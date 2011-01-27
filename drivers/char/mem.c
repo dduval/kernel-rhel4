@@ -111,15 +111,20 @@ static inline int valid_phys_addr_range(unsigned long addr, size_t *count)
 }
 #endif
 
-static inline int range_is_allowed(unsigned long from, unsigned long to)
+static inline int range_is_allowed(unsigned long from, unsigned long size)
 {
-	unsigned long cursor;
-	
-	cursor = from >> PAGE_SHIFT;
-	while ((cursor << PAGE_SHIFT) < to) {
-		if (!devmem_is_allowed(cursor))
+	unsigned long pfn = from >> PAGE_SHIFT;
+	u64 cursor = pfn << PAGE_SHIFT;
+	u64 to = from + size;
+
+	while (cursor < to) {
+		if (!devmem_is_allowed(pfn)) {
+			printk(KERN_INFO "Program %s tried to access /dev/mem between %Lx->%Lx.\n",
+				current->comm, from, to);
 			return 0;
-		cursor++;
+		}
+		cursor += PAGE_SIZE;
+		pfn++;
 	}
 	return 1;
 }
@@ -142,7 +147,7 @@ static ssize_t do_write_mem(void *p, unsigned long realp,
 		written+=sz;
 	}
 #endif
-	if (!range_is_allowed(realp, realp+count))
+	if (!range_is_allowed(realp, count))
 		return -EPERM;
 	copied = copy_from_user(p, buf, count);
 	if (copied) {
@@ -188,7 +193,7 @@ static ssize_t read_mem(struct file * file, char __user * buf,
 		}
 	}
 #endif
-	if (!range_is_allowed(p, p+count))
+	if (!range_is_allowed(p, count))
 		return -EPERM;
 	if (copy_to_user(buf, __va(p), count))
 		return -EFAULT;
@@ -210,8 +215,12 @@ static ssize_t write_mem(struct file * file, const char __user * buf,
 
 static int mmap_mem(struct file * file, struct vm_area_struct * vma)
 {
+	size_t size = vma->vm_end - vma->vm_start;
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
 	int uncached;
+
+	if (!range_is_allowed(offset, size))
+		return -EPERM;
 
 	uncached = uncached_access(file, offset);
 #ifdef pgprot_noncached
@@ -228,7 +237,7 @@ static int mmap_mem(struct file * file, struct vm_area_struct * vma)
 	if (uncached)
 		vma->vm_flags |= VM_IO;
 
-	if (remap_page_range(vma, vma->vm_start, offset, vma->vm_end-vma->vm_start,
+	if (remap_page_range(vma, vma->vm_start, offset, size,
 			     vma->vm_page_prot))
 		return -EAGAIN;
 	return 0;

@@ -14,9 +14,7 @@ xen-platform-pci-objs += panic-handler.o
 xen-platform-pci-objs += ../../xen/xenbus/xenbus_comms.o
 xen-platform-pci-objs += ../../xen/xenbus/xenbus_xs.o
 xen-platform-pci-objs += ../../xen/xenbus/xenbus_probe.o 
-xen-platform-pci-objs += ../../xen/xenbus/xenbus_dev.o 
 xen-platform-pci-objs += ../../xen/xenbus/xenbus_client.o 
-xen-platform-pci-objs += ../../xen/core/xen_proc.o
 
 # Can we do better ?
 ifeq ($(ARCH),ia64)

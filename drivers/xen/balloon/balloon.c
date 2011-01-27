@@ -501,7 +501,8 @@ static int __init balloon_init(void)
 	balloon_timer.data = 0;
 	balloon_timer.function = balloon_alarm;
     
-#ifdef CONFIG_PROC_FS
+/* don't include on bare-metal & FV guest */
+#if defined(CONFIG_PROC_FS) && defined(CONFIG_XEN)
 	if ((balloon_pde = create_xen_proc_entry("balloon", 0644)) == NULL) {
 		WPRINTK("Unable to create /proc/xen/balloon.\n");
 		return -1;

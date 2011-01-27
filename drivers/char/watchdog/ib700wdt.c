@@ -194,7 +194,7 @@ ibwdt_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 	  if ((new_margin < 0) || (new_margin > 30))
 		  return -EINVAL;
 	  for (i = 0x0F; i > -1; i--)
-		  if (wd_times[i] > new_margin)
+		  if (wd_times[i] >= new_margin)
 			  break;
 	  wd_margin = i;
 	  ibwdt_ping();

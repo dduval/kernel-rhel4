@@ -631,6 +631,19 @@ static int write_memory(struct disk_dump_partition *dump_part, int offset,
 			break;
 		}
 
+		if (!pfn_valid(nr)) {
+			Err("invalid PFN %lu\n", nr);
+			memset(scratch + blk_in_chunk * PAGE_SIZE, 0, PAGE_SIZE);
+			sprintf(scratch + blk_in_chunk * PAGE_SIZE,
+				"Unmapped page. PFN %lu\n", nr);
+			/* pretend the page was dumpable */
+			if ((ret = set_bitmap(dump_part, 1)) < 0) {
+				Err("bitmap error %d on block %lu", ret, nr);
+				break;
+			}
+			goto write;
+		}
+
 		dumpable = page_is_dumpable(nr);
 		if ((ret = set_bitmap(dump_part, dumpable)) < 0) {
 			Err("bitmap error %d on block %lu", ret, nr);

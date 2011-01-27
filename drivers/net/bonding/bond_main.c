@@ -854,7 +854,7 @@ int bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb, struct net_de
 			 * so return success here so the calling functions
 			 * won't attempt to free is again.
 			 */
-			return 0;
+			return NETDEV_TX_OK;
 		}
 	} else {
 		skb->dev = slave_dev;
@@ -868,7 +868,7 @@ int bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb, struct net_de
 #endif
 		dev_queue_xmit(skb);
 
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -1726,10 +1726,20 @@ static void bond_poll_controller(struct net_device *bond_dev)
 	struct slave *slave;
 	int i;
 
+
+	/*
+	 * This lock-dance is to make sure that we aren't being called by
+	 * someone who has already taken the lock.
+	 */
+	if (!write_trylock(&bond->lock))
+		return;
+
 	bond_for_each_slave(bond, slave, i) {
-		if (slave->dev->poll_controller)
+		if (slave->dev->poll_controller && IS_UP(slave->dev))
 			netpoll_poll_dev(slave->dev);
 	}
+
+	write_unlock(&bond->lock);
 }
 
 static void bond_netpoll_setup(struct net_device *bond_dev,
@@ -2044,6 +2054,20 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 		}
 	}
 
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	if (slaves_support_netpoll(bond_dev)) {
+		bond_dev->poll_controller = bond_poll_controller;
+		if (dev_wrapper(slave_dev) && dev_wrapper(bond_dev))
+			dev_wrapper(slave_dev)->npinfo =
+				dev_wrapper(bond_dev)->npinfo;
+	} else if (bond_dev->poll_controller) {
+		bond_dev->poll_controller = NULL;
+		printk("New slave device %s does not support netpoll.\n",
+			slave_dev->name);
+		printk("netpoll disabled for %s.\n", bond_dev->name);
+	}
+#endif
+
 	switch (bond->params.mode) {
 	case BOND_MODE_ACTIVEBACKUP:
 		bond_set_slave_inactive_flags(new_slave);
@@ -2141,20 +2165,6 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 	       bond_dev->name, slave_dev->name,
 	       new_slave->state == BOND_STATE_ACTIVE ? "n active" : " backup",
 	       new_slave->link != BOND_LINK_DOWN ? "n up" : " down");
-
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	if (slaves_support_netpoll(bond_dev)) {
-		bond_dev->poll_controller = bond_poll_controller;
-		if (dev_wrapper(slave_dev) && dev_wrapper(bond_dev))
-			dev_wrapper(slave_dev)->npinfo =
-				dev_wrapper(bond_dev)->npinfo;
-	} else if (bond_dev->poll_controller) {
-		bond_dev->poll_controller = NULL;
-		printk("New slave device %s does not support netpoll.\n",
-			slave_dev->name);
-		printk("netpoll disabled for %s.\n", bond_dev->name);
-	}
-#endif
 
 	/* enslave is successful */
 	return 0;
@@ -4693,7 +4703,7 @@ out:
 	}
 	read_unlock(&bond->curr_slave_lock);
 	read_unlock(&bond->lock);
-	return 0;
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -4813,9 +4823,19 @@ int bond_xmit_netpoll(struct netpoll *np, struct sk_buff *skb,
 	struct bonding *bond = bond_dev->priv;
 	int ret;
 
+	/*
+	 * This lock-dance is to make sure that we aren't being called by
+	 * someone who has already taken the lock.
+	 */
+	if (!write_trylock(&bond->lock))
+		return NETDEV_TX_BUSY;
+
+	write_unlock(&bond->lock);
+
 	bond->netpoll = np;
 	ret = bond_dev->hard_start_xmit(skb, bond_dev);
 	bond->netpoll = NULL;
+
 
 	return ret;
 }

@@ -1209,7 +1209,9 @@ static int __init xenbus_probe_init(void)
 	}
 
 
+#if defined(CONFIG_PROC_FS) && defined(CONFIG_XEN)
 	xenbus_dev_init();
+#endif
 
 	/* Initialize the interface to xenstore. */
 	err = xs_init();

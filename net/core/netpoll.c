@@ -273,10 +273,11 @@ void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 			 * procesor, we can wait.  If we are, then we need to 
 			 * bail out.
 			 */
-			if(dev->xmit_lock_owner != smp_processor_id())
-				spin_lock(&dev->xmit_lock);
-			else
+			if(dev->xmit_lock_owner == smp_processor_id())
 				return;
+
+			udelay(50);
+			continue;
 		}
 
 		dev->xmit_lock_owner = smp_processor_id();
@@ -294,14 +295,22 @@ void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 		}
 
 		while ((skbs = skb_dequeue(&npinfo->tx_backlog)) != NULL) {
-			if (ndw->netpoll_start_xmit)
-				status = ndw->netpoll_start_xmit(np, skbs, dev);
+			/*
+			 * Reinitialize these since we have pulled a new skb
+			 * off the queue.
+			 */
+			struct net_device *devs = skbs->dev;
+			struct net_device_wrapper *ndws = dev_wrapper(devs);
+			struct netpoll_info *npinfos = ndws->npinfo;
+
+			if (ndws->netpoll_start_xmit)
+				status = ndws->netpoll_start_xmit(np, skbs, devs);
 			else
-				status = dev->hard_start_xmit(skbs, dev);
+				status = devs->hard_start_xmit(skbs, devs);
 
 			if (status) {
 				/* We failed, lets try again in a bit */
-				skb_queue_head(&npinfo->tx_backlog, skbs);
+				skb_queue_head(&npinfos->tx_backlog, skbs);
 				break;
 			}
 		}

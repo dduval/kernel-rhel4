@@ -1619,6 +1619,9 @@ unsigned long nr_iowait(void)
 	return sum;
 }
 
+/* cpus with isolated domains */
+cpumask_t __devinitdata cpu_isolated_map = CPU_MASK_NONE;
+
 #ifdef CONFIG_SMP
 
 /*
@@ -2330,6 +2333,12 @@ static void rebalance_tick(int this_cpu, runqueue_t *this_rq,
 	if (this_load > old_load)
 		old_load++;
 	this_rq->cpu_load = (old_load + this_load) / 2;
+
+	/*
+	 * Isolated cpus don't get load-balanced.
+	 */
+	if (cpu_isset(this_cpu, cpu_isolated_map))
+		return;
 
 	for_each_domain(this_cpu, sd) {
 		unsigned long interval = sd->balance_interval;
@@ -4591,9 +4600,6 @@ static int __devinit cpu_to_node_group(int cpu)
 
 /* Groups for isolated scheduling domains */
 static struct sched_group sched_group_isolated[NR_CPUS];
-
-/* cpus with isolated domains */
-cpumask_t __devinitdata cpu_isolated_map = CPU_MASK_NONE;
 
 static int __devinit cpu_to_isolated_group(int cpu)
 {

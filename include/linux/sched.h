@@ -489,6 +489,7 @@ struct task_struct_aux {
 #ifndef __GENKSYMS__
 	struct key *request_key_auth;   /* assumed request_key authority */
 	struct task_io_accounting ioac;
+	struct list_head	*scm_work_list;
 #endif
 };
 

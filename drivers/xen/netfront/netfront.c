@@ -518,9 +518,12 @@ static void backend_changed(struct xenbus_device *dev,
 	switch (backend_state) {
 	case XenbusStateInitialising:
 	case XenbusStateInitialised:
-	case XenbusStateConnected:
 	case XenbusStateUnknown:
 	case XenbusStateClosed:
+		break;
+
+	case XenbusStateConnected:
+		(void)send_fake_arp(netdev);
 		break;
 
 	case XenbusStateInitWait:
@@ -2041,7 +2044,7 @@ static int
 netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 {
 	struct in_ifaddr  *ifa = (struct in_ifaddr *)ptr;
-	struct net_device *dev = ifa->ifa_dev->dev;
+	struct net_device *dev = ptr;
 
 	/* Carrier up event and is it one of our devices? */
 	if (event == NETDEV_CHANGE && netif_carrier_ok(dev) &&
@@ -2140,7 +2143,7 @@ static int __init netif_init(void)
 	IPRINTK("Initialising virtual ethernet driver.\n");
 
 	(void)register_inetaddr_notifier(&notifier_inetdev);
-	(void)register_inetaddr_notifier(&notifier_netdev);
+	(void)register_netdevice_notifier(&notifier_netdev);
 
 	return xenbus_register_frontend(&netfront);
 }
@@ -2154,7 +2157,7 @@ static void __exit netif_exit(void)
 	if (is_initial_xendomain())
 		return;
 
-	unregister_inetaddr_notifier(&notifier_netdev);
+	unregister_netdevice_notifier(&notifier_netdev);
 	unregister_inetaddr_notifier(&notifier_inetdev);
 
 	return xenbus_unregister_driver(&netfront);

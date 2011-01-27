@@ -162,6 +162,9 @@ static unsigned char atkbd_unxlate_table[128] = {
 
 #define ATKBD_SPECIAL		250
 
+#define ATKBD_LED_EVENT_BIT	0
+#define ATKBD_REP_EVENT_BIT	1
+
 static unsigned char atkbd_scroll_keys[5][2] = {
 	{ ATKBD_SCR_1,     0x45 },
 	{ ATKBD_SCR_2,     0x29 },
@@ -217,16 +220,11 @@ struct atkbd {
 
 	/* Flags */
 	unsigned long flags;
-};
 
-/* Work structure to schedule execution of a command */
-struct atkbd_work {
-	struct work_struct work;
-	struct atkbd *atkbd;
-	int command;
-	unsigned char param[0];
+	struct work_struct event_work;
+	unsigned long event_mask;
+	unsigned long event_jiffies;
 };
-
 
 static void atkbd_report_key(struct input_dev *dev, struct pt_regs *regs, int code, int value)
 {
@@ -530,52 +528,91 @@ out:
 	return rc;
 }
 
-/*
- * atkbd_execute_scheduled_command() sends a command, previously scheduled by
- * atkbd_schedule_command(), to the keyboard.
- */
-
-static void atkbd_execute_scheduled_command(void *data)
+static int atkbd_set_repeat_rate(struct atkbd *atkbd)
 {
-	struct atkbd_work *atkbd_work = data;
+	const short period[32] =
+		{ 33,  37,  42,  46,  50,  54,  58,  63,  67,  75,  83,  92, 100, 109, 116, 125,
+		 133, 149, 167, 182, 200, 217, 232, 250, 270, 303, 333, 370, 400, 435, 470, 500 };
+	const short delay[4] =
+		{ 250, 500, 750, 1000 };
 
-	atkbd_command(atkbd_work->atkbd, atkbd_work->param, atkbd_work->command);
+	struct input_dev *dev = &atkbd->dev;
+	unsigned char param;
+	int i = 0, j = 0;
 
-	kfree(atkbd_work);
+	while (i < ARRAY_SIZE(period) - 1 && period[i] < dev->rep[REP_PERIOD])
+		i++;
+	dev->rep[REP_PERIOD] = period[i];
+
+	while (j < ARRAY_SIZE(delay) - 1 && delay[j] < dev->rep[REP_DELAY])
+		j++;
+	dev->rep[REP_DELAY] = delay[j];
+
+	param = i | (j << 5);
+	atkbd_command(atkbd, &param, ATKBD_CMD_SETREP);
+
+	return 0;
 }
 
-/*
- * atkbd_schedule_command() allows to schedule delayed execution of a keyboard
- * command and can be used to issue a command from an interrupt or softirq
- * context.
- */
-
-static int atkbd_schedule_command(struct atkbd *atkbd, unsigned char *param, int command)
+static int atkbd_set_leds(struct atkbd *atkbd)
 {
-	struct atkbd_work *atkbd_work;
-	int send = (command >> 12) & 0xf;
-	int receive = (command >> 8) & 0xf;
+	struct input_dev *dev = &atkbd->dev;
+	unsigned char param[2];
 
-	if (!test_bit(ATKBD_FLAG_ENABLED, &atkbd->flags))
-		return -1;
+	param[0] = (test_bit(LED_SCROLLL, dev->led) ? 1 : 0)
+		| (test_bit(LED_NUML,    dev->led) ? 2 : 0)
+		| (test_bit(LED_CAPSL,   dev->led) ? 4 : 0);
+	atkbd_command(atkbd, param, ATKBD_CMD_SETLEDS);
 
-	if (!(atkbd_work = kmalloc(sizeof(struct atkbd_work) + max(send, receive), GFP_ATOMIC)))
-		return -1;
-
-	memset(atkbd_work, 0, sizeof(struct atkbd_work));
-	atkbd_work->atkbd = atkbd;
-	atkbd_work->command = command;
-	memcpy(atkbd_work->param, param, send);
-	INIT_WORK(&atkbd_work->work, atkbd_execute_scheduled_command, atkbd_work);
-
-	if (!schedule_work(&atkbd_work->work)) {
-		kfree(atkbd_work);
-		return -1;
+	if (atkbd->extra) {
+		param[0] = 0;
+		param[1] = (test_bit(LED_COMPOSE, dev->led) ? 0x01 : 0)
+			 | (test_bit(LED_SLEEP,   dev->led) ? 0x02 : 0)
+			 | (test_bit(LED_SUSPEND, dev->led) ? 0x04 : 0)
+			 | (test_bit(LED_MISC,    dev->led) ? 0x10 : 0)
+			 | (test_bit(LED_MUTE,    dev->led) ? 0x20 : 0);
+		atkbd_command(atkbd, param, ATKBD_CMD_EX_SETLEDS);
 	}
 
 	return 0;
 }
 
+/*
+ * atkbd_event_work() is used to complete processing of events that
+ * can not be processed by input_event() which is often called from
+ * interrupt context.
+ */
+
+static void atkbd_event_work(void *data)
+{
+	struct atkbd *atkbd = data;
+
+	if (test_and_clear_bit(ATKBD_LED_EVENT_BIT, &atkbd->event_mask))
+		atkbd_set_leds(atkbd);
+
+	if (test_and_clear_bit(ATKBD_REP_EVENT_BIT, &atkbd->event_mask))
+		atkbd_set_repeat_rate(atkbd);
+}
+
+/*
+ * Schedule switch for execution. We need to throttle requests,
+ * otherwise keyboard may become unresponsive.
+ */
+static void atkbd_schedule_event_work(struct atkbd *atkbd, int event_bit)
+{
+	unsigned long delay = msecs_to_jiffies(50);
+
+	if (!test_bit(ATKBD_FLAG_ENABLED, &atkbd->flags))
+		return;
+
+	if (time_after(jiffies, atkbd->event_jiffies + delay))
+		delay = 0;
+
+	atkbd->event_jiffies = jiffies;
+	set_bit(event_bit, &atkbd->event_mask);
+	wmb();
+	schedule_delayed_work(&atkbd->event_work, delay);
+}
 
 /*
  * Event callback from the input module. Events that change the state of
@@ -585,13 +622,6 @@ static int atkbd_schedule_command(struct atkbd *atkbd, unsigned char *param, int
 static int atkbd_event(struct input_dev *dev, unsigned int type, unsigned int code, int value)
 {
 	struct atkbd *atkbd = dev->private;
-	const short period[32] =
-		{ 33,  37,  42,  46,  50,  54,  58,  63,  67,  75,  83,  92, 100, 109, 116, 125,
-		 133, 149, 167, 182, 200, 217, 232, 250, 270, 303, 333, 370, 400, 435, 470, 500 };
-	const short delay[4] =
-		{ 250, 500, 750, 1000 };
-	unsigned char param[2];
-	int i, j;
 
 	if (!atkbd->write)
 		return -1;
@@ -599,37 +629,13 @@ static int atkbd_event(struct input_dev *dev, unsigned int type, unsigned int co
 	switch (type) {
 
 		case EV_LED:
-
-			param[0] = (test_bit(LED_SCROLLL, dev->led) ? 1 : 0)
-			         | (test_bit(LED_NUML,    dev->led) ? 2 : 0)
-			         | (test_bit(LED_CAPSL,   dev->led) ? 4 : 0);
-		        atkbd_schedule_command(atkbd, param, ATKBD_CMD_SETLEDS);
-
-			if (atkbd->extra) {
-				param[0] = 0;
-				param[1] = (test_bit(LED_COMPOSE, dev->led) ? 0x01 : 0)
-					 | (test_bit(LED_SLEEP,   dev->led) ? 0x02 : 0)
-					 | (test_bit(LED_SUSPEND, dev->led) ? 0x04 : 0)
-				         | (test_bit(LED_MISC,    dev->led) ? 0x10 : 0)
-				         | (test_bit(LED_MUTE,    dev->led) ? 0x20 : 0);
-				atkbd_schedule_command(atkbd, param, ATKBD_CMD_EX_SETLEDS);
-			}
-
+			atkbd_schedule_event_work(atkbd, ATKBD_LED_EVENT_BIT);
 			return 0;
 
 
 		case EV_REP:
-
-			if (atkbd_softrepeat) return 0;
-
-			i = j = 0;
-			while (i < 32 && period[i] < dev->rep[REP_PERIOD]) i++;
-			while (j < 4 && delay[j] < dev->rep[REP_DELAY]) j++;
-			dev->rep[REP_PERIOD] = period[i];
-			dev->rep[REP_DELAY] = delay[j];
-			param[0] = i | (j << 5);
-			atkbd_schedule_command(atkbd, param, ATKBD_CMD_SETREP);
-
+			if (!atkbd_softrepeat)
+				atkbd_schedule_event_work(atkbd, ATKBD_REP_EVENT_BIT);
 			return 0;
 	}
 
@@ -803,6 +809,7 @@ static void atkbd_disconnect(struct serio *serio)
 
 	clear_bit(ATKBD_FLAG_ENABLED, &atkbd->flags);
 	synchronize_kernel();
+	cancel_delayed_work(&atkbd->event_work);
 	flush_scheduled_work();
 
 	input_unregister_device(&atkbd->dev);
@@ -828,6 +835,8 @@ static void atkbd_connect(struct serio *serio, struct serio_driver *drv)
 
 	init_MUTEX(&atkbd->cmd_sem);
 	init_waitqueue_head(&atkbd->wait);
+
+	INIT_WORK(&atkbd->event_work, atkbd_event_work, atkbd);
 
 	switch (serio->type & SERIO_TYPE) {
 

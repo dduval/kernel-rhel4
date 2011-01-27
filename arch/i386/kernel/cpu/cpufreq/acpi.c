@@ -474,23 +474,38 @@ acpi_cpufreq_cpu_init (
 
 	union acpi_object		arg0 = {ACPI_TYPE_BUFFER};
 	u32				arg0_buf[3];
+	struct acpi_object_list		arg_list = {1, &arg0};
 
 	ACPI_FUNCTION_TRACE("acpi_cpufreq_cpu_init");
 	/* setup arg_list for _PDC settings */
         arg0.buffer.length = 12;
         arg0.buffer.pointer = (u8 *) arg0_buf;
 
+	if (!acpi_perf_data[cpu])
+		return (-ENODEV);
+
 	data = kmalloc(sizeof(struct cpufreq_acpi_io), GFP_KERNEL);
 	if (!data)
 		return_VALUE(-ENOMEM);
 	memset(data, 0, sizeof(struct cpufreq_acpi_io));
 
+	data->acpi_data = acpi_perf_data[cpu];
 	acpi_io_data[cpu] = data;
 
+	acpi_processor_cpu_init_pdc(data->acpi_data, cpu, &arg_list);
 	result = acpi_processor_register_performance(data->acpi_data, cpu);
+
+	data->acpi_data->pdc = NULL;
 
 	if (result)
 		goto err_free;
+
+	perf = data->acpi_data;
+	policy->shared_type = perf->shared_type;
+
+	if (policy->shared_type == CPUFREQ_SHARED_TYPE_ALL ||
+	  policy->shared_type == CPUFREQ_SHARED_TYPE_ANY)
+		policy->cpus = perf->shared_cpu_map;
 
 	if (cpu_has(c, X86_FEATURE_CONSTANT_TSC)) {
 		acpi_cpufreq_driver.flags |= CPUFREQ_CONST_LOOPS;
