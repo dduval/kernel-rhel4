@@ -489,6 +489,12 @@ void page_remove_rmap(struct page *page)
 		if (page_test_and_clear_dirty(page))
 			set_page_dirty(page);
 		dec_page_state(nr_mapped);
+
+		/*
+		 * Deactivate the page when the last munmap() occurs.  
+		 */
+		if (pagecache_over_max() && !PageAnon(page))
+			deactivate_unmapped_page(page);
 	}
 }
 

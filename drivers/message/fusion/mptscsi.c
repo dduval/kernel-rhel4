@@ -1348,11 +1348,11 @@ mptscsih_remove(struct pci_dev *pdev)
 	mptscsih_shutdown(pdev);
 #endif
 
-/*	dexitprintk((KERN_INFO MYNAM ": %s: calling scsi_remove_host ioc=%p host=%p\n", 
+	dexitprintk((KERN_INFO MYNAM ": %s: calling scsi_remove_host ioc=%p host=%p\n", 
 		ioc->name, ioc, host));
 
 	scsi_remove_host(host);
-	dexitprintk((KERN_INFO MYNAM ": %s: scsi_remove_host completed\n", ioc->name)); */
+	dexitprintk((KERN_INFO MYNAM ": %s: scsi_remove_host completed\n", ioc->name));
 
 	if (hd->ScsiLookup != NULL) {
 		sz1 = hd->ioc->req_depth * sizeof(void *);

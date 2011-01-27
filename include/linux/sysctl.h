@@ -176,6 +176,7 @@ enum
 	VM_OOM_KILL=28,		/* oom killer enabled */
 	VM_MAX_QUEUE_DEPTH=29,	/* max IO queue depth */
 	VM_PERCPU_PAGELIST_FRACTION=30,/* int: fraction of pages in each percpu_pagelist */
+	VM_PAGECACHE=31,	/* favor reclaiming unmapped pagecache pages */
 };
 
 

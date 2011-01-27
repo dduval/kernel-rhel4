@@ -450,7 +450,8 @@ nfs_fill_super(struct super_block *sb, struct nfs_mount_data *data, int silent)
 	if (server->flags & NFS_MOUNT_VER3) {
 #ifdef CONFIG_NFS_V3
 		server->rpc_ops = &nfs_v3_clientops;
-		server->caps |= NFS_CAP_READDIRPLUS;
+		if (!(data->flags & NFS_MOUNT_NORDIRPLUS))
+			server->caps |= NFS_CAP_READDIRPLUS;
 		if (data->version < 4) {
 			printk(KERN_NOTICE "NFS: NFSv3 not supported by mount program.\n");
 			return -EIO;
@@ -570,6 +571,7 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss, 
 		{ NFS_MOUNT_NONLM, ",nolock", ",lock" },
 		{ NFS_MOUNT_NOACL, ",noacl", "" },
 		{ NFS_MOUNT_BROKEN_SUID, ",broken_suid", "" },
+		{ NFS_MOUNT_NORDIRPLUS, ",nordirplus", "" },
 		{ 0, NULL, NULL }
 	};
 	struct proc_nfs_info *nfs_infop;
@@ -831,6 +833,16 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
 			inode->i_fop = &nfs_file_operations;
 			inode->i_data.a_ops = &nfs_file_aops;
 			inode->i_data.backing_dev_info = &NFS_SB(sb)->backing_dev_info;
+#ifdef CONFIG_HIGHMEM
+			/*
+			 * Until NFS gets proper congestion control,
+			 * we disallow HIGHMEM so the writeback logic
+			 * limits the amount of dirty memory.  Otherwise,
+			 * writing large files results in OOM when the
+			 * lowmem is scarce.
+			 */
+			mapping_set_gfp_mask(&inode->i_data, GFP_KERNEL);
+#endif
 		} else if (S_ISDIR(inode->i_mode)) {
 			inode->i_op = NFS_SB(sb)->rpc_ops->dir_inode_ops;
 			inode->i_fop = &nfs_dir_operations;

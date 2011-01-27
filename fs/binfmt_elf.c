@@ -705,7 +705,9 @@ static int load_elf_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 
 	relocexec = 0;
 
-	if (current->personality == PER_LINUX)
+	if (current->personality == PER_LINUX ||
+	    bprm->e_uid != current->euid ||
+	    bprm->e_gid != current->egid)
 	switch (exec_shield) {
 	case 1:
 		if (executable_stack == EXSTACK_DISABLE_X) {

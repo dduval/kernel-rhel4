@@ -163,10 +163,15 @@ extern unsigned int nr_free_buffer_pages(void);
 extern unsigned int nr_free_pagecache_pages(void);
 
 /* linux/mm/swap.c */
+extern int pagecache_maxpercent;
+#define pagecache_over_max() \
+	(get_page_cache_size() - total_swapcache_pages) > \
+	(totalram_pages * pagecache_maxpercent / 100)
 extern void FASTCALL(lru_cache_add(struct page *));
 extern void FASTCALL(lru_cache_add_active(struct page *));
 extern void FASTCALL(activate_page(struct page *));
 extern void FASTCALL(mark_page_accessed(struct page *));
+extern void FASTCALL(deactivate_unmapped_page(struct page *));
 extern void lru_add_drain(void);
 extern int rotate_reclaimable_page(struct page *page);
 extern void swap_setup(void);

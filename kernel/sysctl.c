@@ -942,6 +942,17 @@ static ctl_table vm_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &min_percpu_pagelist_fract,
 	},
+	{
+		.ctl_name	= VM_PAGECACHE,
+		.procname	= "pagecache",
+		.data		= &pagecache_maxpercent,
+		.maxlen		= sizeof(pagecache_maxpercent),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
 	{ .ctl_name = 0 }
 };
 

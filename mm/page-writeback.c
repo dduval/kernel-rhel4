@@ -138,30 +138,58 @@ static void
 get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty, struct address_space *mapping)
 {
 	int background_ratio;		/* Percentages */
-	int dirty_ratio;
-	int unmapped_ratio;
+	int dirty_ratio = vm_dirty_ratio;
 	long background;
 	long dirty;
-	unsigned long available_memory = total_pages;
+	unsigned long available_memory;
 	struct task_struct *tsk;
+	struct zone *zone;
+#ifdef CONFIG_HIGHMEM
+	int no_highmem = 0;
+#endif
 
 	get_writeback_state(wbs);
 
+	/*
+	 * Arbitrarily assume that 10% of the slab
+	 * is reclaimable.  2.6.19 and beyond actually
+	 * track the amount of slab which is reclaimable,
+	 * the statistic we really need here.  In the absence
+	 * of that we prefer to be conservative here.
+	 */
+	available_memory = read_page_state(nr_slab) / 10;
+
+	for_each_zone(zone) {
+#ifdef CONFIG_HIGHMEM
+		if (is_highmem(zone) && mapping &&
+		    !(mapping_gfp_mask(mapping) & __GFP_HIGHMEM)) {
+			no_highmem++;
+			continue;
+		}
+#endif
+		available_memory += zone->nr_active;
+		available_memory += zone->nr_inactive;
+		available_memory += zone->free_pages;
+	}
 #ifdef CONFIG_HIGHMEM
 	/*
-	 * If this mapping can only allocate from low memory,
-	 * we exclude high memory from our count.
+	 * Assume the mapped memory ratio is the
+	 * same as the zone size ratio.  Again, later
+	 * kernels track mapped memory on a per zone basis
+	 * which would be very useful here.
 	 */
-	if (mapping && !(mapping_gfp_mask(mapping) & __GFP_HIGHMEM))
-		available_memory -= totalhigh_pages;
+	if (no_highmem) {
+		int ratio = 100 - totalhigh_pages * 100 / total_pages;
+		wbs->nr_mapped = wbs->nr_mapped * ratio / 100;
+	}
 #endif
+	if (wbs->nr_mapped < available_memory)
+		available_memory -= wbs->nr_mapped;
+	else
+		available_memory = 1;
 
-	unmapped_ratio = 100 - (wbs->nr_mapped * 100) / available_memory;
-
-	dirty_ratio = vm_dirty_ratio;
-	if (dirty_ratio > unmapped_ratio / 2)
-		dirty_ratio = unmapped_ratio / 2;
-
+	if (dirty_ratio > 100)
+		dirty_ratio = 100;
 	if (dirty_ratio < 1)
 		dirty_ratio = 1;
 
