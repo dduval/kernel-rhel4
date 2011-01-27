@@ -353,8 +353,7 @@ int_with_check:
 	movl threadinfo_flags(%rcx),%edx
 	andl %edi,%edx
 	jnz   int_careful
-#FIXME: double check this one
-#	andl    $~TS_COMPAT,threadinfo_status(%rcx)
+	andl    $~TS_COMPAT,threadinfo_status(%rcx)
 	jmp   retint_restore_args
 
 	/* Either reschedule or signal or syscall exit tracking needed. */

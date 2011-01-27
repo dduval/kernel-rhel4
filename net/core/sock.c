@@ -459,6 +459,8 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
   		return -EFAULT;
 	if(len < 0)
 		return -EINVAL;
+
+	memset(&v, 0, sizeof(v));
 		
   	switch(optname) 
   	{

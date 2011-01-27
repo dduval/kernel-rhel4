@@ -21,8 +21,8 @@
 #include "megaraid_ioctl.h"
 
 
-#define MEGARAID_VERSION	"2.20.4.6-rh2"
-#define MEGARAID_EXT_VERSION	"(Release Date: Wed Jun 28 12:27:22 EST 2006)"
+#define MEGARAID_VERSION	"2.20.4.6-rh3"
+#define MEGARAID_EXT_VERSION	"(Release Date: Tue Mar 3 14:14:22 EST 2009)"
 
 
 /*

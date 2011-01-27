@@ -520,18 +520,6 @@ thread_matches (struct task_struct *thread, unsigned long addr)
 	unsigned long thread_rbs_end;
 	struct pt_regs *thread_regs;
 
-	if (ptrace_check_attach(thread, 0) < 0)
-		/*
-		 * If the thread is not in an attachable state, we'll ignore it.
-		 * The net effect is that if ADDR happens to overlap with the
-		 * portion of the thread's register backing store that is
-		 * currently residing on the thread's kernel stack, then ptrace()
-		 * may end up accessing a stale value.  But if the thread isn't
-		 * stopped, that's a problem anyhow, so we're doing as well as we
-		 * can...
-		 */
-		return 0;
-
 	thread_regs = ia64_task_regs(thread);
 	thread_rbs_end = ia64_get_user_rbs_end(thread, thread_regs, NULL);
 	if (!on_kernel_rbs(addr, thread_regs->ar_bspstore, thread_rbs_end))
@@ -1297,6 +1285,7 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 	struct pt_regs *pt, *regs = (struct pt_regs *) &stack;
 	unsigned long urbs_end, peek_or_poke;
 	struct task_struct *child;
+	struct task_struct *rbs_child;
 	struct switch_stack *sw;
 	long ret;
 
@@ -1316,13 +1305,16 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 
 	peek_or_poke = (request == PTRACE_PEEKTEXT || request == PTRACE_PEEKDATA
 			|| request == PTRACE_POKETEXT || request == PTRACE_POKEDATA);
+	rbs_child = NULL;
 	ret = -ESRCH;
 	read_lock(&tasklist_lock);
 	{
 		child = find_task_by_pid(pid);
 		if (child) {
-			if (peek_or_poke)
-				child = find_thread_for_addr(child, addr);
+			if (peek_or_poke) {
+				rbs_child = find_thread_for_addr(child, addr);
+				get_task_struct(rbs_child);
+			}
 			get_task_struct(child);
 		}
 	}
@@ -1338,9 +1330,29 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 		goto out_tsk;
 	}
 
-	ret = ptrace_check_attach(child, request == PTRACE_KILL);
-	if (ret < 0)
-		goto out_tsk;
+	ret = -ESRCH;
+	if (rbs_child) {
+		/*
+		 * If the thread is not in an attachable state, we'll ignore it.
+		 * The net effect is that if ADDR happens to overlap with the
+		 * portion of the thread's register backing store that is
+		 * currently residing on the thread's kernel stack, then ptrace()
+		 * may end up accessing a stale value.  But if the thread isn't
+		 * stopped, that's a problem anyhow, so we're doing as well as we
+		 * can...
+		 */
+		if (rbs_child != child &&
+		    !(ret =  ptrace_check_attach(rbs_child, 0))) {
+			put_task_struct(child);
+			child = rbs_child;
+		} else
+			put_task_struct(rbs_child);
+	}
+	if (!ret) {
+		ret = ptrace_check_attach(child, request == PTRACE_KILL);
+		if (ret < 0)
+			goto out_tsk;
+	}
 
 	pt = ia64_task_regs(child);
 	sw = (struct switch_stack *) (child->thread.ksp + 16);

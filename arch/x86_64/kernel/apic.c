@@ -1066,6 +1066,7 @@ int __init APIC_init_uniprocessor (void)
 		nr_ioapics = 0;
 #endif
 	setup_boot_APIC_clock();
+	check_nmi_watchdog();
 
 	return 0;
 }

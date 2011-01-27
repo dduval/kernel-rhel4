@@ -1388,6 +1388,7 @@ static inline void invalidate_remote_inode(struct inode *inode)
 		invalidate_inode_pages(inode->i_mapping);
 }
 extern void invalidate_inode_pages2(struct address_space *mapping);
+extern int invalidate_inode_pages3(struct address_space *mapping);
 extern void write_inode_now(struct inode *, int);
 extern int write_inode_now_err(struct inode *, int);
 extern int filemap_fdatawrite(struct address_space *);
@@ -1597,6 +1598,8 @@ extern int vfs_follow_link(struct nameidata *, const char *);
 extern int page_readlink(struct dentry *, char __user *, int);
 extern int page_follow_link_light(struct dentry *, struct nameidata *);
 extern void page_put_link(struct dentry *, struct nameidata *);
+extern int __page_symlink(struct inode *inode, const char *symname, int len,
+		gfp_t gfp_mask);
 extern int page_symlink(struct inode *inode, const char *symname, int len);
 extern struct inode_operations page_symlink_inode_operations;
 extern int generic_readlink(struct dentry *, char __user *, int);

@@ -216,12 +216,11 @@ static struct net_device *create_netdev(struct xenbus_device *);
 
 static void end_access(int, void *);
 static void netif_disconnect_backend(struct netfront_info *);
-static void netif_free(struct netfront_info *);
 
 static int network_connect(struct net_device *);
 static void network_tx_buf_gc(struct net_device *);
 static void network_alloc_rx_buffers(struct net_device *);
-static int send_fake_arp(struct net_device *);
+static void send_fake_arp(struct net_device *);
 
 static irqreturn_t netif_int(int irq, void *dev_id, struct pt_regs *ptregs);
 
@@ -264,7 +263,7 @@ static int __devinit netfront_probe(struct xenbus_device *dev,
 	if (err) {
 		printk(KERN_WARNING "%s: register_netdev err=%d\n",
 		       __FUNCTION__, err);
- 		goto fail;
+		goto fail;
 	}
 
 	err = xennet_sysfs_addif(info->netdev);
@@ -453,7 +452,7 @@ static int setup_device(struct xenbus_device *dev, struct netfront_info *info)
 	info->tx.sring = NULL;
 	info->irq = 0;
 
-	txs = (struct netif_tx_sring *)get_zeroed_page(GFP_KERNEL | __GFP_HIGH);
+	txs = (struct netif_tx_sring *)get_zeroed_page(GFP_NOIO|__GFP_HIGH);
 	if (!txs) {
 		err = -ENOMEM;
 		xenbus_dev_fatal(dev, err, "allocating tx ring page");
@@ -469,7 +468,7 @@ static int setup_device(struct xenbus_device *dev, struct netfront_info *info)
 	}
 	info->tx_ring_ref = err;
 
-	rxs = (struct netif_rx_sring *)get_zeroed_page(GFP_KERNEL | __GFP_HIGH);
+	rxs = (struct netif_rx_sring *)get_zeroed_page(GFP_NOIO|__GFP_HIGH);
 	if (!rxs) {
 		err = -ENOMEM;
 		xenbus_dev_fatal(dev, err, "allocating rx ring page");
@@ -499,7 +498,6 @@ static int setup_device(struct xenbus_device *dev, struct netfront_info *info)
 	return 0;
 
  fail:
-	netif_free(info);
 	return err;
 }
 
@@ -523,16 +521,14 @@ static void backend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateConnected:
-		(void)send_fake_arp(netdev);
+		send_fake_arp(netdev);
 		break;
 
 	case XenbusStateInitWait:
-		if (network_connect(netdev) != 0) {
-			netif_free(np);
+		if (network_connect(netdev) != 0)
 			break;
-		}
 		xenbus_switch_state(dev, XenbusStateConnected);
-		(void)send_fake_arp(netdev);
+		send_fake_arp(netdev);
 		break;
 
 	case XenbusStateClosing:
@@ -546,9 +542,8 @@ static void backend_changed(struct xenbus_device *dev,
  * MAC. We send a fake ARP request.
  *
  * @param dev device
- * @return 0 on success, error code otherwise
  */
-static int send_fake_arp(struct net_device *dev)
+static void send_fake_arp(struct net_device *dev)
 {
 	struct sk_buff *skb;
 	u32             src_ip, dst_ip;
@@ -558,16 +553,16 @@ static int send_fake_arp(struct net_device *dev)
 
 	/* No IP? Then nothing to do. */
 	if (src_ip == 0)
-		return 0;
+		return;
 
 	skb = arp_create(ARPOP_REPLY, ETH_P_ARP,
 			 dst_ip, dev, src_ip,
 			 /*dst_hw*/ NULL, /*src_hw*/ NULL,
 			 /*target_hw*/ dev->dev_addr);
 	if (skb == NULL)
-		return -ENOMEM;
+		return;
 
-	return dev_queue_xmit(skb);
+	dev_queue_xmit(skb);
 }
 
 
@@ -1140,22 +1135,17 @@ static int xennet_get_responses(struct netfront_info *np,
 				struct page *page =
 					skb_shinfo(skb)->frags[0].page;
 				unsigned long pfn = page_to_pfn(page);
-/* to avoid build warnings */
-#if CONFIG_XEN || (!CONFIG_X86_PAE && CONFIG_XEN_PV_ON_HVM)
 				void *vaddr = page_address(page);
-#endif
 
 				mcl = np->rx_mcl + pages_flipped;
 				mmu = np->rx_mmu + pages_flipped;
 
-/* not for rhel4 & rhel5 -- _supported_pte_mask not exported for pfn_pte_ma */
-#if CONFIG_XEN || (!CONFIG_X86_PAE && CONFIG_XEN_PV_ON_HVM)
 				MULTI_update_va_mapping(mcl,
 							(unsigned long)vaddr,
 							pfn_pte_ma(mfn,
 								   PAGE_KERNEL),
 							0);
-#endif
+
 				mmu->ptr = ((maddr_t)mfn << PAGE_SHIFT)
 					| MMU_MACHPHYS_UPDATE;
 				mmu->val = pfn;
@@ -1521,14 +1511,12 @@ static void netif_release_rx_bufs_flip(struct netfront_info *np)
 			/* Remap the page. */
 			struct page *page = skb_shinfo(skb)->frags[0].page;
 			unsigned long pfn = page_to_pfn(page);
-/* to avoid build warnings */
-#if CONFIG_XEN || (!CONFIG_X86_PAE && CONFIG_XEN_PV_ON_HVM)
 			void *vaddr = page_address(page);
 
 			MULTI_update_va_mapping(mcl, (unsigned long)vaddr,
 						pfn_pte_ma(mfn, PAGE_KERNEL),
 						0);
-#endif
+
 			mcl++;
 			mmu->ptr = ((maddr_t)mfn << PAGE_SHIFT)
 				| MMU_MACHPHYS_UPDATE;
@@ -2032,7 +2020,7 @@ inetdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 
 	/* UP event and is it one of our devices? */
 	if (event == NETDEV_UP && dev->open == network_open)
-		(void)send_fake_arp(dev);
+		send_fake_arp(dev);
 
 	return NOTIFY_DONE;
 }
@@ -2043,13 +2031,12 @@ inetdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 static int
 netdev_notify(struct notifier_block *this, unsigned long event, void *ptr)
 {
-	struct in_ifaddr  *ifa = (struct in_ifaddr *)ptr;
 	struct net_device *dev = ptr;
 
 	/* Carrier up event and is it one of our devices? */
 	if (event == NETDEV_CHANGE && netif_carrier_ok(dev) &&
 	    dev->open == network_open)
-		(void)send_fake_arp(dev);
+		send_fake_arp(dev);
 
 	return NOTIFY_DONE;
 }
@@ -2074,13 +2061,6 @@ static void netif_disconnect_backend(struct netfront_info *info)
 	info->rx_ring_ref = GRANT_INVALID_REF;
 	info->tx.sring = NULL;
 	info->rx.sring = NULL;
-}
-
-
-static void netif_free(struct netfront_info *info)
-{
-	netif_disconnect_backend(info);
-	free_netdev(info->netdev);
 }
 
 

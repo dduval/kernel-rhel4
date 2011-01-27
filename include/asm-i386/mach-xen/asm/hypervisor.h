@@ -193,6 +193,7 @@ HYPERVISOR_poll(
 	return rc;
 }
 
+#ifdef CONFIG_XEN
 static inline void
 MULTI_update_va_mapping(
     multicall_entry_t *mcl, unsigned long va,
@@ -213,6 +214,11 @@ MULTI_update_va_mapping(
     mcl->args[3] = flags;
 #endif
 }
+#else /* !defined(CONFIG_XEN) .... HVM */
+/* Multicalls not supported for HVM guests. */
+#define MULTI_update_va_mapping(a,b,c,d) ((void)0)
+#define MULTI_grant_table_op(a,b,c,d) ((void)0)
+#endif
 
 static inline void
 MULTI_update_va_mapping_otherdomain(

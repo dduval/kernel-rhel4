@@ -1200,11 +1200,6 @@ static task_t *copy_process(unsigned long clone_flags,
 	 */
 	clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
 
-	/* Our parent execution domain becomes current domain
-	   These must match for thread signalling to apply */
-	   
-	p->parent_exec_id = p->self_exec_id;
-
 	/* ok, now we should be set up.. */
 	p->exit_signal = (clone_flags & CLONE_THREAD) ? -1 : (clone_flags & CSIGNAL);
 	p->pdeath_signal = 0;
@@ -1246,10 +1241,13 @@ static task_t *copy_process(unsigned long clone_flags,
 	}
 
 	/* CLONE_PARENT re-uses the old parent */
-	if (clone_flags & (CLONE_PARENT|CLONE_THREAD))
+	if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {
 		p->real_parent = current->real_parent;
-	else
+		p->parent_exec_id = current->parent_exec_id;
+	} else {
 		p->real_parent = current;
+		p->parent_exec_id = current->self_exec_id;
+	}
 	p->parent = p->real_parent;
 
 	spin_lock(&current->sighand->siglock);

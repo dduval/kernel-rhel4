@@ -783,8 +783,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 				 * with result of command (READ or VERIFY),
 				 * DID_SOFT_ERROR is set.
 				 */
-				if (ioc->bus_type == SPI && pTarget &&
-		 			(pTarget->inq_data[0] == TYPE_DISK)){
+				if (ioc->bus_type == SPI && pTarget) {
 					if (pScsiReq->CDB[0] == READ_6  ||
 					    pScsiReq->CDB[0] == READ_10 ||
 					    pScsiReq->CDB[0] == READ_12 ||
@@ -843,8 +842,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 				 * the length of transfer and residual.
 				 * MEDIUM_ERROR is set by incorrect data.
 				 */
-				if (ioc->bus_type == SPI && pTarget &&
-		 			(pTarget->inq_data[0] == TYPE_DISK)){
+				if (ioc->bus_type == SPI && pTarget){
 					if (sc->sense_buffer[2] & 0x20) {
 					    u32	 difftransfer;
 					    difftransfer =

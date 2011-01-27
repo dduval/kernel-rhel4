@@ -2420,6 +2420,7 @@ megaraid_mbox_dpc(unsigned long devp)
 	unsigned long		flags;
 	uint8_t			c;
 	int			status;
+	uioc_t			*kioc;
 
 
 	if (!adapter) return;
@@ -2461,6 +2462,9 @@ megaraid_mbox_dpc(unsigned long devp)
 
 			// remove from local clist
 			list_del_init(&scb->list);
+
+			kioc		= (uioc_t *)scb->gp;
+			kioc->status	= 0;
 
 			megaraid_mbox_mm_done(adapter, scb);
 
@@ -2784,6 +2788,7 @@ megaraid_reset_handler(struct scsi_cmnd *scp)
 	int		recovery_window;
 	int		recovering;
 	int		i;
+	uioc_t		*kioc;
 
 	adapter		= SCP2ADAPTER(scp);
 	raid_dev	= ADAP2RAIDDEV(adapter);
@@ -2810,17 +2815,34 @@ megaraid_reset_handler(struct scsi_cmnd *scp)
 
 		list_del_init(&scb->list);	// from pending list
 
-		con_log(CL_ANN, (KERN_WARNING
-			"megaraid: %ld:%d[%d:%d], reset from pending list\n",
-				scp->serial_number, scb->sno,
-				scb->dev_channel, scb->dev_target));
+		if (scb->sno >= MBOX_MAX_SCSI_CMDS) {
+			con_log(CL_ANN, (KERN_WARNING
+			"megaraid: IOCTL packet with %d[%d:%d] being reset\n",
+			scb->sno, scb->dev_channel, scb->dev_target));
 
-		scp->result = (DID_RESET << 16);
-		if (scp->scsi_done) {
-			scp->scsi_done(scp);
+			scb->status = -1;
+
+			kioc			= (uioc_t *)scb->gp;
+			kioc->status		= -EFAULT;
+
+			megaraid_mbox_mm_done(adapter, scb);
+		} else {
+			if (scb->scp == scp) {	// Found command
+				con_log(CL_ANN, (KERN_WARNING
+					"megaraid: %ld:%d[%d:%d], reset from pending list\n",
+					scp->serial_number, scb->sno,
+					scb->dev_channel, scb->dev_target));
+			} else {
+				con_log(CL_ANN, (KERN_WARNING
+				"megaraid: IO packet with %d[%d:%d] being reset\n",
+				scb->sno, scb->dev_channel, scb->dev_target));
+			}
+
+			scb->scp->result = (DID_RESET << 16);
+			scb->scp->scsi_done(scb->scp);
+
+			megaraid_dealloc_scb(adapter, scb);
 		}
-
-		megaraid_dealloc_scb(adapter, scb);
 	}
 	spin_unlock_irqrestore(PENDING_LIST_LOCK(adapter), flags);
 
@@ -3854,7 +3876,6 @@ megaraid_mbox_mm_done(adapter_t *adapter, scb_t *scb)
 	unsigned long		flags;
 
 	kioc			= (uioc_t *)scb->gp;
-	kioc->status		= 0;
 	mbox64			= (mbox64_t *)(unsigned long)kioc->cmdbuf;
 	mbox64->mbox32.status	= scb->status;
 	raw_mbox		= (uint8_t *)&mbox64->mbox32;

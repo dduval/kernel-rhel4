@@ -269,10 +269,13 @@ struct igb_adapter {
 	/* to not mess up cache alignment, always add to the bottom */
 	unsigned long state;
 	unsigned int msi_enabled;
+	unsigned int flags;
 
 	u32 eeprom_wol;
 	u32 pm_state[16];
 };
+
+#define IGB_FLAG_IN_NETPOLL	(1 << 5)
 
 enum e1000_state_t {
 	__IGB_TESTING,

@@ -184,7 +184,6 @@ void do_machine_check(struct pt_regs * regs, long error_code)
 
 		if (error_code != -1)
 			rdtscll(m.tsc);
-		wrmsrl(MSR_IA32_MC0_STATUS + i*4, 0);
 		mce_log(&m);
 
 		/* Did this bank cause the exception? */
@@ -234,6 +233,8 @@ void do_machine_check(struct pt_regs * regs, long error_code)
 
  out:
 	/* Last thing done in the machine check exception to clear state. */
+	for (i = 0; i < banks; i++)
+		wrmsrl(MSR_IA32_MC0_STATUS + i*4, 0);
 	wrmsrl(MSR_IA32_MCG_STATUS, 0);
 }
 

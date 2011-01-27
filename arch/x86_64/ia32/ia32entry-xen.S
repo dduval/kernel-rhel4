@@ -108,6 +108,7 @@ ENTRY(ia32_sysenter_target)
  	.quad 1b,ia32_badarg
  	.previous	
 	GET_THREAD_INFO(%r10)
+	orl    $TS_COMPAT,threadinfo_status(%r10)
 	testl  $(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT),threadinfo_flags(%r10)
 	jnz  sysenter_tracesys
 sysenter_do_call:	
@@ -121,6 +122,7 @@ sysenter_do_call:
 	__cli
 	testl	$_TIF_ALLWORK_MASK,threadinfo_flags(%r10)
 	jnz	int_ret_from_sys_call
+	andl    $~TS_COMPAT,threadinfo_status(%r10)
 	/* clear IF, that popfq doesn't enable interrupts early */
 	andl  $~0x200,EFLAGS-R11(%rsp) 
 	RESTORE_ARGS 1,24,1,1,1,1
@@ -196,6 +198,7 @@ ENTRY(ia32_cstar_target)
 	.quad 1b,ia32_badarg
 	.previous	
 	GET_THREAD_INFO(%r10)
+	orl   $TS_COMPAT,threadinfo_status(%r10)
 	testl $(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT),threadinfo_flags(%r10)
 	jnz   cstar_tracesys
 cstar_do_call:	
@@ -209,6 +212,7 @@ cstar_do_call:
 	__cli
 	testl $_TIF_ALLWORK_MASK,threadinfo_flags(%r10)
 	jnz  int_ret_from_sys_call
+	andl $~TS_COMPAT,threadinfo_status(%r10)
 	RESTORE_ARGS 1,-ARG_SKIP,1,1,1
 	movl RIP-ARGOFFSET(%rsp),%ecx
 	movl EFLAGS-ARGOFFSET(%rsp),%r11d	
@@ -274,6 +278,7 @@ ENTRY(ia32_syscall)
 	   this could be a problem. */
 	SAVE_ARGS 0,0,1
 	GET_THREAD_INFO(%r10)
+	orl   $TS_COMPAT,threadinfo_status(%r10)
 	testl $(_TIF_SYSCALL_TRACE|_TIF_SYSCALL_AUDIT),threadinfo_flags(%r10)
 	jnz ia32_tracesys
 ia32_do_syscall:	

@@ -209,8 +209,11 @@ extern int io_apic_set_pci_routing (int ioapic, int pin, int irq, int, int);
 
 extern int sis_apic_bug; /* dummy */ 
 
+/* 1 if the timer IRQ uses the '8259A Virtual Wire' mode */
+extern int timer_through_8259;
 #else  /* !CONFIG_X86_IO_APIC */
 #define io_apic_assign_pci_irqs 0
+static const int timer_through_8259 = 0;
 #endif
 
 extern int assign_irq_vector(int irq);

@@ -57,6 +57,7 @@ static DEFINE_PER_CPU(short, wd_enabled);
 unsigned int nmi_watchdog = NMI_DEFAULT;
 static unsigned int nmi_hz = HZ;
 unsigned int nmi_perfctr_msr;	/* the MSR to reset in NMI handler */
+static int endflag __initdata;
 
 /* Run after command line and cpu_init init, but before all other checks */
 void __init nmi_watchdog_default(void)
@@ -71,6 +72,32 @@ void __init nmi_watchdog_default(void)
 		nmi_watchdog = NMI_LOCAL_APIC;
 }
 
+#ifdef CONFIG_SMP
+/*
+ * The performance counters used by NMI_LOCAL_APIC don't trigger when
+ * the CPU is idle. To make sure the NMI watchdog really ticks on all
+ * CPUs during the test make them busy.
+ */
+static __init void nmi_cpu_busy(void *data)
+{
+	/*
+	 * Intentionally don't use cpu_relax here. This is
+	 * to make sure that the performance counter really ticks,
+	 * even if there is a simulator or similar that catches the
+	 * pause instruction. On a real HT machine this is fine because
+	 * all other CPUs are busy with "useless" delay loops and don't
+	 * care if they get somewhat less cycles.
+	 */
+	while (endflag == 0)
+		mb();
+}
+#endif
+
+static void __acpi_nmi_disable(void *__unused)
+{
+	apic_write(APIC_LVT0, APIC_DM_NMI | APIC_LVT_MASKED);
+}
+
 int __init check_nmi_watchdog (void)
 {
 	int counts[NR_CPUS];
@@ -81,10 +108,16 @@ int __init check_nmi_watchdog (void)
 
 	printk(KERN_INFO "testing NMI watchdog ... ");
 
+#ifdef CONFIG_SMP
+	if (nmi_watchdog == NMI_LOCAL_APIC)
+		smp_call_function(nmi_cpu_busy, (void *)&endflag, 0, 0);
+#endif
+
 	for (cpu = 0; cpu < NR_CPUS; cpu++)
 		counts[cpu] = cpu_pda[cpu].__nmi_count; 
 	local_irq_enable();
-	mdelay((10*1000)/nmi_hz); // wait 10 ticks
+	mdelay((20 * 1000) / nmi_hz); /* wait 20 ticks */
+	endflag = 1;
 
 	for (cpu = 0; cpu < NR_CPUS; cpu++) {
 		if (!cpu_online(cpu))
@@ -99,13 +132,13 @@ int __init check_nmi_watchdog (void)
 			if (atomic_dec_and_test(&nmi_watchdog_active))
 				nmi_active = 0;
 			per_cpu(wd_enabled, cpu) = 0;
-			return -1;
+			goto error;
 		}
 	}
 	if (!atomic_read(&nmi_watchdog_active)) {
 		atomic_set(&nmi_watchdog_active, -1);
 		nmi_active = -1;
-		return -1;
+		goto error;
 	}
 
 	printk("OK.\n");
@@ -116,6 +149,14 @@ int __init check_nmi_watchdog (void)
 		nmi_hz = lapic_adjust_nmi_hz(1);
 
 	return 0;
+error:
+	if (nmi_watchdog == NMI_IO_APIC) {
+		if (!timer_through_8259)
+			disable_8259A_irq(0);
+		printk(KERN_INFO "NMI watchdog: disabling NMI delivery on LINT0 for all CPUs\n");
+		on_each_cpu(__acpi_nmi_disable, NULL, 0, 1);
+	}
+	return -2;
 }
 
 int __init setup_nmi_watchdog(char *str)
@@ -289,11 +330,11 @@ void acpi_nmi_enable(void)
 	touch_nmi_watchdog();
 }
 
-static void __acpi_nmi_disable(void *__unused)
+static void acpi_nmi_disable_one(void *__unused)
 {
 	if (__get_cpu_var(wd_enabled) == 0)
 		return;
-	apic_write(APIC_LVT0, APIC_DM_NMI | APIC_LVT_MASKED);
+	__acpi_nmi_disable(NULL);
 	__get_cpu_var(wd_enabled) = 0;
 	if (atomic_dec_and_test(&nmi_watchdog_active))
 		nmi_active = 0;
@@ -305,7 +346,7 @@ static void __acpi_nmi_disable(void *__unused)
 void acpi_nmi_disable(void)
 {
 	if (atomic_read(&nmi_watchdog_active))
-		on_each_cpu(__acpi_nmi_disable, NULL, 0, 1);
+		on_each_cpu(acpi_nmi_disable_one, NULL, 0, 1);
 }
 
 /*

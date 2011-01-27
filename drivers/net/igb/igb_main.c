@@ -520,10 +520,11 @@ static void igb_free_irq(struct igb_adapter *adapter)
 }
 
 /**
- * igb_irq_disable - Mask off interrupt generation on the NIC
+ * igb_irq_disable_nosync - Mask off interrupt generation on the NIC, but
+ * 			    do not call synchronize_irq to avoid deadlocks.
  * @adapter: board private structure
  **/
-static void igb_irq_disable(struct igb_adapter *adapter)
+static void igb_irq_disable_nosync(struct igb_adapter *adapter)
 {
 	struct e1000_hw *hw = &adapter->hw;
 
@@ -533,6 +534,15 @@ static void igb_irq_disable(struct igb_adapter *adapter)
 	}
 	wr32(E1000_IMC, ~0);
 	wrfl();
+}
+
+/**
+ * igb_irq_disable - Mask off interrupt generation on the NIC
+ * @adapter: board private structure
+ **/
+static void igb_irq_disable(struct igb_adapter *adapter)
+{
+	igb_irq_disable_nosync(adapter);
 	synchronize_irq(adapter->pdev->irq);
 }
 
@@ -3053,7 +3063,8 @@ static irqreturn_t igb_msix_tx(int irq, void *data, struct pt_regs *regs)
 	
 	tx_ring->total_bytes = 0;
 	tx_ring->total_packets = 0;
-	if (!igb_clean_tx_irq(adapter, tx_ring))
+	if (!(adapter->flags & IGB_FLAG_IN_NETPOLL) &&
+	    !igb_clean_tx_irq(adapter, tx_ring))
 		/* Ring was not completely cleaned, so fire another interrupt */
 		wr32(E1000_EICS, tx_ring->eims_value);
 
@@ -3194,24 +3205,27 @@ static int igb_clean(struct net_device *poll_dev, int *budget)
 	if (!netif_carrier_ok(poll_dev))
 		goto quit_polling;
 
-	/* igb_clean is called per-cpu.  This lock protects tx_ring[i] from
-	 * being cleaned by multiple cpus simultaneously.  A failure obtaining
-	 * the lock means tx_ring[i] is currently being cleaned anyway. */
-	for (i = 0; i < adapter->num_tx_queues; i++) {
-		if (spin_trylock(&adapter->tx_ring[i].tx_clean_lock)) {
-			tx_clean_complete &= igb_clean_tx_irq(adapter,
+	if (!(adapter->flags & IGB_FLAG_IN_NETPOLL)) {
+		/* igb_clean is called per-cpu.  This lock protects tx_ring[i] from
+		 * being cleaned by multiple cpus simultaneously.  A failure obtaining
+		 * the lock means tx_ring[i] is currently being cleaned anyway. */
+		for (i = 0; i < adapter->num_tx_queues; i++) {
+			if (spin_trylock(&adapter->tx_ring[i].tx_clean_lock)) {
+				tx_clean_complete &=
+					igb_clean_tx_irq(adapter,
 			                                &adapter->tx_ring[i]);
-			spin_unlock(&adapter->tx_ring[i].tx_clean_lock);
+				spin_unlock(&adapter->tx_ring[i].tx_clean_lock);
+			}
 		}
-	}
 
-	for (i = 0; i < adapter->num_rx_queues; i++) {
-		igb_clean_rx_irq_adv(adapter, &adapter->rx_ring[i], &work_done,
-		                     work_to_do / adapter->num_rx_queues);
-		*budget -= work_done;
-		poll_dev->quota -= work_done;
-	}
+		for (i = 0; i < adapter->num_rx_queues; i++) {
+			igb_clean_rx_irq_adv(adapter, &adapter->rx_ring[i], &work_done,
+			                     work_to_do / adapter->num_rx_queues);
+			*budget -= work_done;
+			poll_dev->quota -= work_done;
+		}
 
+	}
 	/* If no Tx and not enough Rx work done, exit the polling mode */
 	if ((tx_clean_complete && (work_done == 0)) ||
 	    !netif_running(poll_dev)) {
@@ -3240,7 +3254,9 @@ static int igb_clean_rx_ring_msix(struct net_device *netdev, int *budget)
 	if (!netif_carrier_ok(real_netdev))
 		goto quit_polling;
 
-	igb_clean_rx_irq_adv(adapter, rx_ring, &work_done, work_to_do);
+	if (!(adapter->flags & IGB_FLAG_IN_NETPOLL)) {
+		igb_clean_rx_irq_adv(adapter, rx_ring, &work_done, work_to_do);
+	}
 
 	*budget -= work_done;
 	netdev->quota -= work_done;
@@ -4034,7 +4050,9 @@ static void igb_netpoll(struct net_device *netdev)
 	int i;
 	int work_done = 0, work_to_do = adapter->netdev->weight;
 
-	igb_irq_disable(adapter);
+	igb_irq_disable_nosync(adapter);
+	adapter->flags |= IGB_FLAG_IN_NETPOLL;
+
 	for (i = 0; i < adapter->num_tx_queues; i++)
 		igb_clean_tx_irq(adapter, &adapter->tx_ring[i]);
 
@@ -4042,6 +4060,7 @@ static void igb_netpoll(struct net_device *netdev)
 		igb_clean_rx_irq_adv(adapter, &adapter->rx_ring[i],
 				     &work_done, work_to_do);
 
+	adapter->flags &= ~IGB_FLAG_IN_NETPOLL;
 	igb_irq_enable(adapter);
 }
 #endif /* CONFIG_NET_POLL_CONTROLLER */

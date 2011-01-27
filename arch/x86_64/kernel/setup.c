@@ -1019,6 +1019,12 @@ static void __init init_intel(struct cpuinfo_x86 *c)
 #ifdef CONFIG_SMP
 	c->x86_num_cores = num_cpu_cores(c);
 #endif
+	if (c->cpuid_level > 9) {
+		unsigned eax = cpuid_eax(10);
+		/* Check for version and the number of counters */
+		if ((eax & 0xff) && (((eax>>8) & 0xff) > 1))
+			set_bit(X86_FEATURE_ARCH_PERFMON, &c->x86_capability);
+	}
 }
 
 void __init get_cpu_vendor(struct cpuinfo_x86 *c)

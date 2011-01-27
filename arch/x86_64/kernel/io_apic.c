@@ -45,6 +45,7 @@ int sis_apic_bug; /* not actually supported, dummy for compile */
 extern int disable_timer_pin_1;
 
 int timer_over_8254 __initdata = 1;
+int timer_through_8259 __initdata;
 
 #undef APIC_LOCKUP_DEBUG
 
@@ -1796,7 +1797,6 @@ static inline void check_timer(void)
 				disable_8259A_irq(0);
 				setup_nmi();
 				enable_8259A_irq(0);
-				check_nmi_watchdog();
 			}
 			if (disable_timer_pin_1 > 0)
 				clear_IO_APIC_pin(0, pin1);
@@ -1815,11 +1815,10 @@ static inline void check_timer(void)
 		setup_ExtINT_IRQ0_pin(pin2, vector);
 		if (timer_irq_works()) {
 			printk("works.\n");
+			timer_through_8259 = 1;
 			nmi_watchdog_default();
-			if (nmi_watchdog == NMI_IO_APIC) {
+			if (nmi_watchdog == NMI_IO_APIC)
 				setup_nmi();
-				check_nmi_watchdog();
-			}
 			goto out;
 		}
 		/*
@@ -1829,7 +1828,7 @@ static inline void check_timer(void)
 	}
 	printk(" failed.\n");
 
-	if (nmi_watchdog) {
+	if (nmi_watchdog == NMI_IO_APIC) {
 		printk(KERN_WARNING "timer doesn't work through the IO-APIC - disabling NMI Watchdog!\n");
 		nmi_watchdog = 0;
 	}
