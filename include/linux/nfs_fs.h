@@ -143,7 +143,10 @@ struct nfs_inode {
 	 *
 	 * We need to revalidate the cached attrs for this inode if
 	 *
-	 *	jiffies - read_cache_jiffies > attrtimeo
+	 *	jiffies - read_cache_jiffies >= attrtimeo
+	 *
+	 * Please note the comparison is greater than or equal
+	 * so that zero timeout values can be specified.
 	 *
 	 * and invalidate any cached data/flush out any dirty pages if
 	 * we find that
@@ -420,6 +423,7 @@ extern struct file_operations_ext nfs3_dir_file_operations;
 extern struct dentry_operations nfs_dentry_operations;
 
 extern int nfs_instantiate(struct dentry *dentry, struct nfs_fh *fh, struct nfs_fattr *fattr);
+extern int is_atomic_open(struct inode *dir, struct nameidata *nd);
 
 /*
  * linux/fs/nfs/symlink.c
@@ -711,6 +715,9 @@ struct nfs4_client {
 	wait_queue_head_t	cl_waitq;
 	struct rpc_wait_queue	cl_rpcwaitq;
 
+	/* used for the setclientid verifier */
+	struct timespec		cl_boot_time;
+
 	/* idmapper */
 	struct idmap *		cl_idmap;
 
@@ -718,6 +725,7 @@ struct nfs4_client {
 	 * This is used to generate the clientid, and the callback address.
 	 */
 	char			cl_ipaddr[16];
+	unsigned char		cl_id_uniquifier;
 };
 
 /*
@@ -771,18 +779,10 @@ enum {
 	NFS_DELEGATED_STATE,
 };
 
-/* struct for tracking incomplete opens */
-struct nfs4_inc_open {
-	struct list_head	state;
-	struct task_struct	*task;
-	unsigned long		flags;
-};
-
 struct nfs4_state {
 	struct list_head open_states;	/* List of states for the same state_owner */
 	struct list_head inode_states;	/* List of states for the same inode */
 	struct list_head lock_states;	/* List of subservient lock stateids */
-	struct list_head inc_open;	/* List of incomplete opens */
 
 	struct nfs4_state_owner *owner;	/* Pointer to the open owner */
 	struct inode *inode;		/* Pointer to the inode */
@@ -824,6 +824,7 @@ extern struct inode *nfs4_atomic_open(struct inode *, struct dentry *, struct na
 extern int nfs4_open_revalidate(struct inode *, struct dentry *, int);
 extern int nfs4_handle_exception(struct nfs_server *, int, struct nfs4_exception *);
 extern int nfs4_lock_reclaim(struct nfs4_state *state, struct file_lock *request);
+extern void nfs4_lookup_undo(struct nameidata *nd);
 
 /* nfs4renewd.c */
 extern void nfs4_schedule_state_renewal(struct nfs4_client *);

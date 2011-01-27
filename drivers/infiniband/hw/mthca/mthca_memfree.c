@@ -30,13 +30,12 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id$
  */
 
 #include <linux/mm.h>
 #include <linux/scatterlist.h>
 #include <linux/sched.h>
+#include <linux/vmalloc.h>
 
 #include <asm/page.h>
 
@@ -105,13 +104,47 @@ void mthca_free_icm(struct mthca_dev *dev, struct mthca_icm *icm, int coherent)
 	kfree(icm);
 }
 
+static void clear_pages(struct page *page, int npages)
+{
+	struct page **page_arr;
+	int i;
+	void *buf;
+
+	page_arr = kmalloc(npages * sizeof *page_arr, GFP_KERNEL);
+	if (!page_arr) {
+		printk(KERN_WARNING "page array alloc failure\n");
+		return;
+	}
+
+	for (i = 0; i < npages; ++i)
+		page_arr[i] = page++;
+
+	buf = vmap(page_arr, npages, VM_MAP, PAGE_KERNEL);
+	if (!buf) {
+		printk(KERN_WARNING "vmap failed\n");
+		goto exit;
+	}
+	memset(buf, 0, PAGE_SIZE * npages);
+	vunmap(buf);
+
+exit:
+	kfree(page_arr);
+}
+
+
 static int mthca_alloc_icm_pages(struct scatterlist *mem, int order, gfp_t gfp_mask)
 {
 	struct page *page;
 
+	/*
+	 * Use __GFP_ZERO because buggy firmware assumes ICM pages are
+	 * cleared, and subtle failures are seen if they aren't.
+	 */
 	page = alloc_pages(gfp_mask, order);
 	if (!page)
 		return -ENOMEM;
+
+	clear_pages(page, 1 << order);
 
 	sg_set_page(mem, page, PAGE_SIZE << order, 0);
 	return 0;
@@ -359,12 +392,14 @@ struct mthca_icm_table *mthca_alloc_icm_table(struct mthca_dev *dev,
 					      int use_lowmem, int use_coherent)
 {
 	struct mthca_icm_table *table;
+	int obj_per_chunk;
 	int num_icm;
 	unsigned chunk_size;
 	int i;
 	u8 status;
 
-	num_icm = (obj_size * nobj + MTHCA_TABLE_CHUNK_SIZE - 1) / MTHCA_TABLE_CHUNK_SIZE;
+	obj_per_chunk = MTHCA_TABLE_CHUNK_SIZE / obj_size;
+	num_icm = DIV_ROUND_UP(nobj, obj_per_chunk);
 
 	table = kmalloc(sizeof *table + num_icm * sizeof *table->icm, GFP_KERNEL);
 	if (!table)
@@ -412,7 +447,7 @@ err:
 		if (table->icm[i]) {
 			mthca_UNMAP_ICM(dev, virt + i * MTHCA_TABLE_CHUNK_SIZE,
 					MTHCA_TABLE_CHUNK_SIZE / MTHCA_ICM_PAGE_SIZE,
-				        &status);
+					&status);
 			mthca_free_icm(dev, table->icm[i], table->coherent);
 		}
 

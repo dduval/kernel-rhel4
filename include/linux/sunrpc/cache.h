@@ -205,7 +205,8 @@ RTN *FNAME ARGS										\
 			else read_unlock(&(DETAIL)->hash_lock);				\
 			if (set)							\
 				cache_fresh(DETAIL, &tmp->MEMBER, item->MEMBER.expiry_time); \
-			if (set && !INPLACE && new) cache_fresh(DETAIL, &new->MEMBER, 0);	\
+			if (set && !INPLACE && new)					\
+				cache_nofresh(DETAIL, &new->MEMBER);			\
 			if (new) (DETAIL)->cache_put(&new->MEMBER, DETAIL);		\
 			return tmp;							\
 		}									\
@@ -275,6 +276,7 @@ static inline int cache_put(struct cache_head *h, struct cache_detail *cd)
 extern void cache_init(struct cache_head *h);
 extern void cache_fresh(struct cache_detail *detail,
 			struct cache_head *head, time_t expiry);
+extern void cache_nofresh(struct cache_detail *detail, struct cache_head *head);
 extern int cache_check(struct cache_detail *detail,
 		       struct cache_head *h, struct cache_req *rqstp);
 extern int cache_clean(void);

@@ -34,6 +34,14 @@ typedef int __bitwise pci_power_t;
 #define PCI_EXP_LNKCAP          12      /* Link Capabilities */
 #define PCI_EXP_LNKSTA          18      /* Link Status */
 
+#define BMSR_ESTATEN		0x0100	/* Extended Status in R15 */
+
+#define ESTATUS_1000_TFULL	0x2000	/* Can do 1000BT Full */
+#define ESTATUS_1000_THALF	0x1000	/* Can do 1000BT Half */
+
+#define MII_ESTATUS		0x0f
+
+#define ip_hdr(skb)		(skb->nh.iph)
 
 static inline struct net_device *vlan_group_get_device(struct vlan_group *vg,
 						       int vlan_id)
@@ -57,5 +65,9 @@ static inline struct sk_buff *netdev_alloc_skb(struct net_device *dev,
 		skb->dev = dev;
 	return skb;
 }
+
+#define PCI_VDEVICE(vendor, device)		\
+	PCI_VENDOR_ID_##vendor, (device),	\
+	PCI_ANY_ID, PCI_ANY_ID, 0, 0
 
 #endif 

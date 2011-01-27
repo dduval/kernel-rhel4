@@ -45,6 +45,26 @@
 #include <asm/desc.h>
 #include <asm/irq.h>
 
+static void stack_overflow(void)
+{
+	printk(KERN_WARNING "low stack detected by irq handler\n");
+	dump_stack();
+}
+
+static inline int call_on_stack(void *func, void *stack)
+{
+	int retval;
+	asm volatile(
+		"       xchgl   %%ebx,%%esp     \n"
+		"       call    *%%edi          \n"
+		"       xchgl   %%ebx,%%esp     \n"
+		: "=a"(retval)
+		: "b"(stack), "D"(func)
+		: "memory", "cc", "edx", "ecx"
+	);
+	return retval;
+}
+
 /*
  * Linux has a controller-independent x86 interrupt architecture.
  * every controller has a 'controller-template', that is used
@@ -579,6 +599,7 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 	irq_desc_t *desc = irq_desc + irq;
 	struct irqaction * action;
 	unsigned int status;
+	int overflow = 0;
 
 	irq_enter();
 
@@ -589,11 +610,8 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 
 		__asm__ __volatile__("andl %%esp,%0" :
 					"=r" (esp) : "0" (THREAD_SIZE - 1));
-		if (unlikely(esp < (sizeof(struct thread_info) + STACK_WARN))) {
-			printk("do_IRQ: stack overflow: %ld\n",
-				esp - sizeof(struct thread_info));
-			dump_stack();
-		}
+		if (unlikely(esp < (sizeof(struct thread_info) + STACK_WARN)))
+			overflow = 1;
 	}
 #endif
 	kstat_this_cpu.irqs[irq]++;
@@ -667,20 +685,14 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 			irqctx->tinfo.virtual_stack = curctx->tinfo.virtual_stack;
 			irqctx->tinfo.previous_esp = current_stack_pointer();
 
+			/* Execute warning on interrupt stack */
+			if (unlikely(overflow))
+				call_on_stack(stack_overflow, isp);
+
 			*--isp = (u32) action;
 			*--isp = (u32) regs;
 			*--isp = (u32) irq;
-
-			asm volatile(
-				"       xchgl   %%ebx,%%esp     \n"
-				"       call    handle_IRQ_event \n"
-				"       xchgl   %%ebx,%%esp     \n"
-				: "=a"(action_ret)
-				: "b"(isp)
-				: "memory", "cc", "edx", "ecx"
-			);
-
-
+			action_ret = call_on_stack(handle_IRQ_event, isp);
 		}
 		spin_lock(&desc->lock);
 		if (!noirqdebug)
@@ -698,6 +710,9 @@ fastcall unsigned int do_IRQ(struct pt_regs *regs)
 		irqreturn_t action_ret;
 
 		spin_unlock(&desc->lock);
+
+		if (unlikely(overflow))
+			stack_overflow();
 
 		action_ret = handle_IRQ_event(irq, regs, action);
 

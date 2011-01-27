@@ -235,7 +235,7 @@ static void tstojiffie(struct timespec *tp, int res, u64 *jiff)
 	long sec = tp->tv_sec;
 	long nsec = tp->tv_nsec + res - 1;
 
-	if (nsec >= NSEC_PER_SEC) {
+	if (nsec > NSEC_PER_SEC) {
 		sec++;
 		nsec -= NSEC_PER_SEC;
 	}
@@ -1147,7 +1147,7 @@ retry_delete:
 }
 
 /*
- * This is called by __exit_signal, only when there are no more
+ * This is called by do_exit or de_thread, only when there are no more
  * references to the shared signal_struct.
  */
 void exit_itimers(struct signal_struct *sig)
@@ -1207,9 +1207,13 @@ int do_posix_clock_monotonic_gettime(struct timespec *tp)
 
 	do_posix_clock_monotonic_gettime_parts(tp, &wall_to_mono);
 
-	set_normalized_timespec(tp, tp->tv_sec + wall_to_mono.tv_sec,
-				tp->tv_nsec + wall_to_mono.tv_nsec);
+	tp->tv_sec += wall_to_mono.tv_sec;
+	tp->tv_nsec += wall_to_mono.tv_nsec;
 
+	if ((tp->tv_nsec - NSEC_PER_SEC) > 0) {
+		tp->tv_nsec -= NSEC_PER_SEC;
+		tp->tv_sec++;
+	}
 	return 0;
 }
 

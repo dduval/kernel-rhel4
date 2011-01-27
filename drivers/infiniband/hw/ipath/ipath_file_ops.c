@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -39,11 +39,13 @@
 #include <linux/highmem.h>
 #include <linux/io.h>
 #include <linux/jiffies.h>
+#include <linux/smp_lock.h>
 #include <asm/pgtable.h>
 
 #include "ipath_kernel.h"
 #include "ipath_common.h"
 #include "ipath_user_sdma.h"
+#include "ipath_wc_pat.h"
 
 static int ipath_open(struct inode *, struct file *);
 static int ipath_close(struct inode *, struct file *);
@@ -173,44 +175,23 @@ static int ipath_get_base_info(struct file *fp,
 		(void *) dd->ipath_statusp -
 		(void *) dd->ipath_pioavailregs_dma;
 	if (!shared) {
-		kinfo->spi_piocnt = dd->ipath_pbufsport;
+		kinfo->spi_piocnt = pd->port_piocnt;
 		kinfo->spi_piobufbase = (u64) pd->port_piobufs;
 		kinfo->__spi_uregbase = (u64) dd->ipath_uregbase +
 			dd->ipath_ureg_align * pd->port_port;
 	} else if (master) {
-		kinfo->spi_piocnt = (dd->ipath_pbufsport / subport_cnt) +
-				    (dd->ipath_pbufsport % subport_cnt);
+		kinfo->spi_piocnt = (pd->port_piocnt / subport_cnt) +
+				    (pd->port_piocnt % subport_cnt);
 		/* Master's PIO buffers are after all the slave's */
 		kinfo->spi_piobufbase = (u64) pd->port_piobufs +
 			dd->ipath_palign *
-			(dd->ipath_pbufsport - kinfo->spi_piocnt);
+			(pd->port_piocnt - kinfo->spi_piocnt);
 	} else {
 		unsigned slave = subport_fp(fp) - 1;
 
-		kinfo->spi_piocnt = dd->ipath_pbufsport / subport_cnt;
+		kinfo->spi_piocnt = pd->port_piocnt / subport_cnt;
 		kinfo->spi_piobufbase = (u64) pd->port_piobufs +
 			dd->ipath_palign * kinfo->spi_piocnt * slave;
-	}
-
-	/*
-	 * Set the PIO avail update threshold to no larger
-	 * than the number of buffers per process. Note that
-	 * we decrease it here, but won't ever increase it.
-	 */
-	if (dd->ipath_pioupd_thresh &&
-		kinfo->spi_piocnt < dd->ipath_pioupd_thresh) {
-		unsigned long flags;
-		dd->ipath_pioupd_thresh = kinfo->spi_piocnt;
-		ipath_dbg("Decreased pio update threshold to %u\n",
-			dd->ipath_pioupd_thresh);
-		spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
-		dd->ipath_sendctrl &= ~(INFINIPATH_S_UPDTHRESH_MASK
-			<< INFINIPATH_S_UPDTHRESH_SHIFT);
-		dd->ipath_sendctrl |= dd->ipath_pioupd_thresh
-			<< INFINIPATH_S_UPDTHRESH_SHIFT;
-		ipath_write_kreg(dd, dd->ipath_kregs->kr_sendctrl,
-			dd->ipath_sendctrl);
-		spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
 	}
 
 	if (shared) {
@@ -243,8 +224,13 @@ static int ipath_get_base_info(struct file *fp,
 			(unsigned long long) kinfo->spi_subport_rcvhdr_base);
 	}
 
-	kinfo->spi_pioindex = (kinfo->spi_piobufbase - dd->ipath_piobufbase) /
-		dd->ipath_palign;
+	/*
+	 * All user buffers are 2KB buffers.  If we ever support
+	 * giving 4KB buffers to user processes, this will need some
+	 * work.
+	 */
+	kinfo->spi_pioindex = (kinfo->spi_piobufbase -
+		(dd->ipath_piobufbase & 0xffffffff)) / dd->ipath_palign;
 	kinfo->spi_pioalign = dd->ipath_palign;
 
 	kinfo->spi_qpair = IPATH_KD_QP;
@@ -1111,6 +1097,9 @@ static int mmap_piobufs(struct vm_area_struct *vma,
 	vma->vm_flags &= ~VM_MAYREAD;
 	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND;
 
+	if (ipath_wc_pat)
+		vma->vm_page_prot = pgprot_wc(vma->vm_page_prot);
+
 	ret = io_remap_pfn_range(vma, vma->vm_start, phys >> PAGE_SHIFT,
 				 vma->vm_end - vma->vm_start,
 				 vma->vm_page_prot);
@@ -1330,19 +1319,19 @@ static int ipath_mmap(struct file *fp, struct vm_area_struct *vma)
 	ureg = dd->ipath_uregbase + dd->ipath_ureg_align * pd->port_port;
 	if (!pd->port_subport_cnt) {
 		/* port is not shared */
-		piocnt = dd->ipath_pbufsport;
+		piocnt = pd->port_piocnt;
 		piobufs = pd->port_piobufs;
 	} else if (!subport_fp(fp)) {
 		/* caller is the master */
-		piocnt = (dd->ipath_pbufsport / pd->port_subport_cnt) +
-			 (dd->ipath_pbufsport % pd->port_subport_cnt);
+		piocnt = (pd->port_piocnt / pd->port_subport_cnt) +
+			 (pd->port_piocnt % pd->port_subport_cnt);
 		piobufs = pd->port_piobufs +
-			dd->ipath_palign * (dd->ipath_pbufsport - piocnt);
+			dd->ipath_palign * (pd->port_piocnt - piocnt);
 	} else {
 		unsigned slave = subport_fp(fp) - 1;
 
 		/* caller is a slave */
-		piocnt = dd->ipath_pbufsport / pd->port_subport_cnt;
+		piocnt = pd->port_piocnt / pd->port_subport_cnt;
 		piobufs = pd->port_piobufs + dd->ipath_palign * piocnt * slave;
 	}
 
@@ -1654,9 +1643,6 @@ static int try_alloc_port(struct ipath_devdata *dd, int port,
 		port_fp(fp) = pd;
 		pd->port_pid = current->pid;
 		strncpy(pd->port_comm, current->comm, sizeof(pd->port_comm));
-		ipath_chg_pioavailkernel(dd,
-			dd->ipath_pbufsport * (pd->port_port - 1),
-			dd->ipath_pbufsport, 0);
 		ipath_stats.sps_ports++;
 		ret = 0;
 	} else
@@ -1819,7 +1805,7 @@ static int find_shared_port(struct file *fp,
 	for (ndev = 0; ndev < devmax; ndev++) {
 		struct ipath_devdata *dd = ipath_lookup(ndev);
 
-		if (!dd)
+		if (!usable(dd))
 			continue;
 		for (i = 1; i < dd->ipath_cfgports; i++) {
 			struct ipath_portdata *pd = dd->ipath_pd[i];
@@ -1860,6 +1846,7 @@ done:
 static int ipath_open(struct inode *in, struct file *fp)
 {
 	/* The real work is performed later in ipath_assign_port() */
+	cycle_kernel_lock();
 	fp->private_data = kzalloc(sizeof(struct ipath_filedata), GFP_KERNEL);
 	return fp->private_data ? 0 : -ENOMEM;
 }
@@ -1959,11 +1946,25 @@ static int ipath_do_user_init(struct file *fp,
 
 	/* for now we do nothing with rcvhdrcnt: uinfo->spu_rcvhdrcnt */
 
+	/* some ports may get extra buffers, calculate that here */
+	if (pd->port_port <= dd->ipath_ports_extrabuf)
+		pd->port_piocnt = dd->ipath_pbufsport + 1;
+	else
+		pd->port_piocnt = dd->ipath_pbufsport;
+
 	/* for right now, kernel piobufs are at end, so port 1 is at 0 */
+	if (pd->port_port <= dd->ipath_ports_extrabuf)
+		pd->port_pio_base = (dd->ipath_pbufsport + 1)
+			* (pd->port_port - 1);
+	else
+		pd->port_pio_base = dd->ipath_ports_extrabuf +
+			dd->ipath_pbufsport * (pd->port_port - 1);
 	pd->port_piobufs = dd->ipath_piobufbase +
-		dd->ipath_pbufsport * (pd->port_port - 1) * dd->ipath_palign;
-	ipath_cdbg(VERBOSE, "Set base of piobufs for port %u to 0x%x\n",
-		   pd->port_port, pd->port_piobufs);
+		pd->port_pio_base * dd->ipath_palign;
+	ipath_cdbg(VERBOSE, "piobuf base for port %u is 0x%x, piocnt %u,"
+		" first pio %u\n", pd->port_port, pd->port_piobufs,
+		pd->port_piocnt, pd->port_pio_base);
+	ipath_chg_pioavailkernel(dd, pd->port_pio_base, pd->port_piocnt, 0);
 
 	/*
 	 * Now allocate the rcvhdr Q and eager TIDs; skip the TID
@@ -2070,7 +2071,9 @@ static int ipath_close(struct inode *in, struct file *fp)
 	struct ipath_filedata *fd;
 	struct ipath_portdata *pd;
 	struct ipath_devdata *dd;
+	unsigned long flags;
 	unsigned port;
+	pid_t pid;
 
 	ipath_cdbg(VERBOSE, "close on dev %lx, private data %p\n",
 		   (long)in->i_rdev, fp->private_data);
@@ -2102,14 +2105,13 @@ static int ipath_close(struct inode *in, struct file *fp)
 		mutex_unlock(&ipath_mutex);
 		goto bail;
 	}
+	/* early; no interrupt users after this */
+	spin_lock_irqsave(&dd->ipath_uctxt_lock, flags);
 	port = pd->port_port;
-
-	if (pd->port_hdrqfull) {
-		ipath_cdbg(PROC, "%s[%u] had %u rcvhdrqfull errors "
-			   "during run\n", pd->port_comm, pd->port_pid,
-			   pd->port_hdrqfull);
-		pd->port_hdrqfull = 0;
-	}
+	dd->ipath_pd[port] = NULL;
+	pid = pd->port_pid;
+	pd->port_pid = 0;
+	spin_unlock_irqrestore(&dd->ipath_uctxt_lock, flags);
 
 	if (pd->port_rcvwait_to || pd->port_piowait_to
 	    || pd->port_rcvnowait || pd->port_pionowait) {
@@ -2128,7 +2130,6 @@ static int ipath_close(struct inode *in, struct file *fp)
 	}
 
 	if (dd->ipath_kregbase) {
-		int i;
 		/* atomically clear receive enable port and intr avail. */
 		clear_bit(dd->ipath_r_portenable_shift + port,
 			  &dd->ipath_rcvctrl);
@@ -2157,9 +2158,9 @@ static int ipath_close(struct inode *in, struct file *fp)
 		ipath_write_kreg_port(dd, dd->ipath_kregs->kr_rcvhdraddr,
 			pd->port_port, dd->ipath_dummy_hdrq_phys);
 
-		i = dd->ipath_pbufsport * (port - 1);
-		ipath_disarm_piobufs(dd, i, dd->ipath_pbufsport);
-		ipath_chg_pioavailkernel(dd, i, dd->ipath_pbufsport, 1);
+		ipath_disarm_piobufs(dd, pd->port_pio_base, pd->port_piocnt);
+		ipath_chg_pioavailkernel(dd, pd->port_pio_base,
+			pd->port_piocnt, 1);
 
 		dd->ipath_f_clear_tids(dd, pd->port_port);
 
@@ -2167,12 +2168,10 @@ static int ipath_close(struct inode *in, struct file *fp)
 			unlock_expected_tids(pd);
 		ipath_stats.sps_ports--;
 		ipath_cdbg(PROC, "%s[%u] closed port %u:%u\n",
-			   pd->port_comm, pd->port_pid,
+			   pd->port_comm, pid,
 			   dd->ipath_unit, port);
 	}
 
-	pd->port_pid = 0;
-	dd->ipath_pd[pd->port_port] = NULL; /* before releasing mutex */
 	mutex_unlock(&ipath_mutex);
 	ipath_free_pddata(dd, pd); /* after releasing the mutex */
 
@@ -2451,15 +2450,18 @@ static ssize_t ipath_writev(struct file *filp, const struct iovec *iov,
 	return ipath_user_sdma_writev(pd->port_dd, pq, iov, dim);
 }
 
+static struct class *ipath_class;
+
 static ssize_t show_dev(struct class_device *class_dev, char *buf)
 {
-	struct cdev *dev = class_get_devdata(class_dev);
+	dev_t dev = (dev_t)class_get_devdata(class_dev);
 
-	return print_dev_t(buf, dev->dev);
+	if (!dev)
+		return -ENODEV;
+
+	return print_dev_t(buf, dev);
 }
 static CLASS_DEVICE_ATTR(dev, S_IRUGO, show_dev, NULL);
-
-static struct class *ipath_class;
 
 static int init_cdev(int minor, char *name, const struct file_operations *fops,
 		     struct cdev **cdevp, struct class_device **class_devp)
@@ -2499,16 +2501,12 @@ static int init_cdev(int minor, char *name, const struct file_operations *fops,
 		       minor, name, -ret);
 		goto err_cdev;
 	}
-
-	class_set_devdata(class_dev, cdev);
-
 	if (class_device_create_file(class_dev, &class_device_attr_dev))
-		goto err_class;
+		printk(KERN_ERR IPATH_DRV_NAME " Failed to add class dev file\n");
+	else
+		class_set_devdata(class_dev, dev);
 
 	goto done;
-
-err_class:
-	class_device_unregister(class_dev);
 
 err_cdev:
 	cdev_del(cdev);

@@ -19,7 +19,6 @@
 
 #include "qla_def.h"
 
-#include <linux/delay.h>
 #include <asm/uaccess.h>
 
 static uint16_t qla2x00_nvram_request(scsi_qla_host_t *, uint32_t);
@@ -32,6 +31,13 @@ static int qla2x00_write_nvram_word_tmo(scsi_qla_host_t *, uint32_t, uint16_t,
 uint16_t qla24xx_update_or_read_flash(scsi_qla_host_t *, uint8_t *,
     uint32_t, uint32_t, uint8_t);
 int qla24xx_get_flash_version(scsi_qla_host_t *, uint8_t *);
+
+inline void
+qla2xxx_schedule_udelay(unsigned long usecs)
+{
+	schedule();
+	udelay(usecs);
+}
 
 /*
  * NVRAM support routines
@@ -50,21 +56,21 @@ qla2x00_lock_nvram_access(scsi_qla_host_t *ha)
 	if (!IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA2300(ha)) {
 		data = RD_REG_WORD(&reg->nvram);
 		while (data & NVR_BUSY) {
-			udelay(100);
+			qla2xxx_schedule_udelay(100);
 			data = RD_REG_WORD(&reg->nvram);
 		}
 
 		/* Lock resource */
 		WRT_REG_WORD(&reg->u.isp2300.host_semaphore, 0x1);
 		RD_REG_WORD(&reg->u.isp2300.host_semaphore);
-		udelay(5);
+		qla2xxx_schedule_udelay(5);
 		data = RD_REG_WORD(&reg->u.isp2300.host_semaphore);
 		while ((data & BIT_0) == 0) {
 			/* Lock failed */
-			udelay(100);
+			qla2xxx_schedule_udelay(100);
 			WRT_REG_WORD(&reg->u.isp2300.host_semaphore, 0x1);
 			RD_REG_WORD(&reg->u.isp2300.host_semaphore);
-			udelay(5);
+			qla2xxx_schedule_udelay(5);
 			data = RD_REG_WORD(&reg->u.isp2300.host_semaphore);
 		}
 	}
@@ -466,7 +472,7 @@ qla24xx_read_flash_dword(scsi_qla_host_t *ha, uint32_t addr)
 	    (RD_REG_DWORD(&reg->flash_addr) & FARX_DATA_FLAG) == 0 &&
 	    rval == QLA_SUCCESS; cnt--) {
 		if (cnt)
-			udelay(10);
+			qla2xxx_schedule_udelay(10);
 		else
 			rval = QLA_FUNCTION_TIMEOUT;
 	}
@@ -547,7 +553,7 @@ qla24xx_write_flash_dword(scsi_qla_host_t *ha, uint32_t addr, uint32_t data)
 	for (cnt = 500000; (RD_REG_DWORD(&reg->flash_addr) & FARX_DATA_FLAG) &&
 	    rval == QLA_SUCCESS; cnt--) {
 		if (cnt)
-			udelay(10);
+			qla2xxx_schedule_udelay(10);
 		else
 			rval = QLA_FUNCTION_TIMEOUT;
 	}
@@ -572,7 +578,7 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	int ret;
 	uint32_t liter;
 	uint32_t sec_mask, rest_addr, conf_addr;
-	uint32_t fdata;
+	uint32_t fdata, cnt;
 	uint8_t	man_id, flash_id;
 	struct device_reg_24xx __iomem *reg =
 	    (struct device_reg_24xx __iomem *)ha->iobase;
@@ -586,19 +592,29 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	conf_addr = flash_conf_to_access_addr(0x03d8);
 	switch (man_id) {
 	case 0xbf: // STT flash
-		rest_addr = 0x1fff;
-		sec_mask = 0x3e000;
-		if (flash_id == 0x80 || flash_id == 0x8e)
+		if (flash_id == 0x8e) {
+			rest_addr = 0x3fff;
+			sec_mask = 0x7c000;
+		} else {
+			rest_addr = 0x1fff;
+			sec_mask = 0x7e000;
+		}
+		if (flash_id == 0x80)
 			conf_addr = flash_conf_to_access_addr(0x0352);
 		break;
 	case 0x13: // ST M25P80
 		rest_addr = 0x3fff;
-		sec_mask = 0x3c000;
+		sec_mask = 0x7c000;
+		break;
+	case 0x1f: // Atmel 26DF081A
+		rest_addr = 0x3fff;
+		sec_mask = 0x7c000;
+		conf_addr = flash_conf_to_access_addr(0x0320);
 		break;
 	default:
 		// Default to 64 kb sector size
 		rest_addr = 0x3fff;
-		sec_mask = 0x3c000;
+		sec_mask = 0x7c000;
 		break;
 	}
 
@@ -637,8 +653,14 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 		}
 	} while (0);
 
-	/* Enable flash write-protection. */
+	/* Enable flash write-protection and wait for completion */
 	qla24xx_write_flash_dword(ha, flash_conf_to_access_addr(0x101), 0x9c);
+	for (cnt = 300; cnt &&
+	    qla24xx_read_flash_dword(ha,
+		flash_conf_to_access_addr(0x005)) & BIT_0;
+	    cnt--) {
+		qla2xxx_schedule_udelay(10);
+	}
 
 	/* Disable flash write. */
 	WRT_REG_DWORD(&reg->ctrl_status,

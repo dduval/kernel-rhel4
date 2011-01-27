@@ -7,9 +7,12 @@ obj-$(CONFIG_HUGETLB_PAGE) += hugetlbpage.o
 obj-$(CONFIG_DISCONTIGMEM) += numa.o
 obj-$(CONFIG_K8_NUMA) += k8topology.o
 obj-$(CONFIG_ACPI_NUMA) += srat.o
-obj-$(CONFIG_XEN) += hypervisor.o
 
 ifdef CONFIG_XEN
 include $(srctree)/scripts/Makefile.xen
+
+hypervisor-y    += ../../i386/mm/hypervisor.o
+obj-y           += hypervisor.o
+
 obj-y := $(call cherrypickxen, $(obj-y))
 endif

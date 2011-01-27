@@ -810,10 +810,16 @@ __rpc_schedule(void)
 /*
  * Allocate memory for RPC purposes.
  *
- * We try to ensure that some NFS reads and writes can always proceed
- * by using a mempool when allocating 'small' buffers.
+ * To prevent rpciod from hanging, this allocator never sleeps,
+ * returning NULL if the request cannot be serviced immediately.
+ * The caller can arrange to sleep in a way that is safe for rpciod.
+ *
+ * Most requests are 'small' (under 2KiB) and can be serviced from a
+ * mempool, ensuring that NFS reads and writes can always proceed,
+ * and that there is good locality of reference for these buffers.
+ *
  * In order to avoid memory starvation triggering more writebacks of
- * NFS requests, we use GFP_NOFS rather than GFP_KERNEL.
+ * NFS requests, we avoid using GFP_KERNEL.
  */
 void *
 rpc_malloc(struct rpc_task *task, size_t size)
@@ -823,7 +829,7 @@ rpc_malloc(struct rpc_task *task, size_t size)
 	if (task->tk_flags & RPC_TASK_SWAPPER)
 		gfp = GFP_ATOMIC;
 	else
-		gfp = GFP_NOFS;
+		gfp = __GFP_NOWARN;
 
 	if (size > RPC_BUFFER_MAXSIZE) {
 		task->tk_buffer =  kmalloc(size, gfp);

@@ -360,6 +360,9 @@ static struct scsi_host_template k2_sata_sht = {
 	.proc_info		= k2_sata_proc_info,
 #endif
 	.bios_param		= ata_std_bios_param,
+	.dump_sanity_check      = ata_scsi_dump_sanity_check,
+	.dump_quiesce           = ata_scsi_dump_quiesce,
+	.dump_poll              = ata_scsi_dump_poll,
 };
 
 

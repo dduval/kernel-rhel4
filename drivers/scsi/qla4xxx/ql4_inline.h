@@ -5,6 +5,44 @@
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
 
+static inline void
+qla4xxx_queue_aen(scsi_qla_host_t *ha, uint32_t *mbox_sts)
+{
+	ha->aen_count++;
+	if (ha->aen_count == 0) {
+		/* We overflowed the counter */
+		ha->aen_report = 0;
+	}
+
+	if (ha->aen_count - ha->aen_report == MAX_AEN_ENTRIES) {
+		/* We wrapped the queue,
+		 * update starting point for SDMAPI copy */
+		ha->aen_report++;
+	}
+
+	if (ha->aen_in == (MAX_AEN_ENTRIES - 1))
+		ha->aen_in = 0;
+	else
+		ha->aen_in++;
+
+	memcpy(&ha->aen_q[ha->aen_in].mbox_sts[0],
+	       mbox_sts,
+	       sizeof(mbox_sts[0]) * MBOX_AEN_REG_COUNT);
+
+}
+
+static inline void qla4xxx_queue_lun_change_aen(scsi_qla_host_t *ha,
+						     uint32_t index)
+{
+	uint32_t mbox_sts[MBOX_REG_COUNT];
+	memset(mbox_sts, 0, sizeof(mbox_sts));
+	mbox_sts[0] = MBOX_DRVR_ASTS_LUN_STATUS_CHANGE;
+	mbox_sts[1] = index;
+	qla4xxx_queue_aen(ha, &mbox_sts[0]);
+
+	QL4PRINT(QLP7, printk("scsi%d: %s: index[%d]\n",
+		ha->host_no, __func__, index));
+}
 
 /**************************************************************************
  * qla4xxx_lookup_lun_handle
@@ -127,32 +165,6 @@ qla4xxx_lookup_ddb_by_fw_index(scsi_qla_host_t *ha, uint32_t fw_ddb_index)
 }
 
 /**************************************************************************
- * qla4xxx_mark_device_missing
- *	This routine marks a device missing and resets the relogin retry count.
- *
- * Input:
- * 	ha - Pointer to host adapter structure.
- *	ddb_entry - Pointer to device database entry
- *
- * Returns:
- *	None
- *
- * Context:
- *	Kernel context.
- **************************************************************************/
-static inline void
-qla4xxx_mark_device_missing(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry)
-{
-	atomic_set(&ddb_entry->state, DEV_STATE_MISSING);
-	if (ddb_entry->fcport != NULL)
-		atomic_set(&ddb_entry->fcport->state, FCS_DEVICE_LOST);
-
-	QL4PRINT(QLP2, printk("scsi%d:%d:%d: index [%d] marked "
-	    "MISSING\n", ha->host_no, ddb_entry->bus, ddb_entry->target,
-	    ddb_entry->fw_ddb_index));
-}
-
-/**************************************************************************
  * qla4xxx_enable_intrs
  *	This routine enables the PCI interrupt request by clearing the
  *	appropriate bit.
@@ -175,7 +187,6 @@ qla4xxx_mark_device_missing(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry)
  **************************************************************************/
 static inline void __qla4xxx_enable_intrs(scsi_qla_host_t *ha)
 {
-	ENTER("qla4xxx_enable_intrs");
 	set_bit(AF_INTERRUPTS_ON, &ha->flags);
 
 	if( IS_QLA4010(ha) ) {
@@ -188,13 +199,11 @@ static inline void __qla4xxx_enable_intrs(scsi_qla_host_t *ha)
 		WRT_REG_DWORD(&ha->reg->u1.isp4022.intr_mask, SET_RMASK(IMR_SCSI_INTR_ENABLE));
 		PCI_POSTING(&ha->reg->u1.isp4022.intr_mask);
 	}
-	LEAVE("qla4xxx_enable_intrs");
 }
 
 static inline void __qla4xxx_disable_intrs(scsi_qla_host_t *ha)
 {
 
-	ENTER("qla4xxx_disable_intrs");
 	clear_bit(AF_INTERRUPTS_ON, &ha->flags);
 	
 	if( IS_QLA4010(ha) ) {
@@ -210,7 +219,6 @@ static inline void __qla4xxx_disable_intrs(scsi_qla_host_t *ha)
 			      ha->host_no, __func__,
 			      RD_REG_DWORD(&ha->reg->u1.isp4022.intr_mask)));
 	}
-	LEAVE("qla4xxx_disable_intrs");
 }
 static inline void qla4xxx_enable_intrs(scsi_qla_host_t *ha)
 {

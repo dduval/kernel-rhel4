@@ -114,6 +114,7 @@ EXPORT_SYMBOL(cache_clean);
 EXPORT_SYMBOL(cache_flush);
 EXPORT_SYMBOL(cache_purge);
 EXPORT_SYMBOL(cache_fresh);
+EXPORT_SYMBOL(cache_nofresh);
 EXPORT_SYMBOL(cache_init);
 EXPORT_SYMBOL(cache_register);
 EXPORT_SYMBOL(cache_register_owner);

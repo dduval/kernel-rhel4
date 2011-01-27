@@ -12,6 +12,7 @@
  *            Wolfgang Taphorn
  *            Stefan Bader <stefan.bader@de.ibm.com> 
  *            Heiko Carstens <heiko.carstens@de.ibm.com> 
+ *            Andreas Herrmann <aherrman@de.ibm.com>
  * 
  * This program is free software; you can redistribute it and/or modify 
  * it under the terms of the GNU General Public License as published by 
@@ -105,6 +106,8 @@
 #define FSF_PAYLOAD_SIZE_MISMATCH		0x00000060
 #define FSF_REQUEST_SIZE_TOO_LARGE		0x00000061
 #define FSF_RESPONSE_SIZE_TOO_LARGE		0x00000062
+#define FSF_SBAL_MISMATCH			0x00000063
+#define FSF_OPEN_PORT_WITHOUT_PRLI		0x00000064
 #define FSF_ADAPTER_STATUS_AVAILABLE		0x000000AD
 #define FSF_FCP_RSP_AVAILABLE			0x000000AF
 #define FSF_UNKNOWN_COMMAND			0x000000E2
@@ -354,7 +357,6 @@ struct fsf_nport_serv_param {
 	u8  class3_serv_param[16];
 	u8  class4_serv_param[16];
 	u8  vendor_version_level[16];
-	u8  res1[16];
 } __attribute__ ((packed));
 
 struct fsf_plogi {
@@ -412,11 +414,13 @@ struct fsf_qtcb_bottom_config {
 	u8 res2[12];
 	u32 s_id;
 	struct fsf_nport_serv_param nport_serv_param;
+	u8 reserved_nport_serv_param[16];
 	u8 res3[8];
 	u32 adapter_ports;
 	u32 hardware_version;
 	u8 serial_number[32];
-	u8 res4[272];
+	struct fsf_nport_serv_param plogi_payload;
+	u8 res4[160];
 } __attribute__ ((packed));
 
 struct fsf_qtcb_bottom_port {

@@ -690,6 +690,17 @@ dasd_eckd_check_characteristics(struct dasd_device *device)
 		    private->rdc_data.no_cyl,
 		    private->rdc_data.trk_per_cyl,
 		    private->rdc_data.sec_per_trk);
+	/*
+	 * Can't handle devices that have no proper cylinder or track
+	 * numbers, e.g. hyper PAV alias devices.
+	 */
+	if (!private->rdc_data.no_cyl || !private->rdc_data.trk_per_cyl) {
+		DEV_MESSAGE(KERN_WARNING, device, "%s",
+			    "Cannot online device that reports no cylinder or"
+			    " head information.");
+		return -EOPNOTSUPP;
+	}
+
 	return rc;
 }
 

@@ -286,55 +286,7 @@ typedef struct {
 	(IS_QLA4010(ha) ? \
 	 offsetof(eeprom_data_t, isp4010.ext_hw_conf) / 2 : \
 	 offsetof(eeprom_data_t, isp4022.ext_hw_conf) / 2)
-
-
-/*************************************************************************
- *
- *			Hardware Semaphore
- *
- *************************************************************************/
-#if 0
-//
-// Semaphore register definitions
-//
-#define SEM_AVAILABLE        	0x00
-#define SEM_OWNER_FIRMWARE   	0x01
-#define SEM_OWNER_STORAGE    	0x02
-#define SEM_OWNER_NETWORK    	0x03
-
-
-//
-// Private Semaphore definitions
-//
-typedef enum
-{
-	SEM_HW_LOCK
-	, SEM_GPO
-	, SEM_SDRAM_INIT
-	, SEM_PHY_GBIC
-	, SEM_NVRAM
-	, SEM_FLASH
-
-	, SEM_COUNT // Not a real semaphore, just indicates how many there are
-} ISP4XXX_SEMAPHORE;
-
-typedef struct {
-	u32   semId;
-	u32   semShift;
-} isp4xxxSemInfo_t;
-
-
-#define SEM_MASK  0x3
-
-/* Wait flag defines -- specifies type of wait to acquire semaphore */
-#define SEM_FLG_NO_WAIT		0
-#define SEM_FLG_WAIT_FOREVER	1
-#define SEM_FLG_TIMED_WAIT	2
-
-#endif
-
-
-
+	
 #endif // _QL4XNVRM_H_
 
 /*

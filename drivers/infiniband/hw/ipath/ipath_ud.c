@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -54,6 +54,7 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	unsigned long flags;
 	struct ipath_rq *rq;
 	struct ipath_srq *srq;
+	struct ipath_sge_state ssge;
 	struct ipath_sge_state rsge;
 	struct ipath_sge *sge;
 	struct ipath_rwq *wq;
@@ -65,12 +66,10 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	u32 length;
 
 	qp = ipath_lookup_qpn(&dev->qp_table, swqe->wr.wr.ud.remote_qpn);
-	if (!qp) {
+	if (!qp || !(ib_ipath_state_ops[qp->state] & IPATH_PROCESS_RECV_OK)) {
 		dev->n_pkt_drops++;
-		goto send_comp;
+		goto done;
 	}
-
-	rsge.sg_list = NULL;
 
 	/*
 	 * Check that the qkey matches (except for QP0, see 9.6.1.4.1).
@@ -91,14 +90,12 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	 * present on the wire.
 	 */
 	length = swqe->length;
+	memset(&wc, 0, sizeof wc);
 	wc.byte_len = length + sizeof(struct ib_grh);
 
 	if (swqe->wr.opcode == IB_WR_SEND_WITH_IMM) {
 		wc.wc_flags = IB_WC_WITH_IMM;
-		wc.imm_data = swqe->wr.imm_data;
-	} else {
-		wc.wc_flags = 0;
-		wc.imm_data = 0;
+		wc.ex.imm_data = swqe->wr.ex.imm_data;
 	}
 
 	/*
@@ -115,21 +112,6 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		srq = NULL;
 		handler = NULL;
 		rq = &qp->r_rq;
-	}
-
-	if (rq->max_sge > 1) {
-		/*
-		 * XXX We could use GFP_KERNEL if ipath_do_send()
-		 * was always called from the tasklet instead of
-		 * from ipath_post_send().
-		 */
-		rsge.sg_list = kmalloc((rq->max_sge - 1) *
-					sizeof(struct ipath_sge),
-				       GFP_ATOMIC);
-		if (!rsge.sg_list) {
-			dev->n_pkt_drops++;
-			goto drop;
-		}
 	}
 
 	/*
@@ -149,6 +131,7 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		goto drop;
 	}
 	wqe = get_rwqe_ptr(rq, tail);
+	rsge.sg_list = qp->r_ud_sg_list;
 	if (!ipath_init_sge(qp, wqe, &rlen, &rsge)) {
 		spin_unlock_irqrestore(&rq->lock, flags);
 		dev->n_pkt_drops++;
@@ -198,7 +181,10 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		wc.wc_flags |= IB_WC_GRH;
 	} else
 		ipath_skip_sge(&rsge, sizeof(struct ib_grh));
-	sge = swqe->sg_list;
+	ssge.sg_list = swqe->sg_list + 1;
+	ssge.sge = *swqe->sg_list;
+	ssge.num_sge = swqe->wr.num_sge;
+	sge = &ssge.sge;
 	while (length) {
 		u32 len = sge->length;
 
@@ -212,8 +198,8 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 		sge->length -= len;
 		sge->sge_length -= len;
 		if (sge->sge_length == 0) {
-			if (--swqe->wr.num_sge)
-				sge++;
+			if (--ssge.num_sge)
+				*sge = *ssge.sg_list++;
 		} else if (sge->length == 0 && sge->mr != NULL) {
 			if (++sge->n >= IPATH_SEGSZ) {
 				if (++sge->m >= sge->mr->mapsz)
@@ -229,7 +215,6 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	}
 	wc.status = IB_WC_SUCCESS;
 	wc.opcode = IB_WC_RECV;
-	wc.vendor_err = 0;
 	wc.qp = &qp->ibqp;
 	wc.src_qp = sqp->ibqp.qp_num;
 	/* XXX do we know which pkey matched? Only needed for GSI. */
@@ -245,11 +230,9 @@ static void ipath_ud_loopback(struct ipath_qp *sqp, struct ipath_swqe *swqe)
 	ipath_cq_enter(to_icq(qp->ibqp.recv_cq), &wc,
 		       swqe->wr.send_flags & IB_SEND_SOLICITED);
 drop:
-	kfree(rsge.sg_list);
 	if (atomic_dec_and_test(&qp->refcount))
 		wake_up(&qp->wait);
-send_comp:
-	ipath_send_complete(sqp, swqe, IB_WC_SUCCESS);
+done:;
 }
 
 /**
@@ -264,20 +247,40 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 	struct ipath_other_headers *ohdr;
 	struct ib_ah_attr *ah_attr;
 	struct ipath_swqe *wqe;
+	unsigned long flags;
 	u32 nwords;
 	u32 extra_bytes;
 	u32 bth0;
 	u16 lrh0;
 	u16 lid;
 	int ret = 0;
+	int next_cur;
 
-	if (unlikely(!(ib_ipath_state_ops[qp->state] & IPATH_PROCESS_SEND_OK)))
-		goto bail;
+	spin_lock_irqsave(&qp->s_lock, flags);
+
+	if (!(ib_ipath_state_ops[qp->state] & IPATH_PROCESS_NEXT_SEND_OK)) {
+		if (!(ib_ipath_state_ops[qp->state] & IPATH_FLUSH_SEND))
+			goto bail;
+		/* We are in the error state, flush the work request. */
+		if (qp->s_last == qp->s_head)
+			goto bail;
+		/* If DMAs are in progress, we can't flush immediately. */
+		if (atomic_read(&qp->s_dma_busy)) {
+			qp->s_flags |= IPATH_S_WAIT_DMA;
+			goto bail;
+		}
+		wqe = get_swqe_ptr(qp, qp->s_last);
+		ipath_send_complete(qp, wqe, IB_WC_WR_FLUSH_ERR);
+		goto done;
+	}
 
 	if (qp->s_cur == qp->s_head)
 		goto bail;
 
 	wqe = get_swqe_ptr(qp, qp->s_cur);
+	next_cur = qp->s_cur + 1;
+	if (next_cur >= qp->s_size)
+		next_cur = 0;
 
 	/* Construct the header. */
 	ah_attr = &to_iah(wqe->wr.wr.ud.ah)->attr;
@@ -288,14 +291,29 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 			dev->n_unicast_xmit++;
 	} else {
 		dev->n_unicast_xmit++;
-		lid = ah_attr->dlid &
-			~((1 << dev->dd->ipath_lmc) - 1);
+		lid = ah_attr->dlid & ~((1 << dev->dd->ipath_lmc) - 1);
 		if (unlikely(lid == dev->dd->ipath_lid)) {
+			/*
+			 * If DMAs are in progress, we can't generate
+			 * a completion for the loopback packet since
+			 * it would be out of order.
+			 * XXX Instead of waiting, we could queue a
+			 * zero length descriptor so we get a callback.
+			 */
+			if (atomic_read(&qp->s_dma_busy)) {
+				qp->s_flags |= IPATH_S_WAIT_DMA;
+				goto bail;
+			}
+			qp->s_cur = next_cur;
+			spin_unlock_irqrestore(&qp->s_lock, flags);
 			ipath_ud_loopback(qp, wqe);
+			spin_lock_irqsave(&qp->s_lock, flags);
+			ipath_send_complete(qp, wqe, IB_WC_SUCCESS);
 			goto done;
 		}
 	}
 
+	qp->s_cur = next_cur;
 	extra_bytes = -wqe->length & 3;
 	nwords = (wqe->length + extra_bytes) >> 2;
 
@@ -308,6 +326,7 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 	qp->s_sge.sge = wqe->sg_list[0];
 	qp->s_sge.sg_list = wqe->sg_list + 1;
 	qp->s_sge.num_sge = wqe->wr.num_sge;
+	qp->s_sge.total_len = wqe->length;
 
 	if (ah_attr->ah_flags & IB_AH_GRH) {
 		/* Header size in 32-bit words. */
@@ -327,7 +346,7 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 	}
 	if (wqe->wr.opcode == IB_WR_SEND_WITH_IMM) {
 		qp->s_hdrwords++;
-		ohdr->u.ud.imm_data = wqe->wr.imm_data;
+		ohdr->u.ud.imm_data = wqe->wr.ex.imm_data;
 		bth0 = IB_OPCODE_UD_SEND_ONLY_WITH_IMMEDIATE << 24;
 	} else
 		bth0 = IB_OPCODE_UD_SEND_ONLY << 24;
@@ -368,11 +387,13 @@ int ipath_make_ud_req(struct ipath_qp *qp)
 	ohdr->u.ud.deth[1] = cpu_to_be32(qp->ibqp.qp_num);
 
 done:
-	if (++qp->s_cur >= qp->s_size)
-		qp->s_cur = 0;
 	ret = 1;
+	goto unlock;
 
 bail:
+	qp->s_flags &= ~IPATH_S_BUSY;
+unlock:
+	spin_unlock_irqrestore(&qp->s_lock, flags);
 	return ret;
 }
 
@@ -463,14 +484,14 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	if (qp->ibqp.qp_num > 1 &&
 	    opcode == IB_OPCODE_UD_SEND_ONLY_WITH_IMMEDIATE) {
 		if (header_in_data) {
-			wc.imm_data = *(__be32 *) data;
+			wc.ex.imm_data = *(__be32 *) data;
 			data += sizeof(__be32);
 		} else
-			wc.imm_data = ohdr->u.ud.imm_data;
+			wc.ex.imm_data = ohdr->u.ud.imm_data;
 		wc.wc_flags = IB_WC_WITH_IMM;
 		hdrsize += sizeof(u32);
 	} else if (opcode == IB_OPCODE_UD_SEND_ONLY) {
-		wc.imm_data = 0;
+		wc.ex.imm_data = 0;
 		wc.wc_flags = 0;
 	} else {
 		dev->n_pkt_drops++;
@@ -506,8 +527,8 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	/*
 	 * Get the next work request entry to find where to put the data.
 	 */
-	if (qp->r_reuse_sge)
-		qp->r_reuse_sge = 0;
+	if (qp->r_flags & IPATH_R_REUSE_SGE)
+		qp->r_flags &= ~IPATH_R_REUSE_SGE;
 	else if (!ipath_get_rwqe(qp, 0)) {
 		/*
 		 * Count VL15 packets dropped due to no receive buffer.
@@ -523,7 +544,7 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	}
 	/* Silently drop packets which are too big. */
 	if (wc.byte_len > qp->r_len) {
-		qp->r_reuse_sge = 1;
+		qp->r_flags |= IPATH_R_REUSE_SGE;
 		dev->n_pkt_drops++;
 		goto bail;
 	}
@@ -535,7 +556,8 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		ipath_skip_sge(&qp->r_sge, sizeof(struct ib_grh));
 	ipath_copy_sge(&qp->r_sge, data,
 		       wc.byte_len - sizeof(struct ib_grh));
-	qp->r_wrid_valid = 0;
+	if (!test_and_clear_bit(IPATH_R_WRID_VALID, &qp->r_aflags))
+		goto bail;
 	wc.wr_id = qp->r_wr_id;
 	wc.status = IB_WC_SUCCESS;
 	wc.opcode = IB_WC_RECV;

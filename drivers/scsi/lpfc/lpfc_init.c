@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_init.c 3125 2008-01-08 21:11:52Z sf_support $
+ * $Id: lpfc_init.c 3191 2008-09-03 13:47:36Z sf_support $
  */
 
 #include <linux/version.h>
@@ -166,13 +166,9 @@ lpfc_config_port_prep(struct lpfc_hba * phba)
 		memcpy(phba->RandomData, (char *)&mb->un.varWords[24],
 			sizeof (phba->RandomData));
 
-	/* Get adapter VPD information */
-	pmb->context2 = kmalloc(DMP_RSP_SIZE, GFP_ATOMIC);
-	if (!pmb->context2)
-		goto out_free_mbox;
 	lpfc_vpd_data = kmalloc(DMP_VPD_SIZE, GFP_ATOMIC);
 	if (!lpfc_vpd_data)
-		goto out_free_context2;
+		goto out_free_mbox;
 
 	do {
 		lpfc_dump_mem(phba, pmb, offset);
@@ -191,9 +187,9 @@ lpfc_config_port_prep(struct lpfc_hba * phba)
 		}
 		if (mb->un.varDmp.word_cnt > DMP_VPD_SIZE - offset)
 			mb->un.varDmp.word_cnt = DMP_VPD_SIZE - offset;
-		lpfc_sli_pcimem_bcopy((uint32_t *)pmb->context2,
-                                      (uint32_t*)((uint8_t*)lpfc_vpd_data + offset),
-                                      mb->un.varDmp.word_cnt);
+		lpfc_sli_pcimem_bcopy(((uint32_t *)mb) + (DMP_RSP_OFFSET/sizeof(uint32_t)),
+					(uint32_t*)((uint8_t*)lpfc_vpd_data + offset),
+					mb->un.varDmp.word_cnt);
 
 		offset += mb->un.varDmp.word_cnt;
 	} while (mb->un.varDmp.word_cnt && offset < DMP_VPD_SIZE);
@@ -201,8 +197,6 @@ lpfc_config_port_prep(struct lpfc_hba * phba)
 	lpfc_parse_vpd(phba, (uint8_t*)lpfc_vpd_data, offset);
 
 	kfree(lpfc_vpd_data);
-out_free_context2:
-	kfree(pmb->context2);
 out_free_mbox:
 	mempool_free(pmb, phba->mbox_mem_pool);
 	return 0;
@@ -661,58 +655,63 @@ lpfc_hb_timeout_handler(struct lpfc_hba *phba)
 		return;
 	}
 
+
 	/* If there is no heart beat outstanding, issue a heartbeat command */
-	if (!phba->hb_outstanding) {
-		spin_unlock_irq(phba->host->host_lock);
-		pmboxq = mempool_alloc(phba->mbox_mem_pool,GFP_KERNEL);
-		if (!pmboxq) {
-			mod_timer(&phba->hb_tmofunc,
-				jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
-			return;
-		}
-		spin_lock_irq(phba->host->host_lock);
-
-		lpfc_heart_beat(phba, pmboxq);
-		pmboxq->mbox_cmpl = lpfc_hb_mbox_cmpl;
-		retval = lpfc_sli_issue_mbox(phba, pmboxq, MBX_NOWAIT);
-
-		if (retval != MBX_BUSY && retval != MBX_SUCCESS) {
+	if (phba->cfg_enable_hba_heartbeat) {
+		if (!phba->hb_outstanding) {
 			spin_unlock_irq(phba->host->host_lock);
-			mempool_free(pmboxq, phba->mbox_mem_pool);
+			pmboxq = mempool_alloc(phba->mbox_mem_pool,GFP_KERNEL);
+			if (!pmboxq) {
+				mod_timer(&phba->hb_tmofunc,
+					jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
+				return;
+			}
+			spin_lock_irq(phba->host->host_lock);
+
+			lpfc_heart_beat(phba, pmboxq);
+			pmboxq->mbox_cmpl = lpfc_hb_mbox_cmpl;
+			retval = lpfc_sli_issue_mbox(phba, pmboxq, MBX_NOWAIT);
+
+			if (retval != MBX_BUSY && retval != MBX_SUCCESS) {
+				spin_unlock_irq(phba->host->host_lock);
+				mempool_free(pmboxq, phba->mbox_mem_pool);
+				mod_timer(&phba->hb_tmofunc,
+					jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
+				return;
+			}
 			mod_timer(&phba->hb_tmofunc,
-				jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
+				jiffies + HZ * LPFC_HB_MBOX_TIMEOUT);
+			phba->hb_outstanding = 1;
+			spin_unlock_irq(phba->host->host_lock);
 			return;
+		} else {
+			/*
+			 * If heart beat timeout called with hb_outstanding set
+			 * we need to take the HBA offline.
+			 */
+			lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+				"%d:0464 Adapter heartbeat failure, taking "
+				"this port offline.\n", phba->brd_no);
+
+			psli->sliinit.sli_flag &= ~LPFC_SLI2_ACTIVE;
+			spin_unlock_irq(phba->host->host_lock);
+
+			lpfc_offline(phba);
+			phba->hba_state = LPFC_HBA_ERROR;
+			spin_lock_irq(phba->host->host_lock);
+			lpfc_hba_down_post(phba);
+			spin_unlock_irq(phba->host->host_lock);
+
+			/*
+			 * Restart all traffic to this host.  Since fc_transport
+			 * block functions (future) were not called in
+			 * lpfc_offline, don't call them here.
+			 */
+			lpfc_unblock_requests(phba);
 		}
-		mod_timer(&phba->hb_tmofunc,
-			jiffies + HZ * LPFC_HB_MBOX_TIMEOUT);
-		phba->hb_outstanding = 1;
-		spin_unlock_irq(phba->host->host_lock);
-		return;
-	} else {
-		/*
-		 * If heart beat timeout called with hb_outstanding set we
-		 * need to take the HBA offline.
-		 */
-		lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
-			"%d:0464 Adapter heartbeat failure, taking "
-			"this port offline.\n", phba->brd_no);
-
-		psli->sliinit.sli_flag &= ~LPFC_SLI2_ACTIVE;
-		spin_unlock_irq(phba->host->host_lock);
-
-		lpfc_offline(phba);
-		phba->hba_state = LPFC_HBA_ERROR;
-		spin_lock_irq(phba->host->host_lock);
-		lpfc_hba_down_post(phba);
-		spin_unlock_irq(phba->host->host_lock);
-
-		/*
-		 * Restart all traffic to this host.  Since the fc_transport
-		 * block functions (future) were not called in lpfc_offline,
-		 * don't call them here.
-		 */
-		lpfc_unblock_requests(phba);
 	}
+	else
+		spin_unlock_irq(phba->host->host_lock);
 }
 
 /************************************************************************/
@@ -741,6 +740,15 @@ lpfc_handle_eratt(struct lpfc_hba * phba, uint32_t status)
 	status1 = readl( from_slim);
 	from_slim =  ((uint8_t *)phba->MBslimaddr + 0xac);
 	status2 = readl( from_slim);
+
+	/* If resets are disabled then leave the HBA alone and return */
+	if (!phba->cfg_enable_hba_reset) {
+		lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+				"%d:1311 Ignoring ERATT "
+				"Data: x%x x%x x%x\n",
+				phba->brd_no, status, status1, status2);
+		return;
+	}
 
 	if (status & HS_FFER6) {
 		/* Re-establishing Link */
@@ -1085,6 +1093,7 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 	lpfc_vpd_t *vp;
 	uint16_t dev_id = phba->pcidev->device;
 	int max_speed;
+	int GE = 0;
 	struct {
 		char * name;
 		int    max_speed;
@@ -1217,6 +1226,10 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 	case PCI_DEVICE_ID_SAT_S:
 		m = (typeof(m)){"LPe12000-S", max_speed, "PCIe"};
 		break;
+	case PCI_DEVICE_ID_HORNET:
+		m = (typeof(m)){"LP21000", max_speed, "PCIe"};
+		GE = 1;
+		break;
 	default:
 		break;
 	}
@@ -1225,8 +1238,12 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 		snprintf(mdp, 79,"%s", m.name);
 	if (descp && descp[0] == '\0')
 		snprintf(descp, 255,
-			 "Emulex %s %dGb %s Fibre Channel Adapter",
-			 m.name, m.max_speed, m.bus);
+			 "Emulex %s %d%s %s %s",
+			 m.name, m.max_speed,
+			(GE)? "GE":"Gb",
+			 m.bus,
+			(GE)? "FCoE Adapter" : "Fibre Channel Adapter");
+
 }
 
 /**************************************************/
@@ -1592,8 +1609,8 @@ lpfc_offline(struct lpfc_hba * phba)
 	struct lpfc_sli_ring *pring;
 	struct lpfc_sli *psli;
 	unsigned long iflag;
+	unsigned long max_jiffies;
 	int i;
-	int cnt = 0;
 
 	if (!phba)
 		return 0;
@@ -1618,9 +1635,11 @@ lpfc_offline(struct lpfc_hba * phba)
 	for (i = 0; i < psli->sliinit.num_rings; i++) {
 		pring = &psli->ring[i];
 		/* The linkdown event takes 30 seconds to timeout. */
+		max_jiffies = jiffies + 30 * HZ;
 		while (pring->txcmplq_cnt) {
-			LPFC_MDELAY(10);
-			if (cnt++ > 3000) {
+			set_current_state(TASK_UNINTERRUPTIBLE);
+			schedule_timeout(msecs_to_jiffies(10));
+			if (time_after(jiffies, max_jiffies)) {
 				lpfc_printf_log(phba,
 					KERN_WARNING, LOG_INIT,
 					"%d:0466 Outstanding IO when "

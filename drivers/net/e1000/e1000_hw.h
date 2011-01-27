@@ -428,6 +428,7 @@ int e1000_pcix_get_mmrbc(struct e1000_hw *hw);
 void e1000_io_write(struct e1000_hw *hw, unsigned long port, uint32_t value);
 int32_t e1000_disable_pciex_master(struct e1000_hw *hw);
 int32_t e1000_check_phy_reset_block(struct e1000_hw *hw);
+int32_t e1000_link_cfg_80003es2lan(struct e1000_hw *hw, uint16_t speed, uint16_t duplex);
 
 
 #define E1000_READ_REG_IO(a, reg) \
@@ -1380,6 +1381,13 @@ struct e1000_hw_stats {
 	uint64_t		icrxoc;
 };
 
+enum e1000_serdes_link_state {
+	e1000_serdes_link_down = 0,
+	e1000_serdes_link_autoneg_progress,
+	e1000_serdes_link_autoneg_complete,
+	e1000_serdes_link_forced_up
+};
+
 /* Structure containing variables used by the shared code (e1000_hw.c) */
 struct e1000_hw {
 	uint8_t __iomem		*hw_addr;
@@ -1470,6 +1478,7 @@ struct e1000_hw {
 	boolean_t		has_manc2h;
 	boolean_t		rx_needs_kicking;
 	boolean_t		has_smbus;
+	enum e1000_serdes_link_state serdes_link_state;
 };
 
 

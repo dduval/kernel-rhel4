@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_debug_ioctl.c 2894 2006-03-28 16:47:45Z sf_support $
+ * $Id: lpfc_debug_ioctl.c 3167 2008-04-11 15:31:09Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -705,6 +705,9 @@ lpfc_ioctl_reset(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip)
 	uint32_t offset;
 	struct lpfc_sli *psli;
 	int rc = 0;
+
+	if (!phba->cfg_enable_hba_reset)
+		return (EIO);
 
 	psli = &phba->sli;
 	offset = (ulong) cip->lpfc_arg1;

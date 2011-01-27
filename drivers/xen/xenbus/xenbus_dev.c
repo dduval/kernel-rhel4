@@ -240,7 +240,7 @@ static ssize_t xenbus_dev_write(struct file *filp,
 			static const char * XS_WATCH_RESP = "OK";
 			struct xsd_sockmsg hdr;
 
-			watch = kmalloc(sizeof(*watch), GFP_KERNEL);
+			watch = kzalloc(sizeof(*watch), GFP_KERNEL);
 			watch->watch.node = kmalloc(strlen(path)+1,
                                                     GFP_KERNEL);
 			strcpy((char *)watch->watch.node, path);

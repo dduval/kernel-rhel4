@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: sa_query.c 2811 2005-07-06 18:11:43Z halr $
  */
 
 #include <linux/module.h>
@@ -525,7 +523,7 @@ static void update_sm_ah(struct work_struct *work)
 {
 	struct ib_sa_port *port =
 		container_of(work, struct ib_sa_port, update_task);
-	struct ib_sa_sm_ah *new_ah, *old_ah;
+	struct ib_sa_sm_ah *new_ah;
 	struct ib_port_attr port_attr;
 	struct ib_ah_attr   ah_attr;
 
@@ -561,12 +559,9 @@ static void update_sm_ah(struct work_struct *work)
 	}
 
 	spin_lock_irq(&port->ah_lock);
-	old_ah = port->sm_ah;
 	port->sm_ah = new_ah;
 	spin_unlock_irq(&port->ah_lock);
 
-	if (old_ah)
-		kref_put(&old_ah->ref, free_sm_ah);
 }
 
 static void ib_sa_event(struct ib_event_handler *handler, struct ib_event *event)
@@ -577,8 +572,17 @@ static void ib_sa_event(struct ib_event_handler *handler, struct ib_event *event
 	    event->event == IB_EVENT_PKEY_CHANGE ||
 	    event->event == IB_EVENT_SM_CHANGE   ||
 	    event->event == IB_EVENT_CLIENT_REREGISTER) {
-		struct ib_sa_device *sa_dev;
-		sa_dev = container_of(handler, typeof(*sa_dev), event_handler);
+		unsigned long flags;
+		struct ib_sa_device *sa_dev =
+			container_of(handler, typeof(*sa_dev), event_handler);
+		struct ib_sa_port *port =
+			&sa_dev->port[event->element.port_num - sa_dev->start_port];
+
+		spin_lock_irqsave(&port->ah_lock, flags);
+		if (port->sm_ah)
+			kref_put(&port->sm_ah->ref, free_sm_ah);
+		port->sm_ah = NULL;
+		spin_unlock_irqrestore(&port->ah_lock, flags);
 
 		schedule_work(&sa_dev->port[event->element.port_num -
 					    sa_dev->start_port].update_task);
@@ -683,6 +687,10 @@ static int alloc_mad(struct ib_sa_query *query, gfp_t gfp_mask)
 	unsigned long flags;
 
 	spin_lock_irqsave(&query->port->ah_lock, flags);
+	if (!query->port->sm_ah) {
+		spin_unlock_irqrestore(&query->port->ah_lock, flags);
+		return -EAGAIN;
+	}
 	kref_get(&query->port->sm_ah->ref);
 	query->sm_ah = query->port->sm_ah;
 	spin_unlock_irqrestore(&query->port->ah_lock, flags);
@@ -1178,6 +1186,7 @@ static void ib_sa_notice_resp(struct ib_sa_port *port,
 	struct ib_mad_send_buf *mad_buf;
 	struct ib_sa_mad *mad;
 	int ret;
+	unsigned long flags;
 
 	mad_buf = ib_create_send_mad(port->notice_agent, 1, 0, 0,
 				     IB_MGMT_SA_HDR, IB_MGMT_SA_DATA,
@@ -1189,11 +1198,16 @@ static void ib_sa_notice_resp(struct ib_sa_port *port,
 	memcpy(mad, mad_recv_wc->recv_buf.mad, sizeof *mad);
 	mad->mad_hdr.method = IB_MGMT_METHOD_REPORT_RESP;
 
-	spin_lock_irq(&port->ah_lock);
+	spin_lock_irqsave(&port->ah_lock, flags);
+	if (!port->sm_ah) {
+		spin_unlock_irqrestore(&port->ah_lock, flags);
+		ib_free_send_mad(mad_buf);
+		return;
+	}
 	kref_get(&port->sm_ah->ref);
 	mad_buf->context[0] = &port->sm_ah->ref;
 	mad_buf->ah = port->sm_ah->ah;
-	spin_unlock_irq(&port->ah_lock);
+	spin_unlock_irqrestore(&port->ah_lock, flags);
 
 	ret = ib_post_send_mad(mad_buf, NULL);
 	if (ret)
@@ -1382,7 +1396,8 @@ static void ib_sa_remove_one(struct ib_device *device)
 	for (i = 0; i <= sa_dev->end_port - sa_dev->start_port; ++i) {
 		ib_unregister_mad_agent(sa_dev->port[i].notice_agent);
 		ib_unregister_mad_agent(sa_dev->port[i].agent);
-		kref_put(&sa_dev->port[i].sm_ah->ref, free_sm_ah);
+		if (sa_dev->port[i].sm_ah)
+			kref_put(&sa_dev->port[i].sm_ah->ref, free_sm_ah);
 	}
 
 	kfree(sa_dev);

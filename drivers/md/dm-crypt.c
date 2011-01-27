@@ -548,7 +548,7 @@ bad2:
 	crypto_free_tfm(tfm);
 bad1:
 	/* Must zero key material before freeing */
-	memset(cc, 0, sizeof(*cc) + cc->key_size * sizeof(u8));
+	memset(cc, 0, sizeof(*cc) + key_size * sizeof(u8));
 	kfree(cc);
 	return -EINVAL;
 }

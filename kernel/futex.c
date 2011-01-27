@@ -97,7 +97,6 @@ struct futex_q {
  */
 struct futex_hash_bucket {
        spinlock_t              lock;
-       unsigned int	    nqueued;
        struct list_head       chain;
 };
 
@@ -265,7 +264,6 @@ static inline int get_futex_value_locked(int *dest, int __user *from)
 	inc_preempt_count();
 	ret = __copy_from_user_inatomic(dest, from, sizeof(int));
 	dec_preempt_count();
-	preempt_check_resched();
 
 	return ret ? -EFAULT : 0;
 }
@@ -345,7 +343,6 @@ static int futex_requeue(unsigned long uaddr1, unsigned long uaddr2,
 	struct list_head *head1;
 	struct futex_q *this, *next;
 	int ret, drop_count = 0;
-	unsigned int nqueued;
 
  retry:
 	down_read(&current->mm->mmap_sem);
@@ -360,23 +357,22 @@ static int futex_requeue(unsigned long uaddr1, unsigned long uaddr2,
 	bh1 = hash_futex(&key1);
 	bh2 = hash_futex(&key2);
 
-	nqueued = bh1->nqueued;
+	if (bh1 < bh2)
+		spin_lock(&bh1->lock);
+	spin_lock(&bh2->lock);
+	if (bh1 > bh2)
+		spin_lock(&bh1->lock);
+
 	if (likely(valp != NULL)) {
 		int curval;
-
-		/* In order to avoid doing get_user while
-		   holding bh1->lock and bh2->lock, nqueued
-		   (monotonically increasing field) must be first
-		   read, then *uaddr1 fetched from userland and
-		   after acquiring lock nqueued field compared with
-		   the stored value.  The smp_mb () below
-		   makes sure that bh1->nqueued is read from memory
-		   before *uaddr1.  */
-		smp_mb();
 
 		ret = get_futex_value_locked(&curval, (int __user *)uaddr1);
 
 		if (unlikely(ret)) {
+			spin_unlock(&bh1->lock);
+			if (bh1 != bh2)
+				spin_unlock(&bh2->lock);
+
 			/* If we would have faulted, release mmap_sem, fault
 			 * it in and start all over again.
 			 */
@@ -391,19 +387,8 @@ static int futex_requeue(unsigned long uaddr1, unsigned long uaddr2,
 		}
 		if (curval != *valp) {
 			ret = -EAGAIN;
-			goto out;
+			goto out_unlock;
 		}
-	}
-
-	if (bh1 < bh2)
-		spin_lock(&bh1->lock);
-	spin_lock(&bh2->lock);
-	if (bh1 > bh2)
-		spin_lock(&bh1->lock);
-
-	if (unlikely(nqueued != bh1->nqueued && valp != NULL)) {
-		ret = -EAGAIN;
-		goto out_unlock;
 	}
 
 	head1 = &bh1->chain;
@@ -463,7 +448,6 @@ queue_lock(struct futex_q *q, int fd, struct file *filp)
 static inline void __queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
 {
 	list_add_tail(&q->list, &hb->chain);
-	hb->nqueued++;
 	spin_unlock(&hb->lock);
 }
 
@@ -581,9 +565,11 @@ static int futex_wait(unsigned long uaddr, int val, unsigned long time)
 			goto retry;
 		return ret;
 	}
-	ret = -EWOULDBLOCK;
-	if (curval != val)
-		goto out_unlock_release_sem;
+	if (curval != val) {
+		ret = -EWOULDBLOCK;
+		queue_unlock(&q, hb);
+		goto out_release_sem;
+	}
 
 	/* Only actually queue if *uaddr contained val.  */
 	__queue_me(&q, hb);
@@ -629,9 +615,6 @@ static int futex_wait(unsigned long uaddr, int val, unsigned long time)
 	 * have handled it for us already.
 	 */
 	return -EINTR;
-
- out_unlock_release_sem:
-	queue_unlock(&q, hb);
 
  out_release_sem:
 	up_read(&curr->mm->mmap_sem);
@@ -782,9 +765,11 @@ asmlinkage long sys_futex(u32 __user *uaddr, int op, int val,
 	unsigned long timeout = MAX_SCHEDULE_TIMEOUT;
 	int val2 = 0;
 
-	if ((op == FUTEX_WAIT) && utime) {
+	if (utime && (op == FUTEX_WAIT)) {
 		if (copy_from_user(&t, utime, sizeof(t)) != 0)
 			return -EFAULT;
+		if ((t.tv_sec < 0) || (((unsigned) t.tv_nsec) >= NSEC_PER_SEC))
+			return -EINVAL;
 		timeout = timespec_to_jiffies(&t) + 1;
 	}
 	/*

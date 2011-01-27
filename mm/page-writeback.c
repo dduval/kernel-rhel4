@@ -38,7 +38,7 @@
  * been forced to throttle against that inode.  Also, the code reevaluates
  * the dirty each time it has written this many pages.
  */
-#define MAX_WRITEBACK_PAGES	1024
+int max_writeback_pages = 1024;
 
 /*
  * After a CPU has dirtied this many pages, balance_dirty_pages_ratelimited
@@ -386,10 +386,10 @@ static void background_writeout(unsigned long _min_pages)
 			written = 0;
 		}
 		wbc.encountered_congestion = 0;
-		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+		wbc.nr_to_write = max_writeback_pages;
 		wbc.pages_skipped = 0;
 		writeback_inodes(&wbc);
-		min_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+		min_pages -= max_writeback_pages - wbc.nr_to_write;
 		if (wbc.nr_to_write > 0 || wbc.pages_skipped > 0) {
 			/* Wrote less than expected */
 			blk_congestion_wait(WRITE, HZ/10);
@@ -464,7 +464,7 @@ static void wb_kupdate(unsigned long arg)
 			(inodes_stat.nr_inodes - inodes_stat.nr_unused);
 	while (nr_to_write > 0) {
 		wbc.encountered_congestion = 0;
-		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
+		wbc.nr_to_write = max_writeback_pages;
 		writeback_inodes(&wbc);
 		if (wbc.nr_to_write > 0) {
 			if (wbc.encountered_congestion)
@@ -472,7 +472,7 @@ static void wb_kupdate(unsigned long arg)
 			else
 				break;	/* All the old data is written */
 		}
-		nr_to_write -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+		nr_to_write -= max_writeback_pages - wbc.nr_to_write;
 	}
 	if (time_before(next_jif, jiffies + HZ))
 		next_jif = jiffies + HZ;

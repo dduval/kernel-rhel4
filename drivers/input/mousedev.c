@@ -52,6 +52,10 @@ static unsigned tap_time = 200;
 module_param(tap_time, uint, 0);
 MODULE_PARM_DESC(tap_time, "Tap time for touchpads in absolute mode (msecs)");
 
+static int ignore_tablets;
+module_param(ignore_tablets, uint, 0);
+MODULE_PARM_DESC(ignore_tablets, "Do not handle tablets (absolute coordinates but no touch)");
+
 struct mousedev_hw_data {
 	int dx, dy, dz;
 	int x, y;
@@ -600,6 +604,12 @@ static struct input_handle *mousedev_connect(struct input_handler *handler, stru
 {
 	struct mousedev *mousedev;
 	int minor = 0;
+
+	if (ignore_tablets) {
+		if (test_bit(ABS_X, dev->absbit) &&
+		    test_bit(BTN_TOOL_PEN, dev->keybit))
+			return NULL;
+	}
 
 	for (minor = 0; minor < MOUSEDEV_MINORS && mousedev_table[minor]; minor++);
 	if (minor == MOUSEDEV_MINORS) {

@@ -27,6 +27,7 @@
 #include <linux/net.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_dbg.h>
+#include <scsi/scsi_eh.h>
 
 #include "iscsi-session.h"
 #include "iscsi-task.h"
@@ -566,10 +567,6 @@ handle_scsi_data(struct iscsi_session *session, struct iscsi_hdr *sth)
 	int dlength, offset, rc;
 	u32 itt = ntohl(stdrh->itt);
 
-	if (stdrh->flags & ISCSI_FLAG_DATA_STATUS)
-		/* FIXME: check StatSN */
-		session->exp_stat_sn = ntohl(stdrh->statsn) + 1;
-
 	update_sn(session, ntohl(stdrh->expcmdsn), ntohl(stdrh->maxcmdsn));
 
 	dlength = ntoh24(stdrh->dlength);
@@ -653,6 +650,7 @@ handle_scsi_data(struct iscsi_session *session, struct iscsi_hdr *sth)
 		/* fall through */
 	case ISCSI_IO_SUCCESS:
 		if (stdrh->flags & ISCSI_FLAG_DATA_STATUS) {
+			session->exp_stat_sn = ntohl(stdrh->statsn) + 1;
 			iscsi_process_task_status(task, sth);
 			iscsi_complete_task(task);
 		}
@@ -823,6 +821,7 @@ handle_async_msg(struct iscsi_session *session, struct iscsi_hdr *sth,
 {
 	struct iscsi_async_msg_hdr *staeh = (struct iscsi_async_msg_hdr *)sth;
 	unsigned int senselen;
+	struct scsi_sense_hdr sshdr;
 
 	/* FIXME: check StatSN */
 	session->exp_stat_sn = ntohl(staeh->statsn) + 1;
@@ -833,12 +832,15 @@ handle_async_msg(struct iscsi_session *session, struct iscsi_hdr *sth,
 		senselen = (xbuf[0] << 8) | xbuf[1];
 		xbuf += 2;
 
-		iscsi_host_info(session, "Received async SCSI event. Printing "
-				"sense\n");
-/*
-		remove for 2.6.11
-		__scsi_print_sense(ISCSI_PROC_NAME, xbuf, senselen);
-*/
+		iscsi_host_info(session, "Received async SCSI event.\n");
+		if (!scsi_normalize_sense((uint8_t *)xbuf, senselen, &sshdr)) {
+			iscsi_host_err(session, "Could not handle SCSI event. "
+				       "Invalid sense.");
+			break;
+		}
+
+		if (sshdr.asc == 0x3f && sshdr.ascq == 0x0e)
+			iscsi_scan_target(session->shost, 0);
 		break;
 	case ISCSI_ASYNC_MSG_REQUEST_LOGOUT:
 		/*

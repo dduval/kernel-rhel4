@@ -133,6 +133,7 @@ static const struct smb_to_posix_error mapping_table_ERRHRD[] = {
 };
 
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,19)
 /* if the mount helper is missing we need to reverse the 1st slash
    from '/' to backslash in order to format the UNC properly for
    ip address parsing and for tree connect (unless the user
@@ -159,6 +160,7 @@ static int canonicalize_unc(char *cp)
 	}
 	return 0;
 }
+#endif
 
 /* Convert string containing dotted ip address to binary form */
 /* returns 0 if invalid address */
@@ -1000,8 +1002,11 @@ struct timespec cnvrtDosUnixTm(__u16 date, __u16 time)
 		cERROR(1, ("illegal hours %d", st->Hours));
 	days = sd->Day;
 	month = sd->Month;
-	if ((days > 31) || (month > 12))
+	if ((days > 31) || (month > 12)) {
 		cERROR(1, ("illegal date, month %d day: %d", month, days));
+		if (month > 12)
+			month = 12;
+	}
 	month -= 1;
 	days += total_days_of_prev_months[month];
 	days += 3652; /* account for difference in days between 1980 and 1970 */

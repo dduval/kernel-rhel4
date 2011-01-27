@@ -948,10 +948,9 @@ nfs_setattr(struct dentry *dentry, struct iattr *attr)
 
 	lock_kernel();
 	nfs_begin_data_update(inode);
-	/* Write all dirty data if we're changing file permissions or size */
-	if ((attr->ia_valid & (ATTR_MODE|ATTR_UID|ATTR_GID|ATTR_SIZE)) != 0) {
-		if (filemap_fdatawrite(inode->i_mapping) == 0)
-			filemap_fdatawait(inode->i_mapping);
+	/* Write all dirty data */
+	if (S_ISREG(inode->i_mode)) {
+		filemap_write_and_wait(inode->i_mapping);
 		nfs_wb_all(inode);
 	}
 	error = NFS_PROTO(inode)->setattr(dentry, &fattr, attr);
@@ -1183,7 +1182,7 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
 		status = nfs_wait_on_inode(inode, NFS_INO_REVALIDATING);
 		if (status < 0)
 			goto out_nowait;
-		if (NFS_SERVER(inode)->flags & NFS_MOUNT_NOAC)
+		if (nfsi->attrtimeo == 0)
 			continue;
 		if (nfsi->cache_validity & (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ATIME))
 			continue;
@@ -1240,7 +1239,8 @@ int nfs_attribute_timeout(struct inode *inode)
 
 	if (nfs_have_delegation(inode, FMODE_READ))
 		return 0;
-	return !time_in_range(jiffies, nfsi->read_cache_jiffies, nfsi->read_cache_jiffies + nfsi->attrtimeo);
+	return !time_in_range_open(jiffies, nfsi->read_cache_jiffies,
+				nfsi->read_cache_jiffies + nfsi->attrtimeo);
 }
 
 /**
@@ -1606,7 +1606,8 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 		nfs_inc_stats(inode, NFSIOS_ATTRINVALIDATE);
 		nfsi->attrtimeo = NFS_MINATTRTIMEO(inode);
 		nfsi->attrtimeo_timestamp = now;
-	} else if (!time_in_range(now, nfsi->attrtimeo_timestamp, nfsi->attrtimeo_timestamp + nfsi->attrtimeo)) {
+	} else if (!time_in_range_open(now, nfsi->attrtimeo_timestamp,
+				nfsi->attrtimeo_timestamp + nfsi->attrtimeo)) {
 		if ((nfsi->attrtimeo <<= 1) > NFS_MAXATTRTIMEO(inode))
 			nfsi->attrtimeo = NFS_MAXATTRTIMEO(inode);
 		nfsi->attrtimeo_timestamp = now;
@@ -1958,7 +1959,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 		server->namelen = NFS4_MAXNAMLEN;
 
 	sb->s_op = &nfs4_sops;
-	sb->s_flags |= MS_HAS_INO64;
+	sb->s_flags |= MS_HAS_INO64 | MS_LOOKUP_UNDO;
 	err = nfs_sb_init(sb, authflavour);
 	if (err == 0)
 		return 0;

@@ -381,8 +381,12 @@ qla4xxx_print_srb_info(uint32_t dbg_mask, srb_t *srb)
 		       __func__, srb->fw_ddb_index, srb->lun);
 		printk("%s: os_tov = %d, iocb_tov = %d\n",
 		       __func__, srb->os_tov, srb->iocb_tov);
-		printk("%s: cc_stat = 0x%x, r_start = 0x%lx, u_start = 0x%lx\n\n",
-		       __func__, srb->cc_stat, srb->r_start, srb->u_start);
+		printk("%s: ref_count = %d, r_start = 0x%lx, u_start = 0x%lx\n\n",
+		       __func__, atomic_read(&srb->ref_count), srb->r_start, srb->u_start);
+ 		if (srb->cmd) {
+ 			printk("%s: pid = 0x%ld\n",
+ 			       __func__, srb->cmd->serial_number);
+		}
 	}
 }
 

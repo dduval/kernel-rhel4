@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/topology.h>
 #include <linux/interrupt.h>
+#include <linux/iommu-helper.h>
 #include <asm/atomic.h>
 #include <asm/io.h>
 #include <asm/mtrr.h>
@@ -101,7 +102,8 @@ AGPEXTERN __u32 *agp_gatt_table;
 static unsigned long next_bit;  /* protected by iommu_bitmap_lock */
 static int need_flush; 		/* global flush state. set for each gart wrap */
 static dma_addr_t dma_map_area(struct device *dev, unsigned long phys_mem,
-			       size_t size, int dir, int do_panic);
+			       size_t size, int dir, int do_panic,
+			       u64 align_mask);
 
 /* Dummy device used for NULL arguments (normally ISA). Better would
    be probably a smaller DMA mask, but this is bug-to-bug compatible to i386. */
@@ -111,37 +113,53 @@ static struct device fallback_dev = {
 	.dma_mask = &fallback_dev.coherent_dma_mask,
 };
 
-static unsigned long alloc_iommu(int size) 
-{ 	
-	unsigned long offset, flags;
+static int alloc_iommu_junk; /* preserve find_next_zero_string() kabi */
 
-	spin_lock_irqsave(&iommu_bitmap_lock, flags);	
-	offset = find_next_zero_string(iommu_gart_bitmap,next_bit,iommu_pages,size);
+static unsigned long alloc_iommu(struct device *dev, int size,
+				 unsigned long mask)
+{
+	unsigned long offset, flags;
+	unsigned long boundary_size;
+	unsigned long base_index;
+
+	base_index = ALIGN(iommu_bus_base & 0xffffffff,
+			   PAGE_SIZE) >> PAGE_SHIFT;
+	boundary_size = ALIGN(0x100000000ULL, PAGE_SIZE) >> PAGE_SHIFT;
+
+	spin_lock_irqsave(&iommu_bitmap_lock, flags);
+	offset = iommu_area_alloc(iommu_gart_bitmap, iommu_pages, next_bit,
+				  size, base_index, boundary_size, mask);
+	if (alloc_iommu_junk)
+		find_next_zero_string(iommu_gart_bitmap,next_bit,
+					       iommu_pages,size);
 	if (offset == -1) {
 		need_flush = 1;
-	       	offset = find_next_zero_string(iommu_gart_bitmap,0,next_bit,size);
+		offset = iommu_area_alloc(iommu_gart_bitmap, iommu_pages, 0,
+					  size, base_index, boundary_size,
+					  mask);
 	}
-	if (offset != -1) { 
-		set_bit_string(iommu_gart_bitmap, offset, size); 
-		next_bit = offset+size; 
-		if (next_bit >= iommu_pages) { 
+	if (offset != -1) {
+		next_bit = offset+size;
+		if (next_bit >= iommu_pages) {
 			next_bit = 0;
 			need_flush = 1;
-		} 
-	} 
+		}
+	}
 	if (iommu_fullflush)
 		need_flush = 1;
-	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);      
+	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);
+
 	return offset;
-} 
+}
 
 static void free_iommu(unsigned long offset, int size)
-{ 
+{
 	unsigned long flags;
+
 	spin_lock_irqsave(&iommu_bitmap_lock, flags);
-	__clear_bit_string(iommu_gart_bitmap, offset, size);
+	iommu_area_free(iommu_gart_bitmap, offset, size);
 	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);
-} 
+}
 
 /* 
  * Use global flush state to avoid races with multiple flushers.
@@ -252,7 +270,8 @@ dma_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle,
 		}
 	} 
 
-	*dma_handle = dma_map_area(dev, bus, size, PCI_DMA_BIDIRECTIONAL, 0);
+	*dma_handle = dma_map_area(dev, bus, size, PCI_DMA_BIDIRECTIONAL, 0,
+				   size - 1);
 	if (*dma_handle == bad_dma_address)
 		goto error; 
 	flush_gart(dev);
@@ -370,10 +389,12 @@ static inline int nonforced_iommu(struct device *dev, unsigned long addr, size_t
  * Caller needs to check if the iommu is needed and flush.
  */
 static dma_addr_t dma_map_area(struct device *dev, unsigned long phys_mem,
-				size_t size, int dir, int do_panic)
+			       size_t size, int dir, int do_panic,
+			       u64 align_mask)
 { 
 	unsigned long npages = to_pages(phys_mem, size);
-	unsigned long iommu_page = alloc_iommu(npages);
+	unsigned long palign_mask = align_mask >> PAGE_SHIFT;
+	unsigned long iommu_page = alloc_iommu(dev, npages, palign_mask);
 	int i;
 	if (iommu_page == -1) {
 		if (!nonforced_iommu(dev, phys_mem, size))
@@ -408,7 +429,7 @@ dma_addr_t dma_map_single(struct device *dev, void *addr, size_t size, int dir)
 	if (!need_iommu(dev, phys_mem, size))
 		return phys_mem; 
 
-	bus = dma_map_area(dev, phys_mem, size, dir, 1);
+	bus = dma_map_area(dev, phys_mem, size, dir, 1, 0);
 	flush_gart(dev); 
 	return bus; 
 } 
@@ -427,7 +448,7 @@ static int dma_map_sg_nonforce(struct device *dev, struct scatterlist *sg,
 		struct scatterlist *s = &sg[i];
 		unsigned long addr = page_to_phys(s->page) + s->offset; 
 		if (nonforced_iommu(dev, addr, s->length)) { 
-			addr = dma_map_area(dev, addr, s->length, dir, 0);
+			addr = dma_map_area(dev, addr, s->length, dir, 0, 0);
 			if (addr == bad_dma_address) { 
 				if (i > 0) 
 					dma_unmap_sg(dev, sg, i, dir);
@@ -444,10 +465,11 @@ static int dma_map_sg_nonforce(struct device *dev, struct scatterlist *sg,
 }
 
 /* Map multiple scatterlist entries continuous into the first. */
-static int __dma_map_cont(struct scatterlist *sg, int start, int stopat,
-		      struct scatterlist *sout, unsigned long pages)
+static int __dma_map_cont(struct device *dev, struct scatterlist *sg,
+			  int start, int stopat, struct scatterlist *sout,
+			  unsigned long pages)
 {
-	unsigned long iommu_start = alloc_iommu(pages);
+	unsigned long iommu_start = alloc_iommu(dev, pages, 0);
 	unsigned long iommu_page = iommu_start; 
 	int i;
 
@@ -482,9 +504,9 @@ static int __dma_map_cont(struct scatterlist *sg, int start, int stopat,
 	return 0;
 }
 
-static inline int dma_map_cont(struct scatterlist *sg, int start, int stopat,
-		      struct scatterlist *sout,
-		      unsigned long pages, int need)
+static inline int dma_map_cont(struct device *dev, struct scatterlist *sg,
+			       int start, int stopat, struct scatterlist *sout,
+		      	       unsigned long pages, int need)
 {
 	if (!need) { 
 		BUG_ON(stopat - start != 1);
@@ -492,7 +514,7 @@ static inline int dma_map_cont(struct scatterlist *sg, int start, int stopat,
 		sout->dma_length = sg[start].length; 
 		return 0;
 	} 
-	return __dma_map_cont(sg, start, stopat, sout, pages);
+	return __dma_map_cont(dev, sg, start, stopat, sout, pages);
 }
 		
 /*
@@ -533,8 +555,8 @@ int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents, int dir)
 			   boundary and the new one doesn't have an offset. */
 			if (!iommu_merge || !nextneed || !need || s->offset ||
 			    (ps->offset + ps->length) % PAGE_SIZE) { 
-				if (dma_map_cont(sg, start, i, sg+out, pages,
-						 need) < 0)
+				if (dma_map_cont(dev, sg, start, i, sg+out,
+						 pages, need) < 0)
 					goto error;
 				out++;
 				pages = 0;
@@ -545,7 +567,7 @@ int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents, int dir)
 		need = nextneed;
 		pages += to_pages(s->offset, s->length);
 	}
-	if (dma_map_cont(sg, start, i, sg+out, pages, need) < 0)
+	if (dma_map_cont(dev, sg, start, i, sg+out, pages, need) < 0)
 		goto error;
 	out++;
 	flush_gart(dev);

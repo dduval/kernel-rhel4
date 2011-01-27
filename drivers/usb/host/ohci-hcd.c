@@ -128,6 +128,20 @@ static const char	hcd_name [] = "ohci_hcd";
 
 #include "ohci.h"
 
+#ifdef CONFIG_PCI
+static void quirk_amd_pll(int state);
+static void amd_iso_dev_put(void);
+#else
+static inline void quirk_amd_pll(int state)
+{
+	return;
+}
+static inline void amd_iso_dev_put(void)
+{
+	return;
+}
+#endif
+
 #include "ohci-hub.c"
 #include "ohci-dbg.c"
 #include "ohci-mem.c"
@@ -633,7 +647,10 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd, struct pt_regs *ptregs)
 	if (ints & OHCI_INTR_RD) {
 		ohci_vdbg (ohci, "resume detect\n");
 		writel (OHCI_INTR_RD, &regs->intrstatus);
-		schedule_work(&ohci->rh_resume);
+		if (hcd->state != USB_STATE_QUIESCING &&
+		    hcd->state != USB_STATE_HALT) {
+			schedule_work(&ohci->rh_resume);
+		}
 	}
 
 	if (ints & OHCI_INTR_WDH) {
@@ -681,7 +698,6 @@ static void ohci_stop (struct usb_hcd *hcd)
 		ohci->hcd.state);
 	ohci_dump (ohci, 1);
 
-	flush_scheduled_work();
 	if (HCD_IS_RUNNING(ohci->hcd.state))
 		hc_reset (ohci);
 	else
@@ -689,7 +705,11 @@ static void ohci_stop (struct usb_hcd *hcd)
 	if (hcd->irq >= 0) {
 		free_irq(hcd->irq, hcd);
 		hcd->irq = -1;
+
 	}
+
+	if (ohci->flags & OHCI_QUIRK_AMD_ISO)
+		amd_iso_dev_put();
 
 	remove_debug_files (ohci);
 	ohci_mem_cleanup (ohci);

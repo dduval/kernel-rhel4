@@ -155,6 +155,7 @@ nfs4_alloc_client(struct in_addr *addr)
 	INIT_LIST_HEAD(&clp->cl_superblocks);
 	init_waitqueue_head(&clp->cl_waitq);
 	rpc_init_wait_queue(&clp->cl_rpcwaitq, "NFS4 client");
+	clp->cl_boot_time = CURRENT_TIME;
 	clp->cl_state = 1 << NFS4CLNT_OK;
 	return clp;
 }
@@ -403,7 +404,6 @@ nfs4_alloc_open_state(void)
 	memset(state->stateid.data, 0, sizeof(state->stateid.data));
 	atomic_set(&state->count, 1);
 	INIT_LIST_HEAD(&state->lock_states);
-	INIT_LIST_HEAD(&state->inc_open);
 	init_MUTEX(&state->lock_sema);
 	rwlock_init(&state->state_lock);
 	return state;

@@ -12,6 +12,7 @@
 #include <asm/semaphore.h>
 #include <linux/lockdep.h>
 
+#define mutex_lock_nested(a, b) mutex_lock(a)
 #define mutex semaphore
 #define DEFINE_MUTEX(foo) DECLARE_MUTEX(foo)
 #define mutex_init(foo) init_MUTEX(foo)

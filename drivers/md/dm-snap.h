@@ -82,6 +82,10 @@ struct exception_store {
 	void *context;
 };
 
+#define DM_TRACKED_CHUNK_HASH_SIZE	16
+#define DM_TRACKED_CHUNK_HASH(x)	((unsigned long)(x) & \
+					 (DM_TRACKED_CHUNK_HASH_SIZE - 1))
+
 struct dm_snapshot {
 	struct rw_semaphore lock;
 	struct dm_table *table;
@@ -116,6 +120,10 @@ struct dm_snapshot {
 	struct exception_store store;
 
 	struct kcopyd_client *kcopyd_client;
+
+	mempool_t *tracked_chunk_pool;
+	spinlock_t tracked_chunk_lock;
+	struct hlist_head tracked_chunk_hash[DM_TRACKED_CHUNK_HASH_SIZE];
 };
 
 /*

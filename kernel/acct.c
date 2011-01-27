@@ -444,10 +444,10 @@ static void do_acct_process(long exitcode, struct file *file)
 	ac.ac_ppid = current->parent->pid;
 #endif
 
-	read_lock(&tasklist_lock);	/* pin current->signal */
+	write_lock_irq(&tasklist_lock);	/* pin signal->tty */
 	ac.ac_tty = current->signal->tty ?
 		old_encode_dev(tty_devnum(current->signal->tty)) : 0;
-	read_unlock(&tasklist_lock);
+	write_unlock_irq(&tasklist_lock);
 
 	ac.ac_flag = 0;
 	if (current->flags & PF_FORKNOEXEC)

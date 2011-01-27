@@ -579,7 +579,7 @@ static int gnttab_expand(unsigned int req_entries)
 	return rc;
 }
  
-int __init gnttab_init(void)
+int __devinit gnttab_init(void)
 {
 	int i;
 	unsigned int max_nr_glist_frames, nr_glist_frames;

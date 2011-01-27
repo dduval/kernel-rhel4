@@ -106,6 +106,7 @@ qim_init_drvr_data(struct scsi_qla_host *drvr_ha,
 				udelay(100);
 			}
 		} else {
+			RD_REG_WORD(&reg->hccr); 
 			udelay(10);
 		}
 		spin_unlock_irqrestore(&drvr_ha->hardware_lock, flags);

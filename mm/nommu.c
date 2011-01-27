@@ -358,6 +358,10 @@ unsigned long do_mmap_pgoff(
 #ifdef DEBUG
 			printk("f_op->mmap() returned %d/%lx\n", error, vma.vm_start);
 #endif
+			if (file->f_op->mmap == generic_file_noatime_mmap &&
+			    !(file->f_flags & O_NOATIME))
+				update_atime(file->f_dentry->d_inode);
+
 			if (!error)
 				return vma.vm_start;
 			else if (error != -ENOSYS)

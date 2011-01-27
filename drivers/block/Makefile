@@ -46,3 +46,4 @@ obj-$(CONFIG_BLK_DEV_UB)	+= ub.o
 
 obj-$(CONFIG_DISKDUMP)         += diskdump.o
 obj-$(CONFIG_CCISS_DUMP_GLUE)	+= cciss_dump.o
+obj-$(CONFIG_VIRTIO_BLK)	+= virtio_blk.o

@@ -230,7 +230,7 @@ DEFINE_ALSA_IOCTL1(pcm_sw_params, data.boundary = recalculate_boundary(file, dat
 static inline int _snd_ioctl32_pcm_hw_params(unsigned int fd, unsigned int cmd, unsigned long arg, struct file *file, unsigned int native_ctl)
 {
 	struct sndrv_pcm_hw_params32 *data32;
-	struct sndrv_pcm_hw_params *data;
+	struct snd_pcm_hw_params *data;
 	mm_segment_t oldseg;
 	int err;
 
@@ -245,7 +245,7 @@ static inline int _snd_ioctl32_pcm_hw_params(unsigned int fd, unsigned int cmd, 
 		goto __end;
 	}
 	memset(data, 0, sizeof(*data));
-	convert_from_32(pcm_hw_params, data, data32);
+	convert_from_32_1(pcm_hw_params, data, data32);
 	oldseg = get_fs();
 	set_fs(KERNEL_DS);
 	err = file->f_op->ioctl(file->f_dentry->d_inode, file, native_ctl, (unsigned long)data);
@@ -253,7 +253,7 @@ static inline int _snd_ioctl32_pcm_hw_params(unsigned int fd, unsigned int cmd, 
 	if (err < 0)
 		goto __end;
 	err = 0;
-	convert_to_32(pcm_hw_params, data32, data);
+	convert_to_32_1(pcm_hw_params, data32, data);
 	if (copy_to_user((void __user *)arg, data32, sizeof(*data32)))
 		err = -EFAULT;
 	else {
@@ -441,7 +441,7 @@ static void snd_pcm_hw_convert_to_old_params(struct sndrv_pcm_hw_params_old32 *o
 static inline int _snd_ioctl32_pcm_hw_params_old(unsigned int fd, unsigned int cmd, unsigned long arg, struct file *file, unsigned int native_ctl)
 {
 	struct sndrv_pcm_hw_params_old32 *data32;
-	struct sndrv_pcm_hw_params *data;
+	struct snd_pcm_hw_params *data;
 	mm_segment_t oldseg;
 	int err;
 

@@ -2073,8 +2073,6 @@ void ipv6_mc_up(struct inet6_dev *idev)
 
 void ipv6_mc_init_dev(struct inet6_dev *idev)
 {
-	struct in6_addr maddr;
-
 	write_lock_bh(&idev->lock);
 	idev->mc_lock = RW_LOCK_UNLOCKED;
 	idev->mc_gq_running = 0;
@@ -2090,10 +2088,6 @@ void ipv6_mc_init_dev(struct inet6_dev *idev)
 	idev->mc_maxdelay = IGMP6_UNSOLICITED_IVAL;
 	idev->mc_v1_seen = 0;
 	write_unlock_bh(&idev->lock);
-
-	/* Add all-nodes address. */
-	ipv6_addr_all_nodes(&maddr);
-	ipv6_dev_mc_inc(idev->dev, &maddr);
 }
 
 /*

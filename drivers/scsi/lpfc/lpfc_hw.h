@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hw.h 3099 2007-11-29 15:38:19Z sf_support $
+ * $Id: lpfc_hw.h 3219 2008-10-20 18:23:31Z sf_support $
  */
 
 #ifndef  _H_LPFC_HW
@@ -842,6 +842,12 @@ typedef struct _D_ID {		/* Structure is in Big Endian format */
 	} un;
 } D_ID;
 
+#define RSCN_ADDRESS_FORMAT_PORT	0x0
+#define RSCN_ADDRESS_FORMAT_AREA	0x1
+#define RSCN_ADDRESS_FORMAT_DOMAIN	0x2
+#define RSCN_ADDRESS_FORMAT_FABRIC	0x3
+#define RSCN_ADDRESS_FORMAT_MASK	0x3
+
 /*
  *  Structure to define all ELS Payload types
  */
@@ -1114,6 +1120,7 @@ typedef struct {
 #define PCI_DEVICE_ID_HELIOS_SCSP   0xfd11
 #define PCI_DEVICE_ID_HELIOS_DCSP   0xfd12
 #define PCI_DEVICE_ID_ZEPHYR        0xfe00
+#define PCI_DEVICE_ID_HORNET        0xfe05
 #define PCI_DEVICE_ID_ZEPHYR_SCSP   0xfe11
 #define PCI_DEVICE_ID_ZEPHYR_DCSP   0xfe12
 
@@ -1131,6 +1138,7 @@ typedef struct {
 #define ZEPHYR_JEDEC_ID             0x0577
 #define VIPER_JEDEC_ID              0x4838
 #define SATURN_JEDEC_ID             0x1004
+#define HORNET_JDEC_ID              0x2057706D
 
 #define JEDEC_ID_MASK               0x0FFFF000
 #define JEDEC_ID_SHIFT              12
@@ -2063,7 +2071,10 @@ typedef struct {
 typedef struct {
 	uint32_t eventTag;	/* Event tag */
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd1:22;
+	uint32_t rsvd1:19;
+	uint32_t fa:1;
+	uint32_t mm:1;
+	uint32_t rx:1;
 	uint32_t pb:1;
 	uint32_t il:1;
 	uint32_t attType:8;
@@ -2071,7 +2082,10 @@ typedef struct {
 	uint32_t attType:8;
 	uint32_t il:1;
 	uint32_t pb:1;
-	uint32_t rsvd1:22;
+	uint32_t rx:1;
+	uint32_t mm:1;
+	uint32_t fa:1;
+	uint32_t rsvd1:19;
 #endif
 
 #define AT_RESERVED    0x00	/* Reserved - attType */
@@ -2092,6 +2106,7 @@ typedef struct {
 
 #define TOPOLOGY_PT_PT 0x01	/* Topology is pt-pt / pt-fabric */
 #define TOPOLOGY_LOOP  0x02	/* Topology is FC-AL */
+#define LPFC_LNK_MENLO_MAINT 0x05 /* external link down menlo link up */
 
 	union {
 		struct ulp_bde lilpBde; /* This BDE points to a 128 byte buffer
@@ -2323,8 +2338,48 @@ typedef struct {
 #endif
 } ASYNCEVT_ENABLE_VAR;
 
+/* Structure for MB Command UPDATE_CFG */
+
+typedef struct
+{
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32_t rsvd2          : 16 ;
+	uint32_t proc_type      : 8 ;
+	uint32_t rsvd1          : 1 ;
+	uint32_t Abit           : 1 ;
+	uint32_t Obit           : 1 ;
+	uint32_t Vbit           : 1 ;
+	uint32_t req_type       : 4 ;
+	uint32_t entry_len      : 16 ;
+	uint32_t region_id      : 16 ;
+#else
+	uint32_t req_type       : 4 ;
+	uint32_t Vbit           : 1 ;
+	uint32_t Obit           : 1 ;
+	uint32_t Abit           : 1 ;
+	uint32_t rsvd1          : 1 ;
+	uint32_t proc_type      : 8 ;
+	uint32_t rsvd2          : 16 ;
+	uint32_t region_id      : 16 ;
+	uint32_t entry_len      : 16 ;
+#endif
+	uint32_t rsp_info ;
+	uint32_t byte_len ;
+	uint32_t cfg_data ;
+
+#define  INIT_REGION             1 /* req_type */
+#define  UPDATE_DATA             2 /* req_type */
+#define  CLEAN_UP_CFG            3 /* req_type */
+
+}  UPDATE_CFG_VAR ;
+
 /* Union of all Mailbox Command types */
-#define MAILBOX_CMD_WSIZE 32
+#define MAILBOX_CMD_WSIZE	32
+#define MAILBOX_CMD_SIZE	(MAILBOX_CMD_WSIZE * sizeof(uint32_t))
+#define MAILBOX_EXT_WSIZE	512
+#define MAILBOX_EXT_SIZE	(MAILBOX_EXT_WSIZE * sizeof(uint32_t))
+#define MAILBOX_HBA_EXT_OFFSET	0x100
+
 
 typedef union {
 	uint32_t varWords[MAILBOX_CMD_WSIZE - 1];
@@ -2356,6 +2411,7 @@ typedef union {
 	CONFIG_FARP_VAR varCfgFarp; /* cmd = 0x25 (CONFIG_FARP)  NEW_FEATURE */
 	CONFIG_PORT_VAR varCfgPort; /* cmd = 0x88 (CONFIG_PORT)  */
 	ASYNCEVT_ENABLE_VAR varCfgAsyncEvent; /* cmd = x33 (CONFIG_ASYNC) */
+	UPDATE_CFG_VAR  varUpdateCfg;   /* Warm Start UPDATE_CFG cmd */
 } MAILVARIANTS;
 
 /*
@@ -2811,16 +2867,18 @@ typedef volatile struct _IOCB {	/* IOCB structure */
 
 #define SLI1_SLIM_SIZE   (4 * 1024)
 
-/* Up to 498 IOCBs will fit into 16k
- * 256 (MAILBOX_t) + 140 (PCB_t) + ( 32 (IOCB_t) * 498 ) = < 16384
+/* Up to 498 IOCBs will fit into 64k
+ * 256 (MAILBOX_t) + 512 mailbox extension +
+ * 140 (PCB_t) + ( 32 (IOCB_t) * 498 ) = < 16384
  */
-#define SLI2_SLIM_SIZE   (16 * 1024)
+#define SLI2_SLIM_SIZE   (32 * 1024)
 
 /* Maximum IOCBs that will fit in SLI2 slim */
 #define MAX_SLI2_IOCB    498
 
 struct lpfc_sli2_slim {
 	MAILBOX_t mbx;
+	uint32_t  mbx_ext_words[MAILBOX_EXT_WSIZE];
 	PCB_t pcb;
 	IOCB_t IOCBs[MAX_SLI2_IOCB];
 };

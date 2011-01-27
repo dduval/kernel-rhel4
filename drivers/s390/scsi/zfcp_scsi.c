@@ -12,6 +12,7 @@
  *            Wolfgang Taphorn
  *            Stefan Bader <stefan.bader@de.ibm.com> 
  *            Heiko Carstens <heiko.carstens@de.ibm.com> 
+ *            Andreas Herrmann <aherrman@de.ibm.com>
  * 
  * This program is free software; you can redistribute it and/or modify 
  * it under the terms of the GNU General Public License as published by 
@@ -31,7 +32,7 @@
 #define ZFCP_LOG_AREA			ZFCP_LOG_AREA_SCSI
 
 /* this drivers version (do not edit !!! generated and updated by cvs) */
-#define ZFCP_SCSI_REVISION "$Revision: 1.68 $"
+#define ZFCP_SCSI_REVISION "$Revision: 1.71 $"
 
 #include "zfcp_ext.h"
 #include <asm/atomic.h>
@@ -84,7 +85,8 @@ struct zfcp_data zfcp_data = {
 	      unchecked_isa_dma:       0,
 	      use_clustering:          1,
 	      sdev_attrs:              zfcp_sysfs_sdev_attrs,
-	}
+	},
+	.driver_version = ZFCP_VERSION,
 	/* rest initialised with zeros */
 };
 

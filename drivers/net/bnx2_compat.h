@@ -32,7 +32,10 @@ typedef int __bitwise pci_power_t;
 
 #define pci_choose_state(pdev, state)	(state)
 
-#define IRQF_SHARED	SA_SHIRQ
+#define IRQF_SHARED		SA_SHIRQ
+#define IRQF_SAMPLE_RANDOM	SA_SAMPLE_RANDOM
 #define DMA_40BIT_MASK	0x000000ffffffffffULL
+
+#define NET_SKB_PAD     16
 
 #endif /* __BNX2_COMPAT_H__ */

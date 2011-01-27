@@ -1629,6 +1629,8 @@ static struct file_operations proc_tgid_attr_operations;
 static struct inode_operations proc_tgid_attr_inode_operations;
 #endif
 
+static int get_tid_list(int index, unsigned int *tids, struct inode *dir);
+
 /* SMP-safe */
 static struct dentry *proc_pident_lookup(struct inode *dir, 
 					 struct dentry *dentry,
@@ -1668,7 +1670,7 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 	 */
 	switch(p->type) {
 		case PROC_TGID_TASK:
-			inode->i_nlink = 3;
+			inode->i_nlink = 2 + get_tid_list(2, NULL, dir);
 			inode->i_op = &proc_task_inode_operations;
 			inode->i_fop = &proc_task_operations;
 			break;
@@ -2016,8 +2018,12 @@ struct dentry *proc_pid_lookup(struct inode *dir, struct dentry * dentry, struct
 	inode->i_mode = S_IFDIR|S_IRUGO|S_IXUGO;
 	inode->i_op = &proc_tgid_base_inode_operations;
 	inode->i_fop = &proc_tgid_base_operations;
-	inode->i_nlink = 3;
 	inode->i_flags|=S_IMMUTABLE;
+#ifdef CONFIG_SECURITY
+	inode->i_nlink = 5;
+#else
+	inode->i_nlink = 4;
+#endif
 
 	dentry->d_op = &pid_base_dentry_operations;
 
@@ -2071,8 +2077,12 @@ static struct dentry *proc_task_lookup(struct inode *dir, struct dentry * dentry
 	inode->i_mode = S_IFDIR|S_IRUGO|S_IXUGO;
 	inode->i_op = &proc_tid_base_inode_operations;
 	inode->i_fop = &proc_tid_base_operations;
-	inode->i_nlink = 3;
 	inode->i_flags|=S_IMMUTABLE;
+#ifdef CONFIG_SECURITY
+	inode->i_nlink = 4;
+#else
+	inode->i_nlink = 3;
+#endif
 
 	dentry->d_op = &pid_base_dentry_operations;
 
@@ -2148,7 +2158,8 @@ static int get_tid_list(int index, unsigned int *tids, struct inode *dir)
 
 		if (--index >= 0)
 			continue;
-		tids[nr_tids] = tid;
+		if (tids != NULL)
+			tids[nr_tids] = tid;
 		nr_tids++;
 		if (nr_tids >= PROC_MAXPIDS)
 			break;
@@ -2261,6 +2272,7 @@ static int proc_task_readdir(struct file * filp, void * dirent, filldir_t filldi
 	}
 
 	nr_tids = get_tid_list(pos, tid_array, inode);
+	inode->i_nlink = pos + nr_tids;
 
 	for (i = 0; i < nr_tids; i++) {
 		unsigned long j = PROC_NUMBUF;

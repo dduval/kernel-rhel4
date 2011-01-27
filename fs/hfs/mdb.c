@@ -343,6 +343,10 @@ void hfs_mdb_put(struct super_block *sb)
 	brelse(HFS_SB(sb)->mdb_bh);
 	brelse(HFS_SB(sb)->alt_mdb_bh);
 
+	/* free the bitmap page(s) */
+	if (HFS_SB(sb)->bitmap)
+		free_pages((unsigned long)HFS_SB(sb)->bitmap, PAGE_SIZE < 8192 ? 1 : 0);
+
 	kfree(HFS_SB(sb));
 	sb->s_fs_info = NULL;
 }

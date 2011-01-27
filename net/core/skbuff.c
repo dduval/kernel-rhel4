@@ -229,17 +229,22 @@ nodata:
 }
 
 
-static void skb_drop_fraglist(struct sk_buff *skb)
+static void skb_drop_list(struct sk_buff **listp)
 {
-	struct sk_buff *list = skb_shinfo(skb)->frag_list;
+	struct sk_buff *list = *listp;
 
-	skb_shinfo(skb)->frag_list = NULL;
+	*listp = NULL;
 
 	do {
 		struct sk_buff *this = list;
 		list = list->next;
 		kfree_skb(this);
 	} while (list);
+}
+
+static inline void skb_drop_fraglist(struct sk_buff *skb)
+{
+	skb_drop_list(&skb_shinfo(skb)->frag_list);
 }
 
 static void skb_clone_fraglist(struct sk_buff *skb)
@@ -732,51 +737,93 @@ struct sk_buff *skb_pad(struct sk_buff *skb, int pad)
 		memset(nskb->data+nskb->len, 0, pad);
 	return nskb;
 }	
- 
-/* Trims skb to length len. It can change skb pointers, if "realloc" is 1.
- * If realloc==0 and trimming is impossible without change of data,
- * it is BUG().
+
+/* Trims skb to length len. It can change skb pointers.
  */
 
 int ___pskb_trim(struct sk_buff *skb, unsigned int len, int realloc)
 {
+	struct sk_buff **fragp;
+	struct sk_buff *frag;
 	int offset = skb_headlen(skb);
 	int nfrags = skb_shinfo(skb)->nr_frags;
 	int i;
+	int err;
 
-	for (i = 0; i < nfrags; i++) {
-		int end = offset + skb_shinfo(skb)->frags[i].size;
-		if (end > len) {
-			if (skb_cloned(skb)) {
-				if (!realloc)
-					BUG();
-				if (pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
-					return -ENOMEM;
-			}
-			if (len <= offset) {
-				put_page(skb_shinfo(skb)->frags[i].page);
-				skb_shinfo(skb)->nr_frags--;
-			} else {
-				skb_shinfo(skb)->frags[i].size = len - offset;
-			}
-		}
-		offset = end;
+	if (unlikely(!realloc && skb->data_len)) {
+		/* call of skb_trim/__skb_trim on a non-linear skb */
+		WARN_ON(1);
+		return -EINVAL;
 	}
 
-	if (offset < len) {
+	if (skb_cloned(skb) &&
+	    unlikely((err = pskb_expand_head(skb, 0, 0, GFP_ATOMIC))))
+		return err;
+
+	i = 0;
+	if (offset >= len)
+		goto drop_pages;
+
+	for (; i < nfrags; i++) {
+		int end = offset + skb_shinfo(skb)->frags[i].size;
+
+		if (end < len) {
+			offset = end;
+			continue;
+		}
+
+		skb_shinfo(skb)->frags[i++].size = len - offset;
+
+drop_pages:
+		skb_shinfo(skb)->nr_frags = i;
+
+		for (; i < nfrags; i++)
+			put_page(skb_shinfo(skb)->frags[i].page);
+
+		if (skb_shinfo(skb)->frag_list)
+			skb_drop_fraglist(skb);
+		goto done;
+	}
+
+	for (fragp = &skb_shinfo(skb)->frag_list; (frag = *fragp);
+	     fragp = &frag->next) {
+		int end = offset + frag->len;
+
+		if (skb_shared(frag)) {
+			struct sk_buff *nfrag;
+
+			nfrag = skb_clone(frag, GFP_ATOMIC);
+			if (unlikely(!nfrag))
+				return -ENOMEM;
+
+			nfrag->next = frag->next;
+			kfree_skb(frag);
+			frag = nfrag;
+			*fragp = frag;
+		}
+
+		if (end < len) {
+			offset = end;
+			continue;
+		}
+
+		if (end > len &&
+		    unlikely((err = pskb_trim(frag, len - offset))))
+			return err;
+
+		if (frag->next)
+			skb_drop_list(&frag->next);
+		break;
+	}
+
+done:
+	if (len > skb_headlen(skb)) {
 		skb->data_len -= skb->len - len;
 		skb->len       = len;
 	} else {
-		if (len <= skb_headlen(skb)) {
-			skb->len      = len;
-			skb->data_len = 0;
-			skb->tail     = skb->data + len;
-			if (skb_shinfo(skb)->frag_list && !skb_cloned(skb))
-				skb_drop_fraglist(skb);
-		} else {
-			skb->data_len -= skb->len - len;
-			skb->len       = len;
-		}
+		skb->len       = len;
+		skb->data_len  = 0;
+		skb->tail      = skb->data + len;
 	}
 
 	return 0;
@@ -1493,6 +1540,29 @@ void skb_split(struct sk_buff *skb, struct sk_buff *skb1, const u32 len)
 	else		/* Second chunk has no header, nothing to copy. */
 		skb_split_no_header(skb, skb1, len, pos);
 }
+
+/**
+ *      skb_pull_rcsum - pull skb and update receive checksum
+ *      @skb: buffer to update
+ *      @start: start of data before pull
+ *      @len: length of data pulled
+ *
+ *      This function performs an skb_pull on the packet and updates
+ *      update the CHECKSUM_HW checksum.  It should be used on receive
+ *      path processing instead of skb_pull unless you know that the
+ *      checksum difference is zero (e.g., a valid IP header) or you
+ *      are setting ip_summed to CHECKSUM_NONE.
+ */
+unsigned char *skb_pull_rcsum(struct sk_buff *skb, unsigned int len)
+{
+        BUG_ON(len > skb->len);
+        skb->len -= len;
+        BUG_ON(skb->len < skb->data_len);
+        skb_postpull_rcsum(skb, skb->data, len);
+        return skb->data += len;
+}
+
+EXPORT_SYMBOL_GPL(skb_pull_rcsum);
 
 void __init skb_init(void)
 {

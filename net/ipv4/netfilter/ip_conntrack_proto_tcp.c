@@ -597,20 +597,23 @@ static int tcp_in_window(struct ip_ct_tcp *state,
 		ack = sack = receiver->td_end;
 	}
 
-	if (seq == end)
+	if (seq == end
+	    && (!tcph->rst
+		|| (seq == 0 && state->state == TCP_CONNTRACK_SYN_SENT)))
 		/*
 		 * Packets contains no data: we assume it is valid
 		 * and check the ack value only.
+		 * However RST segments are always validated by their
+		 * SEQ number, except when seq == 0 (reset sent answering
+		 * SYN.
 		 */
 		seq = end = sender->td_end;
 		
 	DEBUGP("tcp_in_window: src=%u.%u.%u.%u:%hu dst=%u.%u.%u.%u:%hu "
-	       "seq=%u ack=%u sack =%u win=%u end=%u trim=%u\n",
+	       "seq=%u ack=%u sack =%u win=%u end=%u\n",
 		NIPQUAD(iph->saddr), ntohs(tcph->source),
 		NIPQUAD(iph->daddr), ntohs(tcph->dest),
-		seq, ack, sack, win, end, 
-		after(end, sender->td_maxend) && before(seq, sender->td_maxend)
-		? sender->td_maxend : end);
+		seq, ack, sack, win, end);
 	DEBUGP("tcp_in_window: sender end=%u maxend=%u maxwin=%u scale=%i "
 	       "receiver end=%u maxend=%u maxwin=%u scale=%i\n",
 		sender->td_end, sender->td_maxend, sender->td_maxwin,
@@ -618,24 +621,15 @@ static int tcp_in_window(struct ip_ct_tcp *state,
 		receiver->td_end, receiver->td_maxend, receiver->td_maxwin,
 		receiver->td_scale);
 	
-	/* Ignore data over the right edge of the receiver's window. */
-	if (after(end, sender->td_maxend) &&
-	    before(seq, sender->td_maxend)) {
-		end = sender->td_maxend;
-		if (*index == TCP_FIN_SET)
-			*index = TCP_ACK_SET;
-	}
 	DEBUGP("tcp_in_window: I=%i II=%i III=%i IV=%i\n",
-		before(end, sender->td_maxend + 1) 
-		    || before(seq, sender->td_maxend + 1),
-	    	after(seq, sender->td_end - receiver->td_maxwin - 1) 
-	    	    || after(end, sender->td_end - receiver->td_maxwin - 1),
+		before(seq, sender->td_maxend + 1) ,
+	    	after(end, sender->td_end - receiver->td_maxwin - 1) ,
 	    	before(sack, receiver->td_end + 1),
 	    	after(ack, receiver->td_end - MAXACKWINDOW(sender)));
 	
 	if (sender->loose || receiver->loose ||
-	    (before(end, sender->td_maxend + 1) &&
-	     after(seq, sender->td_end - receiver->td_maxwin - 1) &&
+	    (before(seq, sender->td_maxend + 1) &&
+	     after(end, sender->td_end - receiver->td_maxwin - 1) &&
 	     before(sack, receiver->td_end + 1) &&
 	     after(ack, receiver->td_end - MAXACKWINDOW(sender)))) {
 	    	/*
@@ -652,6 +646,11 @@ static int tcp_in_window(struct ip_ct_tcp *state,
 			sender->td_maxwin = swin;
 		if (after(end, sender->td_end))
 			sender->td_end = end;
+		/*
+		 * Update receiver data.
+		 */
+		if (after(end, sender->td_maxend))
+			receiver->td_maxwin += end - sender->td_maxend;
 		if (after(sack + win, receiver->td_maxend - 1)) {
 			receiver->td_maxend = sack + win;
 			if (win == 0)
@@ -688,13 +687,14 @@ static int tcp_in_window(struct ip_ct_tcp *state,
 		if (LOG_INVALID(IPPROTO_TCP))
 			nf_log_packet(PF_INET, 0, skb, NULL, NULL,
 			"ip_ct_tcp: %s ",
-			before(end, sender->td_maxend + 1) ?
-			after(seq, sender->td_end - receiver->td_maxwin - 1) ?
+			before(seq, sender->td_maxend + 1) ?
+			after(end, sender->td_end - receiver->td_maxwin - 1) ?
 			before(ack, receiver->td_end + 1) ?
 			after(ack, receiver->td_end - MAXACKWINDOW(sender)) ? "BUG"
-			: "ACK is under the lower bound (possibly overly delayed ACK)"
-			: "ACK is over the upper bound (ACKed data has never seen yet)"
-			: "SEQ is under the lower bound (retransmitted already ACKed data)"
+			: "ACK is under the lower bound (possible overly delayed ACK)"
+			: "ACK is over the upper bound (ACKed data not seen yet)"
+			: "SEQ is under the lower bound (already ACKed data retransmitted)"
+
 			: "SEQ is over the upper bound (over the window of the receiver)");
 
 		res = ip_ct_tcp_be_liberal && !tcph->rst;
@@ -858,8 +858,8 @@ static int tcp_packet(struct ip_conntrack *conntrack,
 		if (index == TCP_SYNACK_SET
 		    && conntrack->proto.tcp.last_index == TCP_SYN_SET
 		    && conntrack->proto.tcp.last_dir != dir
-		    && after(ntohl(th->ack_seq),
-		    	     conntrack->proto.tcp.last_seq)) {
+		    && ntohl(th->ack_seq) ==
+		    	     conntrack->proto.tcp.last_end) {
 			/* This SYN/ACK acknowledges a SYN that we earlier 
 			 * ignored as invalid. This means that the client and
 			 * the server are both in sync, while the firewall is
@@ -879,6 +879,8 @@ static int tcp_packet(struct ip_conntrack *conntrack,
 		conntrack->proto.tcp.last_index = index;
 		conntrack->proto.tcp.last_dir = dir;
 		conntrack->proto.tcp.last_seq = ntohl(th->seq);
+		conntrack->proto.tcp.last_end =
+		    segment_seq_plus_len(ntohl(th->seq), skb->len, iph, th);
 		
 		WRITE_UNLOCK(&tcp_lock);
 		if (LOG_INVALID(IPPROTO_TCP))
@@ -905,20 +907,16 @@ static int tcp_packet(struct ip_conntrack *conntrack,
 		    					    conntrack);
 		    	return -NF_REPEAT;
 		}
-		break;
 	case TCP_CONNTRACK_CLOSE:
 		if (index == TCP_RST_SET
 		    && test_bit(IPS_SEEN_REPLY_BIT, &conntrack->status)
 		    && conntrack->proto.tcp.last_index <= TCP_SYNACK_SET
-		    && after(ntohl(th->ack_seq),
-		    	     conntrack->proto.tcp.last_seq)) {
-			/* Ignore RST closing down invalid SYN 
-			   we had let trough. */ 
-		    	WRITE_UNLOCK(&tcp_lock);
-			if (LOG_INVALID(IPPROTO_TCP))
-				nf_log_packet(PF_INET, 0, skb, NULL, NULL, 
-					  "ip_ct_tcp: invalid RST (ignored) ");
-			return NF_ACCEPT;
+		    && ntohl(th->ack_seq) == conntrack->proto.tcp.last_end) {
+			/* RST sent to invalid SYN we had let trough
+			 * SYN was in window then, tear down connection.
+			 * We skip window checking, because packet might ACK
+			 * segments we ignored in the SYN. */
+			goto in_window;
 		}
 		/* Just fall trough */
 	default:
@@ -931,6 +929,7 @@ static int tcp_packet(struct ip_conntrack *conntrack,
 		WRITE_UNLOCK(&tcp_lock);
 		return -NF_ACCEPT;
 	}
+in_window:
 	/* From now on we have got in-window packets */
 	
 	/* If FIN was trimmed off, we don't change state. */

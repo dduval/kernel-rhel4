@@ -1,3 +1,8 @@
+Version 1.50cRH.1
+-----------------
+Fix prefixpath path separator so we can handle mounts with prefixpaths longer
+than one directory (one path component) when mounted to Windows servers.
+
 Version 1.50cRH
 ---------------
 Fix memory leak in statfs when mounted to very old servers (e.g.

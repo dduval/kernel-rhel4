@@ -1152,7 +1152,6 @@ chsc_secm(int enable)
 	if (!secm_area)
 		return -ENOMEM;
 
-	down(&cm_sem);
 	if (enable && !cm_enabled) {
 		cub_addr1 = (void *)get_zeroed_page(GFP_KERNEL | GFP_DMA);
 		cub_addr2 = (void *)get_zeroed_page(GFP_KERNEL | GFP_DMA);
@@ -1160,7 +1159,6 @@ chsc_secm(int enable)
 			free_page((unsigned long)cub_addr1);
 			free_page((unsigned long)cub_addr2);
 			free_page((unsigned long)secm_area);
-			up(&cm_sem);
 			return -ENOMEM;
 		}
 	}
@@ -1181,7 +1179,6 @@ chsc_secm(int enable)
 		free_page((unsigned long)cub_addr1);
 		free_page((unsigned long)cub_addr2);
 	}
-	up(&cm_sem);
 	free_page((unsigned long)secm_area);
 	return ret;
 }

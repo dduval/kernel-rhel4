@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.c 3122 2008-01-07 18:49:20Z sf_support $
+ * $Id: lpfc_sli.c 3208 2008-10-02 16:40:13Z sf_support $
  */
 
 #include <linux/version.h>
@@ -279,7 +279,7 @@ lpfc_hatt_timeout(unsigned long ptr)
 	}
 
 	if ((phba->hatt_jiffies + (HZ * MAX_INTR_LATENCY)/1000) < jiffies) {
-		lpfc_printf_log(phba, KERN_ERR, LOG_SLI,
+		lpfc_printf_log(phba, KERN_WARNING, LOG_SLI,
 			"%d:0314 Unprocessed Host attention x%lx.\n",
 			phba->brd_no, ha_copy);
 		lpfc_toggle_host_control_register(phba);
@@ -551,8 +551,12 @@ lpfc_sli_submit_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	 * driver will put a command into.
 	 */
 	pring->cmdidx = pring->next_cmdidx;
-	writel((uint32_t)pring->cmdidx,
-	       (u8 *)phba->MBslimaddr + (SLIMOFF + (ringno * 2)) * 4);
+	if (phba->cfg_hostmem_hgp)
+		phba->slim2p->mbx.us.s2.host[ringno].cmdPutInx =
+			pring->cmdidx;
+	else
+		writel((uint32_t)pring->cmdidx,
+	       	(u8 *)phba->MBslimaddr + (SLIMOFF + (ringno * 2)) * 4);
 
 	return (0);
 }
@@ -880,6 +884,12 @@ lpfc_sli_handle_mb_event(struct lpfc_hba * phba)
 						(uint32_t *) pmbox,
 						(sizeof (uint32_t) *
 						(MAILBOX_CMD_WSIZE)));
+			/* Copy the mailbox extension data */
+			if (pmb->out_ext_byte_len && pmb->context2) {
+				lpfc_sli_pcimem_bcopy(&(phba->slim2p->mbx_ext_words[0]),
+					pmb->context2,
+					pmb->out_ext_byte_len);
+			}
 			/* All mbox cmpls are posted to discovery tasklet */
 			lpfc_discq_post_event(phba, pmb, NULL,
 						LPFC_EVT_MBOX);
@@ -1329,9 +1339,15 @@ lpfc_sli_handle_ring_event(struct lpfc_hba * phba,
 		/* Let the HBA know what IOCB slot will be the next one the
 		 * driver will read a response from.
 		 */
-		to_slim = (uint8_t *) phba->MBslimaddr +
-			(SLIMOFF + (ringno * 2) + 1) * 4;
-		writel( (uint32_t)pring->rspidx, to_slim);
+		if (phba->cfg_hostmem_hgp) {
+			rmb();
+			phba->slim2p->mbx.us.s2.host[ringno].rspGetInx
+				= pring->rspidx;
+		} else {
+			to_slim = (uint8_t *) phba->MBslimaddr +
+				(SLIMOFF + (ringno * 2) + 1) * 4;
+			writel( (uint32_t)pring->rspidx, to_slim);
+		}
 
 		/* chain all iocb entries until LE is set */
 		if (list_empty(&(pring->iocb_continueq))) {
@@ -2576,6 +2592,19 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 	mb->mbxOwner = OWN_CHIP;
 
 	if (psli->sliinit.sli_flag & LPFC_SLI2_ACTIVE) {
+		/* Populate mbox extension offset word. */
+		if (pmbox->in_ext_byte_len || pmbox->out_ext_byte_len) {
+			*(((uint32_t *)mb) + pmbox->mbox_offset_word)
+				= (uint8_t *)&(phba->slim2p->mbx_ext_words[0])
+				- (uint8_t *)&(phba->slim2p->mbx);
+		}
+
+		/* Copy the mailbox extension data */
+		if (pmbox->in_ext_byte_len && pmbox->context2) {
+			lpfc_sli_pcimem_bcopy((uint32_t*)pmbox->context2,
+				(uint32_t*)&phba->slim2p->mbx_ext_words[0],
+				pmbox->in_ext_byte_len);
+		}
 
 		/* First copy command data to host SLIM area */
 		mbox = (MAILBOX_t *) psli->MBhostaddr;
@@ -2584,6 +2613,17 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 				       (MAILBOX_CMD_WSIZE)));
 
 	} else {
+		/* Populate mbox extension offset word. */
+		if (pmbox->in_ext_byte_len || pmbox->out_ext_byte_len)
+			*(((uint32_t *)mb) + pmbox->mbox_offset_word)
+				= MAILBOX_HBA_EXT_OFFSET;
+
+		/* Copy the mailbox extension data */
+		if (pmbox->in_ext_byte_len && pmbox->context2) {
+			lpfc_memcpy_to_slim(phba->MBslimaddr +
+				MAILBOX_HBA_EXT_OFFSET,
+				pmbox->context2, pmbox->in_ext_byte_len);
+		}
 		if (mb->mbxCommand == MBX_CONFIG_PORT) {
 			/* copy command data into host mbox for cmpl */
 			mbox = (MAILBOX_t *) psli->MBhostaddr;
@@ -2697,16 +2737,24 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 					      (uint32_t *) mb,
 					      (sizeof (uint32_t) *
 					       MAILBOX_CMD_WSIZE));
+			/* Copy the mailbox extension data */
+			if (pmbox->out_ext_byte_len && pmbox->context2) {
+				lpfc_sli_pcimem_bcopy(
+					&(phba->slim2p->mbx_ext_words[0]),
+					pmbox->context2,
+					pmbox->out_ext_byte_len);
+			}
 		} else {
 			/* First copy command data */
 			lpfc_memcpy_from_slim((void *)mb,
 				      phba->MBslimaddr,
 				      sizeof (uint32_t) * (MAILBOX_CMD_WSIZE));
-         		if ((mb->mbxCommand == MBX_DUMP_MEMORY) &&
-				pmbox->context2) {
-				lpfc_memcpy_from_slim((void *)pmbox->context2,
-				      phba->MBslimaddr + DMP_RSP_OFFSET,
-               			      mb->un.varDmp.word_cnt);
+			/* Copy the mailbox extension data */
+			if (pmbox->out_ext_byte_len && pmbox->context2) {
+				lpfc_memcpy_from_slim(pmbox->context2,
+					phba->MBslimaddr +
+					MAILBOX_HBA_EXT_OFFSET,
+					pmbox->out_ext_byte_len);
 			}
 		}
 
@@ -2766,6 +2814,17 @@ lpfc_sli_issue_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		 * can be issued if the link is not up.
 		 */
 		switch (piocb->iocb.ulpCommand) {
+		case CMD_GEN_REQUEST64_CR:
+		case CMD_GEN_REQUEST64_CX:
+			if (!(phba->sli.sliinit.sli_flag & LPFC_MENLO_MAINT) ||
+				(piocb->iocb.un.genreq64.w5.hcsw.Rctl !=
+				FC_FCP_CMND) ||
+				(piocb->iocb.un.genreq64.w5.hcsw.Type !=
+				MENLO_TRANSPORT_TYPE))
+			goto iocb_busy;
+		break;
+
+
 		case CMD_QUE_RING_BUF_CN:
 		case CMD_QUE_RING_BUF64_CN:
 			/*

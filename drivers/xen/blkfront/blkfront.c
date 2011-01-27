@@ -44,6 +44,7 @@
 #include <xen/evtchn.h>
 #include <xen/xenbus.h>
 #include <xen/interface/grant_table.h>
+#include <xen/interface/io/protocols.h>
 #include <xen/gnttab.h>
 #include <asm/hypervisor.h>
 #include <asm/maddr.h>
@@ -91,8 +92,13 @@ static int blkfront_probe(struct xenbus_device *dev,
 	err = xenbus_scanf(XBT_NIL, dev->nodename,
 			   "virtual-device", "%i", &vdevice);
 	if (err != 1) {
-		xenbus_dev_fatal(dev, err, "reading virtual-device");
-		return err;
+		/* go looking in the extended area instead */
+		err = xenbus_scanf(XBT_NIL, dev->nodename,
+				   "virtual-device-ext", "%i", &vdevice);
+		if (err != 1) {
+			xenbus_dev_fatal(dev, err, "reading virtual-device");
+			return err;
+		}
 	}
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -181,6 +187,13 @@ again:
 		goto abort_transaction;
 	}
 
+	err = xenbus_printf(xbt, dev->nodename, "protocol", "%s",
+			    XEN_IO_PROTO_ABI_NATIVE);
+	if (err) {
+		message = "writing protocol";
+		goto abort_transaction;
+	}
+
 	err = xenbus_transaction_end(xbt, 0);
 	if (err) {
 		if (err == -EAGAIN)
@@ -212,7 +225,7 @@ static int setup_blkring(struct xenbus_device *dev,
 
 	info->ring_ref = GRANT_INVALID_REF;
 
-	sring = (blkif_sring_t *)__get_free_page(GFP_KERNEL | __GFP_HIGH);
+	sring = (blkif_sring_t *)__get_free_page(GFP_NOIO | __GFP_HIGH);
 	if (!sring) {
 		xenbus_dev_fatal(dev, -ENOMEM, "allocating shared ring");
 		return -ENOMEM;
@@ -782,7 +795,7 @@ static void blkif_recover(struct blkfront_info *info)
 	int j;
 
 	/* Stage 1: Make a safe copy of the shadow state. */
-	copy = kmalloc(sizeof(info->shadow), GFP_KERNEL | __GFP_NOFAIL | __GFP_HIGH);
+	copy = kmalloc(sizeof(info->shadow), GFP_NOIO | __GFP_NOFAIL | __GFP_HIGH);
 	memcpy(copy, info->shadow, sizeof(info->shadow));
 
 	/* Stage 2: Set up free list. */

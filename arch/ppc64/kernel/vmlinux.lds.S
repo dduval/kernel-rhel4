@@ -1,4 +1,5 @@
 #include <asm-generic/vmlinux.lds.h>
+#include <asm/cache.h>
 
 OUTPUT_ARCH(powerpc:common64)
 jiffies = jiffies_64;
@@ -89,6 +90,7 @@ SECTIONS
 	__initramfs_end = .;
 	}
 
+  . = ALIGN(L1_CACHE_BYTES);
   .data.percpu : {
 	__per_cpu_start = .;
 	*(.data.percpu)

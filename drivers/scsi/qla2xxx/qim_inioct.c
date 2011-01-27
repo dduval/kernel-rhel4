@@ -83,7 +83,6 @@ qim_read_nvram(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	int	ret = 0;
 	char	*ptmp_buf;
 	uint32_t transfer_size;
-	unsigned long flags;
 	struct scsi_qla_host	*dr_ha = ha->dr_data;
 
 
@@ -105,10 +104,8 @@ qim_read_nvram(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 		transfer_size = pext->ResponseLen;
 
 	/* Dump NVRAM. */
-	spin_lock_irqsave(&dr_ha->hardware_lock, flags);
 	qim_read_nvram_data(dr_ha, (uint8_t *)ptmp_buf, dr_ha->nvram_base,
 	    dr_ha->nvram_size);
-	spin_unlock_irqrestore(&dr_ha->hardware_lock, flags);
 
 	ret = copy_to_user(Q64BIT_TO_PTR(pext->ResponseAdr, pext->AddrMode),
 	    ptmp_buf, transfer_size);
@@ -202,7 +199,6 @@ qim_update_nvram(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	nvram_t *pnew_nv;
 	uint32_t transfer_size;
 	int ret = 0;
-	unsigned long flags;
 	struct scsi_qla_host	*dr_ha = ha->dr_data;
 
 
@@ -262,8 +258,6 @@ qim_update_nvram(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	}
 
 	/* Write NVRAM. */
-	spin_lock_irqsave(&dr_ha->hardware_lock, flags);
-
 	if (IS_QLA25XX(dr_ha)) {
 		ret = qim_write_vpd_nv_data(dr_ha, (uint8_t *)pnew_nv,
 		    (dr_ha->nvram_base * 4), transfer_size);
@@ -280,8 +274,6 @@ qim_update_nvram(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 		qim_write_nvram_data(dr_ha, (uint8_t *)pnew_nv, dr_ha->nvram_base,
 		    transfer_size);
 	}
-
-	spin_unlock_irqrestore(&dr_ha->hardware_lock, flags);
 
 	pext->Status       = EXT_STATUS_OK;
 	pext->DetailStatus = EXT_STATUS_OK;
@@ -308,7 +300,6 @@ qim_get_vpd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	uint8_t		*ptmp_buf;
 	uint32_t	data_offset;
 	uint32_t	transfer_size;
-	unsigned long	flags;
 	struct scsi_qla_host	*dr_ha = ha->dr_data;
 
 
@@ -350,9 +341,7 @@ qim_get_vpd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 		data_offset = FA_NVRAM_VPD0_ADDR;
 
 	/* Dump VPD region in NVRAM. */
-	spin_lock_irqsave(&dr_ha->hardware_lock, flags);
 	qim_read_nvram_data(dr_ha, ptmp_buf, data_offset, transfer_size);
-	spin_unlock_irqrestore(&dr_ha->hardware_lock, flags);
 
 	DEBUG9(printk("%s(%ld): inst=%ld offset=%x xfr_size=%d. vpd dump-\n",
 	    __func__, ha->host_no, ha->instance, data_offset, transfer_size);)
@@ -385,7 +374,6 @@ qim_update_vpd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	uint8_t		*usr_tmp, *kernel_tmp, *pnew_nv;
 	uint32_t	data_offset;
 	uint32_t	transfer_size;
-	unsigned long	flags;
 	struct scsi_qla_host	*dr_ha = ha->dr_data;
 
 
@@ -436,8 +424,6 @@ qim_update_vpd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 		data_offset = FA_NVRAM_VPD0_ADDR;
 
 	/* Write NVRAM. */
-	spin_lock_irqsave(&dr_ha->hardware_lock, flags);
-
 	if (IS_QLA25XX(dr_ha)) {
 		ret = qim_write_vpd_nv_data(dr_ha, pnew_nv, (data_offset * 4),
 		    transfer_size);
@@ -453,8 +439,6 @@ qim_update_vpd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
         } else {
 		qim_write_nvram_data(dr_ha, pnew_nv, data_offset, transfer_size);
 	}
-
-	spin_unlock_irqrestore(&dr_ha->hardware_lock, flags);
 
 	pext->Status       = EXT_STATUS_OK;
 	pext->DetailStatus = EXT_STATUS_OK;
@@ -504,6 +488,12 @@ qim_get_option_rom_table(scsi_qla_host_t *ha,
 	case PCI_DEVICE_ID_QLOGIC_ISP8432:
 		*pOptionRomTable = OptionRomTable2422;
 		*OptionRomTableSize = sizeof(OptionRomTable2422);
+		break;
+	case PCI_DEVICE_ID_QLOGIC_ISP2532:
+	case PCI_DEVICE_ID_QLOGIC_ISP2522:
+	case PCI_DEVICE_ID_QLOGIC_ISP2512:
+		*pOptionRomTable = OptionRomTable25XX;
+		*OptionRomTableSize = sizeof(OptionRomTable25XX);
 		break;
 	default: 
 		DEBUG9_10(printk("%s(%ld) Option Rom Table for device_id=0x%x "
@@ -1748,7 +1738,7 @@ qim84xx_update_chip_fw(scsi_qla_host_t *ha,
 
 	DEBUG16(printk("%s(%ld): Dump of Verify CS84XX (FW update) IOCB "
 	    "request \n", __func__, ha->host_no));
-	DEBUG16(qla2x00_dump_buffer((uint8_t *)mn,
+	DEBUG16(qim_dump_buffer((uint8_t *)mn,
 	    sizeof(struct a84_mgmt_request)));
 
 	down(&ha->cs84xx->fw_update_mutex);
@@ -1762,7 +1752,7 @@ qim84xx_update_chip_fw(scsi_qla_host_t *ha,
 
 	DEBUG9_10(printk("%s(%ld): Dump of CS84XX Management "
 	    "response\n", __func__, ha->host_no);
-		qla2x00_dump_buffer((uint8_t *)mn,
+		qim_dump_buffer((uint8_t *)mn,
 			sizeof(struct a84_mgmt_request)););
 
 	DEBUG16(printk("scsi(%ld): ql24xx_verify_CS84XX: "

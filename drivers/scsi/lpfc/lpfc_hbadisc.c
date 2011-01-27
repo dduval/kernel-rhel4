@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hbadisc.c 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_hbadisc.c 3207 2008-09-17 19:49:56Z sf_support $
  */
 
 #include <linux/version.h>
@@ -64,6 +64,7 @@ uint8_t lpfcAlpaArray[] = {
 };
 
 static void lpfc_disc_timeout_handler(struct lpfc_hba *);
+extern void lpfc_check_menlo_cfg(struct lpfc_hba *phba);
 
 void
 lpfc_evt_iocb_free(struct lpfc_hba * phba, struct lpfc_iocbq * saveq)
@@ -835,16 +836,20 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	}
 
 	phba->fc_eventTag = la->eventTag;
+	if (la->mm)
+		phba->sli.sliinit.sli_flag |= LPFC_MENLO_MAINT;
+	else
+		phba->sli.sliinit.sli_flag &= ~LPFC_MENLO_MAINT;
 
-	if (la->attType == AT_LINK_UP) {
+	if ((la->attType == AT_LINK_UP) && !la->mm) {
 		phba->fc_stat.LinkUp++;
 		/* Link Up Event <eventTag> received */
 		lpfc_printf_log(phba, KERN_ERR, LOG_LINK_EVENT,
 				"%d:1303 Link Up Event x%x received "
-				"Data: x%x x%x x%x x%x\n",
+				"Data: x%x x%x x%x x%x x%x x%x\n",
 				phba->brd_no, la->eventTag, phba->fc_eventTag,
 				la->granted_AL_PA, la->UlnkSpeed,
-				phba->alpa_map[0]);
+				phba->alpa_map[0], la->mm, la->fa);
 
 		switch(la->UlnkSpeed) {
 			case LA_1GHZ_LINK:
@@ -934,14 +939,15 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 			lpfc_sli_issue_mbox
 			    (phba, mbox, (MBX_NOWAIT | MBX_STOP_IOCB));
 		}
-	} else {
+	} else if (la->attType == AT_LINK_DOWN) {
 		phba->fc_stat.LinkDown++;
 		/* Link Down Event <eventTag> received */
 		lpfc_printf_log(phba, KERN_ERR, LOG_LINK_EVENT,
 				"%d:1305 Link Down Event x%x received "
-				"Data: x%x x%x x%x\n",
+				"Data: x%x x%x x%x x%x x%x\n",
 				phba->brd_no, la->eventTag, phba->fc_eventTag,
-				phba->hba_state, phba->fc_flag);
+				phba->hba_state, phba->fc_flag,
+				la->mm, la->fa);
 
 		lpfc_linkdown(phba);
 
@@ -952,6 +958,49 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		writel(control, phba->HCregaddr);
 		readl(phba->HCregaddr); /* flush */
 	}
+	if (la->mm && (la->attType == AT_LINK_UP)) {
+		if (phba->hba_state != LPFC_LINK_DOWN) {
+			phba->fc_stat.LinkDown++;
+			/* Link Down Event <eventTag> received */
+			lpfc_printf_log(phba, KERN_ERR, LOG_LINK_EVENT,
+				"%d:1309 Link Down Event x%x received "
+				"Data: x%x x%x x%x\n",
+				phba->brd_no, la->eventTag, phba->fc_eventTag,
+				phba->hba_state, phba->fc_flag);
+
+			lpfc_linkdown(phba);
+
+		}
+		/*
+		 * turn on Link Attention interrupts -
+		 * no CLEAR_LA needed
+		 */
+		psli->sliinit.sli_flag |= LPFC_PROCESS_LA;
+		control = readl(phba->HCregaddr);
+		control |= HC_LAINT_ENA;
+		writel(control, phba->HCregaddr);
+		readl(phba->HCregaddr); /* flush */
+
+		lpfc_printf_log(phba, KERN_ERR, LOG_LINK_EVENT,
+			"1308 Menlo Maint Mode Link up Event x%x rcvd "
+			"Data: x%x \n",
+			la->eventTag, phba->fc_eventTag);
+		/*
+		 * The cmnd that triggered this will be waiting for this
+		 * signal.
+		 * WAKEUP for MENLO_SET_MODE command.
+		 */
+		if ( phba->wait_4_mlo_maint_flg ) {
+			phba->wait_4_mlo_maint_flg = 0;
+			wake_up_interruptible(&phba->wait_4_mlo_m_q);
+		}
+	}
+	if (la->fa ) {
+		lpfc_printf_log(phba, KERN_INFO, LOG_LINK_EVENT,
+				"1311 fa %d\n", la->fa);
+		lpfc_check_menlo_cfg(phba);
+	}
+
 
 	pmb->context1 = NULL;
 	lpfc_mbuf_free(phba, mp->virt, mp->phys);

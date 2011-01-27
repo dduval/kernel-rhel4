@@ -333,7 +333,7 @@ out1:
 	return NULL;
 }
 
-void __init
+void __devinit
 pcibios_fixup_device_resources (struct pci_dev *dev, struct pci_bus *bus)
 {
 	struct pci_controller *controller = PCI_CONTROLLER(dev);

@@ -40,7 +40,7 @@
 #include <asm/io.h>
 
 #define DRV_NAME	"ehea"
-#define DRV_VERSION	"EHEA_0078-03"
+#define DRV_VERSION	"EHEA_0078-08"
 
 /* eHEA capability flags */
 #define DLPAR_PORT_ADD_REM 1
@@ -419,6 +419,7 @@ struct ehea_port {
 	int num_add_tx_qps;
 	int num_mcs;
 	int resets;
+	u64 flags;
 	u64 mac_addr;
 	u32 logical_port_id;
 	u32 port_speed;
@@ -441,6 +442,9 @@ struct port_res_cfg {
 	int max_entries_rq3;
 };
 
+enum ehea_flag_bits {
+	__EHEA_DISABLE_PORT_RESET
+};
 
 void ehea_set_ethtool_ops(struct net_device *netdev);
 int ehea_sense_port_attr(struct ehea_port *port);

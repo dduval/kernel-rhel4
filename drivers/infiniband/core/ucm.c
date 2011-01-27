@@ -29,8 +29,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: ucm.c 4311 2005-12-05 18:42:01Z sean.hefty $
  */
 
 #include <linux/completion.h>
@@ -105,6 +103,9 @@ enum {
 	IB_UCM_BASE_MINOR = 224,
 	IB_UCM_MAX_DEVICES = 32
 };
+
+/* ib_cm and ib_user_cm modules share /sys/class/infiniband_cm */
+extern struct class cm_class;
 
 #define IB_UCM_BASE_DEV MKDEV(IB_UCM_MAJOR, IB_UCM_BASE_MINOR)
 
@@ -1152,6 +1153,14 @@ static unsigned int ib_ucm_poll(struct file *filp,
 	return mask;
 }
 
+/*
+ * ib_ucm_open() does not need the BKL:
+ *
+ *  - no global state is referred to;
+ *  - there is no ioctl method to race against;
+ *  - no further module initialization is required for open to work
+ *    after the device is registered.
+ */
 static int ib_ucm_open(struct inode *inode, struct file *filp)
 {
 	struct ib_ucm_file *file;
@@ -1199,7 +1208,7 @@ static int ib_ucm_close(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static void ib_ucm_release_class_dev(struct class_device *class_dev)
+static void ucm_release_class_dev(struct class_device *class_dev)
 {
 	struct ib_ucm_device *dev;
 
@@ -1218,8 +1227,8 @@ static struct file_operations ucm_fops = {
 };
 
 static struct class ucm_class = {
-	.name    = "infiniband_cm",
-	.release = ib_ucm_release_class_dev
+	.name    = "infiniband_ucm",
+	.release = ucm_release_class_dev
 };
 
 static ssize_t show_ibdev(struct class_device *class_dev, char *buf)
@@ -1306,33 +1315,33 @@ static int __init ib_ucm_init(void)
 				     "infiniband_cm");
 	if (ret) {
 		printk(KERN_ERR "ucm: couldn't register device number\n");
-		goto err;
+		goto error1;
 	}
 
 	ret = class_register(&ucm_class);
 	if (ret) {
 		printk(KERN_ERR "ucm: couldn't create class infiniband_cm\n");
-		goto err_chrdev;
+		goto error2;
 	}
 
 	ret = class_create_file(&ucm_class, &class_attr_abi_version);
 	if (ret) {
 		printk(KERN_ERR "ucm: couldn't create abi_version attribute\n");
-		goto err_class;
+		goto error3;
 	}
 
 	ret = ib_register_client(&ucm_client);
 	if (ret) {
 		printk(KERN_ERR "ucm: couldn't register client\n");
-		goto err_class;
+		goto error3;
 	}
 	return 0;
 
-err_class:
+error3:
 	class_unregister(&ucm_class);
-err_chrdev:
+error2:
 	unregister_chrdev_region(IB_UCM_BASE_DEV, IB_UCM_MAX_DEVICES);
-err:
+error1:
 	return ret;
 }
 

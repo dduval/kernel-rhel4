@@ -16,18 +16,13 @@
 int init_new_context(struct task_struct *tsk, struct mm_struct *mm);
 void destroy_context(struct mm_struct *mm);
 
-#if defined(CONFIG_SMP) && !defined(CONFIG_XEN)
-
 static inline void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 {
+#if defined(CONFIG_SMP) && !defined(CONFIG_XEN)
 	if (read_pda(mmu_state) == TLBSTATE_OK) 
 		write_pda(mmu_state, TLBSTATE_LAZY);
-}
-#else
-static inline void enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
-{
-}
 #endif
+}
 
 #define prepare_arch_switch(prev, next)	__prepare_arch_switch()
 # define finish_arch_switch(rq, next)	spin_unlock_irq(&(rq)->lock)
@@ -75,8 +70,7 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	pml4_t *pml4;
 
 	if (likely(prev != next)) {
-		if (!next->context.pinned)
-			mm_pin(next);
+		BUG_ON(!next->context.pinned);
 
 		/* stop flush ipis for the previous mm */
 		clear_bit(cpu, &prev->cpu_vm_mask);
@@ -131,9 +125,11 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	asm volatile("movl %0,%%fs"::"r"(0));  \
 } while(0)
 
-#define activate_mm(prev, next) do {		\
-	switch_mm((prev),(next),NULL);		\
-} while (0)
-
+static inline void activate_mm(struct mm_struct *prev, struct mm_struct *next)
+{
+	if (!next->context.pinned)
+		mm_pin(next);
+	switch_mm(prev, next, NULL);
+}
 
 #endif

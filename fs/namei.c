@@ -1413,6 +1413,18 @@ int may_open(struct nameidata *nd, int acc_mode, int flag)
 	return 0;
 }
 
+void
+do_lookup_undo(struct nameidata *nd)
+{
+	struct inode *inode = nd->dentry->d_inode;
+	struct inode_operations_ext *ixop;
+
+	if (inode && IS_LOOKUP_UNDO(inode)) {
+		ixop = (struct inode_operations_ext *) inode->i_op;
+		ixop->lookup_undo(nd);
+	}
+}
+
 /*
  *	open_namei()
  *
@@ -1539,6 +1551,7 @@ ok:
 exit_dput:
 	dput(dentry);
 exit:
+	do_lookup_undo(nd);
 	path_release(nd);
 	return error;
 
@@ -1574,8 +1587,10 @@ do_link:
 	dput(dentry);
 	mntput(mnt);
 
-	if (error)
+	if (error) {
+		do_lookup_undo(nd);
 		return error;
+	}
 	nd->flags &= ~LOOKUP_PARENT;
 	if (nd->last_type == LAST_BIND) {
 		dentry = nd->dentry;

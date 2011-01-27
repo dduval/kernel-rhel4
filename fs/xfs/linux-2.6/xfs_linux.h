@@ -246,7 +246,6 @@ static inline void set_buffer_unwritten_io(struct buffer_head *bh)
 #define MIN(a,b)	(min(a,b))
 #define MAX(a,b)	(max(a,b))
 #define howmany(x, y)	(((x)+((y)-1))/(y))
-#define roundup(x, y)	((((x)+((y)-1))/(y))*(y))
 
 #define xfs_stack_trace()	dump_stack()
 

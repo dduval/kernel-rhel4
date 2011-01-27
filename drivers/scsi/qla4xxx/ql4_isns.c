@@ -1327,8 +1327,6 @@ qla4xxx_isns_process_response(scsi_qla_host_t *ha, PASSTHRU_STATUS_ENTRY *sts_en
 	uint32_t pdu_type = IOCB_ISNS_PT_PDU_TYPE(handle);
 	uint8_t status = QLA_SUCCESS;
 
-	ENTER("qla4xxx_passthru_status_entry");
-
 	QL4PRINT(QLP20,
 		 printk("scsi%d: %s isns_flags 0x%lx to=0x%x "
 			"IOCS=0x%02x OutResidual/Len=0x%x/0x%x "
@@ -1426,7 +1424,6 @@ qla4xxx_isns_process_response(scsi_qla_host_t *ha, PASSTHRU_STATUS_ENTRY *sts_en
 	}
 
 	exit_pt_sts:
-	LEAVE("qla4xxx_passthru_status_entry");
 	return(status);
 }
 

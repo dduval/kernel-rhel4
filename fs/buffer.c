@@ -1382,7 +1382,19 @@ __getblk_slow(struct block_device *bdev, sector_t block, int size)
  */
 void fastcall mark_buffer_dirty(struct buffer_head *bh)
 {
-	if (!buffer_dirty(bh) && !test_set_buffer_dirty(bh))
+	/*
+	 * Very *carefully* optimize the it-is-already-dirty case.
+	 *
+	 * Don't let the final "is it dirty" escape to before we
+	 * perhaps modified the buffer.
+	 */
+	if (buffer_dirty(bh)) {
+		smp_mb();
+		if (buffer_dirty(bh))
+			return;
+	}
+
+	if (!test_set_buffer_dirty(bh))
 		__set_page_dirty_nobuffers(bh->b_page);
 }
 
@@ -2212,9 +2224,12 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 			continue;
 
 		if (!buffer_mapped(bh)) {
+			int err = 0;
+
 			fully_mapped = 0;
 			if (iblock < lblock) {
-				if (get_block(inode, iblock, bh, 0))
+				err = get_block(inode, iblock, bh, 0);
+				if (err)
 					SetPageError(page);
 			}
 			if (!buffer_mapped(bh)) {
@@ -2222,7 +2237,8 @@ int block_read_full_page(struct page *page, get_block_t *get_block)
 				memset(kaddr + i * blocksize, 0, blocksize);
 				flush_dcache_page(page);
 				kunmap_atomic(kaddr, KM_USER0);
-				set_buffer_uptodate(bh);
+				if (!err)
+					set_buffer_uptodate(bh);
 				continue;
 			}
 			/*

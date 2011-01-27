@@ -82,7 +82,7 @@ enum {
 	board_ahci_vt8251	= 2,
 	board_ahci_ign_iferr	= 3,
 	board_ahci_sb600	= 4,
-	board_ahci_sb700	= 5,
+	board_ahci_sb700	= 5, /* for SB700 AND SB800 */
 
 	/* global controller registers */
 	HOST_CAP		= 0x00, /* host capabilities */
@@ -372,7 +372,7 @@ static const struct ata_port_info ahci_port_info[] = {
 		.udma_mask	= 0x7f, /* udma0-6 ; FIXME */
 		.port_ops	= &ahci_ops,
 	},	
-	/* board_ahci_sb700 */	
+	/* board_ahci_sb700, for SB700 and SB800 */	
 	{
 		.sht		= &ahci_sht,
 		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY |
@@ -418,6 +418,10 @@ static const struct pci_device_id ahci_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, 0x502b), board_ahci }, /* Tolapai */
 	{ PCI_VDEVICE(INTEL, 0x3a05), board_ahci_pi }, /* ICH10 */
 	{ PCI_VDEVICE(INTEL, 0x3a25), board_ahci_pi }, /* ICH10 */
+	{ PCI_VDEVICE(INTEL, 0x3b24), board_ahci_pi }, /* PCH RAID */
+	{ PCI_VDEVICE(INTEL, 0x3b25), board_ahci_pi }, /* PCH RAID */
+	{ PCI_VDEVICE(INTEL, 0x3b2b), board_ahci_pi }, /* PCH RAID */
+	{ PCI_VDEVICE(INTEL, 0x3b2c), board_ahci_pi }, /* PCH RAID */
 
 	/* JMicron 360/1/3/5/6, match class to avoid IDE function */
 	{ PCI_VENDOR_ID_JMICRON, PCI_ANY_ID, PCI_ANY_ID, PCI_ANY_ID,
@@ -1781,6 +1785,14 @@ static int ahci_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	probe_ent->mmio_base = mmio_base;
 	probe_ent->private_data = hpriv;
 
+	/* SB800 does NOT need the workaround to ignore SERR_INTERNAL */
+	if (board_idx == board_ahci_sb700) {
+		u8 rev = 0;
+		pci_read_config_byte(pdev, PCI_CLASS_REVISION, &rev);
+		if (rev >= 0x40)
+			probe_ent->port_flags &= ~AHCI_FLAG_IGN_SERR_INTERNAL;
+	}
+	
 	if (have_msi)
 		hpriv->flags |= AHCI_FLAG_MSI;
 

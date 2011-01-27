@@ -192,11 +192,11 @@ static void mark_offset_tsc_hpet(void)
 
 	/* lost tick compensation */
 	offset = hpet_readl(HPET_T0_CMP) - hpet_tick;
-	if (unlikely(((offset - hpet_last) > hpet_tick) && (hpet_last != 0))) {
-		int lost_ticks = (offset - hpet_last) / hpet_tick;
+	if (unlikely(((offset - hpet_last) >= hpet_tick) && (hpet_last != 0))) {
+		int lost_ticks = ((offset - hpet_last) / hpet_tick) - 1;
 		jiffies_64 += lost_ticks;
 	}
-	hpet_last = hpet_current;
+	hpet_last = offset;
 
 	/* update the monotonic base value */
 	this_offset = ((unsigned long long)last_tsc_high<<32)|last_tsc_low;
@@ -393,8 +393,8 @@ static void mark_offset_tsc(void)
 		delta = edx;
 	}
 	delta += delay_at_last_interrupt;
-	lost = delta/(1000000/HZ);
-	delay = delta%(1000000/HZ);
+	lost = delta/(1000000/REAL_HZ);
+	delay = delta%(1000000/REAL_HZ);
 	if (lost >= 2) {
 		jiffies_64 += lost-1;
 

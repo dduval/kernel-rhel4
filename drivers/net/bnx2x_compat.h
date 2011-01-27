@@ -36,6 +36,7 @@ typedef int __bitwise pci_power_t;
 
 #define IRQF_SHARED			SA_SHIRQ
 
+#define KERN_CONT			""
 
 #define ADVERTISED_Pause		(1 << 13)
 #define ADVERTISED_Asym_Pause		(1 << 14)

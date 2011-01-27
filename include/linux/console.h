@@ -115,7 +115,7 @@ extern int is_console_locked(void);
 
 /* Some debug stub to catch some of the obvious races in the VT code */
 #if 1
-#define WARN_CONSOLE_UNLOCKED()	WARN_ON(!is_console_locked() && !oops_in_progress)
+#define WARN_CONSOLE_UNLOCKED() WARN_ON((!is_console_locked() && !oops_in_progress) && !crashdump_mode())
 #else
 #define WARN_CONSOLE_UNLOCKED()
 #endif

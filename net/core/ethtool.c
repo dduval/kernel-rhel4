@@ -29,7 +29,7 @@ u32 ethtool_op_get_link(struct net_device *dev)
 
 u32 ethtool_op_get_tx_csum(struct net_device *dev)
 {
-	return (dev->features & NETIF_F_IP_CSUM) != 0;
+	return (dev->features & (NETIF_F_IP_CSUM | NETIF_F_HW_CSUM)) != 0;
 }
 
 int ethtool_op_set_tx_csum(struct net_device *dev, u32 data)
@@ -357,7 +357,7 @@ static int ethtool_set_coalesce(struct net_device *dev, void __user *useraddr)
 {
 	struct ethtool_coalesce coalesce;
 
-	if (!dev->ethtool_ops->get_coalesce)
+	if (!dev->ethtool_ops->set_coalesce)
 		return -EOPNOTSUPP;
 
 	if (copy_from_user(&coalesce, useraddr, sizeof(coalesce)))
@@ -465,12 +465,19 @@ static int ethtool_get_tx_csum(struct net_device *dev, char __user *useraddr)
 static int ethtool_set_tx_csum(struct net_device *dev, char __user *useraddr)
 {
 	struct ethtool_value edata;
+	int err;
 
 	if (!dev->ethtool_ops->set_tx_csum)
 		return -EOPNOTSUPP;
 
 	if (copy_from_user(&edata, useraddr, sizeof(edata)))
 		return -EFAULT;
+
+	if (!edata.data && dev->ethtool_ops->set_sg) {
+		err = dev->ethtool_ops->set_sg(dev, 0);
+		if (err)
+			return err;
+	}
 
 	return dev->ethtool_ops->set_tx_csum(dev, edata.data);
 }
@@ -498,6 +505,12 @@ static int ethtool_set_sg(struct net_device *dev, char __user *useraddr)
 
 	if (copy_from_user(&edata, useraddr, sizeof(edata)))
 		return -EFAULT;
+
+	if (edata.data &&
+		!(dev->features & (NETIF_F_IP_CSUM |
+				   NETIF_F_NO_CSUM |
+				   NETIF_F_HW_CSUM)))
+		return -EINVAL;
 
 	return dev->ethtool_ops->set_sg(dev, edata.data);
 }

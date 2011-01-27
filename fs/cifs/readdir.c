@@ -173,6 +173,7 @@ static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 	__u32 attr;
 	__u64 allocation_size;
 	__u64 end_of_file;
+	umode_t default_mode;
 
 	/* save mtime and size */
 	local_mtime = tmp_inode->i_mtime;
@@ -222,49 +223,55 @@ static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 	if (atomic_read(&cifsInfo->inUse) == 0) {
 		tmp_inode->i_uid = cifs_sb->mnt_uid;
 		tmp_inode->i_gid = cifs_sb->mnt_gid;
-		/* set default mode. will override for dirs below */
-		tmp_inode->i_mode = cifs_sb->mnt_file_mode;
-	} else {
-		/* mask off the type bits since it gets set
-		below and we do not want to get two type
-		bits set */
+	}
+
+	if (attr & ATTR_DIRECTORY)
+		default_mode = cifs_sb->mnt_dir_mode;
+	else
+		default_mode = cifs_sb->mnt_file_mode;
+
+	/* set initial permissions */
+	if ((atomic_read(&cifsInfo->inUse) == 0) ||
+	    (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DYNPERM) == 0)
+		tmp_inode->i_mode = default_mode;
+	else {
+		/* just reenable write bits if !ATTR_READONLY */
+		if ((tmp_inode->i_mode & S_IWUGO) == 0 &&
+		    (attr & ATTR_READONLY) == 0)
+			tmp_inode->i_mode |= (S_IWUGO & default_mode);
+
 		tmp_inode->i_mode &= ~S_IFMT;
 	}
 
-	if (attr & ATTR_DIRECTORY) {
-		*pobject_type = DT_DIR;
-		/* override default perms since we do not lock dirs */
-		if (atomic_read(&cifsInfo->inUse) == 0) {
-			tmp_inode->i_mode = cifs_sb->mnt_dir_mode;
+	/* clear write bits if ATTR_READONLY is set */
+	if (attr & ATTR_READONLY) {
+		tmp_inode->i_mode &= ~S_IWUGO;
 		}
-		tmp_inode->i_mode |= S_IFDIR;
-	} else if ((cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL) &&
-		   (attr & ATTR_SYSTEM)) {
+
+	/* set inode type */
+	if ((attr & ATTR_SYSTEM) &&
+	    (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_UNX_EMUL)) {
 		if (end_of_file == 0)  {
-			*pobject_type = DT_FIFO;
 			tmp_inode->i_mode |= S_IFIFO;
+			*pobject_type = DT_FIFO;
 		} else {
-			/* rather than get the type here, we mark the
-			inode as needing revalidate and get the real type
-			(blk vs chr vs. symlink) later ie in lookup */
-			*pobject_type = DT_REG;
+			/*
+			 * trying to get the type can be slow, so just call
+			 * this a regular file for now, and mark for reval
+			 */
 			tmp_inode->i_mode |= S_IFREG;
+			*pobject_type = DT_REG;
 			cifsInfo->time = 0;
 		}
-/* we no longer mark these because we could not follow them */
-/*        } else if (attr & ATTR_REPARSE) {
-		*pobject_type = DT_LNK;
-		tmp_inode->i_mode |= S_IFLNK; */
 	} else {
-		*pobject_type = DT_REG;
-		tmp_inode->i_mode |= S_IFREG;
-		if (attr & ATTR_READONLY)
-			tmp_inode->i_mode &= ~(S_IWUGO);
-		else if ((tmp_inode->i_mode & S_IWUGO) == 0)
-			/* the ATTR_READONLY flag may have been changed on   */
-			/* server -- set any w bits allowed by mnt_file_mode */
-			tmp_inode->i_mode |= (S_IWUGO & cifs_sb->mnt_file_mode);
-	} /* could add code here - to validate if device or weird share type? */
+		if (attr & ATTR_DIRECTORY) {
+			tmp_inode->i_mode |= S_IFDIR;
+			*pobject_type = DT_DIR;
+		} else {
+			tmp_inode->i_mode |= S_IFREG;
+			*pobject_type = DT_REG;
+		}
+	}
 
 	/* can not fill in nlink here as in qpathinfo version and Unx search */
 	if (atomic_read(&cifsInfo->inUse) == 0) {
@@ -691,6 +698,70 @@ static int is_dir_changed(struct file *file)
 
 }
 
+static int cifs_save_resume_key(const char *current_entry,
+	struct cifsFileInfo *cifsFile)
+{
+	int rc = 0;
+	unsigned int len = 0;
+	__u16 level;
+	char *filename;
+
+	if ((cifsFile == NULL) || (current_entry == NULL))
+		return -EINVAL;
+
+	level = cifsFile->srch_inf.info_level;
+
+	if (level == SMB_FIND_FILE_UNIX) {
+		FILE_UNIX_INFO *pFindData = (FILE_UNIX_INFO *)current_entry;
+
+		filename = &pFindData->FileName[0];
+		if (cifsFile->srch_inf.unicode) {
+			len = cifs_unicode_bytelen(filename);
+		} else {
+			/* BB should we make this strnlen of PATH_MAX? */
+			len = strnlen(filename, PATH_MAX);
+		}
+		cifsFile->srch_inf.resume_key = pFindData->ResumeKey;
+	} else if (level == SMB_FIND_FILE_DIRECTORY_INFO) {
+		FILE_DIRECTORY_INFO *pFindData =
+			(FILE_DIRECTORY_INFO *)current_entry;
+		filename = &pFindData->FileName[0];
+		len = le32_to_cpu(pFindData->FileNameLength);
+		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
+	} else if (level == SMB_FIND_FILE_FULL_DIRECTORY_INFO) {
+		FILE_FULL_DIRECTORY_INFO *pFindData =
+			(FILE_FULL_DIRECTORY_INFO *)current_entry;
+		filename = &pFindData->FileName[0];
+		len = le32_to_cpu(pFindData->FileNameLength);
+		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
+	} else if (level == SMB_FIND_FILE_ID_FULL_DIR_INFO) {
+		SEARCH_ID_FULL_DIR_INFO *pFindData =
+			(SEARCH_ID_FULL_DIR_INFO *)current_entry;
+		filename = &pFindData->FileName[0];
+		len = le32_to_cpu(pFindData->FileNameLength);
+		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
+	} else if (level == SMB_FIND_FILE_BOTH_DIRECTORY_INFO) {
+		FILE_BOTH_DIRECTORY_INFO *pFindData =
+			(FILE_BOTH_DIRECTORY_INFO *)current_entry;
+		filename = &pFindData->FileName[0];
+		len = le32_to_cpu(pFindData->FileNameLength);
+		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
+	} else if (level == SMB_FIND_FILE_INFO_STANDARD) {
+		FIND_FILE_STANDARD_INFO *pFindData =
+			(FIND_FILE_STANDARD_INFO *)current_entry;
+		filename = &pFindData->FileName[0];
+		/* one byte length, no name conversion */
+		len = (unsigned int)pFindData->FileNameLength;
+		cifsFile->srch_inf.resume_key = pFindData->ResumeKey;
+	} else {
+		cFYI(1, ("Unknown findfirst level %d", level));
+		return -EINVAL;
+	}
+	cifsFile->srch_inf.resume_name_len = len;
+	cifsFile->srch_inf.presume_name = filename;
+	return rc;
+}
+
 /* find the corresponding entry in the search */
 /* Note that the SMB server returns search entries for . and .. which
    complicates logic here if we choose to parse for them and we do not
@@ -730,10 +801,14 @@ static int find_cifs_entry(const int xid, struct cifsTconInfo *pTcon,
 	   (index_to_find < first_entry_in_buffer)) {
 		/* close and restart search */
 		cFYI(1, ("search backing up - close and restart search"));
-		cifsFile->invalidHandle = TRUE;
-		CIFSFindClose(xid, pTcon, cifsFile->netfid);
-		kfree(cifsFile->search_resume_name);
-		cifsFile->search_resume_name = NULL;
+		write_lock(&GlobalSMBSeslock);
+		if (!cifsFile->srch_inf.endOfSearch &&
+		    !cifsFile->invalidHandle) {
+			cifsFile->invalidHandle = TRUE;
+			write_unlock(&GlobalSMBSeslock);
+			CIFSFindClose(xid, pTcon, cifsFile->netfid);
+		} else
+			write_unlock(&GlobalSMBSeslock);
 		if (cifsFile->srch_inf.ntwrk_buf_start) {
 			cFYI(1, ("freeing SMB ff cache buf on search rewind"));
 			if (cifsFile->srch_inf.smallBuf)
@@ -742,6 +817,7 @@ static int find_cifs_entry(const int xid, struct cifsTconInfo *pTcon,
 			else
 				cifs_buf_release(cifsFile->srch_inf.
 						ntwrk_buf_start);
+			cifsFile->srch_inf.ntwrk_buf_start = NULL;
 		}
 		rc = initiate_cifs_search(xid, file);
 		if (rc) {
@@ -749,6 +825,7 @@ static int find_cifs_entry(const int xid, struct cifsTconInfo *pTcon,
 				 rc));
 			return rc;
 		}
+		cifs_save_resume_key(cifsFile->srch_inf.last_entry, cifsFile);
 	}
 
 	while ((index_to_find >= cifsFile->srch_inf.index_of_last_entry) &&
@@ -756,6 +833,7 @@ static int find_cifs_entry(const int xid, struct cifsTconInfo *pTcon,
 		cFYI(1, ("calling findnext2"));
 		rc = CIFSFindNext(xid, pTcon, cifsFile->netfid,
 				  &cifsFile->srch_inf);
+		cifs_save_resume_key(cifsFile->srch_inf.last_entry, cifsFile);
 		if (rc)
 			return -ENOENT;
 	}
@@ -974,70 +1052,6 @@ static int cifs_filldir(char *pfindEntry, struct file *file,
 	return rc;
 }
 
-static int cifs_save_resume_key(const char *current_entry,
-	struct cifsFileInfo *cifsFile)
-{
-	int rc = 0;
-	unsigned int len = 0;
-	__u16 level;
-	char *filename;
-
-	if ((cifsFile == NULL) || (current_entry == NULL))
-		return -EINVAL;
-
-	level = cifsFile->srch_inf.info_level;
-
-	if (level == SMB_FIND_FILE_UNIX) {
-		FILE_UNIX_INFO * pFindData = (FILE_UNIX_INFO *)current_entry;
-
-		filename = &pFindData->FileName[0];
-		if (cifsFile->srch_inf.unicode) {
-			len = cifs_unicode_bytelen(filename);
-		} else {
-			/* BB should we make this strnlen of PATH_MAX? */
-			len = strnlen(filename, PATH_MAX);
-		}
-		cifsFile->srch_inf.resume_key = pFindData->ResumeKey;
-	} else if (level == SMB_FIND_FILE_DIRECTORY_INFO) {
-		FILE_DIRECTORY_INFO *pFindData =
-			(FILE_DIRECTORY_INFO *)current_entry;
-		filename = &pFindData->FileName[0];
-		len = le32_to_cpu(pFindData->FileNameLength);
-		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
-	} else if (level == SMB_FIND_FILE_FULL_DIRECTORY_INFO) {
-		FILE_FULL_DIRECTORY_INFO *pFindData =
-			(FILE_FULL_DIRECTORY_INFO *)current_entry;
-		filename = &pFindData->FileName[0];
-		len = le32_to_cpu(pFindData->FileNameLength);
-		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
-	} else if (level == SMB_FIND_FILE_ID_FULL_DIR_INFO) {
-		SEARCH_ID_FULL_DIR_INFO *pFindData =
-			(SEARCH_ID_FULL_DIR_INFO *)current_entry;
-		filename = &pFindData->FileName[0];
-		len = le32_to_cpu(pFindData->FileNameLength);
-		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
-	} else if (level == SMB_FIND_FILE_BOTH_DIRECTORY_INFO) {
-		FILE_BOTH_DIRECTORY_INFO *pFindData =
-			(FILE_BOTH_DIRECTORY_INFO *)current_entry;
-		filename = &pFindData->FileName[0];
-		len = le32_to_cpu(pFindData->FileNameLength);
-		cifsFile->srch_inf.resume_key = pFindData->FileIndex;
-	} else if (level == SMB_FIND_FILE_INFO_STANDARD) {
-		FIND_FILE_STANDARD_INFO *pFindData =
-			(FIND_FILE_STANDARD_INFO *)current_entry;
-		filename = &pFindData->FileName[0];
-		/* one byte length, no name conversion */
-		len = (unsigned int)pFindData->FileNameLength;
-		cifsFile->srch_inf.resume_key = pFindData->ResumeKey;
-	} else {
-		cFYI(1, ("Unknown findfirst level %d", level));
-		return -EINVAL;
-	}
-	cifsFile->srch_inf.resume_name_len = len;
-	cifsFile->srch_inf.presume_name = filename;
-	return rc;
-}
-
 int cifs_readdir(struct file *file, void *direntry, filldir_t filldir)
 {
 	int rc = 0;
@@ -1124,9 +1138,7 @@ int cifs_readdir(struct file *file, void *direntry, filldir_t filldir)
 		} /* else {
 			cifsFile->invalidHandle = TRUE;
 			CIFSFindClose(xid, pTcon, cifsFile->netfid);
-		}
-		kfree(cifsFile->search_resume_name);
-		cifsFile->search_resume_name = NULL; */
+		} */
 
 		rc = find_cifs_entry(xid, pTcon, file,
 				&current_entry, &num_to_fill);

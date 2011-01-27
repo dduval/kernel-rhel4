@@ -274,7 +274,7 @@ int ipv6_setsockopt(struct sock *sk, int level, int optname,
 		msg.msg_controllen = optlen;
 		msg.msg_control = (void*)(opt+1);
 
-		retv = datagram_send_ctl(&msg, &fl, opt, &junk);
+		retv = datagram_send_ctl(&msg, &fl, opt, &junk, &junk);
 		if (retv)
 			goto done;
 update:
@@ -513,6 +513,18 @@ done:
 		retv = xfrm_user_policy(sk, optname, optval, optlen);
 		break;
 
+	case IPV6_TCLASS:
+		if (val < -1 || val > 0xff)
+			goto e_inval;
+		np->tclass = val;
+		retv = 0;
+		break;
+
+	case IPV6_RECVTCLASS:
+		np->rxtclass = valbool;
+		retv = 0;
+		break;
+
 #ifdef CONFIG_NETFILTER
 	default:
 		retv = nf_setsockopt(sk, PF_INET6, optname, optval, 
@@ -645,6 +657,16 @@ int ipv6_getsockopt(struct sock *sk, int level, int optname,
 
 	case IPV6_DSTOPTS:
 		val = np->rxopt.bits.dstopts;
+		break;
+
+	case IPV6_TCLASS:
+		val = np->tclass;
+		if (val < 0)
+			val = 0;
+		break;
+
+	case IPV6_RECVTCLASS:
+		val = np->rxtclass;
 		break;
 
 	case IPV6_FLOWINFO:

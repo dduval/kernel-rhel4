@@ -628,7 +628,7 @@ call_allocate(struct rpc_task *task)
 
 	if (rpc_malloc(task, bufsiz << 1) != NULL)
 		return;
-	printk(KERN_INFO "RPC: buffer allocation failed for task %p\n", task); 
+	dprintk("RPC: buffer allocation failed for task %p\n", task); 
 
 	if (RPC_IS_ASYNC(task) || !signalled()) {
 		xprt_release(task);

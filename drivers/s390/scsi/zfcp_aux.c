@@ -12,6 +12,7 @@
  *            Wolfgang Taphorn
  *            Stefan Bader <stefan.bader@de.ibm.com>
  *            Heiko Carstens <heiko.carstens@de.ibm.com>
+ *            Andreas Herrmann <aherrman@de.ibm.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,7 +30,7 @@
  */
 
 /* this drivers version (do not edit !!! generated and updated by cvs) */
-#define ZFCP_AUX_REVISION "$Revision: 1.129 $"
+#define ZFCP_AUX_REVISION "$Revision: 1.135 $"
 
 #include "zfcp_ext.h"
 
@@ -80,6 +81,7 @@ static struct miscdevice zfcp_cfdc_misc = {
 module_init(zfcp_module_init);
 
 MODULE_AUTHOR("Heiko Carstens <heiko.carstens@de.ibm.com>, "
+	      "Andreas Herrman <aherrman@de.ibm.com>, "
 	      "Martin Peschke <mpeschke@de.ibm.com>, "
 	      "Raimund Schroeder <raimund.schroeder@de.ibm.com>, "
 	      "Wolfgang Taphorn <taphorn@de.ibm.com>, "
@@ -89,10 +91,10 @@ MODULE_DESCRIPTION
     ("FCP (SCSI over Fibre Channel) HBA driver for IBM eServer zSeries");
 MODULE_LICENSE("GPL");
 
-module_param(device, charp, 0);
+module_param(device, charp, 0400);
 MODULE_PARM_DESC(device, "specify initial device");
 
-module_param(loglevel, uint, 0);
+module_param(loglevel, uint, 0400);
 MODULE_PARM_DESC(loglevel,
 		 "log levels, 8 nibbles: "
 		 "FC ERP QDIO CIO Config FSF SCSI Other, "
@@ -504,19 +506,10 @@ zfcp_cfdc_dev_ioctl(struct inode *inode, struct file *file,
 		}
 	}
 
-	retval = zfcp_fsf_control_file(
-		adapter, &fsf_req, fsf_command, option, sg_list);
-	if (retval == -EOPNOTSUPP) {
-		ZFCP_LOG_INFO("adapter does not support cfdc\n");
+	retval = zfcp_fsf_control_file(adapter, &fsf_req, fsf_command,
+				       option, sg_list);
+	if (retval)
 		goto out;
-	} else if (retval != 0) {
-		ZFCP_LOG_INFO("initiation of cfdc up/download failed\n");
-		retval = -EPERM;
-		goto out;
-	}
-
-	wait_event(fsf_req->completion_wq,
-	           fsf_req->status & ZFCP_STATUS_FSFREQ_COMPLETED);
 
 	if ((fsf_req->qtcb->prefix.prot_status != FSF_PROT_GOOD) &&
 	    (fsf_req->qtcb->prefix.prot_status != FSF_PROT_FSF_STATUS_PRESENTED)) {
@@ -603,13 +596,13 @@ zfcp_sg_list_alloc(struct zfcp_sg_list *sg_list, size_t size)
 		sg->length = min(size, PAGE_SIZE);
 		sg->offset = 0;
 		address = (void *) get_zeroed_page(GFP_KERNEL);
-		zfcp_address_to_sg(address, sg);
-		if (sg->page == NULL) {
+		if (address == NULL) {
 			sg_list->count = i;
 			zfcp_sg_list_free(sg_list);
 			retval = -ENOMEM;
 			goto out;
 		}
+		zfcp_address_to_sg(address, sg);
 		size -= sg->length;
 	}
 
@@ -634,7 +627,7 @@ zfcp_sg_list_free(struct zfcp_sg_list *sg_list)
 	BUG_ON(sg_list == NULL);
 
 	for (i = 0, sg = sg_list->sg; i < sg_list->count; i++, sg++)
-		__free_pages(sg->page, 0);
+		free_page((unsigned long) zfcp_sg_to_address(sg));
 
 	sg_list->count = 0;
 	kfree(sg_list->sg);

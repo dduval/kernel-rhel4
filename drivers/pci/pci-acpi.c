@@ -126,6 +126,9 @@ acpi_run_osc (
 			"Evaluate _OSC Set fails. Status = 0x%04x\n", status);
 		return status;
 	}
+	if (!output.length)
+		return AE_NULL_OBJECT;
+
 	out_obj = output.pointer;
 	if (out_obj->type != ACPI_TYPE_BUFFER) {
 		printk(KERN_DEBUG  

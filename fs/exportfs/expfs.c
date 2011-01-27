@@ -220,7 +220,7 @@ find_exported_dentry(struct super_block *sb, void *obj, void *parent,
 			if (npd == pd)
 				noprogress = 0;
 			else
-				printk("find_exported_dentry: npd != pd\n");
+				dprintk("find_exported_dentry: npd != pd\n");
 			dput(npd);
 			dput(ppd);
 			if (IS_ROOT(pd)) {

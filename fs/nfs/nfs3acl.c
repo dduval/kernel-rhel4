@@ -218,6 +218,7 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 		return NULL;
 
 	dprintk("NFS call getacl\n");
+	nfs_fattr_init(&fattr);
 	status = rpc_call(server->client_acl, ACLPROC3_GETACL,
 			  &args, &res, 0);
 	dprintk("NFS reply getacl: %d\n", status);
@@ -305,6 +306,7 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 	}
 
 	dprintk("NFS call setacl\n");
+	nfs_fattr_init(&fattr);
 	nfs_begin_data_update(inode);
 	status = rpc_call(server->client_acl, ACLPROC3_SETACL,
 			  &args, &fattr, 0);

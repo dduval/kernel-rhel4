@@ -897,6 +897,15 @@ config NI65
 	  <file:Documentation/networking/net-modules.txt>. The module
 	  will be called ni65.
 
+config IGB_LRO 
+	bool "Use software LRO"
+	depends on IGB && INET
+	select INET_LRO
+	---help---
+	  Say Y here if you want to use large receive offload. 
+
+	  If in doubt, say N.
+
 source "drivers/net/tulip/Kconfig"
 
 config AT1700
@@ -1350,6 +1359,22 @@ config FORCEDETH
 	  <file:Documentation/networking/net-modules.txt>.  The module will be
 	  called forcedeth.
 
+config FORCEDETH_NAPI
+	bool "Use Rx and Tx Polling (NAPI) (EXPERIMENTAL)"
+	depends on FORCEDETH && EXPERIMENTAL
+	help
+	  NAPI is a new driver API designed to reduce CPU and interrupt load
+	  when the driver is receiving lots of packets from the card. It is
+	  still somewhat experimental and thus not yet enabled by default.
+
+	  If your estimated Rx load is 10kpps or more, or if the card will be
+	  deployed on potentially unfriendly networks (e.g. in a firewall),
+	  then say Y here.
+
+	  See <file:Documentation/networking/NAPI_HOWTO.txt> for more
+	  information.
+
+	  If in doubt, say N.
 
 config CS89x0
 	tristate "CS89x0 support"
@@ -2077,23 +2102,6 @@ config R8169
 	  To compile this driver as a module, choose M here: the module
 	  will be called r8169.  This is recommended.
 
-config R8169_NAPI
-	bool "Use Rx and Tx Polling (NAPI) (EXPERIMENTAL)"
-	depends on R8169 && EXPERIMENTAL
-	help
-	  NAPI is a new driver API designed to reduce CPU and interrupt load
-	  when the driver is receiving lots of packets from the card. It is
-	  still somewhat experimental and thus not yet enabled by default.
-
-	  If your estimated Rx load is 10kpps or more, or if the card will be
-	  deployed on potentially unfriendly networks (e.g. in a firewall),
-	  then say Y here.
-
-	  See <file:Documentation/networking/NAPI_HOWTO.txt> for more
-	  information.
-
-	  If in doubt, say N.
-
 config SKGE
 	tristate "New SysKonnect GigaEthernet support (EXPERIMENTAL)"
 	depends on PCI && EXPERIMENTAL
@@ -2352,6 +2360,7 @@ config IXGB_NAPI
 config CHELSIO_T3
         tristate "Chelsio Communications T3 10Gb Ethernet support"
         depends on PCI
+        select INET_LRO
         help
           This driver supports Chelsio T3-based gigabit and 10Gb Ethernet
           adapters.
@@ -2415,6 +2424,15 @@ config BNX2X
 	  This driver supports Broadcom NetXtremeII 10 gigabit Ethernet cards.
 	  To compile this driver as a module, choose M here: the module
 	  will be called bnx2x.  This is recommended.
+
+config MLX4_EN
+	tristate "Mellanox Technologies 10Gbit Ethernet support"
+	depends on PCI && INET
+	select MLX4_CORE
+	select INET_LRO
+	help
+	  This driver supports Mellanox Technologies ConnectX Ethernet
+	  devices.
 
 config MLX4_CORE
 	tristate
@@ -2826,3 +2844,9 @@ config NETDUMP
 	Enable this option if you have a netdump server and you would like
 	to collect kernel crash dumps.
 
+config VIRTIO_NET
+        tristate "Virtio network driver (EXPERIMENTAL)"
+        depends on EXPERIMENTAL && VIRTIO
+        ---help---
+          This is the virtual network driver for virtio.  It can be used with
+          lguest or QEMU based VMMs (like KVM or Xen).  Say Y or M.

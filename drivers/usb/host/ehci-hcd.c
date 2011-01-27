@@ -459,6 +459,8 @@ static int ehci_start (struct usb_hcd *hcd)
 	 */
 	if (hcd->self.controller->bus == &pci_bus_type) {
 		struct pci_dev		*pdev;
+		struct pci_dev		*p_smbus;
+		u8			rev;
 
 		pdev = to_pci_dev(hcd->self.controller);
 
@@ -478,6 +480,30 @@ static int ehci_start (struct usb_hcd *hcd)
 					ehci_warn (ehci, "can't enable NVidia "
 						"workaround for >2GB RAM\n");
 				break;
+			}
+			break;
+		case PCI_VENDOR_ID_ATI:
+			/* SB600 and old version of SB700 have a bug in EHCI controller,
+			 * which causes usb devices lose response in some cases.
+			 */
+			if ((pdev->device == 0x4386) || (pdev->device == 0x4396)) {
+				p_smbus = pci_get_device(PCI_VENDOR_ID_ATI,
+						 PCI_DEVICE_ID_ATI_SBX00_SMBUS,
+						 NULL);
+				if (!p_smbus)
+					break;
+				pci_read_config_byte(p_smbus, PCI_REVISION_ID,
+						     &rev);
+				if ((pdev->device == 0x4386) ||
+				    (rev == 0x3a) || (rev == 0x3b)) {
+					u8 tmp;
+					ehci_info(ehci,
+						"applying AMD SB600/SB700 USB "
+						"freeze workaround\n");
+					pci_read_config_byte(pdev, 0x53, &tmp);
+					pci_write_config_byte(pdev, 0x53, tmp | (1<<3));
+				}
+				pci_dev_put(p_smbus);
 			}
 			break;
 		}
@@ -1146,7 +1172,7 @@ static const struct hc_driver ehci_driver = {
 	 * memory lifecycle (except per-request)
 	 */
 	.hcd_alloc =		ehci_hcd_alloc,
-	.hcd_free =		ehci_hcd_free,
+	.hcd_free =		NULL,
 
 	/*
 	 * managing i/o requests and associated device resources

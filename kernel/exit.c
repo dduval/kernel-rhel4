@@ -839,6 +839,8 @@ asmlinkage NORET_TYPE void do_exit(long code)
 				preempt_count());
 
 	group_dead = atomic_dec_and_test(&tsk->signal->live);
+	if (group_dead)
+		exit_itimers(tsk->signal);
 	acct_process(code);
 
 	if (current->tux_info) {
@@ -984,7 +986,7 @@ static int eligible_child(pid_t pid, int options, task_t *p)
 	 * Do not consider thread group leaders that are
 	 * in a non-empty thread group:
 	 */
-	if (current->tgid != p->tgid && delay_group_leader(p))
+	if (delay_group_leader(p))
 		return 2;
 
 	if (security_task_wait(p))

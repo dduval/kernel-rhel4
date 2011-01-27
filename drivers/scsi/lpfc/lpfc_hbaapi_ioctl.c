@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hbaapi_ioctl.c 2894 2006-03-28 16:47:45Z sf_support $
+ * $Id: lpfc_hbaapi_ioctl.c 3194 2008-09-05 15:28:23Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -226,7 +226,7 @@ lpfc_ioctl_hba_adapterattributes(struct lpfc_hba * phba,
 	ha->NumberOfPorts = 1;
 	ha->VendorSpecificID = 
 	    ((((uint32_t) pdev->device) << 16) | (uint32_t) (pdev->vendor));
-	memcpy(ha->DriverVersion, LPFC_DRIVER_VERSION, 16);
+	memcpy(ha->DriverVersion, LPFC_DRIVER_VERSION, DFC_DRVID_STR_SZ);
 	lpfc_decode_firmware_rev(phba, fwrev, 1);
 	memcpy(ha->FirmwareVersion, fwrev, 32);
 	memcpy((uint8_t *) & ha->NodeWWN,
@@ -296,6 +296,9 @@ lpfc_ioctl_hba_portattributes(struct lpfc_hba * phba,
 		break;
 		case LA_4GHZ_LINK:
 			hp->PortSpeed = HBA_PORTSPEED_4GBIT;
+		break;
+		case LA_8GHZ_LINK:
+			hp->PortSpeed = HBA_PORTSPEED_8GBIT;
 		break;
 		default:
 			hp->PortSpeed = HBA_PORTSPEED_UNKNOWN;
@@ -384,7 +387,6 @@ lpfc_ioctl_hba_portattributes(struct lpfc_hba * phba,
 	    (uint32_t) hsp->cmn.bbRcvSizeLsb;
 
 	hp->PortSupportedFc4Types.bits[2] = 0x1;
-	hp->PortSupportedFc4Types.bits[3] = 0x20;
 	hp->PortSupportedFc4Types.bits[7] = 0x1;
 	hp->PortActiveFc4Types.bits[2] = 0x1;
 	hp->PortActiveFc4Types.bits[7] = 0x1;
@@ -831,7 +833,7 @@ lpfc_ioctl_hba_rnid(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 	for (i0 = 0;
 	     i0 < 10 && (pndl->nlp_flag & NLP_ELS_SND_MASK) == NLP_RNID_SND;
 	     i0++) {
-		mdelay(1000);
+		msleep(1000);
 	}
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 

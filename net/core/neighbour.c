@@ -174,38 +174,9 @@ static void pneigh_queue_purge(struct sk_buff_head *list)
 	}
 }
 
-void neigh_changeaddr(struct neigh_table *tbl, struct net_device *dev)
+static void neigh_flush_dev(struct neigh_table *tbl, struct net_device *dev)
 {
 	int i;
-
-	write_lock_bh(&tbl->lock);
-
-	for (i=0; i <= tbl->hash_mask; i++) {
-		struct neighbour *n, **np;
-
-		np = &tbl->hash_buckets[i];
-		while ((n = *np) != NULL) {
-			if (dev && n->dev != dev) {
-				np = &n->next;
-				continue;
-			}
-			*np = n->next;
-			write_lock_bh(&n->lock);
-			n->dead = 1;
-			neigh_del_timer(n);
-			write_unlock_bh(&n->lock);
-			neigh_release(n);
-		}
-	}
-
-        write_unlock_bh(&tbl->lock);
-}
-
-int neigh_ifdown(struct neigh_table *tbl, struct net_device *dev)
-{
-	int i;
-
-	write_lock_bh(&tbl->lock);
 
 	for (i = 0; i <= tbl->hash_mask; i++) {
 		struct neighbour *n, **np = &tbl->hash_buckets[i];
@@ -242,7 +213,19 @@ int neigh_ifdown(struct neigh_table *tbl, struct net_device *dev)
 			neigh_release(n);
 		}
 	}
+}
 
+void neigh_changeaddr(struct neigh_table *tbl, struct net_device *dev)
+{
+	write_lock_bh(&tbl->lock);
+	neigh_flush_dev(tbl, dev);
+	write_unlock_bh(&tbl->lock);
+}
+
+int neigh_ifdown(struct neigh_table *tbl, struct net_device *dev)
+{
+	write_lock_bh(&tbl->lock);
+	neigh_flush_dev(tbl, dev);
 	pneigh_ifdown(tbl, dev);
 	write_unlock_bh(&tbl->lock);
 
@@ -890,6 +873,7 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 				buff = neigh->arp_queue.next;
 				__skb_unlink(buff, &neigh->arp_queue);
 				kfree_skb(buff);
+				NEIGH_CACHE_STAT_INC(neigh->tbl, unres_discards);
 			}
 			__skb_queue_tail(&neigh->arp_queue, skb);
 		}
@@ -1957,12 +1941,12 @@ static int neigh_stat_seq_show(struct seq_file *seq, void *v)
 	struct neigh_statistics *st = v;
 
 	if (v == SEQ_START_TOKEN) {
-		seq_printf(seq, "entries  allocs destroys hash_grows  lookups hits  res_failed  rcv_probes_mcast rcv_probes_ucast  periodic_gc_runs forced_gc_runs forced_gc_goal_miss\n");
+		seq_printf(seq, "entries  allocs destroys hash_grows  lookups hits  res_failed  rcv_probes_mcast rcv_probes_ucast  periodic_gc_runs forced_gc_runs forced_gc_goal_miss unresolved_discards\n");
 		return 0;
 	}
 
 	seq_printf(seq, "%08x  %08lx %08lx %08lx  %08lx %08lx  %08lx  "
-			"%08lx %08lx  %08lx %08lx\n",
+			"%08lx %08lx  %08lx %08lx %08lx %08lx\n",
 		   atomic_read(&tbl->entries),
 
 		   st->allocs,
@@ -1978,7 +1962,9 @@ static int neigh_stat_seq_show(struct seq_file *seq, void *v)
 		   st->rcv_probes_ucast,
 
 		   st->periodic_gc_runs,
-		   st->forced_gc_runs
+		   st->forced_gc_runs,
+		   0,
+		   st->unres_discards
 		   );
 
 	return 0;

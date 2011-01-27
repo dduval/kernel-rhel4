@@ -229,7 +229,7 @@
  */
 #define CIFS_NO_HANDLE        0xFFFF
 
-#define NO_CHANGE_64          cpu_to_le64(0xFFFFFFFFFFFFFFFFULL)
+#define NO_CHANGE_64          0xFFFFFFFFFFFFFFFFULL
 #define NO_CHANGE_32          0xFFFFFFFFUL
 
 /* IPC$ in ASCII */
@@ -310,6 +310,7 @@
 #define CREATE_OPEN_BY_ID       0x00002000
 #define OPEN_REPARSE_POINT	0x00200000
 #define CREATE_OPTIONS_MASK     0x007FFFFF
+#define CREATE_OPTION_READONLY	0x10000000
 #define CREATE_OPTION_SPECIAL   0x20000000   /* system. NB not sent over wire */
 
 /* ImpersonationLevel flags */

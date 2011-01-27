@@ -73,6 +73,8 @@ static void nfs_callback_svc(struct svc_rqst *rqstp)
 		svc_process(serv, rqstp);
 	}
 
+	flush_signals(current);
+	svc_exit_thread(rqstp);
 	nfs_callback_info.pid = 0;
 	complete(&nfs_callback_info.stopped);
 	unlock_kernel();
@@ -84,7 +86,7 @@ static void nfs_callback_svc(struct svc_rqst *rqstp)
  */
 int nfs_callback_up(void)
 {
-	struct svc_serv *serv;
+	struct svc_serv *serv = NULL;
 	struct svc_sock *svsk;
 	int ret = 0;
 
@@ -101,7 +103,7 @@ int nfs_callback_up(void)
 	/* FIXME: We don't want to register this socket with the portmapper */
 	ret = svc_makesock(serv, IPPROTO_TCP, 0);
 	if (ret < 0)
-		goto out_destroy;
+		goto out_err;
 	if (!list_empty(&serv->sv_permsocks)) {
 		svsk = list_entry(serv->sv_permsocks.next,
 				struct svc_sock, sk_list);
@@ -111,15 +113,21 @@ int nfs_callback_up(void)
 		BUG();
 	ret = svc_create_thread(nfs_callback_svc, serv);
 	if (ret < 0)
-		goto out_destroy;
+		goto out_err;
 	nfs_callback_info.serv = serv;
 	wait_for_completion(&nfs_callback_info.started);
 out:
+	/*
+	 * svc_create creates the svc_serv with sv_nrthreads == 1, and then
+	 * svc_create_thread increments that. So we need to call svc_destroy
+	 * on both success and failure so that the refcount is 1 when the
+	 * thread exits.
+	 */
+	if (serv)
+		svc_destroy(serv);
 	up(&nfs_callback_sema);
 	unlock_kernel();
 	return ret;
-out_destroy:
-	svc_destroy(serv);
 out_err:
 	nfs_callback_info.users--;
 	goto out;

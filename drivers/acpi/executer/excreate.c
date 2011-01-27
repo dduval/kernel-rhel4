@@ -103,6 +103,9 @@ acpi_ex_create_alias (
 	 * to the original Node.
 	 */
 	switch (target_node->type) {
+
+		/* For these types, the sub-object can change dynamically via a Store */
+
 	case ACPI_TYPE_INTEGER:
 	case ACPI_TYPE_STRING:
 	case ACPI_TYPE_BUFFER:
@@ -110,9 +113,18 @@ acpi_ex_create_alias (
 	case ACPI_TYPE_BUFFER_FIELD:
 
 		/*
+		 * These types open a new scope, so we need the NS node in order to access
+		 * any children.
+		 */
+	case ACPI_TYPE_DEVICE:
+	case ACPI_TYPE_POWER:
+	case ACPI_TYPE_PROCESSOR:
+	case ACPI_TYPE_THERMAL:
+	case ACPI_TYPE_LOCAL_SCOPE:
+
+		/*
 		 * The new alias has the type ALIAS and points to the original
-		 * NS node, not the object itself.  This is because for these
-		 * types, the object can change dynamically via a Store.
+		 * NS node, not the object itself.
 		 */
 		alias_node->type = ACPI_TYPE_LOCAL_ALIAS;
 		alias_node->object = ACPI_CAST_PTR (union acpi_operand_object, target_node);
@@ -121,9 +133,7 @@ acpi_ex_create_alias (
 	case ACPI_TYPE_METHOD:
 
 		/*
-		 * The new alias has the type ALIAS and points to the original
-		 * NS node, not the object itself.  This is because for these
-		 * types, the object can change dynamically via a Store.
+		 * Control method aliases need to be differentiated
 		 */
 		alias_node->type = ACPI_TYPE_LOCAL_METHOD_ALIAS;
 		alias_node->object = ACPI_CAST_PTR (union acpi_operand_object, target_node);

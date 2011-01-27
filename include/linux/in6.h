@@ -196,4 +196,10 @@ struct in6_flowlabel_req
  * MCAST_MSFILTER		48
  */
 
+/*
+ * Advanced API (RFC3542) (2)
+ */
+#define IPV6_RECVTCLASS         66
+#define IPV6_TCLASS             67
+
 #endif

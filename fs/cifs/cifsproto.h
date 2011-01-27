@@ -49,7 +49,8 @@ extern void cifs_buf_release(void *);
 extern struct smb_hdr *cifs_small_buf_get(void);
 extern void cifs_small_buf_release(void *);
 extern int smb_send(struct socket *, struct smb_hdr *,
-			unsigned int /* length */ , struct sockaddr *);
+			unsigned int /* length */ , struct sockaddr *,
+			unsigned int);
 extern unsigned int _GetXid(void);
 extern void _FreeXid(unsigned int);
 #define GetXid() (int)_GetXid(); cFYI(1,("CIFS VFS: in %s as Xid: %d with uid: %d",__FUNCTION__, xid,current->fsuid));
@@ -94,6 +95,7 @@ extern __u16 GetNextMid(struct TCP_Server_Info *server);
 extern struct oplock_q_entry *AllocOplockQEntry(struct inode *, u16,
 						 struct cifsTconInfo *);
 extern void DeleteOplockQEntry(struct oplock_q_entry *);
+extern void DeleteTconOplockQEntries(struct cifsTconInfo *);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
 extern struct timespec cifs_NTtimeToUnix(u64 /* utc nanoseconds since 1601 */ );
 extern u64 cifs_UnixTimeToNT(struct timespec);
@@ -196,12 +198,15 @@ extern int CIFSSMBQFSPosixInfo(const int xid, struct cifsTconInfo *tcon,
 			struct statfs  *FSData);
 #endif
 
-extern int CIFSSMBSetTimes(const int xid, struct cifsTconInfo *tcon,
+extern int CIFSSMBSetPathInfo(const int xid, struct cifsTconInfo *tcon,
 			const char *fileName, const FILE_BASIC_INFO * data,
 			const struct nls_table *nls_codepage,
 			int remap_special_chars);
-extern int CIFSSMBSetFileTimes(const int xid, struct cifsTconInfo *tcon,
-			const FILE_BASIC_INFO * data, __u16 fid);
+extern int CIFSSMBSetFileInfo(const int xid, struct cifsTconInfo *tcon,
+			const FILE_BASIC_INFO * data, __u16 fid,
+			__u32 pid_of_opener);
+extern int CIFSSMBSetFileDisposition(const int xid, struct cifsTconInfo *tcon,
+			int delete_file, __u16 fid, __u32 pid_of_opener);
 #if 0
 extern int CIFSSMBSetAttrLegacy(int xid, struct cifsTconInfo *tcon,
 			char *fileName, __u16 dos_attributes,
@@ -215,9 +220,20 @@ extern int CIFSSMBSetEOF(const int xid, struct cifsTconInfo *tcon,
 extern int CIFSSMBSetFileSize(const int xid, struct cifsTconInfo *tcon,
 			 __u64 size, __u16 fileHandle, __u32 opener_pid,
 			int AllocSizeFlag);
-extern int CIFSSMBUnixSetPerms(const int xid, struct cifsTconInfo *pTcon,
-			char *full_path, __u64 mode, __u64 uid,
-			__u64 gid, dev_t dev,
+
+struct cifs_unix_set_info_args {
+	__u64	ctime;
+	__u64	atime;
+	__u64	mtime;
+	__u64	mode;
+	__u64	uid;
+	__u64	gid;
+	dev_t	device;
+};
+
+extern int CIFSSMBUnixSetInfo(const int xid, struct cifsTconInfo *pTcon,
+			char *fileName,
+			const struct cifs_unix_set_info_args *args,
 			const struct nls_table *nls_codepage,
 			int remap_special_chars);
 
@@ -241,7 +257,7 @@ extern int CIFSSMBRename(const int xid, struct cifsTconInfo *tcon,
 			const struct nls_table *nls_codepage,
 			int remap_special_chars);
 extern int CIFSSMBRenameOpenFile(const int xid, struct cifsTconInfo *pTcon,
-			int netfid, char *target_name,
+			int netfid, const char *target_name,
 			const struct nls_table *nls_codepage,
 			int remap_special_chars);
 extern int CIFSCreateHardLink(const int xid,

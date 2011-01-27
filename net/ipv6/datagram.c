@@ -389,6 +389,11 @@ int datagram_recv_ctl(struct sock *sk, struct msghdr *msg, struct sk_buff *skb)
 		put_cmsg(msg, SOL_IPV6, IPV6_HOPLIMIT, sizeof(hlim), &hlim);
 	}
 
+	if (np->rxtclass) {
+		int tclass = (ntohl(*(u32 *)skb->nh.ipv6h) >> 20) & 0xff;
+		put_cmsg(msg, SOL_IPV6, IPV6_TCLASS, sizeof(tclass), &tclass);
+	}
+
 	if (np->rxopt.bits.rxflow && (*(u32*)skb->nh.raw & IPV6_FLOWINFO_MASK)) {
 		u32 flowinfo = *(u32*)skb->nh.raw & IPV6_FLOWINFO_MASK;
 		put_cmsg(msg, SOL_IPV6, IPV6_FLOWINFO, sizeof(flowinfo), &flowinfo);
@@ -414,7 +419,7 @@ int datagram_recv_ctl(struct sock *sk, struct msghdr *msg, struct sk_buff *skb)
 
 int datagram_send_ctl(struct msghdr *msg, struct flowi *fl,
 		      struct ipv6_txoptions *opt,
-		      int *hlimit)
+		      int *hlimit, int *tclass)
 {
 	struct in6_pktinfo *src_info;
 	struct cmsghdr *cmsg;
@@ -586,6 +591,25 @@ int datagram_send_ctl(struct msghdr *msg, struct flowi *fl,
 
 			*hlimit = *(int *)CMSG_DATA(cmsg);
 			break;
+
+		case IPV6_TCLASS:
+		    {
+			int tc;
+
+			err = -EINVAL;
+			if (cmsg->cmsg_len != CMSG_LEN(sizeof(int))) {
+				goto exit_f;
+			}
+
+			tc = *(int *)CMSG_DATA(cmsg);
+			if (tc < -1 || tc > 0xff)
+				goto exit_f;
+
+			err = 0;
+			*tclass = tc;
+
+			break;
+		    }
 
 		default:
 			LIMIT_NETDEBUG(

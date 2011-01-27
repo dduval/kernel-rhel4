@@ -499,7 +499,12 @@ css_generate_pgid(void)
 static ssize_t
 css_cm_enable_show(struct device *dev, char *buf)
 {
-	return sprintf(buf, "%x\n", cm_enabled);
+	int ret;
+
+	down(&cm_sem);
+	ret = sprintf(buf, "%x\n", cm_enabled);
+	up(&cm_sem);
+	return ret;
 }
 
 static ssize_t
@@ -507,6 +512,7 @@ css_cm_enable_store(struct device *dev, const char *buf, size_t count)
 {
 	int ret;
 
+	down(&cm_sem);
 	switch (buf[0]) {
 	case '0':
 		ret = cm_enabled ? chsc_secm(0) : 0;
@@ -517,6 +523,7 @@ css_cm_enable_store(struct device *dev, const char *buf, size_t count)
 	default:
 		ret = -EINVAL;
 	}
+	up(&cm_sem);
 	return ret < 0 ? ret : count;
 }
 
@@ -528,7 +535,9 @@ static int css_reboot_event(struct notifier_block *this,
 {
 	int ret;
 
+	down(&cm_sem);
 	ret = cm_enabled ? chsc_secm(0) : 0;
+	up(&cm_sem);
 
 	return ret ? NOTIFY_BAD : NOTIFY_DONE;
 }

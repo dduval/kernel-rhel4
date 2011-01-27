@@ -607,8 +607,8 @@ static void stop_this_cpu (void * dummy)
 	/*
 	 * Remove this CPU:
 	 */
-	cpu_clear(smp_processor_id(), cpu_online_map);
 	local_irq_disable();
+	cpu_clear(smp_processor_id(), cpu_online_map);
 	disable_local_APIC();
 	if (cpu_data[smp_processor_id()].hlt_works_ok)
 		for(;;) __asm__("hlt");

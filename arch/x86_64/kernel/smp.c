@@ -404,8 +404,8 @@ void smp_stop_cpu(void)
 	/*
 	 * Remove this CPU:
 	 */
-	cpu_clear(smp_processor_id(), cpu_online_map);
 	local_irq_disable();
+	cpu_clear(smp_processor_id(), cpu_online_map);
 	disable_local_APIC();
 	local_irq_enable(); 
 }

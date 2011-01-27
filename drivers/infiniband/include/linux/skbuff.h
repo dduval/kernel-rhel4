@@ -3,6 +3,17 @@
 
 #include_next <linux/skbuff.h>
 
+static inline struct sk_buff *netdev_alloc_skb(struct net_device *dev,
+		unsigned int length)
+{
+	struct sk_buff *skb;
+	skb = dev_alloc_skb(length);
+	if (likely(skb))
+		skb->dev = dev;
+
+	return skb;
+}
+
 #define CHECKSUM_PARTIAL CHECKSUM_HW 
 #define CHECKSUM_COMPLETE CHECKSUM_HW 
 
@@ -129,6 +140,21 @@ static inline void skb_copy_from_linear_data_offset(const struct sk_buff *skb,
                                                     const unsigned int len)
 {
         memcpy(to, skb->data + offset, len);
+}
+
+static inline unsigned char *skb_tail_pointer(const struct sk_buff *skb)
+{
+	return skb->tail;
+}
+
+static inline void skb_reset_tail_pointer(struct sk_buff *skb)
+{
+	skb->tail = skb->data;
+}
+
+static inline void skb_set_tail_pointer(struct sk_buff *skb, const int offset)
+{
+	skb->tail = skb->data + offset;
 }
 
 #endif

@@ -100,17 +100,11 @@ static struct serio *i8042_aux_port;
 static struct serio *i8042_mux_port[I8042_NUM_MUX_PORTS];
 static unsigned char i8042_initial_ctr;
 static unsigned char i8042_ctr;
-static unsigned char i8042_mux_open;
 static unsigned char i8042_mux_present;
+static unsigned char i8042_kbd_irq_registered;
+static unsigned char i8042_aux_irq_registered;
 static struct pm_dev *i8042_pm_dev;
-static struct timer_list i8042_timer;
 static struct platform_device *i8042_platform_device;
-
-/*
- * Shared IRQ's require a device pointer, but this driver doesn't support
- * multiple devices
- */
-#define i8042_request_irq_cookie (&i8042_timer)
 
 static irqreturn_t i8042_interrupt(int irq, void *dev_id, struct pt_regs *regs);
 
@@ -290,71 +284,6 @@ static int i8042_activate_port(struct serio *port)
 	return 0;
 }
 
-
-/*
- * i8042_open() is called when a port is open by the higher layer.
- * It allocates the interrupt and calls i8042_enable_port.
- */
-
-static int i8042_open(struct serio *port)
-{
-	struct i8042_values *values = port->port_data;
-
-	if (values->mux != -1)
-		if (i8042_mux_open++)
-			return 0;
-
-	if (request_irq(values->irq, i8042_interrupt,
-			SA_SHIRQ, "i8042", i8042_request_irq_cookie)) {
-		printk(KERN_ERR "i8042.c: Can't get irq %d for %s, unregistering the port.\n", values->irq, values->name);
-		goto irq_fail;
-	}
-
-	if (i8042_activate_port(port)) {
-		printk(KERN_ERR "i8042.c: Can't activate %s, unregistering the port\n", values->name);
-		goto activate_fail;
-	}
-
-	i8042_interrupt(0, NULL, NULL);
-
-	return 0;
-
-activate_fail:
-	free_irq(values->irq, i8042_request_irq_cookie);
-
-irq_fail:
-	values->exists = 0;
-	serio_unregister_port_delayed(port);
-
-	return -1;
-}
-
-/*
- * i8042_close() frees the interrupt, so that it can possibly be used
- * by another driver. We never know - if the user doesn't have a mouse,
- * the BIOS could have used the AUX interrupt for PCI.
- */
-
-static void i8042_close(struct serio *port)
-{
-	struct i8042_values *values = port->port_data;
-
-	if (values->mux != -1)
-		if (--i8042_mux_open)
-			return;
-
-	i8042_ctr &= ~values->irqen;
-
-	if (i8042_command(&i8042_ctr, I8042_CMD_CTL_WCTR)) {
-		printk(KERN_ERR "i8042.c: Can't write CTR while closing %s.\n", values->name);
-		return;
-	}
-
-	free_irq(values->irq, i8042_request_irq_cookie);
-
-	i8042_flush();
-}
-
 /*
  * i8042_interrupt() is the most important function in this driver -
  * it handles the interrupts from the i8042, and sends incoming bytes
@@ -368,8 +297,6 @@ static irqreturn_t i8042_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	unsigned int dfl;
 	unsigned int aux_idx;
 	int ret;
-
-	mod_timer(&i8042_timer, jiffies + I8042_POLL_PERIOD);
 
 	spin_lock_irqsave(&i8042_lock, flags);
 	str = i8042_read_status();
@@ -449,6 +376,44 @@ irq_ret:
 	ret = 1;
 out:
 	return IRQ_RETVAL(ret);
+}
+
+/*
+ * i8042_enable_kbd_port enables keyboard port on chip
+ */
+
+static int i8042_enable_kbd_port(void)
+{
+	i8042_flush();
+
+	i8042_ctr &= ~I8042_CTR_KBDDIS;
+	i8042_ctr |= I8042_CTR_KBDINT;
+
+	if (i8042_command(&i8042_ctr, I8042_CMD_CTL_WCTR)) {
+		printk(KERN_ERR "i8042.c: Failed to enable KBD port.\n");
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/*
+ * i8042_enable_aux_port enables AUX (mouse) port on chip
+ */
+
+static int i8042_enable_aux_port(void)
+{
+	i8042_flush();
+
+	i8042_ctr &= ~I8042_CTR_AUXDIS;
+	i8042_ctr |= I8042_CTR_AUXINT;
+
+	if (i8042_command(&i8042_ctr, I8042_CMD_CTL_WCTR)) {
+		printk(KERN_ERR "i8042.c: Failed to enable AUX port.\n");
+		return -EIO;
+	}
+
+	return 0;
 }
 
 /*
@@ -561,7 +526,6 @@ static int __init i8042_check_mux(struct i8042_values *values)
 static int __init i8042_check_aux(struct i8042_values *values)
 {
 	unsigned char param;
-	static int i8042_check_aux_cookie;
 
 /*
  * Check if AUX irq is available. If it isn't, then there is no point
@@ -569,9 +533,9 @@ static int __init i8042_check_aux(struct i8042_values *values)
  */
 
 	if (request_irq(values->irq, i8042_interrupt, SA_SHIRQ,
-				"i8042", &i8042_check_aux_cookie))
+				"i8042", &i8042_platform_device))
                 return -1;
-	free_irq(values->irq, &i8042_check_aux_cookie);
+	free_irq(values->irq, &i8042_platform_device);
 
 /*
  * Get rid of bytes in the queue.
@@ -659,12 +623,6 @@ static int __init i8042_port_register(struct serio *port)
 	serio_register_port(port);
 
 	return 0;
-}
-
-
-static void i8042_timer_func(unsigned long data)
-{
-	i8042_interrupt(0, NULL, NULL);
 }
 
 
@@ -894,7 +852,6 @@ void i8042_controller_cleanup(void)
 
 static int i8042_controller_suspend(void)
 {
-	del_timer_sync(&i8042_timer);
 	i8042_controller_reset();
 
 	return 0;
@@ -933,10 +890,6 @@ static int i8042_controller_resume(void)
 	for (i = 0; i < I8042_NUM_MUX_PORTS; i++)
 		if (i8042_mux_values[i].exists && i8042_activate_port(i8042_mux_port[i]) == 0)
 			serio_reconnect(i8042_mux_port[i]);
-/*
- * Restart timer (for polling "stuck" data)
- */
-	mod_timer(&i8042_timer, jiffies + I8042_POLL_PERIOD);
 
 	return 0;
 }
@@ -1047,8 +1000,6 @@ static struct serio * __init i8042_allocate_kbd_port(void)
 		memset(serio, 0, sizeof(struct serio));
 		serio->type		= i8042_direct ? SERIO_8042 : SERIO_8042_XL,
 		serio->write		= i8042_dumbkbd ? NULL : i8042_kbd_write,
-		serio->open		= i8042_open,
-		serio->close		= i8042_close,
 		serio->port_data	= &i8042_kbd_values,
 		serio->dev.parent	= &i8042_platform_device->dev;
 		strlcpy(serio->name, "i8042 Kbd Port", sizeof(serio->name));
@@ -1067,8 +1018,6 @@ static struct serio * __init i8042_allocate_aux_port(void)
 		memset(serio, 0, sizeof(struct serio));
 		serio->type		= SERIO_8042;
 		serio->write		= i8042_aux_write;
-		serio->open		= i8042_open;
-		serio->close		= i8042_close;
 		serio->port_data	= &i8042_aux_values,
 		serio->dev.parent	= &i8042_platform_device->dev;
 		strlcpy(serio->name, "i8042 Aux Port", sizeof(serio->name));
@@ -1092,8 +1041,6 @@ static struct serio * __init i8042_allocate_mux_port(int index)
 		memset(serio, 0, sizeof(struct serio));
 		serio->type		= SERIO_8042;
 		serio->write		= i8042_aux_write;
-		serio->open		= i8042_open;
-		serio->close		= i8042_close;
 		serio->port_data	= values;
 		serio->dev.parent	= &i8042_platform_device->dev;
 		snprintf(serio->name, sizeof(serio->name), "i8042 Aux-%d Port", index);
@@ -1103,15 +1050,93 @@ static struct serio * __init i8042_allocate_mux_port(int index)
 	return serio;
 }
 
+static void i8042_free_kbd_port(void)
+{
+	kfree(i8042_kbd_port);
+	i8042_kbd_port = NULL;
+}
+
+static void i8042_free_aux_ports(void)
+{
+	int i;
+
+	kfree(i8042_aux_port);
+	i8042_aux_port = NULL;
+
+	for (i = 0; i < I8042_NUM_MUX_PORTS; i++) { 
+		kfree(i8042_mux_port[i]);
+		i8042_mux_port[i] = NULL;
+	}
+}
+
+static void i8042_disable_free_irqs(void)
+{
+
+	/* Disable interface and interrupt */
+	i8042_ctr |= I8042_CTR_AUXDIS | I8042_CTR_KBDDIS;
+	i8042_ctr &= ~(I8042_CTR_AUXINT | I8042_CTR_KBDINT);
+	if (i8042_command(&i8042_ctr, I8042_CMD_CTL_WCTR))
+		printk(KERN_ERR "i8042: Can't write CTR before freeing IRQ\n");
+
+	if (i8042_aux_irq_registered) 
+		free_irq(I8042_AUX_IRQ, i8042_platform_device);
+
+	if (i8042_kbd_irq_registered)
+		free_irq(I8042_KBD_IRQ, i8042_platform_device);
+
+	i8042_aux_irq_registered = i8042_kbd_irq_registered = 0;
+}
+
+static int __init i8042_setup_aux_irq(void)
+{
+	int error;
+
+	error = request_irq(I8042_AUX_IRQ, i8042_interrupt,
+			    SA_SHIRQ, "i8042", i8042_platform_device);
+	if (error)
+		goto err_free_port;
+			
+	error = i8042_enable_aux_port();
+	if (error)
+		goto err_free_irq;
+	
+	i8042_aux_irq_registered = 1;
+	return 0;
+
+ err_free_irq:
+	free_irq(I8042_AUX_IRQ, i8042_platform_device);
+ err_free_port:
+	return error;
+}
+
+static int __init i8042_setup_kbd_irq(void)
+{
+	int error;
+
+	error = request_irq(I8042_KBD_IRQ, i8042_interrupt,
+			    SA_SHIRQ, "i8042", i8042_platform_device);
+	if (error)
+		goto err_free_port;
+
+	error = i8042_enable_kbd_port();
+	if (error)
+		goto err_free_irq;
+	
+	i8042_kbd_irq_registered = 1;
+	return 0;
+
+ err_free_irq:
+	free_irq(I8042_KBD_IRQ, i8042_platform_device);
+ err_free_port:
+	return error;
+}
+ 
 int __init i8042_init(void)
 {
 	int i;
 	int err;
 
 	dbg_init();
-
-	init_timer(&i8042_timer);
-	i8042_timer.function = i8042_timer_func;
 
 	if (i8042_platform_init())
 		return -EBUSY;
@@ -1132,7 +1157,6 @@ int __init i8042_init(void)
 
 	i8042_platform_device = platform_device_register_simple("i8042", -1, NULL, 0);
 	if (IS_ERR(i8042_platform_device)) {
-		del_timer_sync(&i8042_timer);
 		driver_unregister(&i8042_driver);
 		i8042_platform_exit();
 		return PTR_ERR(i8042_platform_device);
@@ -1152,11 +1176,19 @@ int __init i8042_init(void)
 		}
 	}
 
+	if (i8042_mux_present || i8042_aux_port) {
+		err = i8042_setup_aux_irq();
+		if (err)
+			goto out_fail;
+	}
+
 	i8042_kbd_port = i8042_allocate_kbd_port();
 	if (i8042_kbd_port)
 		i8042_port_register(i8042_kbd_port);
 
-	mod_timer(&i8042_timer, jiffies + I8042_POLL_PERIOD);
+	err = i8042_setup_kbd_irq();
+	if (err)
+		goto out_fail;
 
 	i8042_pm_dev = pm_register(PM_SYS_DEV, PM_SYS_UNKNOWN, i8042_pm_callback);
 
@@ -1165,11 +1197,22 @@ int __init i8042_init(void)
 	panic_blink = i8042_panic_blink;
 
 	return 0;
+
+ out_fail:
+	i8042_disable_free_irqs();
+	i8042_free_kbd_port();
+	i8042_free_aux_ports();
+	i8042_controller_reset();
+
+	return err;
 }
 
 void __exit i8042_exit(void)
 {
 	int i;
+
+
+	i8042_disable_free_irqs();
 
 	unregister_reboot_notifier(&i8042_notifier);
 
@@ -1188,7 +1231,8 @@ void __exit i8042_exit(void)
 		if (i8042_mux_values[i].exists)
 			serio_unregister_port(i8042_mux_port[i]);
 
-	del_timer_sync(&i8042_timer);
+	i8042_free_kbd_port();
+	i8042_free_aux_ports();
 
 	platform_device_unregister(i8042_platform_device);
 	driver_unregister(&i8042_driver);

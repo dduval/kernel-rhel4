@@ -7,4 +7,6 @@
 #define NIP6_FMT "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x"
 #define NIPQUAD_FMT "%u.%u.%u.%u"
 
+#define uninitialized_var(x) (x) = (x)
+
 #endif

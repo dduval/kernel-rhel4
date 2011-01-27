@@ -631,8 +631,7 @@ struct sctp_ulpevent *sctp_ulpevent_make_rcvmsg(struct sctp_association *asoc,
 	else
 		rx_count = atomic_read(&asoc->base.sk->sk_rmem_alloc);
 
-	if (rx_count >= asoc->base.sk->sk_rcvbuf) {
-
+	if ((!chunk->data_accepted) && rx_count >= asoc->base.sk->sk_rcvbuf) {
 		if ((asoc->base.sk->sk_userlocks & SOCK_RCVBUF_LOCK) ||
 		   (!sk_stream_rmem_schedule(asoc->base.sk, chunk->skb)))
 			goto fail;
@@ -665,7 +664,7 @@ struct sctp_ulpevent *sctp_ulpevent_make_rcvmsg(struct sctp_association *asoc,
 	event = sctp_skb2event(skb);
 
 	/* Initialize event with flags 0.  */
-	sctp_ulpevent_init(event, 0, skb->len + sizeof(struct sk_buff));
+	sctp_ulpevent_init(event, 0, skb_headlen(skb) + sizeof(struct sk_buff));
 
 	sctp_ulpevent_receive_data(event, asoc);
 

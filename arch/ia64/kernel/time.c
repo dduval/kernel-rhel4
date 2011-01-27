@@ -92,6 +92,7 @@ timer_interrupt (int irq, void *dev_id, struct pt_regs *regs)
 			do_timer(regs);
 			local_cpu_data->itm_next = new_itm;
 			write_sequnlock(&xtime_lock);
+			leap_second_message();
 		} else
 			local_cpu_data->itm_next = new_itm;
 

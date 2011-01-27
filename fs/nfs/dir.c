@@ -146,6 +146,7 @@ struct inode_operations_ext nfs4_dir_inode_operations = {
 	.i_op_orig.getattr	= nfs_getattr,
 	.i_op_orig.setattr	= nfs_setattr,
 	.getattr64		= nfs_getattr64,
+	.lookup_undo		= nfs4_lookup_undo,
 };
 
 #endif /* CONFIG_NFS_V4 */
@@ -1021,7 +1022,7 @@ struct dentry_operations nfs4_dentry_operations = {
 	.d_iput		= nfs_dentry_iput,
 };
 
-static int is_atomic_open(struct inode *dir, struct nameidata *nd)
+int is_atomic_open(struct inode *dir, struct nameidata *nd)
 {
 	if (!nd)
 		return 0;
@@ -1770,7 +1771,8 @@ go_ahead:
 	 * ... prune child dentries and writebacks if needed.
 	 */
 	if (atomic_read(&old_dentry->d_count) > 1) {
-		nfs_wb_all(old_inode);
+		if (S_ISREG(old_inode->i_mode))
+			nfs_wb_all(old_inode);
 		shrink_dcache_parent(old_dentry);
 	}
 	nfs_inode_return_delegation(old_inode);
@@ -1939,7 +1941,8 @@ int nfs_access_get_cached(struct inode *inode, struct rpc_cred *cred, struct nfs
 	cache = nfs_access_search_rbtree(inode, cred);
 	if (cache == NULL)
 		goto out;
-	if (!time_in_range(jiffies, cache->jiffies, cache->jiffies + NFS_ATTRTIMEO(inode)))
+	if (!time_in_range_open(jiffies, cache->jiffies,
+				cache->jiffies + NFS_ATTRTIMEO(inode)))
 		goto out_stale;
 	res->jiffies = cache->jiffies;
 	res->cred = cache->cred;

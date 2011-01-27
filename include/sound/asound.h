@@ -114,9 +114,10 @@ enum sndrv_hwdep_iface {
 	SNDRV_HWDEP_IFACE_USX2Y_PCM,	/* Tascam US122, US224 & US428 rawusb pcm */
 	SNDRV_HWDEP_IFACE_PCXHR,	/* Digigram PCXHR */
 	SNDRV_HWDEP_IFACE_SB_RC,	/* SB Extigy/Audigy2NX remote control */
+	SNDRV_HWDEP_IFACE_HDA,		/* HD-audio */
 
 	/* Don't forget to change the following: */
-	SNDRV_HWDEP_IFACE_LAST = SNDRV_HWDEP_IFACE_EMUX_WAVETABLE,
+	SNDRV_HWDEP_IFACE_LAST = SNDRV_HWDEP_IFACE_HDA,
 };
 
 struct sndrv_hwdep_info {
@@ -361,7 +362,7 @@ struct sndrv_mask {
 	u_int32_t bits[(SNDRV_MASK_MAX+31)/32];
 };
 
-struct sndrv_pcm_hw_params {
+struct snd_pcm_hw_params {
 	unsigned int flags;
 	struct sndrv_mask masks[SNDRV_PCM_HW_PARAM_LAST_MASK - 
 			       SNDRV_PCM_HW_PARAM_FIRST_MASK + 1];
@@ -465,8 +466,8 @@ enum {
 	SNDRV_PCM_IOCTL_PVERSION = _IOR('A', 0x00, int),
 	SNDRV_PCM_IOCTL_INFO = _IOR('A', 0x01, struct sndrv_pcm_info),
 	SNDRV_PCM_IOCTL_TSTAMP = _IOW('A', 0x02, int),
-	SNDRV_PCM_IOCTL_HW_REFINE = _IOWR('A', 0x10, struct sndrv_pcm_hw_params),
-	SNDRV_PCM_IOCTL_HW_PARAMS = _IOWR('A', 0x11, struct sndrv_pcm_hw_params),
+	SNDRV_PCM_IOCTL_HW_REFINE = _IOWR('A', 0x10, struct snd_pcm_hw_params),
+	SNDRV_PCM_IOCTL_HW_PARAMS = _IOWR('A', 0x11, struct snd_pcm_hw_params),
 	SNDRV_PCM_IOCTL_HW_FREE = _IO('A', 0x12),
 	SNDRV_PCM_IOCTL_SW_PARAMS = _IOWR('A', 0x13, struct sndrv_pcm_sw_params),
 	SNDRV_PCM_IOCTL_STATUS = _IOR('A', 0x20, struct sndrv_pcm_status),
@@ -772,7 +773,7 @@ enum sndrv_ctl_elem_iface {
 #define SNDRV_CTL_POWER_D3hot		(SNDRV_CTL_POWER_D3|0x0000)	/* Off, with power */
 #define SNDRV_CTL_POWER_D3cold		(SNDRV_CTL_POWER_D3|0x0001)	/* Off, without power */
 
-struct sndrv_ctl_elem_id {
+struct snd_ctl_elem_id {
 	unsigned int numid;		/* numeric identifier, zero = invalid */
 	enum sndrv_ctl_elem_iface iface; /* interface identifier */
 	unsigned int device;		/* device/client number */
@@ -790,8 +791,8 @@ struct sndrv_ctl_elem_list {
 	unsigned char reserved[50];
 };
 
-struct sndrv_ctl_elem_info {
-	struct sndrv_ctl_elem_id id;	/* W: element ID */
+struct snd_ctl_elem_info {
+	struct snd_ctl_elem_id id;	/* W: element ID */
 	enum sndrv_ctl_elem_type type;	/* R: value type - SNDRV_CTL_ELEM_TYPE_* */
 	unsigned int access;		/* R: value access (bitmask) - SNDRV_CTL_ELEM_ACCESS_* */
 	unsigned int count;		/* count of values */
@@ -821,8 +822,8 @@ struct sndrv_ctl_elem_info {
 	unsigned char reserved[64-4*sizeof(unsigned short)];
 };
 
-struct sndrv_ctl_elem_value {
-	struct sndrv_ctl_elem_id id;	/* W: element ID */
+struct snd_ctl_elem_value {
+	struct snd_ctl_elem_id id;	/* W: element ID */
 	unsigned int indirect: 1;	/* W: use indirect pointer (xxx_ptr member) */
         union {
 		union {
@@ -851,15 +852,15 @@ enum {
 	SNDRV_CTL_IOCTL_PVERSION = _IOR('U', 0x00, int),
 	SNDRV_CTL_IOCTL_CARD_INFO = _IOR('U', 0x01, struct sndrv_ctl_card_info),
 	SNDRV_CTL_IOCTL_ELEM_LIST = _IOWR('U', 0x10, struct sndrv_ctl_elem_list),
-	SNDRV_CTL_IOCTL_ELEM_INFO = _IOWR('U', 0x11, struct sndrv_ctl_elem_info),
-	SNDRV_CTL_IOCTL_ELEM_READ = _IOWR('U', 0x12, struct sndrv_ctl_elem_value),
-	SNDRV_CTL_IOCTL_ELEM_WRITE = _IOWR('U', 0x13, struct sndrv_ctl_elem_value),
-	SNDRV_CTL_IOCTL_ELEM_LOCK = _IOW('U', 0x14, struct sndrv_ctl_elem_id),
-	SNDRV_CTL_IOCTL_ELEM_UNLOCK = _IOW('U', 0x15, struct sndrv_ctl_elem_id),
+	SNDRV_CTL_IOCTL_ELEM_INFO = _IOWR('U', 0x11, struct snd_ctl_elem_info),
+	SNDRV_CTL_IOCTL_ELEM_READ = _IOWR('U', 0x12, struct snd_ctl_elem_value),
+	SNDRV_CTL_IOCTL_ELEM_WRITE = _IOWR('U', 0x13, struct snd_ctl_elem_value),
+	SNDRV_CTL_IOCTL_ELEM_LOCK = _IOW('U', 0x14, struct snd_ctl_elem_id),
+	SNDRV_CTL_IOCTL_ELEM_UNLOCK = _IOW('U', 0x15, struct snd_ctl_elem_id),
 	SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS = _IOWR('U', 0x16, int),
-	SNDRV_CTL_IOCTL_ELEM_ADD = _IOWR('U', 0x17, struct sndrv_ctl_elem_info),
-	SNDRV_CTL_IOCTL_ELEM_REPLACE = _IOWR('U', 0x18, struct sndrv_ctl_elem_info),
-	SNDRV_CTL_IOCTL_ELEM_REMOVE = _IOWR('U', 0x19, struct sndrv_ctl_elem_id),
+	SNDRV_CTL_IOCTL_ELEM_ADD = _IOWR('U', 0x17, struct snd_ctl_elem_info),
+	SNDRV_CTL_IOCTL_ELEM_REPLACE = _IOWR('U', 0x18, struct snd_ctl_elem_info),
+	SNDRV_CTL_IOCTL_ELEM_REMOVE = _IOWR('U', 0x19, struct snd_ctl_elem_id),
 	SNDRV_CTL_IOCTL_HWDEP_NEXT_DEVICE = _IOWR('U', 0x20, int),
 	SNDRV_CTL_IOCTL_HWDEP_INFO = _IOR('U', 0x21, struct sndrv_hwdep_info),
 	SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE = _IOR('U', 0x30, int),
@@ -891,7 +892,7 @@ struct sndrv_ctl_event {
 	union {
 		struct {
 			unsigned int mask;
-			struct sndrv_ctl_elem_id id;
+			struct snd_ctl_elem_id id;
 		} elem;
                 unsigned char data8[60];
         } data;

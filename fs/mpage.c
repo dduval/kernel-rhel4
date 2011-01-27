@@ -642,7 +642,7 @@ mpage_writepages(struct address_space *mapping,
 		writepage = mapping->a_ops->writepage;
 
 	pagevec_init(&pvec, 0);
-	if (wbc->sync_mode == WB_SYNC_NONE) {
+	if (wbc->sync_mode == WB_SYNC_NONE && !wbc->for_kupdate) {
 		index = mapping->writeback_index; /* Start from prev offset */
 	} else {
 		index = 0;			  /* whole-file sweep */

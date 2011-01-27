@@ -299,6 +299,7 @@ irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	do_timer_interrupt(irq, NULL, regs);
 
 	write_sequnlock(&xtime_lock);
+	leap_second_message();
 	return IRQ_HANDLED;
 }
 

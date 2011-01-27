@@ -662,20 +662,14 @@ static void rh_start_recovery(struct region_hash *rh)
 	wake(rh->ms);
 }
 
+static kmem_cache_t *bio_map_info_cache;
+
 struct bio_map_info {
 	struct mirror *bmi_m;
 	struct dm_bio_details bmi_bd;
 };
 
 static mempool_t *bio_map_info_pool = NULL;
-
-static void *bio_map_info_alloc(int gfp_mask, void *pool_data){
-	return kmalloc(sizeof(struct bio_map_info), gfp_mask);
-}
-
-static void bio_map_info_free(void *element, void *pool_data){
-	kfree(element);
-}
 
 static inline void wake(struct mirror_set *ms)
 {
@@ -1820,20 +1814,35 @@ static int __init dm_mirror_init(void)
 {
 	int r;
 
-	bio_map_info_pool = mempool_create(100, bio_map_info_alloc,
-					   bio_map_info_free, NULL);
-	if (!bio_map_info_pool)
+	bio_map_info_cache = kmem_cache_create("dm_mirror",
+					       sizeof(struct bio_map_info),
+					       0, 0, NULL, NULL);
+
+	if (!bio_map_info_cache)
 		return -ENOMEM;
 
+	bio_map_info_pool = mempool_create(100, mempool_alloc_slab,
+					   mempool_free_slab,
+					   bio_map_info_cache);
+	if (!bio_map_info_pool) {
+		kmem_cache_destroy(bio_map_info_cache);
+		return -ENOMEM;
+	}
+
 	r = dm_dirty_log_init();
-	if (r)
+	if (r) {
+		mempool_destroy(bio_map_info_pool);
+		kmem_cache_destroy(bio_map_info_cache);
 		return r;
+	}
 
 	r = dm_register_target(&mirror_target);
 	if (r < 0) {
 		DMERR("%s: Failed to register mirror target",
 		      mirror_target.name);
 		dm_dirty_log_exit();
+		mempool_destroy(bio_map_info_pool);
+		kmem_cache_destroy(bio_map_info_cache);
 	} else if (!dm_mirror_error_on_log_failure) {
 		DMWARN("Warning:: dm_mirror_error_on_log_failure = 0");
 		DMWARN("In this mode, the following steps could cause corruption:");
@@ -1860,6 +1869,9 @@ static void __exit dm_mirror_exit(void)
 		DMERR("%s: unregister failed %d", mirror_target.name, r);
 
 	dm_dirty_log_exit();
+
+	mempool_destroy(bio_map_info_pool);
+	kmem_cache_destroy(bio_map_info_cache);
 }
 
 /* Module hooks */

@@ -160,14 +160,16 @@ static struct net_device *get_iff_from_mac(struct adapter *adapter,
 	int i;
 
 	for_each_port(adapter, i) {
-		const struct vlan_group *grp;
+		struct vlan_group *grp;
 		struct net_device *dev = adapter->port[i];
 		const struct port_info *p = netdev_priv(dev);
 
 		if (!memcmp(dev->dev_addr, mac, ETH_ALEN)) {
 			if (vlan && vlan != VLAN_VID_MASK) {
 				grp = p->vlan_grp;
-				dev = grp ? grp->vlan_devices[vlan] : NULL;
+				dev = NULL;
+				if (grp)
+					dev = vlan_group_get_device(grp, vlan);
 			} else
 				while (dev->master)
 					dev = dev->master;
@@ -205,6 +207,17 @@ static int cxgb_ulp_iscsi_ctl(struct adapter *adapter, unsigned int req,
 		break;
 	case ULP_ISCSI_SET_PARAMS:
 		t3_write_reg(adapter, A_ULPRX_ISCSI_TAGMASK, uiip->tagmask);
+		/* set MaxRxData and MaxCoalesceSize to 16224 */
+		t3_write_reg(adapter, A_TP_PARA_REG2, 0x3f603f60);
+		/* program the ddp page sizes */
+		{
+			int i;
+			unsigned int val = 0;
+			for (i = 0; i < 4; i++)
+				val |= (uiip->pgsz_factor[i] & 0xF) << (8 * i);
+			if (val)
+				t3_write_reg(adapter, A_ULPRX_ISCSI_PSZ, val);
+		}
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -301,6 +314,21 @@ static int cxgb_rdma_ctl(struct adapter *adapter, unsigned int req, void *data)
 		spin_unlock_irq(&adapter->sge.reg_lock);
 		break;
 	}
+	case RDMA_GET_MIB: {
+		spin_lock(&adapter->stats_lock);
+		t3_tp_get_mib_stats(adapter, (struct tp_mib_stats *)data);
+		spin_unlock(&adapter->stats_lock);
+		break;
+	}
+	case GET_EMBEDDED_INFO: {
+		struct ch_embedded_info *e = data;
+
+		spin_lock(&adapter->stats_lock);
+		t3_get_fw_version(adapter, &e->fw_vers);
+		t3_get_tp_version(adapter, &e->tp_vers);
+		spin_unlock(&adapter->stats_lock);
+		break;
+	}
 	default:
 		ret = -EOPNOTSUPP;
 	}
@@ -379,6 +407,7 @@ static int cxgb_offload_ctl(struct t3cdev *tdev, unsigned int req, void *data)
 	case RDMA_CQ_DISABLE:
 	case RDMA_CTRL_QP_SETUP:
 	case RDMA_GET_MEM:
+	case RDMA_GET_MIB:
 		if (!offload_running(adapter))
 			return -EAGAIN;
 		return cxgb_rdma_ctl(adapter, req, data);
@@ -478,9 +507,10 @@ static inline void mk_tid_release(struct sk_buff *skb, unsigned int tid)
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_TID_RELEASE, tid));
 }
 
-static void t3_process_tid_release_list(void *work)
+static void t3_process_tid_release_list(struct work_struct *work)
 {
-	struct t3c_data *td = work;
+	struct t3c_data *td = container_of(work, struct t3c_data,
+					   tid_release_task);
 	struct sk_buff *skb;
 	struct t3cdev *tdev = td->dev;
 
@@ -825,15 +855,31 @@ static int do_trace(struct t3cdev *dev, struct sk_buff *skb)
 	skb->protocol = htons(0xffff);
 	skb->dev = dev->lldev;
 	skb_pull(skb, sizeof(*p));
-	skb->mac.raw = skb->data;
+	skb_reset_mac_header(skb);
 	netif_receive_skb(skb);
 	return 0;
 }
 
+/*
+ * That skb would better have come from process_responses() where we abuse
+ * ->priority and ->csum to carry our data.  NB: if we get to per-arch
+ * ->csum, the things might get really interesting here.
+ */
+
+static inline u32 get_hwtid(struct sk_buff *skb)
+{
+	return ntohl((__force __be32)skb->priority) >> 8 & 0xfffff;
+}
+
+static inline u32 get_opcode(struct sk_buff *skb)
+{
+	return G_OPCODE(ntohl((__force __be32)skb->csum));
+}
+
 static int do_term(struct t3cdev *dev, struct sk_buff *skb)
 {
-	unsigned int hwtid = ntohl(skb->priority) >> 8 & 0xfffff;
-	unsigned int opcode = G_OPCODE(ntohl(skb->csum));
+	unsigned int hwtid = get_hwtid(skb);
+	unsigned int opcode = get_opcode(skb);
 	struct t3c_tid_entry *t3c_tid;
 
 	t3c_tid = lookup_tid(&(T3C_DATA(dev))->tid_maps, hwtid);
@@ -911,7 +957,7 @@ int process_rx(struct t3cdev *dev, struct sk_buff **skbs, int n)
 {
 	while (n--) {
 		struct sk_buff *skb = *skbs++;
-		unsigned int opcode = G_OPCODE(ntohl(skb->csum));
+		unsigned int opcode = get_opcode(skb);
 		int ret = cpl_handlers[opcode] (dev, skb);
 
 #if VALIDATE_TID
@@ -1067,9 +1113,7 @@ void *cxgb_alloc_mem(unsigned long size)
  */
 void cxgb_free_mem(void *addr)
 {
-	unsigned long p = (unsigned long)addr;
-
-	if (p >= VMALLOC_START && p < VMALLOC_END)
+	if (is_vmalloc_addr(addr))
 		vfree(addr);
 	else
 		kfree(addr);
@@ -1174,7 +1218,7 @@ int cxgb3_offload_activate(struct adapter *adapter)
 	t->mtus = mtutab.mtus;
 	t->nmtus = mtutab.size;
 
-	INIT_WORK(&t->tid_release_task,t3_process_tid_release_list,t);
+	INIT_WORK(&t->tid_release_task, t3_process_tid_release_list);
 	spin_lock_init(&t->tid_release_lock);
 	INIT_LIST_HEAD(&t->list_node);
 	t->dev = dev;
@@ -1231,6 +1275,25 @@ static inline void unregister_tdev(struct t3cdev *tdev)
 	mutex_unlock(&cxgb3_db_lock);
 }
 
+static inline int adap2type(struct adapter *adapter)
+{
+	int type = 0;
+
+	switch (adapter->params.rev) {
+	case T3_REV_A:
+		type = T3A;
+		break;
+	case T3_REV_B:
+	case T3_REV_B2:
+		type = T3B;
+		break;
+	case T3_REV_C:
+		type = T3C;
+		break;
+	}
+	return type;
+}
+
 void __devinit cxgb3_adapter_ofld(struct adapter *adapter)
 {
 	struct t3cdev *tdev = &adapter->tdev;
@@ -1240,7 +1303,7 @@ void __devinit cxgb3_adapter_ofld(struct adapter *adapter)
 	cxgb3_set_dummy_ops(tdev);
 	tdev->send = t3_offload_tx;
 	tdev->ctl = cxgb_offload_ctl;
-	tdev->type = adapter->params.rev == 0 ? T3A : T3B;
+	tdev->type = adap2type(adapter);
 
 	register_tdev(tdev);
 }

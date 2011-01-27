@@ -690,22 +690,20 @@ void die_nmi (struct pt_regs *regs, const char *msg)
 static void default_do_nmi(struct pt_regs * regs)
 {
 	unsigned char reason = get_nmi_reason();
+	int cpu =  smp_processor_id();
  
 	if (!(reason & 0xc0)) {
 		if (notify_die(DIE_NMI_IPI, "nmi_ipi", regs, reason, 0, SIGINT)
 							== NOTIFY_STOP)
 			return;
-#ifdef CONFIG_X86_LOCAL_APIC
 		/*
 		 * Ok, so this is none of the documented NMI sources,
 		 * so it must be the NMI watchdog.
 		 */
-		if (nmi_watchdog) {
-			nmi_watchdog_tick(regs);
+		if (nmi_watchdog_tick(regs))
 			return;
-		}
-#endif
-		unknown_nmi_error(reason, regs);
+		if (!do_nmi_callback(regs, cpu))
+			unknown_nmi_error(reason, regs);
 		return;
 	}
 	if (notify_die(DIE_NMI, "nmi", regs, reason, 0, SIGINT) == NOTIFY_STOP)

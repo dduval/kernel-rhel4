@@ -142,7 +142,7 @@ DEFINE_ALSA_IOCTL_ENTRY(ctl_elem_list, ctl_elem_list, SNDRV_CTL_IOCTL_ELEM_LIST)
  */
 
 struct sndrv_ctl_elem_info32 {
-	struct sndrv_ctl_elem_id id; // the size of struct is same
+	struct snd_ctl_elem_id id; // the size of struct is same
 	s32 type;
 	u32 access;
 	u32 count;
@@ -224,7 +224,7 @@ static inline int _snd_ioctl32_ctl_elem_info(unsigned int fd, unsigned int cmd, 
 DEFINE_ALSA_IOCTL_ENTRY(ctl_elem_info, ctl_elem_info, SNDRV_CTL_IOCTL_ELEM_INFO);
 
 struct sndrv_ctl_elem_value32 {
-	struct sndrv_ctl_elem_id id;
+	struct snd_ctl_elem_id id;
 	unsigned int indirect;	/* bit-field causes misalignment */
         union {
 		union {

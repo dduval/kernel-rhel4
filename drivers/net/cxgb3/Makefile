@@ -1,6 +1,10 @@
 #
 # Chelsio T3 driver
 #
+INFINIBANDINCLUDE := -Idrivers/infiniband/include \
+	$(if $(KBUILD_SRC),-I$(srctree)/drivers/infiniband/include)
+
+export CPPFLAGS := -D__KERNEL__ $(INFINIBANDINCLUDE) $(LINUXINCLUDE)
 
 obj-$(CONFIG_CHELSIO_T3) += cxgb3.o
 

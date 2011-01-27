@@ -280,6 +280,7 @@ int timer_interrupt(struct pt_regs * regs)
 			timer_sync_xtime( cur_tb );
 			timer_check_rtc();
 			write_sequnlock(&xtime_lock);
+			leap_second_message();
 			if ( adjusting_time && (time_adjust == 0) )
 				ppc_adjtimex();
 		}

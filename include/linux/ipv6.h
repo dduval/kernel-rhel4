@@ -232,6 +232,9 @@ struct ipv6_pinfo {
 	                        sndflow:1,
 				pmtudisc:2,
 				ipv6only:1;
+#ifndef __GENKSYMS__
+	__u8                    tclass;
+#endif
 
 	struct ipv6_mc_socklist	*ipv6_mc_list;
 	struct ipv6_ac_socklist	*ipv6_ac_list;
@@ -244,7 +247,14 @@ struct ipv6_pinfo {
 		struct ipv6_txoptions *opt;
 		struct rt6_info	*rt;
 		int hop_limit;
+#ifndef __GENKSYMS__
+		int tclass;
+#endif
 	} cork;
+
+#ifndef __GENKSYMS__
+	__u8	rxtclass:1;
+#endif
 };
 
 struct raw6_opt {

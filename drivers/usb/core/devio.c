@@ -48,9 +48,13 @@
 #include <asm/uaccess.h>
 #include <asm/byteorder.h>
 #include <linux/moduleparam.h>
+#include <linux/mutex.h>
 
 #include "hcd.h"	/* for usbcore internals */
 #include "usb.h"
+
+/* Mutual exclusion for removal, open, and release */
+DEFINE_MUTEX(usbfs_mutex);
 
 struct async {
 	struct list_head asynclist;
@@ -479,15 +483,13 @@ static int usbdev_open(struct inode *inode, struct file *file)
 	struct dev_state *ps;
 	int ret;
 
-	/* 
-	 * no locking necessary here, as chrdev_open has the kernel lock
-	 * (still acquire the kernel lock for safety)
-	 */
+	/* Protect against simultaneous removal or release */
+	mutex_lock(&usbfs_mutex);
+
 	ret = -ENOMEM;
 	if (!(ps = kmalloc(sizeof(struct dev_state), GFP_KERNEL)))
-		goto out_nolock;
+		goto out;
 
-	lock_kernel();
 	ret = -ENOENT;
 	dev = usb_get_dev(inode->u.generic_ip);
 	if (!dev) {
@@ -511,9 +513,8 @@ static int usbdev_open(struct inode *inode, struct file *file)
 	list_add_tail(&ps->list, &dev->filelist);
 	file->private_data = ps;
  out:
-	unlock_kernel();
- out_nolock:
-        return ret;
+	mutex_unlock(&usbfs_mutex);
+	return ret;
 }
 
 static int usbdev_release(struct inode *inode, struct file *file)
@@ -523,7 +524,11 @@ static int usbdev_release(struct inode *inode, struct file *file)
 	unsigned int ifnum;
 
 	down(&dev->serialize);
+
+	/* Protect against simultaneous open */
+	mutex_lock(&usbfs_mutex);
 	list_del_init(&ps->list);
+	mutex_unlock(&usbfs_mutex);
 
 	if (connected(dev)) {
 		for (ifnum = 0; ps->ifclaimed && ifnum < 8*sizeof(ps->ifclaimed); ifnum++)

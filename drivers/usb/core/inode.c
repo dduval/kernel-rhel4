@@ -40,6 +40,9 @@
 #include <linux/smp_lock.h>
 #include <linux/parser.h>
 #include <asm/byteorder.h>
+#include <linux/mutex.h>
+
+extern struct mutex usbfs_mutex;
 
 static struct super_operations usbfs_ops;
 static struct file_operations default_file_operations;
@@ -549,6 +552,7 @@ static void fs_remove_file (struct dentry *dentry)
 	down(&parent->d_inode->i_sem);
 	if (usbfs_positive(dentry)) {
 		if (dentry->d_inode) {
+			dentry->d_inode->u.generic_ip = NULL;
 			if (S_ISDIR(dentry->d_inode->i_mode))
 				usbfs_rmdir(parent->d_inode, dentry);
 			else
@@ -787,6 +791,8 @@ void usbfs_remove_device(struct usb_device *dev)
 	struct dev_state *ds;
 	struct siginfo sinfo;
 
+	mutex_lock(&usbfs_mutex);
+
 	if (dev->usbfs_dentry) {
 		fs_remove_file (dev->usbfs_dentry);
 		dev->usbfs_dentry = NULL;
@@ -808,6 +814,8 @@ void usbfs_remove_device(struct usb_device *dev)
 	}
 	usbfs_update_special();
 	usbdevfs_conn_disc_event();
+
+	mutex_unlock(&usbfs_mutex);
 }
 
 /* --------------------------------------------------------------------- */

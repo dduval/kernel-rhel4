@@ -893,7 +893,9 @@ receive_chars(struct uart_8250_port *up, int *status, struct pt_regs *regs)
 
 	do {
 		if (unlikely(tty->flip.count >= TTY_FLIPBUF_SIZE)) {
+			spin_unlock(&up->port.lock);
 			tty->flip.work.func((void *)tty);
+			spin_lock(&up->port.lock);
 			if (tty->flip.count >= TTY_FLIPBUF_SIZE)
 				return; // if TTY_DONT_FLIP is set
 		}

@@ -1,10 +1,10 @@
 /*
  *  linux/drivers/message/fusion/csmi/csmisas.c
- *      For use with LSI Logic PCI chip/adapter(s)
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      For use with LSI PCI chip/adapter(s)
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2008 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -43,8 +43,9 @@
 */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 
-#define MPT_CSMI_DESCRIPTION "LSI Logic Corporation: Fusion MPT Driver "MPT_LINUX_VERSION_COMMON
+#define MPT_CSMI_DESCRIPTION "LSI Corporation: Fusion MPT Driver "MPT_LINUX_VERSION_COMMON
 #define csmisas_is_this_sas_cntr(ioc) (ioc->bus_type == SAS) ? 1 : 0
+
 
 static int csmisas_do_raid(MPT_ADAPTER *ioc, u8 action, u8 PhysDiskNum, u8 VolumeBus,
     u8 VolumeId, pMpiRaidActionReply_t reply);
@@ -114,7 +115,7 @@ csmisas_is_end_device(struct mptsas_devinfo * attached)
  *
  * returns (1) success (0) fail - not a phys disk
  **/
-int
+static int
 csmisas_is_phys_disk(MPT_ADAPTER *ioc, int channel, int id)
 {
 	struct inactive_raid_component_info *component_info;
@@ -160,7 +161,7 @@ csmisas_is_phys_disk(MPT_ADAPTER *ioc, int channel, int id)
  *
  * returns - signed return means failure
  **/
-s8
+static s8
 csmisas_raid_id_to_num(MPT_ADAPTER *ioc, u8 channel, u8 id)
 {
 	struct inactive_raid_component_info *component_info;
@@ -349,7 +350,7 @@ csmisas_send_handshake_wait(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, unsigned long t
 
 	INITIALIZE_IOCTL_STATUS(ioc->taskmgmt_cmds.status)
 	ioc->taskmgmt_cmds.wait_done = 0;
-	rc = mpt_send_handshake_request(mptctl_taskmgmt_id, ioc,
+	rc = mpt_send_special_message(mptctl_taskmgmt_id, ioc,
 	    sizeof(SCSITaskMgmt_t), (u32*)mf, timeout, CAN_SLEEP);
 	if (rc != 0)
 		return rc;
@@ -634,7 +635,7 @@ csmisas_get_driver_info(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 		sizeof(CSMI_SAS_DRIVER_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 		   "Unable to write out csmi_sas_get_driver_info_buffer @ %p\n",
@@ -746,7 +747,7 @@ csmisas_get_cntlr_config(unsigned long arg)
 	/* bReserved will also be zeros. */
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 		sizeof(CSMI_SAS_DRIVER_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 		"Unable to write out csmi_sas_get_driver_info_buffer @ %p\n",
@@ -829,7 +830,7 @@ csmisas_get_cntlr_status(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 		sizeof(CSMI_SAS_CNTLR_STATUS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 		    "Unable to write out csmi_sas_get_cntlr_status @ %p\n",
@@ -1377,7 +1378,7 @@ sas_get_phy_info_exit:
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, karg,
+	if (copy_to_user(uarg, karg,
 	    sizeof(CSMI_SAS_PHY_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 		    "Unable to write out csmisas_get_phy_info_buffer @ %p\n",
@@ -1437,7 +1438,7 @@ csmisas_set_phy_info(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 				sizeof(CSMI_SAS_SET_PHY_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_set_phy_info @ %p\n",
@@ -1513,7 +1514,7 @@ csmisas_get_scsi_address(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 	    sizeof(CSMI_SAS_GET_SCSI_ADDRESS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to write out csmi_sas_get_scsi_address @ %p\n",
@@ -1752,7 +1753,7 @@ csmisas_get_sata_signature(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 	    sizeof(CSMI_SAS_SATA_SIGNATURE_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to write out csmi_sas_sata_signature @ %p\n",
@@ -1823,7 +1824,7 @@ csmisas_get_device_address(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 	    sizeof(CSMI_SAS_GET_DEVICE_ADDRESS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		"Unable to write out csmi_sas_get_device_address_buffer @ %p\n",
@@ -1862,6 +1863,7 @@ csmisas_get_link_errors(unsigned long arg)
 	SasIoUnitControlReply_t		*sasIoUnitCntrReply;
 	u8				phyId;
 	u16				ioc_status;
+	u32				MsgContext;
 
 	sasPhyPage1=NULL;
 	sasPhyPage1_data_sz=0;
@@ -2005,10 +2007,11 @@ csmisas_get_link_errors(unsigned long arg)
         }
 
 	mpi_hdr = (MPIHeader_t *) mf;
+	MsgContext = mpi_hdr->MsgContext;
 	sasIoUnitCntrReq = (SasIoUnitControlRequest_t *)mf;
 	memset(sasIoUnitCntrReq,0,sizeof(SasIoUnitControlRequest_t));
 	sasIoUnitCntrReq->Function = MPI_FUNCTION_SAS_IO_UNIT_CONTROL;
-	sasIoUnitCntrReq->MsgContext = mpi_hdr->MsgContext;
+	sasIoUnitCntrReq->MsgContext = MsgContext;
 	sasIoUnitCntrReq->PhyNum = phyId;
 	sasIoUnitCntrReq->Operation = MPI_SAS_OP_PHY_CLEAR_ERROR_LOG;
 
@@ -2041,7 +2044,7 @@ csmisas_get_link_errors(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 	    sizeof(CSMI_SAS_LINK_ERRORS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to write out csmisas_get_link_errors @ %p\n",
@@ -2067,7 +2070,7 @@ csmisas_smp_passthru(unsigned long arg)
 {
 	CSMI_SAS_SMP_PASSTHRU_BUFFER __user *uarg = (void __user *) arg;
 	MPT_ADAPTER			*ioc;
-	CSMI_SAS_SMP_PASSTHRU_BUFFER	 karg;
+	CSMI_SAS_SMP_PASSTHRU_BUFFER	 *karg;
 	pSmpPassthroughRequest_t	smpReq;
 	pSmpPassthroughReply_t		smpReply;
 	MPT_FRAME_HDR			*mf = NULL;
@@ -2082,23 +2085,41 @@ csmisas_smp_passthru(unsigned long arg)
 	u32				response_data_sz;
 	u16				ioc_status;
 	u64				sas_address;
+	u32				MsgContext;
+	int				malloc_data_sz;
+	int				memory_pages;
 
-	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_SMP_PASSTHRU_BUFFER))) {
+	malloc_data_sz = sizeof(CSMI_SAS_SMP_PASSTHRU_BUFFER);
+	memory_pages = get_order(malloc_data_sz);
+	karg = (CSMI_SAS_SMP_PASSTHRU_BUFFER *)__get_free_pages(
+		GFP_KERNEL, memory_pages);
+	if (!karg){
+		printk(KERN_ERR "%s@%d::%s() - "
+			"Unable to malloc CSMI_SAS_SMP_PASSTHRU_BUFFER "
+			"malloc_data_sz=%d memory_pages=%d\n",
+			__FILE__, __LINE__, __FUNCTION__,
+			malloc_data_sz, memory_pages);
+		return -ENOMEM;
+	}
+
+	if (copy_from_user(karg, uarg, sizeof(CSMI_SAS_SMP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_smp_passthru struct @ %p\n",
 		    __FILE__, __LINE__, __FUNCTION__, uarg);
+		free_pages((unsigned long)karg, memory_pages);
 		return -EFAULT;
 	}
 
 	request_data = NULL;
 	response_data = NULL;
 	response_data_sz = sizeof(CSMI_SAS_SMP_RESPONSE);
-	request_data_sz  = karg.Parameters.uRequestLength;
+	request_data_sz  = karg->Parameters.uRequestLength;
 
-	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
+	if (((iocnum = mpt_verify_adapter(karg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
 		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
 		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
 
@@ -2106,28 +2127,30 @@ csmisas_smp_passthru(unsigned long arg)
 		printk(KERN_ERR "%s@%d::%s - "
 		    "Busy with IOC Reset \n",
 		    __FILE__, __LINE__,__FUNCTION__);
+		free_pages((unsigned long)karg, memory_pages);
 		return -EBUSY;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
 		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
 		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
 
 	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Default to success.*/
-	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
+	karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
 
 	/* Do some error checking on the request. */
-	if (karg.Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_SELECT_PHY_OR_PORT;
+	if (karg->Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT) {
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_SELECT_PHY_OR_PORT;
 		goto cim_smp_passthru_exit;
 	}
 
 	if ((request_data_sz > 0xFFFF) || (!request_data_sz)) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
 	}
 
@@ -2135,26 +2158,27 @@ csmisas_smp_passthru(unsigned long arg)
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
 		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
         }
 
 	mpi_hdr = (MPIHeader_t *) mf;
+	MsgContext = mpi_hdr->MsgContext;
 	smpReq = (pSmpPassthroughRequest_t ) mf;
 
 	memset(smpReq,0,ioc->req_sz);
 
-	memcpy(&sas_address, karg.Parameters.bDestinationSASAddress,
+	memcpy(&sas_address, karg->Parameters.bDestinationSASAddress,
 	    sizeof(u64));
 	sas_address = cpu_to_le64(reverse_byte_order64(sas_address));
 	memcpy(&smpReq->SASAddress, &sas_address, sizeof(u64));
 
 	/* Fill in smp request. */
-	smpReq->PhysicalPort = karg.Parameters.bPortIdentifier;
+	smpReq->PhysicalPort = karg->Parameters.bPortIdentifier;
 	smpReq->Function = MPI_FUNCTION_SMP_PASSTHROUGH;
 	smpReq->RequestDataLength = cpu_to_le16(request_data_sz);
-	smpReq->ConnectionRate = karg.Parameters.bConnectionRate;
-	smpReq->MsgContext = mpi_hdr->MsgContext;
+	smpReq->ConnectionRate = karg->Parameters.bConnectionRate;
+	smpReq->MsgContext = MsgContext;
 	smpReq->Reserved2 = 0;
 	smpReq->Reserved3 = 0;
 
@@ -2168,13 +2192,9 @@ csmisas_smp_passthru(unsigned long arg)
 	/* setup the *Request* payload SGE */
 	flagsLength = MPI_SGE_FLAGS_SIMPLE_ELEMENT |
 		MPI_SGE_FLAGS_SYSTEM_ADDRESS |
-		MPI_SGE_FLAGS_32_BIT_ADDRESSING |
 		MPI_SGE_FLAGS_HOST_TO_IOC |
 		MPI_SGE_FLAGS_END_OF_BUFFER;
 
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
-		flagsLength |= MPI_SGE_FLAGS_64_BIT_ADDRESSING;
-	}
 	flagsLength = flagsLength << MPI_SGE_FLAGS_SHIFT;
 	flagsLength |= request_data_sz;
 
@@ -2183,15 +2203,15 @@ csmisas_smp_passthru(unsigned long arg)
 
 	if (!request_data) {
 		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		mpt_free_msg_frame(ioc, mf);
 		goto cim_smp_passthru_exit;
 	}
 
 	ioc->add_sge(psge, flagsLength, request_data_dma);
-	psge += (sizeof(u32) + sizeof(dma_addr_t));
+	psge += ioc->SGE_size;
 
-	memcpy(request_data,&karg.Parameters.Request,request_data_sz);
+	memcpy(request_data, &karg->Parameters.Request, request_data_sz);
 
 	/* setup the *Response* payload SGE */
 	response_data = pci_alloc_consistent(
@@ -2199,34 +2219,30 @@ csmisas_smp_passthru(unsigned long arg)
 
 	if (!response_data) {
 		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		mpt_free_msg_frame(ioc, mf);
 		goto cim_smp_passthru_exit;
 	}
 
 	flagsLength = MPI_SGE_FLAGS_SIMPLE_ELEMENT |
 		MPI_SGE_FLAGS_SYSTEM_ADDRESS |
-		MPI_SGE_FLAGS_32_BIT_ADDRESSING |
 		MPI_SGE_FLAGS_IOC_TO_HOST |
 		MPI_SGE_FLAGS_END_OF_BUFFER;
-
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
-		flagsLength |= MPI_SGE_FLAGS_64_BIT_ADDRESSING;
-	}
 
 	flagsLength = flagsLength << MPI_SGE_FLAGS_SHIFT;
 	flagsLength |= response_data_sz;
 
 	ioc->add_sge(psge, flagsLength, response_data_dma);
 
-	if (csmisas_send_command_wait(ioc, mf, karg.IoctlHeader.Timeout) != 0) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+	DBG_DUMP_CSMI_FRAME(mf);
+	if (csmisas_send_command_wait(ioc, mf, karg->IoctlHeader.Timeout) != 0) {
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
 	}
 
 	if ((ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) == 0) {
 		dcsmisasprintk(ioc, printk(KERN_DEBUG ": SMP Passthru: oh no, there is no reply!!"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
 	}
 
@@ -2236,7 +2252,7 @@ csmisas_smp_passthru(unsigned long arg)
 
 	if ((ioc_status != MPI_IOCSTATUS_SUCCESS) &&
 	    (ioc_status != MPI_IOCSTATUS_SCSI_DATA_UNDERRUN)) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		dcsmisasprintk(ioc, printk(KERN_DEBUG ": SMP Passthru: "));
 		dcsmisasprintk(ioc, printk("IOCStatus=0x%X IOCLogInfo=0x%X SASStatus=0x%X\n",
 		    le16_to_cpu(smpReply->IOCStatus),
@@ -2245,13 +2261,13 @@ csmisas_smp_passthru(unsigned long arg)
 		goto cim_smp_passthru_exit;
 	}
 
-	karg.Parameters.bConnectionStatus =
+	karg->Parameters.bConnectionStatus =
 	    map_sas_status_to_csmi(smpReply->SASStatus);
 
 
 	if (le16_to_cpu(smpReply->ResponseDataLength)) {
-		karg.Parameters.uResponseBytes = le16_to_cpu(smpReply->ResponseDataLength);
-		memcpy(&karg.Parameters.Response,
+		karg->Parameters.uResponseBytes = le16_to_cpu(smpReply->ResponseDataLength);
+		memcpy(&karg->Parameters.Response,
 		    response_data, le16_to_cpu(smpReply->ResponseDataLength));
 	}
 
@@ -2268,14 +2284,16 @@ csmisas_smp_passthru(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
-				sizeof(CSMI_SAS_SMP_PASSTHRU_BUFFER))) {
+	if (copy_to_user(uarg, karg,
+	    sizeof(CSMI_SAS_SMP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_smp_passthru @ %p\n",
 				__FILE__, __LINE__, __FUNCTION__, uarg);
+		free_pages((unsigned long)karg, memory_pages);
 		return -EFAULT;
 	}
 
+	free_pages((unsigned long)karg, memory_pages);
 	dcsmisasprintk(ioc, printk(KERN_DEBUG ": %s exit.\n",__FUNCTION__));
 	return 0;
 }
@@ -2315,6 +2333,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	u8				id;
 	struct sas_device_info		*sas_info;
 	u8				skey, asc, ascq;
+	u32				MsgContext;
 
 	if (copy_from_user(&karg_hdr, uarg, sizeof(CSMI_SAS_SSP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -2475,6 +2494,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
         }
 
 	mpi_hdr = (MPIHeader_t *) mf;
+	MsgContext = mpi_hdr->MsgContext;
 	pScsiRequest = (pSCSIIORequest_t) mf;
 	req_idx = le16_to_cpu(mf->u.frame.hwhdr.msgctxu.fld.req_idx);
 
@@ -2490,7 +2510,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	memcpy(pScsiRequest->LUN, &karg->Parameters.bLun, 8);
 	pScsiRequest->CDBLength = karg->Parameters.bCDBLength;
 	pScsiRequest->DataLength = cpu_to_le32(request_data_sz);
-	pScsiRequest->MsgContext = mpi_hdr->MsgContext;
+	pScsiRequest->MsgContext = MsgContext;
 	memcpy(pScsiRequest->CDB, karg->Parameters.bCDB,
 	    pScsiRequest->CDBLength);
 
@@ -2525,7 +2545,10 @@ static int csmisas_ssp_passthru(unsigned long arg)
 		    MPI_SCSIIO_MSGFLGS_CMD_DETERMINES_DATA_DIR;
 	}
 
-	pScsiRequest->MsgFlags |= mpt_msg_flags();
+	pScsiRequest->MsgFlags &= ~MPI_SCSIIO_MSGFLGS_SENSE_WIDTH;
+	if (ioc->sg_addr_size == sizeof(u64))
+		pScsiRequest->MsgFlags |= MPI_SCSIIO_MSGFLGS_SENSE_WIDTH_64;
+
 	/* task attributes
 	 */
 	if((karg->Parameters.uFlags && 0xFF) == 0) {
@@ -2559,8 +2582,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 		flagsLength = MPT_SGE_FLAGS_SSIMPLE_READ;
 	}else {
 		flagsLength = ( MPI_SGE_FLAGS_SIMPLE_ELEMENT |
-				MPI_SGE_FLAGS_DIRECTION |
-				mpt_addr_size() )
+				MPI_SGE_FLAGS_DIRECTION )
 				<< MPI_SGE_FLAGS_SHIFT;
 	}
 	flagsLength |= request_data_sz;
@@ -2647,7 +2669,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 
 	if ((karg->Status.uDataBytes) && (request_data) &&
 	    (karg->Parameters.uFlags & CSMI_SAS_SSP_READ)) {
-		if (copy_to_user((char *)uarg->bDataBuffer,
+		if (copy_to_user((void __user *)uarg->bDataBuffer,
 		    request_data, karg->Status.uDataBytes)) {
 			printk(KERN_ERR "%s@%d::%s - "
 			    "Unable to write data to user %p\n",
@@ -2666,7 +2688,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, karg,
+	if (copy_to_user(uarg, karg,
 	    offsetof(CSMI_SAS_SSP_PASSTHRU_BUFFER, bDataBuffer))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_ssp_passthru @ %p\n",
@@ -2715,6 +2737,7 @@ csmisas_stp_passthru(unsigned long arg)
 	u8				volume_bus;
 	struct sas_device_info		*sas_info;
 	u16				ioc_status;
+	u32				MsgContext;
 
 	if (copy_from_user(&karg_hdr, uarg, sizeof(CSMI_SAS_STP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -2863,6 +2886,7 @@ csmisas_stp_passthru(unsigned long arg)
         }
 
 	mpi_hdr = (MPIHeader_t *) mf;
+	MsgContext = mpi_hdr->MsgContext;
 	pSataRequest = (pSataPassthroughRequest_t) mf;
 	req_idx = le16_to_cpu(mf->u.frame.hwhdr.msgctxu.fld.req_idx);
 
@@ -2873,7 +2897,7 @@ csmisas_stp_passthru(unsigned long arg)
 	pSataRequest->Function = MPI_FUNCTION_SATA_PASSTHROUGH;
 	pSataRequest->PassthroughFlags = cpu_to_le16(karg->Parameters.uFlags);
 	pSataRequest->ConnectionRate = karg->Parameters.bConnectionRate;
-	pSataRequest->MsgContext = mpi_hdr->MsgContext;
+	pSataRequest->MsgContext = MsgContext;
 	pSataRequest->DataLength = cpu_to_le32(request_data_sz);
 	pSataRequest->MsgFlags = 0;
 	memcpy( pSataRequest->CommandFIS,karg->Parameters.bCommandFIS, 20);
@@ -2885,8 +2909,7 @@ csmisas_stp_passthru(unsigned long arg)
 		flagsLength = MPT_SGE_FLAGS_SSIMPLE_READ;
 	}else {
 		flagsLength = ( MPI_SGE_FLAGS_SIMPLE_ELEMENT |
-				MPI_SGE_FLAGS_DIRECTION |
-				mpt_addr_size() )
+				MPI_SGE_FLAGS_DIRECTION )
 				<< MPI_SGE_FLAGS_SHIFT;
 	}
 
@@ -2953,7 +2976,7 @@ csmisas_stp_passthru(unsigned long arg)
 	    (karg->Parameters.uFlags & CSMI_SAS_STP_READ)) {
 		karg->Status.uDataBytes =
 		    min(le32_to_cpu(pSataReply->TransferCount),request_data_sz);
-		if (copy_to_user((char *)uarg->bDataBuffer,
+		if (copy_to_user((void __user *)uarg->bDataBuffer,
 		    request_data, karg->Status.uDataBytes)) {
 			printk(KERN_ERR "%s::%s() @%d - "
 			    "Unable to write data to user %p\n",
@@ -2971,7 +2994,7 @@ csmisas_stp_passthru(unsigned long arg)
 
 	/* Copy th data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, karg,
+	if (copy_to_user(uarg, karg,
 	    offsetof(CSMI_SAS_STP_PASSTHRU_BUFFER, bDataBuffer))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_ssp_passthru @ %p\n",
@@ -3103,7 +3126,7 @@ csmisas_firmware_download(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 				sizeof(CSMI_SAS_FIRMWARE_DOWNLOAD_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_firmware_download @ %p\n",
@@ -3199,7 +3222,7 @@ csmisas_get_raid_info_out:
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 				sizeof(CSMI_SAS_RAID_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_get_raid_info @ %p\n",
@@ -3286,13 +3309,14 @@ csmisas_raid_inq(MPT_ADAPTER *ioc, u8 opcode, u8 bus, u8 id, u8 inq_vpd_page,
 	MPT_FRAME_HDR		*mf = NULL;
 	MPIHeader_t 		*mpi_hdr;
 	pSCSIIORequest_t	pScsiRequest;
-	u16		       	req_idx;
-	char		    	*psge;
-	u8 		        inq_vpd_cdb[6];
-	u8 		        *request_data=NULL;
-	dma_addr_t	    	request_data_dma;
-	u32		        request_data_sz;
-	int		    	rc = 0;
+	u16			req_idx;
+	char			*psge;
+	u8 			inq_vpd_cdb[6];
+	u8 			*request_data=NULL;
+	dma_addr_t		request_data_dma;
+	u32			request_data_sz;
+	int			rc = 0;
+	u32			MsgContext;
 
 	request_data_sz = inq_vpd_sz;
 
@@ -3314,6 +3338,7 @@ csmisas_raid_inq(MPT_ADAPTER *ioc, u8 opcode, u8 bus, u8 id, u8 inq_vpd_page,
 	}
 
 	mpi_hdr = (MPIHeader_t *) mf;
+	MsgContext = mpi_hdr->MsgContext;
 	pScsiRequest = (pSCSIIORequest_t) mf;
 	req_idx = le16_to_cpu(mf->u.frame.hwhdr.msgctxu.fld.req_idx);
 
@@ -3323,11 +3348,13 @@ csmisas_raid_inq(MPT_ADAPTER *ioc, u8 opcode, u8 bus, u8 id, u8 inq_vpd_page,
 	pScsiRequest->Bus = bus;
 	pScsiRequest->CDBLength = 6;
 	pScsiRequest->DataLength = cpu_to_le32(request_data_sz);
-	pScsiRequest->MsgContext = mpi_hdr->MsgContext;
+	pScsiRequest->MsgContext = MsgContext;
 	memcpy(pScsiRequest->CDB,inq_vpd_cdb,pScsiRequest->CDBLength);
 	pScsiRequest->Control = cpu_to_le32(MPI_SCSIIO_CONTROL_READ);
 	pScsiRequest->Control |= cpu_to_le32(MPI_SCSIIO_CONTROL_SIMPLEQ);
-	pScsiRequest->MsgFlags = mpt_msg_flags();
+	pScsiRequest->MsgFlags &= ~MPI_SCSIIO_MSGFLGS_SENSE_WIDTH;
+	if (ioc->sg_addr_size == sizeof(u64))
+		pScsiRequest->MsgFlags |= MPI_SCSIIO_MSGFLGS_SENSE_WIDTH_64;
 
 	/* setup sense
 	 */
@@ -3822,6 +3849,10 @@ csmisas_get_raid_config(unsigned long arg)
 		} else { /* drive in a volume can only be SAS/SATA */
 			pKarg->Configuration.Drives[i].bDriveType =
 				CSMI_SAS_DRIVE_TYPE_SINGLE_PORT_SAS;
+			if (mpt_raid_phys_disk_get_num_paths(ioc,
+			    pVolume0->PhysDisk[i].PhysDiskNum) > 1)
+					pKarg->Configuration.Drives[i].bDriveType =
+					    CSMI_SAS_DRIVE_TYPE_DUAL_PORT_SAS;
 		}
 
 		pKarg->Configuration.Drives[i].usBlockSize = 512;
@@ -3940,6 +3971,10 @@ csmisas_get_raid_config(unsigned long arg)
 			} else { /* drive in a volume can only be SAS/SATA */
 				pKarg->Configuration.Drives[i].bDriveType =
 					CSMI_SAS_DRIVE_TYPE_SINGLE_PORT_SAS;
+				if (mpt_raid_phys_disk_get_num_paths(ioc,
+				    pVolume0->PhysDisk[i].PhysDiskNum) > 1)
+					pKarg->Configuration.Drives[i].bDriveType =
+					    CSMI_SAS_DRIVE_TYPE_DUAL_PORT_SAS;
 			}
 			i++;
 		}
@@ -3992,7 +4027,7 @@ csmisas_get_raid_config(unsigned long arg)
 		break;
 	}
 
-	if (copy_to_user((char *)arg, pKarg, copy_buffer_sz)) {
+	if (copy_to_user(uarg, pKarg, copy_buffer_sz)) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		       "Unable to write out csmi_sas_get_raid_config @ %p\n",
 		   	   __FILE__, __LINE__, __FUNCTION__, uarg);
@@ -4112,7 +4147,7 @@ csmisas_get_raid_features(unsigned long arg)
 	/*
 	 * Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, pKarg,
+	if (copy_to_user(uarg, pKarg,
 	    sizeof(CSMI_SAS_RAID_FEATURES_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		"Unable to write out csmi_sas_get_raid_features @ %p\n",
@@ -4243,7 +4278,7 @@ csmisas_set_raid_control(unsigned long arg)
 	/*
 	 * Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, pKarg,
+	if (copy_to_user(uarg, pKarg,
 		sizeof(CSMI_SAS_RAID_CONTROL_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		"Unable to write out csmi_sas_set_raid_control @ %p\n",
@@ -4303,7 +4338,7 @@ csmisas_get_raid_element(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 				sizeof(CSMI_SAS_RAID_ELEMENT_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmisas_get_raid_element @ %p\n",
@@ -4362,7 +4397,7 @@ csmisas_set_raid_operation(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 				sizeof(CSMI_SAS_RAID_SET_OPERATION_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_set_raid_operation @ %p\n",
@@ -4400,11 +4435,12 @@ csmisas_task_managment(unsigned long arg)
 	u8				channel;
 	u8				id;
 	u8				queueTag;
-	u32				msgContext = 0;
+	u32				TaskMsgContext = 0;
 	int				i;
 	u8 				found_qtag;
 	struct sas_device_info		*sas_info;
 	u16				ioc_status;
+	u32				MsgContext;
 
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_SSP_TASK_IU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -4496,7 +4532,7 @@ csmisas_task_managment(unsigned long arg)
 			if ((ioc->ScsiLookup[i]) &&
 			    (ioc->ScsiLookup[i]->tag == queueTag)) {
 				mf = MPT_INDEX_2_MFPTR(hd->ioc, i);
-				msgContext =
+				TaskMsgContext =
 				    mf->u.frame.hwhdr.msgctxu.MsgContext;
 				found_qtag=1;
 				break;
@@ -4530,6 +4566,7 @@ csmisas_task_managment(unsigned long arg)
 		}
 
 		mpi_hdr = (MPIHeader_t *) mf;
+		MsgContext = mpi_hdr->MsgContext;
 		pScsiTm = (pSCSITaskMgmt_t ) mf;
 
 		memset(pScsiTm,0,sizeof(SCSITaskMgmt_t));
@@ -4537,8 +4574,8 @@ csmisas_task_managment(unsigned long arg)
 		pScsiTm->Bus = channel;
 		pScsiTm->TargetID = id;
 		pScsiTm->LUN[1] = karg.Parameters.bLun;
-		pScsiTm->MsgContext = mpi_hdr->MsgContext;
-		pScsiTm->TaskMsgContext = msgContext;
+		pScsiTm->MsgContext = MsgContext;
+		pScsiTm->TaskMsgContext = TaskMsgContext;
 		pScsiTm->Function = MPI_FUNCTION_SCSI_TASK_MGMT;
 
 		if (csmisas_send_handshake_wait(ioc, mf,
@@ -4584,11 +4621,12 @@ csmisas_task_managment(unsigned long arg)
 		break;
 	}
 
+
  cim_get_task_managment_exit:
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 				sizeof(CSMI_SAS_SSP_TASK_IU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_task_managment @ %p\n",
@@ -4692,6 +4730,7 @@ csmisas_phy_reset(MPT_ADAPTER *ioc, u8 PhyNum, u8 opcode)
 	MPT_FRAME_HDR			*mf = NULL;
 	MPIHeader_t			*mpi_hdr;
 	u16 				ioc_status;
+	u32				MsgContext;
 
 	if ((opcode != MPI_SAS_OP_PHY_LINK_RESET) &&
 	    (opcode != MPI_SAS_OP_PHY_HARD_RESET))
@@ -4705,10 +4744,11 @@ csmisas_phy_reset(MPT_ADAPTER *ioc, u8 PhyNum, u8 opcode)
         }
 
 	mpi_hdr = (MPIHeader_t *) mf;
+	MsgContext =  mpi_hdr->MsgContext;
 	sasIoUnitCntrReq = (SasIoUnitControlRequest_t *)mf;
 	memset(sasIoUnitCntrReq,0,sizeof(SasIoUnitControlRequest_t));
 	sasIoUnitCntrReq->Function = MPI_FUNCTION_SAS_IO_UNIT_CONTROL;
-	sasIoUnitCntrReq->MsgContext = mpi_hdr->MsgContext;
+	sasIoUnitCntrReq->MsgContext = MsgContext;
 	sasIoUnitCntrReq->Operation = opcode;
 	sasIoUnitCntrReq->PhyNum = PhyNum;
 
@@ -5042,7 +5082,7 @@ csmisas_phy_control(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg,karg,csmi_sas_phy_control_buffer_sz)) {
+	if (copy_to_user(uarg, karg,csmi_sas_phy_control_buffer_sz)) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to write out csmi_sas_phy_control_buffer @ %p\n",
 		    __FILE__, __LINE__, __FUNCTION__, uarg);
@@ -5203,7 +5243,7 @@ csmisas_get_connector_info(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user(uarg, &karg,
 		sizeof(CSMI_SAS_CONNECTOR_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		"Unable to write out csmi_sas_connector_info_buffer @"
@@ -5741,7 +5781,7 @@ csmisas_get_location(unsigned long arg)
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, karg, csmi_sas_get_location_sz)) {
+	if (copy_to_user(uarg, karg, csmi_sas_get_location_sz)) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to write out csmi_sas_get_location_buffer "
 		    "@ %p\n",__FILE__, __LINE__, __FUNCTION__, uarg);

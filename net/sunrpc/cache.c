@@ -125,6 +125,15 @@ void cache_fresh(struct cache_detail *detail,
 		queue_loose(detail, head);
 }
 
+void cache_nofresh(struct cache_detail *detail, struct cache_head *head)
+{
+
+	head->expiry_time = 0;
+	head->last_refresh = get_seconds();
+	if (test_and_clear_bit(CACHE_PENDING, &head->flags))
+		queue_loose(detail, head);
+}
+
 /*
  * caches need to be periodically cleaned.
  * For this we maintain a list of cache_detail and

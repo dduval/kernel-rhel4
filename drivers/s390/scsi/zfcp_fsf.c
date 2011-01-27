@@ -12,6 +12,7 @@
  *            Wolfgang Taphorn
  *            Stefan Bader <stefan.bader@de.ibm.com>
  *            Heiko Carstens <heiko.carstens@de.ibm.com>
+ *            Andreas Herrmann <aherrman@de.ibm.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,7 +30,7 @@
  */
 
 /* this drivers version (do not edit !!! generated and updated by cvs) */
-#define ZFCP_FSF_C_REVISION "$Revision: 1.65 $"
+#define ZFCP_FSF_C_REVISION "$Revision: 1.76 $"
 
 #include "zfcp_ext.h"
 
@@ -1630,6 +1631,41 @@ zfcp_fsf_send_ct_handler(struct zfcp_fsf_req *fsf_req)
 		    | ZFCP_STATUS_FSFREQ_RETRY;
 		break;
 
+	/* following states should never occure, all cases avoided
+	   in zfcp_fsf_send_ct - but who knows ... */
+	case FSF_PAYLOAD_SIZE_MISMATCH:
+		ZFCP_LOG_FLAGS(2, "FSF_PAYLOAD_SIZE_MISMATCH\n");
+		ZFCP_LOG_INFO("payload size mismatch (adapter: %s, "
+			      "req_buf_length=%d, resp_buf_length=%d)\n",
+			      zfcp_get_busid_by_adapter(adapter),
+			      bottom->req_buf_length, bottom->resp_buf_length);
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
+		break;
+	case FSF_REQUEST_SIZE_TOO_LARGE:
+		ZFCP_LOG_FLAGS(2, "FSF_REQUEST_SIZE_TOO_LARGE\n");
+		ZFCP_LOG_INFO("request size too large (adapter: %s, "
+			      "req_buf_length=%d)\n",
+			      zfcp_get_busid_by_adapter(adapter),
+			      bottom->req_buf_length);
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
+		break;
+	case FSF_RESPONSE_SIZE_TOO_LARGE:
+		ZFCP_LOG_FLAGS(2, "FSF_RESPONSE_SIZE_TOO_LARGE\n");
+		ZFCP_LOG_INFO("response size too large (adapter: %s, "
+			      "resp_buf_length=%d)\n",
+			      zfcp_get_busid_by_adapter(adapter),
+			      bottom->resp_buf_length);
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
+		break;
+	case FSF_SBAL_MISMATCH:
+		ZFCP_LOG_FLAGS(2, "FSF_SBAL_MISMATCH\n");
+		ZFCP_LOG_INFO("SBAL mismatch (adapter: %s, req_buf_length=%d, "
+			      "resp_buf_length=%d)\n",
+			      zfcp_get_busid_by_adapter(adapter),
+			      bottom->req_buf_length, bottom->resp_buf_length);
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
+		break;
+
        default :
 		ZFCP_LOG_NORMAL("bug: An unknown FSF Status was presented "
 				"(debug info 0x%x)\n", header->fsf_status);
@@ -1658,14 +1694,14 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
 {
 	volatile struct qdio_buffer_element *sbale;
 	struct zfcp_fsf_req *fsf_req;
-	struct zfcp_port *port;
+	u32 d_id;
 	struct zfcp_adapter *adapter;
 	unsigned long lock_flags;
         int bytes;
 	int ret = 0;
 
-	port = els->port;
-	adapter = port->adapter;
+	d_id = els->d_id;
+	adapter = els->adapter;
 
         ret = zfcp_fsf_req_create(adapter, FSF_QTCB_SEND_ELS,
 				  ZFCP_REQ_AUTO_CLEANUP,
@@ -1673,7 +1709,7 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
 	if (ret < 0) {
                 ZFCP_LOG_INFO("error: creation of ELS request failed "
 			      "(adapter %s, port d_id: 0x%08x)\n",
-                              zfcp_get_busid_by_adapter(adapter), port->d_id);
+                              zfcp_get_busid_by_adapter(adapter), d_id);
                 goto failed_req;
 	}
 
@@ -1698,8 +1734,7 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
                 if (bytes <= 0) {
                         ZFCP_LOG_INFO("error: creation of ELS request failed "
 				      "(adapter %s, port d_id: 0x%08x)\n",
-				      zfcp_get_busid_by_adapter(adapter),
-				      port->d_id);
+				      zfcp_get_busid_by_adapter(adapter), d_id);
                         if (bytes == 0) {
                                 ret = -ENOMEM;
                         } else {
@@ -1716,8 +1751,7 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
                 if (bytes <= 0) {
                         ZFCP_LOG_INFO("error: creation of ELS request failed "
 				      "(adapter %s, port d_id: 0x%08x)\n",
-				      zfcp_get_busid_by_adapter(adapter),
-				      port->d_id);
+				      zfcp_get_busid_by_adapter(adapter), d_id);
                         if (bytes == 0) {
                                 ret = -ENOMEM;
                         } else {
@@ -1731,13 +1765,13 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
 		ZFCP_LOG_INFO("error: microcode does not support chained SBALs"
                               ", ELS request too big (adapter %s, "
 			      "port d_id: 0x%08x)\n",
-			      zfcp_get_busid_by_adapter(adapter), port->d_id);
+			      zfcp_get_busid_by_adapter(adapter), d_id);
                 ret = -EOPNOTSUPP;
                 goto failed_send;
         }
 
 	/* settings in QTCB */
-	fsf_req->qtcb->bottom.support.d_id = port->d_id;
+	fsf_req->qtcb->bottom.support.d_id = d_id;
 	fsf_req->qtcb->bottom.support.service_class = adapter->fc_service_class;
 	fsf_req->qtcb->bottom.support.timeout = ZFCP_ELS_TIMEOUT;
 	fsf_req->data.send_els = els;
@@ -1748,13 +1782,13 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
 	ret = zfcp_fsf_req_send(fsf_req);
 	if (ret) {
 		ZFCP_LOG_DEBUG("error: initiation of ELS request failed "
-			       "(adapter %s, port 0x%016Lx)\n",
-			       zfcp_get_busid_by_adapter(adapter), port->wwpn);
+			       "(adapter %s, port d_id: 0x%08x)\n",
+			       zfcp_get_busid_by_adapter(adapter), d_id);
 		goto failed_send;
 	}
 
-	ZFCP_LOG_DEBUG("ELS request initiated (adapter %s, port 0x%016Lx)\n",
-		       zfcp_get_busid_by_adapter(adapter), port->wwpn);
+	ZFCP_LOG_DEBUG("ELS request initiated (adapter %s, port d_id: "
+		       "0x%08x)\n", zfcp_get_busid_by_adapter(adapter), d_id);
 	goto out;
 
  failed_send:
@@ -1781,15 +1815,17 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 {
 	struct zfcp_adapter *adapter;
 	struct zfcp_port *port;
+	u32 d_id;
 	struct fsf_qtcb_header *header;
 	struct fsf_qtcb_bottom_support *bottom;
 	struct zfcp_send_els *send_els;
 	int retval = -EINVAL;
 	u16 subtable, rule, counter;
 
-	adapter = fsf_req->adapter;
 	send_els = fsf_req->data.send_els;
+	adapter = send_els->adapter;
 	port = send_els->port;
+	d_id = send_els->d_id;
 	header = &fsf_req->qtcb->header;
 	bottom = &fsf_req->qtcb->bottom.support;
 
@@ -1808,13 +1844,13 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 		if (adapter->fc_service_class <= 3) {
 			ZFCP_LOG_INFO("error: adapter %s does "
 				      "not support fibrechannel class %d.\n",
-				      zfcp_get_busid_by_port(port),
+				      zfcp_get_busid_by_adapter(adapter),
 				      adapter->fc_service_class);
 		} else {
 			ZFCP_LOG_INFO("bug: The fibrechannel class at "
 				      "adapter %s is invalid. "
 				      "(debug info %d)\n",
-				      zfcp_get_busid_by_port(port),
+				      zfcp_get_busid_by_adapter(adapter),
 				      adapter->fc_service_class);
 		}
 		/* stop operation for this adapter */
@@ -1826,17 +1862,15 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 	case FSF_ADAPTER_STATUS_AVAILABLE:
 		ZFCP_LOG_FLAGS(2, "FSF_ADAPTER_STATUS_AVAILABLE\n");
 		switch (header->fsf_status_qual.word[0]){
-		case FSF_SQ_INVOKE_LINK_TEST_PROCEDURE: {
+		case FSF_SQ_INVOKE_LINK_TEST_PROCEDURE:
 			ZFCP_LOG_FLAGS(2,"FSF_SQ_INVOKE_LINK_TEST_PROCEDURE\n");
 			debug_text_event(adapter->erp_dbf, 1, "fsf_sq_ltest");
-			if (send_els->ls_code != ZFCP_LS_ADISC)
+			if (port && (send_els->ls_code != ZFCP_LS_ADISC))
 				zfcp_test_link(port);
 			fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 			break;
-		}
 		case FSF_SQ_ULP_DEPENDENT_ERP_REQUIRED:
 			ZFCP_LOG_FLAGS(2,"FSF_SQ_ULP_DEPENDENT_ERP_REQUIRED\n");
-			/* ERP strategy will escalate */
 			debug_text_event(adapter->erp_dbf, 1, "fsf_sq_ulp");
 			fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 			retval =
@@ -1861,8 +1895,8 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 		ZFCP_LOG_FLAGS(2, "FSF_ELS_COMMAND_REJECTED\n");
 		ZFCP_LOG_INFO("ELS has been rejected because command filter "
 			      "prohibited sending "
-			      "(adapter: %s, wwpn=0x%016Lx)\n",
-			      zfcp_get_busid_by_port(port), port->wwpn);
+			      "(adapter: %s, port d_id: 0x%08x)\n",
+			      zfcp_get_busid_by_adapter(adapter), d_id);
 
 		break;
 
@@ -1872,7 +1906,7 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 			"ELS request size and ELS response size must be either "
 			"both 0, or both greater than 0 "
 			"(adapter: %s, req_buf_length=%d resp_buf_length=%d)\n",
-			zfcp_get_busid_by_port(port),
+			zfcp_get_busid_by_adapter(adapter),
 			bottom->req_buf_length,
 			bottom->resp_buf_length);
 		break;
@@ -1885,7 +1919,7 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 			"exceeds the size of the buffers "
 			"that have been allocated for ELS request data "
 			"(adapter: %s, req_buf_length=%d)\n",
-			zfcp_get_busid_by_port(port),
+			zfcp_get_busid_by_adapter(adapter),
 			bottom->req_buf_length);
 		break;
 
@@ -1897,15 +1931,25 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 			"exceeds the size of the buffers "
 			"that have been allocated for ELS response data "
 			"(adapter: %s, resp_buf_length=%d)\n",
-			zfcp_get_busid_by_port(port),
+			zfcp_get_busid_by_adapter(adapter),
 			bottom->resp_buf_length);
+		break;
+
+	case FSF_SBAL_MISMATCH:
+		/* should never occure, avoided in zfcp_fsf_send_els */
+		ZFCP_LOG_FLAGS(2, "FSF_SBAL_MISMATCH\n");
+		ZFCP_LOG_INFO("SBAL mismatch (adapter: %s, req_buf_length=%d, "
+			      "resp_buf_length=%d)\n",
+			      zfcp_get_busid_by_adapter(adapter),
+			      bottom->req_buf_length, bottom->resp_buf_length);
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
 	case FSF_ACCESS_DENIED:
 		ZFCP_LOG_FLAGS(2, "FSF_ACCESS_DENIED\n");
 		ZFCP_LOG_NORMAL("Access denied, cannot send ELS "
-				"(adapter: %s, wwpn=0x%016Lx)\n",
-				zfcp_get_busid_by_port(port), port->wwpn);
+				"(adapter: %s, port d_id: 0x%08x)\n",
+				zfcp_get_busid_by_adapter(adapter), d_id);
 		for (counter = 0; counter < 2; counter++) {
 			subtable = header->fsf_status_qual.halfword[counter * 2];
 			rule = header->fsf_status_qual.halfword[counter * 2 + 1];
@@ -1928,7 +1972,7 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 		ZFCP_LOG_NORMAL(
 			"bug: An unknown FSF Status was presented "
 			"(adapter: %s, fsf_status=0x%08x)\n",
-			zfcp_get_busid_by_port(port),
+			zfcp_get_busid_by_adapter(adapter),
 			header->fsf_status);
 		debug_text_event(adapter->erp_dbf, 0, "fsf_sq_inval");
 		debug_exception(adapter->erp_dbf, 0,
@@ -2025,6 +2069,9 @@ zfcp_fsf_exchange_config_evaluate(struct zfcp_fsf_req *fsf_req, int xchg_ok)
 		       bottom->low_qtcb_version, bottom->high_qtcb_version);
 	adapter->fsf_lic_version = bottom->lic_version;
 	adapter->supported_features = bottom->supported_features;
+	adapter->peer_wwpn = 0;
+	adapter->peer_wwnn = 0;
+	adapter->peer_d_id = 0;
 
 	if (xchg_ok) {
 		adapter->wwnn = bottom->nport_serv_param.wwnn;
@@ -2042,13 +2089,19 @@ zfcp_fsf_exchange_config_evaluate(struct zfcp_fsf_req *fsf_req, int xchg_ok)
 		adapter->hydra_version = 0;
 	}
 
+	if (adapter->fc_topology == FSF_TOPO_P2P) {
+		adapter->peer_d_id = bottom->peer_d_id & ZFCP_DID_MASK;
+		adapter->peer_wwpn = bottom->plogi_payload.wwpn;
+		adapter->peer_wwnn = bottom->plogi_payload.wwnn;
+	}
+
 	if(adapter->supported_features & FSF_FEATURE_HBAAPI_MANAGEMENT){
 		adapter->hardware_version = bottom->hardware_version;
 		memcpy(adapter->serial_number, bottom->serial_number, 17);
 		EBCASC(adapter->serial_number, sizeof(adapter->serial_number));
 	}
 
-	ZFCP_LOG_INFO("The adapter %s reported the following characteristics:\n"
+	ZFCP_LOG_NORMAL("The adapter %s reported the following characteristics:\n"
 		      "WWNN 0x%016Lx, "
 		      "WWPN 0x%016Lx, "
 		      "S_ID 0x%08x,\n"
@@ -2112,14 +2165,18 @@ zfcp_fsf_exchange_config_data_handler(struct zfcp_fsf_req *fsf_req)
 		switch (adapter->fc_topology) {
 		case FSF_TOPO_P2P:
 			ZFCP_LOG_FLAGS(1, "FSF_TOPO_P2P\n");
-			ZFCP_LOG_NORMAL("error: Point-to-point fibrechannel "
-					"configuration detected at adapter %s "
-					"unsupported, shutting down adapter\n",
-					zfcp_get_busid_by_adapter(adapter));
+			ZFCP_LOG_NORMAL("Point-to-Point fibrechannel "
+					"configuration detected at adapter %s\n"
+					"Peer WWNN 0x%016llx, "
+					"peer WWPN 0x%016llx, "
+					"peer d_id 0x%06x\n",
+					zfcp_get_busid_by_adapter(adapter),
+					adapter->peer_wwnn,
+					adapter->peer_wwpn,
+					adapter->peer_d_id);
 			debug_text_event(fsf_req->adapter->erp_dbf, 0,
 					 "top-p-to-p");
-			zfcp_erp_adapter_shutdown(adapter, 0);
-			return -EIO;
+			break;
 		case FSF_TOPO_AL:
 			ZFCP_LOG_FLAGS(1, "FSF_TOPO_AL\n");
 			ZFCP_LOG_NORMAL("error: Arbitrated loop fibrechannel "
@@ -2144,6 +2201,7 @@ zfcp_fsf_exchange_config_data_handler(struct zfcp_fsf_req *fsf_req)
 					"of a type known to the zfcp "
 					"driver, shutting down adapter\n",
 					zfcp_get_busid_by_adapter(adapter));
+			adapter->fc_topology = FSF_TOPO_ERROR;
 			debug_text_exception(fsf_req->adapter->erp_dbf, 0,
 					     "unknown-topo");
 			zfcp_erp_adapter_shutdown(adapter, 0);
@@ -2523,6 +2581,15 @@ zfcp_fsf_open_port_handler(struct zfcp_fsf_req *fsf_req)
 					port->wwnn = plogi->serv_param.wwnn;
 			}
 		}
+		break;
+
+	case FSF_UNKNOWN_OP_SUBTYPE:
+		/* should never occure, subtype not set in zfcp_fsf_open_port */
+		ZFCP_LOG_FLAGS(2, "FSF_UNKNOWN_OP_SUBTYPE\n");
+		ZFCP_LOG_INFO("unknown operation subtype (adapter: %s, "
+			      "op_subtype=0x%x)\n", zfcp_get_busid_by_port(port),
+			      fsf_req->qtcb->bottom.support.operation_subtype);
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
 	default:
@@ -4237,7 +4304,7 @@ zfcp_fsf_send_fcp_command_task_handler(struct zfcp_fsf_req *fsf_req)
 		 */
 		scpnt->resid = fcp_rsp_iu->fcp_resid;
 		if (scpnt->request_bufflen - scpnt->resid < scpnt->underflow)
-			scpnt->result |= DID_ERROR << 16;
+			set_host_byte(&scpnt->result, DID_ERROR);
 	}
 
  skip_fsfstatus:
@@ -4345,7 +4412,7 @@ zfcp_fsf_send_fcp_command_task_management_handler(struct zfcp_fsf_req *fsf_req)
  *              -EOPNOTSUPP - The FCP adapter does not have Control File support
  *              -EINVAL     - Invalid direction specified
  *              -ENOMEM     - Insufficient memory
- *              -EPERM      - Cannot create FSF request or or place it in QDIO queue
+ *              -EPERM      - Cannot create FSF request or place it in QDIO queue
  */
 int
 zfcp_fsf_control_file(struct zfcp_adapter *adapter,
@@ -4363,11 +4430,10 @@ zfcp_fsf_control_file(struct zfcp_adapter *adapter,
 	int retval = 0;
 
 	if (!(adapter->supported_features & FSF_FEATURE_CFDC)) {
-		ZFCP_LOG_INFO(
-			"Adapter %s does not support control file\n",
-			zfcp_get_busid_by_adapter(adapter));
+		ZFCP_LOG_INFO("cfdc not supported (adapter %s)\n",
+				 zfcp_get_busid_by_adapter(adapter));
 		retval = -EOPNOTSUPP;
-		goto no_cfdc_support;
+		goto out;
 	}
 
 	switch (fsf_command) {
@@ -4385,7 +4451,8 @@ zfcp_fsf_control_file(struct zfcp_adapter *adapter,
 
 	default:
 		ZFCP_LOG_INFO("Invalid FSF command code 0x%08x\n", fsf_command);
-		goto invalid_command;
+		retval = -EINVAL;
+		goto out;
 	}
 
 	retval = zfcp_fsf_req_create(adapter, fsf_command, req_flags,
@@ -4395,7 +4462,7 @@ zfcp_fsf_control_file(struct zfcp_adapter *adapter,
 			      "adapter %s\n",
 			zfcp_get_busid_by_adapter(adapter));
 		retval = -EPERM;
-		goto out;
+		goto unlock_queue_lock;
 	}
 
 	sbale = zfcp_qdio_sbale_req(fsf_req, fsf_req->sbal_curr, 0);
@@ -4417,42 +4484,40 @@ zfcp_fsf_control_file(struct zfcp_adapter *adapter,
 				"SBALS for an FSF request to the adapter %s\n",
 				zfcp_get_busid_by_adapter(adapter));
 			retval = -ENOMEM;
-			goto sbals_failed;
+			goto free_fsf_req;
 		}
-	} else {
+	} else
 		sbale[1].flags |= SBAL_FLAGS_LAST_ENTRY;
-	}
 
 	zfcp_fsf_start_timer(fsf_req, ZFCP_FSF_REQUEST_TIMEOUT);
 	retval = zfcp_fsf_req_send(fsf_req);
 	if (retval < 0) {
-		ZFCP_LOG_INFO(
-			"error: Could not send FSF request to the adapter %s\n",
-			zfcp_get_busid_by_adapter(adapter));
+		ZFCP_LOG_INFO("initiation of cfdc up/download failed"
+			      "(adapter %s)\n",
+			      zfcp_get_busid_by_adapter(adapter));
 		retval = -EPERM;
-		goto queue_failed;
+		goto free_fsf_req;
 	}
-
-	ZFCP_LOG_NORMAL(
-		"Control file %s FSF request has been sent to the adapter %s\n",
-		fsf_command == FSF_QTCB_DOWNLOAD_CONTROL_FILE ?
-			"download" : "upload",
-		zfcp_get_busid_by_adapter(adapter));
-
-	*fsf_req_ptr = fsf_req;
-
-	goto out;
-
-sbals_failed:
-queue_failed:
-	zfcp_fsf_req_free(fsf_req);
-
-out:
 	write_unlock_irqrestore(&adapter->request_queue.queue_lock, lock_flags);
 
-invalid_command:
-no_cfdc_support:
-	return retval;
+	ZFCP_LOG_NORMAL("Control file %s FSF request has been sent to the "
+			"adapter %s\n",
+			fsf_command == FSF_QTCB_DOWNLOAD_CONTROL_FILE ?
+			"download" : "upload",
+			zfcp_get_busid_by_adapter(adapter));
+
+	wait_event(fsf_req->completion_wq,
+	           fsf_req->status & ZFCP_STATUS_FSFREQ_COMPLETED);
+
+	*fsf_req_ptr = fsf_req;
+	goto out;
+
+ free_fsf_req:
+	zfcp_fsf_req_free(fsf_req);
+ unlock_queue_lock:
+ 	write_unlock_irqrestore(&adapter->request_queue.queue_lock, lock_flags);
+ out:
+ 	return retval;
 }
 
 
@@ -4597,11 +4662,9 @@ zfcp_fsf_control_file_handler(struct zfcp_fsf_req *fsf_req)
 
 	case FSF_UNKNOWN_OP_SUBTYPE:
 		ZFCP_LOG_FLAGS(2, "FSF_UNKNOWN_OP_SUBTYPE\n");
-		ZFCP_LOG_NORMAL(
-			"Invalid operation subtype 0x%x has been specified "
-			"in QTCB bottom sent to the adapter %s\n",
-			bottom->operation_subtype,
-			zfcp_get_busid_by_adapter(adapter));
+		ZFCP_LOG_NORMAL("unknown operation subtype (adapter: %s, "
+				"op_subtype=0x%x)\n", zfcp_get_busid_by_adapter(adapter),
+				bottom->operation_subtype);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		retval = -EINVAL;
 		break;

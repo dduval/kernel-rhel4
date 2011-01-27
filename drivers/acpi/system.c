@@ -102,7 +102,13 @@ acpi_system_read_dsdt (
 
 	res = simple_read_from_buffer(buffer, count, ppos,
 				      dsdt.pointer, dsdt.length);
-	acpi_os_free(dsdt.pointer);
+#if CONFIG_IA64
+	if (ia64_platform_is("hpzx1"))
+		free_pages(dsdt.pointer, get_order(dsdt.length));
+	else
+#else
+		acpi_os_free(dsdt.pointer);
+#endif
 
 	return_VALUE(res);
 }

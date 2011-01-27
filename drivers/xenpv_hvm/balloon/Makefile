@@ -1,6 +1,6 @@
 include $(src)/../overrides.mk
 
-obj-y  = xen-balloon.o
+obj-m  = xen-balloon.o
 
 EXTRA_CFLAGS += -I$(src)/../platform-pci
 

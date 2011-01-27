@@ -19,7 +19,7 @@
 /*
  * Driver version
  */
-#define QLA2XXX_VERSION      "8.02.09-d0-rhel4.7-04"
+#define QLA2XXX_VERSION      "8.02.09.02.04.08-d"
 
 #define QLA_DRIVER_MAJOR_VER	8
 #define QLA_DRIVER_MINOR_VER	1

@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_misc.h 2894 2006-03-28 16:47:45Z sf_support $
+ * $Id: lpfc_misc.h 3192 2008-09-04 13:21:27Z sf_support $
  */
 
 #ifndef _H_LPFC_MISC
@@ -50,7 +50,7 @@
 #define LPFC_MAX_EXTRA_IO_TIMEOUT       255	/* 255 sec */
 #define LPFC_DFT_LNKDWN_TIMEOUT         30
 #define LPFC_MAX_LNKDWN_TIMEOUT         255	/* 255 sec */
-#define LPFC_DFT_NODEV_TIMEOUT          30
+#define LPFC_DFT_NODEV_TIMEOUT          20
 #define LPFC_MAX_NODEV_TIMEOUT          255	/* 255 sec */
 #define LPFC_DFT_RSCN_NS_DELAY          0
 #define LPFC_MAX_RSCN_NS_DELAY          255	/* 255 sec */

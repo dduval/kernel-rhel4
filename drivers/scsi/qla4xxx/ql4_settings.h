@@ -15,7 +15,6 @@
  * used for debug purposes only.
  ****************************************/
 #define ISP_RESET_TEST		0 /* Issues BIG HAMMER (reset) every 3 minutes */
-#define NIC_RESET_TEST		0 /* Simulates NIC card reset every 3 minutes */
 
 /*
  * Compile time Options:
@@ -25,5 +24,5 @@
 
 #define ENABLE_MSI		0	/* Need kernel version 2.6.10 and newer */
 
-#define ENABLE_ISNS		0
+#define ENABLE_ISNS		0	/* WARNING: Not Up-To-Date */
 

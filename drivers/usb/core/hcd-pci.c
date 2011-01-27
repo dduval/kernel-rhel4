@@ -35,6 +35,29 @@
 
 /* PCI-based HCs are normal, but custom bus glue should be ok */
 
+/* dead driver used after rmmod xxxx_hcd */
+static int dhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb, int mf) {
+	printk(KERN_WARNING "usb%d: dead enqueue\n", hcd->self.busnum);
+	return -ENODEV;
+}
+static int dhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb) {
+	printk(KERN_WARNING "usb%d: dead unlink\n", hcd->self.busnum);
+	return -ENODEV;
+}
+static void dhci_ep_disable(struct usb_hcd *hcd, struct hcd_dev *dev, int ea) {
+	printk(KERN_WARNING "usb%d: dead ep disable\n", hcd->self.busnum);
+}
+static int dhci_get_frame(struct usb_hcd *hcd) {
+	return 0;
+}
+
+static struct hc_driver usb_dead_hc_driver = {
+	.description =		"dead",
+	.get_frame_number =	dhci_get_frame,
+	.urb_enqueue =		dhci_urb_enqueue,
+	.urb_dequeue =		dhci_urb_dequeue,
+	.endpoint_disable =	dhci_ep_disable,
+};
 
 /*-------------------------------------------------------------------------*/
 
@@ -42,8 +65,12 @@ static void hcd_pci_release(struct usb_bus *bus)
 {
 	struct usb_hcd *hcd = bus->hcpriv;
 
-	if (hcd)
-		hcd->driver->hcd_free(hcd);
+	if (hcd) {
+		if (hcd->driver->hcd_free != NULL)
+			hcd->driver->hcd_free(hcd);
+		else
+			kfree(hcd);
+	}
 }
 
 /* configure so an HC device and id are always provided */
@@ -159,8 +186,13 @@ clean_2:
 	hcd->self.controller = &dev->dev;
 
 	if ((retval = hcd_buffer_create (hcd)) != 0) {
+		printk(KERN_ERR "hcd %d failed to create buffers (%d)\n",
+		    hcd->self.busnum, retval);
 clean_3:
-		driver->hcd_free (hcd);
+		if (driver->hcd_free != NULL)
+			driver->hcd_free(hcd);
+		else
+			kfree(hcd);
 		goto clean_2;
 	}
 
@@ -241,6 +273,11 @@ void usb_hcd_pci_remove (struct pci_dev *dev)
 	if (HCD_IS_RUNNING (hcd->state))
 		hcd->state = USB_STATE_QUIESCING;
 
+	if (hcd->irq != -1) {
+		synchronize_irq(hcd->irq);
+		flush_scheduled_work();		/* Mostly for ohci */
+	}
+
 	dev_dbg (hcd->self.controller, "roothub graceful disconnect\n");
 	usb_disconnect (&hcd->self.root_hub);
 
@@ -259,6 +296,9 @@ void usb_hcd_pci_remove (struct pci_dev *dev)
 		release_region (pci_resource_start (dev, hcd->region),
 			pci_resource_len (dev, hcd->region));
 	}
+
+	if (hcd->driver->hcd_free == NULL)
+		hcd->driver = &usb_dead_hc_driver;
 
 	usb_deregister_bus (&hcd->self);
 }

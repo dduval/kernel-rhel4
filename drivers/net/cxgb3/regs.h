@@ -170,6 +170,10 @@
 
 #define S_RSPQ0DISABLED    8
 
+#define S_FL0EMPTY    16
+#define V_FL0EMPTY(x) ((x) << S_FL0EMPTY)
+#define F_FL0EMPTY    V_FL0EMPTY(1U)
+
 #define A_SG_EGR_RCQ_DRB_THRSH 0x54
 
 #define S_HIRCQDRBTHRSH    16
@@ -257,6 +261,10 @@
 #define S_RSPQCREDITOVERFOW    2
 #define V_RSPQCREDITOVERFOW(x) ((x) << S_RSPQCREDITOVERFOW)
 #define F_RSPQCREDITOVERFOW    V_RSPQCREDITOVERFOW(1U)
+
+#define S_FLEMPTY    1
+#define V_FLEMPTY(x) ((x) << S_FLEMPTY)
+#define F_FLEMPTY    V_FLEMPTY(1U)
 
 #define A_SG_INT_ENABLE 0x60
 
@@ -564,6 +572,10 @@
 #define S_GPIO10    10
 #define V_GPIO10(x) ((x) << S_GPIO10)
 #define F_GPIO10    V_GPIO10(1U)
+
+#define S_GPIO9    9
+#define V_GPIO9(x) ((x) << S_GPIO9)
+#define F_GPIO9    V_GPIO9(1U)
 
 #define S_GPIO7    7
 #define V_GPIO7(x) ((x) << S_GPIO7)
@@ -1509,15 +1521,17 @@
 
 #define A_ULPRX_ISCSI_TAGMASK 0x514
 
-#define S_HPZ0    0
-#define M_HPZ0    0xf
-#define V_HPZ0(x) ((x) << S_HPZ0)
-#define G_HPZ0(x) (((x) >> S_HPZ0) & M_HPZ0)
+#define A_ULPRX_ISCSI_PSZ 0x518
 
 #define A_ULPRX_TDDP_LLIMIT 0x51c
 
 #define A_ULPRX_TDDP_ULIMIT 0x520
 #define A_ULPRX_TDDP_PSZ 0x528
+
+#define S_HPZ0    0
+#define M_HPZ0    0xf
+#define V_HPZ0(x) ((x) << S_HPZ0)
+#define G_HPZ0(x) (((x) >> S_HPZ0) & M_HPZ0)
 
 #define A_ULPRX_STAG_LLIMIT 0x52c
 
@@ -2193,6 +2207,15 @@
 
 #define A_XGM_RX_EXACT_MATCH_LOW_8 0x854
 
+#define A_XGM_INT_STATUS 0x86c
+
+#define S_LINKFAULTCHANGE    9
+#define V_LINKFAULTCHANGE(x) ((x) << S_LINKFAULTCHANGE)
+#define F_LINKFAULTCHANGE    V_LINKFAULTCHANGE(1U)
+
+#define A_XGM_XGM_INT_ENABLE 0x874
+#define A_XGM_XGM_INT_DISABLE 0x878
+
 #define A_XGM_STAT_CTRL 0x880
 
 #define S_CLRSTATS    2
@@ -2390,6 +2413,10 @@
 #define S_XAUIPCSALIGNCHANGE    2
 #define V_XAUIPCSALIGNCHANGE(x) ((x) << S_XAUIPCSALIGNCHANGE)
 #define F_XAUIPCSALIGNCHANGE    V_XAUIPCSALIGNCHANGE(1U)
+
+#define S_XGM_INT    0
+#define V_XGM_INT(x) ((x) << S_XGM_INT)
+#define F_XGM_INT    V_XGM_INT(1U)
 
 #define A_XGM_INT_CAUSE 0x8d8
 

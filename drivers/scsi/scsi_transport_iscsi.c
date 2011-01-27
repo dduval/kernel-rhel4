@@ -28,6 +28,8 @@
 #define ISCSI_SESSION_ATTRS 21
 #define ISCSI_HOST_ATTRS 2
 
+static struct workqueue_struct *iscsi_wq;
+
 struct iscsi_internal {
 	struct scsi_transport_template t;
 	struct iscsi_function_template *fnt;
@@ -349,6 +351,53 @@ iscsi_attach_transport(struct iscsi_function_template *fnt)
 
 EXPORT_SYMBOL(iscsi_attach_transport);
 
+struct iscsi_scan_info {
+	struct Scsi_Host *shost;
+	unsigned int id;
+	struct work_struct work;
+};
+
+static void __iscsi_scan_target(void *data)
+{
+	struct iscsi_scan_info *info = data;
+
+	scsi_scan_target(info->shost, 0, info->id, SCAN_WILD_CARD, 1);
+	scsi_host_put(info->shost);
+	kfree(info);
+}
+
+/**
+ * iscsi_scan_target - queue a scan of a target
+ * @shost: scsi host target is accessed through
+ * @id: target id number
+ */
+void iscsi_scan_target(struct Scsi_Host *shost, unsigned int id)
+{
+	struct iscsi_scan_info *info;
+
+	if (!scsi_host_get(shost))
+		return;
+
+	info = kzalloc(sizeof(*info), GFP_NOIO);
+	if (!info)
+		goto release_host;
+
+	info->shost = shost;
+	info->id = id;
+	INIT_WORK(&info->work, __iscsi_scan_target, info);
+	if (!queue_work(iscsi_wq, &info->work))
+		goto free_info;
+	return;
+
+ free_info:
+	kfree(info);
+ release_host:
+	scsi_host_put(shost);
+	printk(KERN_ERR "Could not scan iscsi target %d:0:%d.\n",
+	       shost->host_no, id);
+}
+EXPORT_SYMBOL_GPL(iscsi_scan_target);
+
 void iscsi_release_transport(struct scsi_transport_template *t)
 {
 	struct iscsi_internal *i = to_iscsi_internal(t);
@@ -359,15 +408,31 @@ EXPORT_SYMBOL(iscsi_release_transport);
 
 static __init int iscsi_transport_init(void)
 {
-	int err = class_register(&iscsi_transport_class);
+	int err;
 
+	iscsi_wq = create_workqueue("iscsi_wq");
+	if (!iscsi_wq)
+		return -ENOMEM;
+
+	err = class_register(&iscsi_transport_class);
 	if (err)
-		return err;
-	return class_register(&iscsi_host_class);
+		goto destroy_wq;
+
+	err = class_register(&iscsi_host_class);
+	if (err)
+		goto unreg_transport;
+	return 0;
+
+ unreg_transport:
+	class_unregister(&iscsi_transport_class);
+ destroy_wq:
+	destroy_workqueue(iscsi_wq);
+	return err;
 }
 
 static void __exit iscsi_transport_exit(void)
 {
+	destroy_workqueue(iscsi_wq);
 	class_unregister(&iscsi_host_class);
 	class_unregister(&iscsi_transport_class);
 }

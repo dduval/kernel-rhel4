@@ -70,6 +70,9 @@ SYSCFLAGS_vsyscall-syms.o = -m32 -r
 $(obj)/vsyscall-syms.o: $(src)/vsyscall.lds $(obj)/vsyscall-sysenter.o FORCE
 	$(call if_changed,syscall)
 
+obj-$(CONFIG_X86_LOCAL_APIC) += perfctr-watchdog.o
+perfctr-watchdog-y := $(addprefix ../../x86_64/kernel/, perfctr-watchdog.o)
+
 ifdef CONFIG_XEN
 include $(srctree)/scripts/Makefile.xen
 

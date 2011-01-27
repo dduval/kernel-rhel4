@@ -330,6 +330,7 @@ int filemap_write_and_wait(struct address_space *mapping)
 	}
 	return retval;
 }
+EXPORT_SYMBOL(filemap_write_and_wait);
 
 /*
  * This function is used to add newly allocated pagecache pages:
@@ -1585,6 +1586,18 @@ int generic_file_readonly_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EINVAL;
 	return generic_file_mmap(file, vma);
 }
+
+/* This is used for a general mmap of a disk file without modify atime */
+
+int generic_file_noatime_mmap(struct file * file, struct vm_area_struct * vma)
+{
+	struct address_space *mapping = file->f_mapping;
+
+	if (!mapping->a_ops->readpage)
+		return -ENOEXEC;
+	vma->vm_ops = &generic_file_vm_ops;
+	return 0;
+}
 #else
 int generic_file_mmap(struct file * file, struct vm_area_struct * vma)
 {
@@ -1594,10 +1607,15 @@ int generic_file_readonly_mmap(struct file * file, struct vm_area_struct * vma)
 {
 	return -ENOSYS;
 }
+int generic_file_noatime_mmap(struct file * file, struct vm_area_struct * vma)
+{
+	return -ENOSYS;
+}
 #endif /* CONFIG_MMU */
 
 EXPORT_SYMBOL(generic_file_mmap);
 EXPORT_SYMBOL(generic_file_readonly_mmap);
+EXPORT_SYMBOL(generic_file_noatime_mmap);
 
 static inline struct page *__read_cache_page(struct address_space *mapping,
 				unsigned long index,

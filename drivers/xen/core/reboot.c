@@ -246,7 +246,8 @@ static int shutdown_process(void *__unused)
 
 	if ((shutting_down == SHUTDOWN_POWEROFF) ||
 	    (shutting_down == SHUTDOWN_HALT)) {
-		if (execve("/sbin/poweroff", poweroff_argv, envp) < 0) {
+		if (call_usermodehelper("/sbin/poweroff", poweroff_argv,
+					envp, 0) < 0) {
 #ifdef CONFIG_XEN
 			sys_reboot(LINUX_REBOOT_MAGIC1,
 				   LINUX_REBOOT_MAGIC2,

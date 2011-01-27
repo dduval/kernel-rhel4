@@ -433,6 +433,7 @@ static void wacom_graphire_irq(struct urb *urb, struct pt_regs *regs)
 			input_report_key(dev, BTN_TOOL_FINGER, 0);
 			input_event(dev, EV_MSC, MSC_SERIAL, 0xf0);
 		}
+		input_sync(dev);
 	}
 
 exit:

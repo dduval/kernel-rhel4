@@ -46,8 +46,6 @@ qla4xxx_get_req_pkt(scsi_qla_host_t *ha, QUEUE_ENTRY **queue_entry)
 	uint16_t  request_in;
 	uint8_t   status = QLA_SUCCESS;
 
-	ENTER("qla4xxx_get_req_pkt");
-
 	*queue_entry = ha->request_ptr;
 
 	/* get the latest request_in and request_out index */
@@ -88,8 +86,6 @@ qla4xxx_get_req_pkt(scsi_qla_host_t *ha, QUEUE_ENTRY **queue_entry)
 		memset(*queue_entry, 0, sizeof(**queue_entry));
 	}
 
-	LEAVE("qla4xxx_get_req_pkt");
-
 	return (status);
 }
 
@@ -117,8 +113,6 @@ qla4xxx_send_marker_iocb(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry,
 	MARKER_ENTRY *marker_entry;
 	unsigned long flags = 0;
 	uint8_t       status = QLA_SUCCESS;
-
-	ENTER("qla4xxx_send_marker_iocb");
 
 	/* Acquire hardware specific lock */
 	spin_lock_irqsave(&ha->hardware_lock, flags);
@@ -152,9 +146,6 @@ qla4xxx_send_marker_iocb(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry,
 
 exit_send_marker:
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
-
-	LEAVE("qla4xxx_send_marker_iocb");
-
 	return (status);
 }
 
@@ -281,8 +272,6 @@ qla4xxx_send_passthru0_iocb(scsi_qla_host_t *ha,
 	PASSTHRU0_ENTRY *passthru_entry;
 	uint8_t         status = QLA_SUCCESS;
 
-	ENTER("qla4xxx_send_passthru0_iocb");
-
 	/* Get pointer to the queue entry for the marker */
 	if (qla4xxx_get_req_pkt(ha, (QUEUE_ENTRY **) &passthru_entry)
 	    != QLA_SUCCESS) {
@@ -341,7 +330,6 @@ qla4xxx_send_passthru0_iocb(scsi_qla_host_t *ha,
 	PCI_POSTING(&ha->reg->req_q_in);
 
 	exit_send_pt0:
-	LEAVE("qla4xxx_send_passthru0_iocb");
 	return(status);
 }
 

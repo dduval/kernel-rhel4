@@ -33,7 +33,7 @@
 #include "e1000_nvm.h"
 
 /**
- *  e1000_raise_eec_clk - Raise EEPROM clock
+ *  igb_raise_eec_clk - Raise EEPROM clock
  *  @hw: pointer to the HW structure
  *  @eecd: pointer to the EEPROM
  *
@@ -48,7 +48,7 @@ static void igb_raise_eec_clk(struct e1000_hw *hw, u32 *eecd)
 }
 
 /**
- *  e1000_lower_eec_clk - Lower EEPROM clock
+ *  igb_lower_eec_clk - Lower EEPROM clock
  *  @hw: pointer to the HW structure
  *  @eecd: pointer to the EEPROM
  *
@@ -63,7 +63,7 @@ static void igb_lower_eec_clk(struct e1000_hw *hw, u32 *eecd)
 }
 
 /**
- *  e1000_shift_out_eec_bits - Shift data bits our to the EEPROM
+ *  igb_shift_out_eec_bits - Shift data bits our to the EEPROM
  *  @hw: pointer to the HW structure
  *  @data: data to send to the EEPROM
  *  @count: number of bits to shift out
@@ -106,7 +106,7 @@ static void igb_shift_out_eec_bits(struct e1000_hw *hw, u16 data, u16 count)
 }
 
 /**
- *  e1000_shift_in_eec_bits - Shift data bits in from the EEPROM
+ *  igb_shift_in_eec_bits - Shift data bits in from the EEPROM
  *  @hw: pointer to the HW structure
  *  @count: number of bits to shift in
  *
@@ -144,7 +144,7 @@ static u16 igb_shift_in_eec_bits(struct e1000_hw *hw, u16 count)
 }
 
 /**
- *  e1000_poll_eerd_eewr_done - Poll for EEPROM read/write completion
+ *  igb_poll_eerd_eewr_done - Poll for EEPROM read/write completion
  *  @hw: pointer to the HW structure
  *  @ee_reg: EEPROM flag for polling
  *
@@ -175,7 +175,7 @@ static s32 igb_poll_eerd_eewr_done(struct e1000_hw *hw, int ee_reg)
 }
 
 /**
- *  e1000_acquire_nvm - Generic request for access to EEPROM
+ *  igb_acquire_nvm - Generic request for access to EEPROM
  *  @hw: pointer to the HW structure
  *
  *  Set the EEPROM access request bit and wait for EEPROM access grant bit.
@@ -203,7 +203,7 @@ s32 igb_acquire_nvm(struct e1000_hw *hw)
 	if (!timeout) {
 		eecd &= ~E1000_EECD_REQ;
 		wr32(E1000_EECD, eecd);
-		hw_dbg(hw, "Could not acquire NVM grant\n");
+		hw_dbg("Could not acquire NVM grant\n");
 		ret_val = -E1000_ERR_NVM;
 	}
 
@@ -211,7 +211,7 @@ s32 igb_acquire_nvm(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_standby_nvm - Return EEPROM to standby state
+ *  igb_standby_nvm - Return EEPROM to standby state
  *  @hw: pointer to the HW structure
  *
  *  Return the EEPROM to a standby state.
@@ -274,7 +274,7 @@ static void e1000_stop_nvm(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_release_nvm - Release exclusive access to EEPROM
+ *  igb_release_nvm - Release exclusive access to EEPROM
  *  @hw: pointer to the HW structure
  *
  *  Stop any current commands to the EEPROM and clear the EEPROM request bit.
@@ -291,7 +291,7 @@ void igb_release_nvm(struct e1000_hw *hw)
 }
 
 /**
- *  e1000_ready_nvm_eeprom - Prepares EEPROM for read/write
+ *  igb_ready_nvm_eeprom - Prepares EEPROM for read/write
  *  @hw: pointer to the HW structure
  *
  *  Setups the EEPROM for reading and writing.
@@ -338,7 +338,7 @@ static s32 igb_ready_nvm_eeprom(struct e1000_hw *hw)
 		}
 
 		if (!timeout) {
-			hw_dbg(hw, "SPI NVM Status error\n");
+			hw_dbg("SPI NVM Status error\n");
 			ret_val = -E1000_ERR_NVM;
 			goto out;
 		}
@@ -349,7 +349,7 @@ out:
 }
 
 /**
- *  e1000_read_nvm_eerd - Reads EEPROM using EERD register
+ *  igb_read_nvm_eerd - Reads EEPROM using EERD register
  *  @hw: pointer to the HW structure
  *  @offset: offset of word in the EEPROM to read
  *  @words: number of words to read
@@ -369,7 +369,7 @@ s32 igb_read_nvm_eerd(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 	 */
 	if ((offset >= nvm->word_size) || (words > (nvm->word_size - offset)) ||
 	    (words == 0)) {
-		hw_dbg(hw, "nvm parameter(s) out of bounds\n");
+		hw_dbg("nvm parameter(s) out of bounds\n");
 		ret_val = -E1000_ERR_NVM;
 		goto out;
 	}
@@ -392,7 +392,7 @@ out:
 }
 
 /**
- *  e1000_write_nvm_spi - Write to EEPROM using SPI
+ *  igb_write_nvm_spi - Write to EEPROM using SPI
  *  @hw: pointer to the HW structure
  *  @offset: offset within the EEPROM to be written to
  *  @words: number of words to write
@@ -415,7 +415,7 @@ s32 igb_write_nvm_spi(struct e1000_hw *hw, u16 offset, u16 words, u16 *data)
 	 */
 	if ((offset >= nvm->word_size) || (words > (nvm->word_size - offset)) ||
 	    (words == 0)) {
-		hw_dbg(hw, "nvm parameter(s) out of bounds\n");
+		hw_dbg("nvm parameter(s) out of bounds\n");
 		ret_val = -E1000_ERR_NVM;
 		goto out;
 	}
@@ -476,7 +476,7 @@ out:
 }
 
 /**
- *  e1000_read_part_num - Read device part number
+ *  igb_read_part_num - Read device part number
  *  @hw: pointer to the HW structure
  *  @part_num: pointer to device part number
  *
@@ -490,14 +490,14 @@ s32 igb_read_part_num(struct e1000_hw *hw, u32 *part_num)
 
 	ret_val = hw->nvm.ops.read_nvm(hw, NVM_PBA_OFFSET_0, 1, &nvm_data);
 	if (ret_val) {
-		hw_dbg(hw, "NVM Read Error\n");
+		hw_dbg("NVM Read Error\n");
 		goto out;
 	}
 	*part_num = (u32)(nvm_data << 16);
 
 	ret_val = hw->nvm.ops.read_nvm(hw, NVM_PBA_OFFSET_1, 1, &nvm_data);
 	if (ret_val) {
-		hw_dbg(hw, "NVM Read Error\n");
+		hw_dbg("NVM Read Error\n");
 		goto out;
 	}
 	*part_num |= nvm_data;
@@ -507,7 +507,7 @@ out:
 }
 
 /**
- *  e1000_read_mac_addr - Read device MAC address
+ *  igb_read_mac_addr - Read device MAC address
  *  @hw: pointer to the HW structure
  *
  *  Reads the device MAC address from the EEPROM and stores the value.
@@ -523,7 +523,7 @@ s32 igb_read_mac_addr(struct e1000_hw *hw)
 		offset = i >> 1;
 		ret_val = hw->nvm.ops.read_nvm(hw, offset, 1, &nvm_data);
 		if (ret_val) {
-			hw_dbg(hw, "NVM Read Error\n");
+			hw_dbg("NVM Read Error\n");
 			goto out;
 		}
 		hw->mac.perm_addr[i] = (u8)(nvm_data & 0xFF);
@@ -542,7 +542,7 @@ out:
 }
 
 /**
- *  e1000_validate_nvm_checksum - Validate EEPROM checksum
+ *  igb_validate_nvm_checksum - Validate EEPROM checksum
  *  @hw: pointer to the HW structure
  *
  *  Calculates the EEPROM checksum by reading/adding each word of the EEPROM
@@ -557,14 +557,14 @@ s32 igb_validate_nvm_checksum(struct e1000_hw *hw)
 	for (i = 0; i < (NVM_CHECKSUM_REG + 1); i++) {
 		ret_val = hw->nvm.ops.read_nvm(hw, i, 1, &nvm_data);
 		if (ret_val) {
-			hw_dbg(hw, "NVM Read Error\n");
+			hw_dbg("NVM Read Error\n");
 			goto out;
 		}
 		checksum += nvm_data;
 	}
 
 	if (checksum != (u16) NVM_SUM) {
-		hw_dbg(hw, "NVM Checksum Invalid\n");
+		hw_dbg("NVM Checksum Invalid\n");
 		ret_val = -E1000_ERR_NVM;
 		goto out;
 	}
@@ -574,7 +574,7 @@ out:
 }
 
 /**
- *  e1000_update_nvm_checksum - Update EEPROM checksum
+ *  igb_update_nvm_checksum - Update EEPROM checksum
  *  @hw: pointer to the HW structure
  *
  *  Updates the EEPROM checksum by reading/adding each word of the EEPROM
@@ -590,7 +590,7 @@ s32 igb_update_nvm_checksum(struct e1000_hw *hw)
 	for (i = 0; i < NVM_CHECKSUM_REG; i++) {
 		ret_val = hw->nvm.ops.read_nvm(hw, i, 1, &nvm_data);
 		if (ret_val) {
-			hw_dbg(hw, "NVM Read Error while updating checksum.\n");
+			hw_dbg("NVM Read Error while updating checksum.\n");
 			goto out;
 		}
 		checksum += nvm_data;
@@ -598,7 +598,7 @@ s32 igb_update_nvm_checksum(struct e1000_hw *hw)
 	checksum = (u16) NVM_SUM - checksum;
 	ret_val = hw->nvm.ops.write_nvm(hw, NVM_CHECKSUM_REG, 1, &checksum);
 	if (ret_val)
-		hw_dbg(hw, "NVM Write Error while updating checksum.\n");
+		hw_dbg("NVM Write Error while updating checksum.\n");
 
 out:
 	return ret_val;

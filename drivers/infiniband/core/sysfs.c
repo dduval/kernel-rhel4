@@ -30,8 +30,6 @@
  * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- *
- * $Id: sysfs.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include "core_priv.h"
@@ -376,6 +374,12 @@ static PORT_PMA_ATTR(port_xmit_data		    , 12, 32, 192);
 static PORT_PMA_ATTR(port_rcv_data		    , 13, 32, 224);
 static PORT_PMA_ATTR(port_xmit_packets		    , 14, 32, 256);
 static PORT_PMA_ATTR(port_rcv_packets		    , 15, 32, 288);
+/*
+ * There is no bit allocated for port_xmit_wait in the CounterSelect field
+ * (IB spec). However, since this bit is ignored when reading
+ * (show_pma_counter), the _counter field of port_xmit_wait can be set to zero.
+ */
+static PORT_PMA_ATTR(port_xmit_wait		    ,  0, 32, 320);
 
 static struct attribute *pma_attrs[] = {
 	&port_pma_attr_symbol_error.attr.attr,
@@ -394,6 +398,7 @@ static struct attribute *pma_attrs[] = {
 	&port_pma_attr_port_rcv_data.attr.attr,
 	&port_pma_attr_port_xmit_packets.attr.attr,
 	&port_pma_attr_port_rcv_packets.attr.attr,
+	&port_pma_attr_port_xmit_wait.attr.attr,
 	NULL
 };
 
@@ -526,19 +531,10 @@ static int add_port(struct ib_device *device, int port_num)
 
 	p->ibdev      = device;
 	p->port_num   = port_num;
-	p->kobj.ktype = &port_type;
 
-	p->kobj.parent = kobject_get(&device->ports_parent);
-	if (!p->kobj.parent) {
-		ret = -EBUSY;
-		goto err;
-	}
-
-	ret = kobject_set_name(&p->kobj, "%d", port_num);
-	if (ret)
-		goto err_put;
-
-	ret = kobject_register(&p->kobj);
+	ret = kobject_init_and_add(&p->kobj, &port_type,
+				   kobject_get(device->ports_parent),
+				   "%d", port_num);
 	if (ret)
 		goto err_put;
 
@@ -567,6 +563,7 @@ static int add_port(struct ib_device *device, int port_num)
 
 	list_add_tail(&p->kobj.entry, &device->port_list);
 
+	kobject_hotplug("add", &p->kobj);
 	return 0;
 
 err_free_pkey:
@@ -588,9 +585,7 @@ err_remove_pma:
 	sysfs_remove_group(&p->kobj, &pma_group);
 
 err_put:
-	kobject_put(&device->ports_parent);
-
-err:
+	kobject_put(device->ports_parent);
 	kfree(p);
 	return ret;
 }
@@ -689,6 +684,120 @@ static struct class ib_class = {
 	.uevent = ib_device_uevent,
 };
 
+/* Show a given an attribute in the statistics group */
+static ssize_t show_protocol_stat(struct class_device *cdev,
+			    char *buf,
+			    unsigned offset)
+{
+	struct ib_device *dev = container_of(cdev, struct ib_device, class_dev);
+	union rdma_protocol_stats stats;
+	ssize_t ret;
+
+	ret = dev->get_protocol_stats(dev, &stats);
+	if (ret)
+		return ret;
+
+	return sprintf(buf, "%llu\n",
+		       (unsigned long long) ((u64 *) &stats)[offset]);
+}
+
+/* generate a read-only iwarp statistics attribute */
+#define IW_STATS_ENTRY(name)						\
+static ssize_t show_##name(struct class_device *cdev,			\
+			   char *buf)					\
+{									\
+	return show_protocol_stat(cdev, buf,				\
+				  offsetof(struct iw_protocol_stats, name) / \
+				  sizeof (u64));			\
+}									\
+static CLASS_DEVICE_ATTR(name, S_IRUGO, show_##name, NULL)
+
+IW_STATS_ENTRY(ipInReceives);
+IW_STATS_ENTRY(ipInHdrErrors);
+IW_STATS_ENTRY(ipInTooBigErrors);
+IW_STATS_ENTRY(ipInNoRoutes);
+IW_STATS_ENTRY(ipInAddrErrors);
+IW_STATS_ENTRY(ipInUnknownProtos);
+IW_STATS_ENTRY(ipInTruncatedPkts);
+IW_STATS_ENTRY(ipInDiscards);
+IW_STATS_ENTRY(ipInDelivers);
+IW_STATS_ENTRY(ipOutForwDatagrams);
+IW_STATS_ENTRY(ipOutRequests);
+IW_STATS_ENTRY(ipOutDiscards);
+IW_STATS_ENTRY(ipOutNoRoutes);
+IW_STATS_ENTRY(ipReasmTimeout);
+IW_STATS_ENTRY(ipReasmReqds);
+IW_STATS_ENTRY(ipReasmOKs);
+IW_STATS_ENTRY(ipReasmFails);
+IW_STATS_ENTRY(ipFragOKs);
+IW_STATS_ENTRY(ipFragFails);
+IW_STATS_ENTRY(ipFragCreates);
+IW_STATS_ENTRY(ipInMcastPkts);
+IW_STATS_ENTRY(ipOutMcastPkts);
+IW_STATS_ENTRY(ipInBcastPkts);
+IW_STATS_ENTRY(ipOutBcastPkts);
+IW_STATS_ENTRY(tcpRtoAlgorithm);
+IW_STATS_ENTRY(tcpRtoMin);
+IW_STATS_ENTRY(tcpRtoMax);
+IW_STATS_ENTRY(tcpMaxConn);
+IW_STATS_ENTRY(tcpActiveOpens);
+IW_STATS_ENTRY(tcpPassiveOpens);
+IW_STATS_ENTRY(tcpAttemptFails);
+IW_STATS_ENTRY(tcpEstabResets);
+IW_STATS_ENTRY(tcpCurrEstab);
+IW_STATS_ENTRY(tcpInSegs);
+IW_STATS_ENTRY(tcpOutSegs);
+IW_STATS_ENTRY(tcpRetransSegs);
+IW_STATS_ENTRY(tcpInErrs);
+IW_STATS_ENTRY(tcpOutRsts);
+
+static struct attribute *iw_proto_stats_attrs[] = {
+	&class_device_attr_ipInReceives.attr,
+	&class_device_attr_ipInHdrErrors.attr,
+	&class_device_attr_ipInTooBigErrors.attr,
+	&class_device_attr_ipInNoRoutes.attr,
+	&class_device_attr_ipInAddrErrors.attr,
+	&class_device_attr_ipInUnknownProtos.attr,
+	&class_device_attr_ipInTruncatedPkts.attr,
+	&class_device_attr_ipInDiscards.attr,
+	&class_device_attr_ipInDelivers.attr,
+	&class_device_attr_ipOutForwDatagrams.attr,
+	&class_device_attr_ipOutRequests.attr,
+	&class_device_attr_ipOutDiscards.attr,
+	&class_device_attr_ipOutNoRoutes.attr,
+	&class_device_attr_ipReasmTimeout.attr,
+	&class_device_attr_ipReasmReqds.attr,
+	&class_device_attr_ipReasmOKs.attr,
+	&class_device_attr_ipReasmFails.attr,
+	&class_device_attr_ipFragOKs.attr,
+	&class_device_attr_ipFragFails.attr,
+	&class_device_attr_ipFragCreates.attr,
+	&class_device_attr_ipInMcastPkts.attr,
+	&class_device_attr_ipOutMcastPkts.attr,
+	&class_device_attr_ipInBcastPkts.attr,
+	&class_device_attr_ipOutBcastPkts.attr,
+	&class_device_attr_tcpRtoAlgorithm.attr,
+	&class_device_attr_tcpRtoMin.attr,
+	&class_device_attr_tcpRtoMax.attr,
+	&class_device_attr_tcpMaxConn.attr,
+	&class_device_attr_tcpActiveOpens.attr,
+	&class_device_attr_tcpPassiveOpens.attr,
+	&class_device_attr_tcpAttemptFails.attr,
+	&class_device_attr_tcpEstabResets.attr,
+	&class_device_attr_tcpCurrEstab.attr,
+	&class_device_attr_tcpInSegs.attr,
+	&class_device_attr_tcpOutSegs.attr,
+	&class_device_attr_tcpRetransSegs.attr,
+	&class_device_attr_tcpInErrs.attr,
+	&class_device_attr_tcpOutRsts.attr,
+	NULL
+};
+
+static struct attribute_group iw_stats_group = {
+	.name	= "proto_stats",
+	.attrs	= iw_proto_stats_attrs,
+};
+
 int ib_device_register_sysfs(struct ib_device *device)
 {
 	struct class_device *class_dev = &device->class_dev;
@@ -712,17 +821,12 @@ int ib_device_register_sysfs(struct ib_device *device)
 			goto err_unregister;
 	}
 
-	device->ports_parent.parent = kobject_get(&class_dev->kobj);
-	if (!device->ports_parent.parent) {
-		ret = -EBUSY;
-		goto err_unregister;
+	device->ports_parent = kobject_create_and_add("ports",
+					kobject_get(&class_dev->kobj));
+	if (!device->ports_parent) {
+		ret = -ENOMEM;
+		goto err_put;
 	}
-	ret = kobject_set_name(&device->ports_parent, "ports");
-	if (ret)
-		goto err_put;
-	ret = kobject_register(&device->ports_parent);
-	if (ret)
-		goto err_put;
 
 	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		ret = add_port(device, 0);
@@ -734,6 +838,12 @@ int ib_device_register_sysfs(struct ib_device *device)
 			if (ret)
 				goto err_put;
 		}
+	}
+
+	if (device->node_type == RDMA_NODE_RNIC && device->get_protocol_stats) {
+		ret = sysfs_create_group(&class_dev->kobj, &iw_stats_group);
+		if (ret)
+			goto err_put;
 	}
 
 	return 0;
@@ -753,7 +863,7 @@ err_put:
 		}
 	}
 
-	kobject_put(&class_dev->kobj);
+	kobject_unregister(&class_dev->kobj);
 
 err_unregister:
 	class_device_unregister(class_dev);
@@ -776,7 +886,9 @@ void ib_device_unregister_sysfs(struct ib_device *device)
 		kobject_unregister(p);
 	}
 
-	kobject_unregister(&device->ports_parent);
+	kobject_put(device->ports_parent);
+	/* WA for memory leak */
+	kfree(device->ports_parent);
 	class_device_unregister(&device->class_dev);
 }
 

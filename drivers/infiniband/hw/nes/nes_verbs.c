@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 - 2008 NetEffect, Inc. All rights reserved.
+ * Copyright (c) 2006 - 2008 Intel-NE, Inc.  All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -49,12 +49,12 @@ atomic_t mod_qp_timouts;
 atomic_t qps_created;
 atomic_t sw_qps_destroyed;
 
+static void nes_unregister_ofa_device(struct nes_ib_device *nesibdev);
 
 /**
  * nes_alloc_mw
  */
 static struct ib_mw *nes_alloc_mw(struct ib_pd *ibpd) {
-	unsigned long flags;
 	struct nes_pd *nespd = to_nespd(ibpd);
 	struct nes_vnic *nesvnic = to_nesvnic(ibpd->device);
 	struct nes_device *nesdev = nesvnic->nesdev;
@@ -109,7 +109,7 @@ static struct ib_mw *nes_alloc_mw(struct ib_pd *ibpd) {
 	cqp_wqe = &cqp_request->cqp_wqe;
 
 	cqp_wqe->wqe_words[NES_CQP_WQE_OPCODE_IDX] =
-			cpu_to_le32(NES_CQP_ALLOCATE_STAG | NES_CQP_STAG_RIGHTS_REMOTE_READ |
+			cpu_to_le32( NES_CQP_ALLOCATE_STAG | NES_CQP_STAG_RIGHTS_REMOTE_READ |
 			NES_CQP_STAG_RIGHTS_REMOTE_WRITE | NES_CQP_STAG_VA_TO |
 			NES_CQP_STAG_REM_ACC_EN);
 
@@ -118,7 +118,7 @@ static struct ib_mw *nes_alloc_mw(struct ib_pd *ibpd) {
 	set_wqe_32bit_value(cqp_wqe->wqe_words, NES_CQP_STAG_WQE_STAG_IDX, stag);
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	ret = wait_event_timeout(cqp_request->waitq, (cqp_request->request_done != 0),
@@ -127,15 +127,7 @@ static struct ib_mw *nes_alloc_mw(struct ib_pd *ibpd) {
 			" CQP Major:Minor codes = 0x%04X:0x%04X.\n",
 			stag, ret, cqp_request->major_code, cqp_request->minor_code);
 	if ((!ret) || (cqp_request->major_code)) {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
+		nes_put_cqp_request(nesdev, cqp_request);
 		kfree(nesmr);
 		nes_free_resource(nesadapter, nesadapter->allocated_mrs, stag_index);
 		if (!ret) {
@@ -143,17 +135,8 @@ static struct ib_mw *nes_alloc_mw(struct ib_pd *ibpd) {
 		} else {
 			return ERR_PTR(-ENOMEM);
 		}
-	} else {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
 	}
+	nes_put_cqp_request(nesdev, cqp_request);
 
 	nesmr->ibmw.rkey = stag;
 	nesmr->mode = IWNES_MEMREG_TYPE_MW;
@@ -177,7 +160,6 @@ static int nes_dealloc_mw(struct ib_mw *ibmw)
 	struct nes_hw_cqp_wqe *cqp_wqe;
 	struct nes_cqp_request *cqp_request;
 	int err = 0;
-	unsigned long flags;
 	int ret;
 
 	/* Deallocate the window with the adapter */
@@ -193,7 +175,7 @@ static int nes_dealloc_mw(struct ib_mw *ibmw)
 	set_wqe_32bit_value(cqp_wqe->wqe_words, NES_CQP_STAG_WQE_STAG_IDX, ibmw->rkey);
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	nes_debug(NES_DBG_MR, "Waiting for deallocate STag 0x%08X to complete.\n",
@@ -203,32 +185,12 @@ static int nes_dealloc_mw(struct ib_mw *ibmw)
 	nes_debug(NES_DBG_MR, "Deallocate STag completed, wait_event_timeout ret = %u,"
 			" CQP Major:Minor codes = 0x%04X:0x%04X.\n",
 			ret, cqp_request->major_code, cqp_request->minor_code);
-	if ((!ret) || (cqp_request->major_code)) {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
-		if (!ret) {
-			err = -ETIME;
-		} else {
-			err = -EIO;
-		}
-	} else {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
-	}
+	if (!ret)
+		err = -ETIME;
+	else if (cqp_request->major_code)
+		err = -EIO;
+
+	nes_put_cqp_request(nesdev, cqp_request);
 
 	nes_free_resource(nesadapter, nesadapter->allocated_mrs,
 			(ibmw->rkey & 0x0fffff00) >> 8);
@@ -258,14 +220,14 @@ static int nes_bind_mw(struct ib_qp *ibqp, struct ib_mw *ibmw,
 	if (nesqp->ibqp_state > IB_QPS_RTS)
 		return -EINVAL;
 
-		spin_lock_irqsave(&nesqp->lock, flags);
+	spin_lock_irqsave(&nesqp->lock, flags);
 
 	head = nesqp->hwqp.sq_head;
 	qsize = nesqp->hwqp.sq_tail;
 
 	/* Check for SQ overflow */
 	if (((head + (2 * qsize) - nesqp->hwqp.sq_tail) % qsize) == (qsize - 1)) {
-			spin_unlock_irqrestore(&nesqp->lock, flags);
+		spin_unlock_irqrestore(&nesqp->lock, flags);
 		return -EINVAL;
 	}
 
@@ -307,7 +269,7 @@ static int nes_bind_mw(struct ib_qp *ibqp, struct ib_mw *ibmw,
 	nes_write32(nesdev->regs+NES_WQE_ALLOC,
 			(1 << 24) | 0x00800000 | nesqp->hwqp.qp_id);
 
-		spin_unlock_irqrestore(&nesqp->lock, flags);
+	spin_unlock_irqrestore(&nesqp->lock, flags);
 
 	return 0;
 }
@@ -387,7 +349,7 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 			if (nesfmr->nesmr.pbls_used > nesadapter->free_4kpbl) {
 				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
 				ret = -ENOMEM;
-				goto failed_vpbl_alloc;
+				goto failed_vpbl_avail;
 			} else {
 				nesadapter->free_4kpbl -= nesfmr->nesmr.pbls_used;
 			}
@@ -395,7 +357,7 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 			if (nesfmr->nesmr.pbls_used > nesadapter->free_256pbl) {
 				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
 				ret = -ENOMEM;
-				goto failed_vpbl_alloc;
+				goto failed_vpbl_avail;
 			} else {
 				nesadapter->free_256pbl -= nesfmr->nesmr.pbls_used;
 			}
@@ -429,22 +391,22 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 			goto failed_vpbl_alloc;
 		}
 
-		nesfmr->root_vpbl.leaf_vpbl = kzalloc(sizeof(*nesfmr->root_vpbl.leaf_vpbl)*1024, GFP_KERNEL);
+		nesfmr->leaf_pbl_cnt = nesfmr->nesmr.pbls_used-1;
+		nesfmr->root_vpbl.leaf_vpbl = kzalloc(sizeof(*nesfmr->root_vpbl.leaf_vpbl)*1024, GFP_ATOMIC);
 		if (!nesfmr->root_vpbl.leaf_vpbl) {
 			spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
 			ret = -ENOMEM;
 			goto failed_leaf_vpbl_alloc;
 		}
 
-		nesfmr->leaf_pbl_cnt = nesfmr->nesmr.pbls_used-1;
 		nes_debug(NES_DBG_MR, "two level pbl, root_vpbl.pbl_vbase=%p"
 				" leaf_pbl_cnt=%d root_vpbl.leaf_vpbl=%p\n",
 				nesfmr->root_vpbl.pbl_vbase, nesfmr->leaf_pbl_cnt, nesfmr->root_vpbl.leaf_vpbl);
 
-		for (i = 0; i < nesfmr->leaf_pbl_cnt; i++)
+		for (i=0; i<nesfmr->leaf_pbl_cnt; i++)
 			nesfmr->root_vpbl.leaf_vpbl[i].pbl_vbase = NULL;
 
-		for (i = 0; i < nesfmr->leaf_pbl_cnt; i++) {
+		for (i=0; i<nesfmr->leaf_pbl_cnt; i++) {
 			vpbl.pbl_vbase = pci_alloc_consistent(nesdev->pcidev, 4096,
 					&vpbl.pbl_pbase);
 
@@ -515,7 +477,7 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 			(nesfmr->nesmr.pbls_used-1) : nesfmr->nesmr.pbls_used);
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	ret = wait_event_timeout(cqp_request->waitq, (cqp_request->request_done != 0),
@@ -525,29 +487,11 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 			stag, ret, cqp_request->major_code, cqp_request->minor_code);
 
 	if ((!ret) || (cqp_request->major_code)) {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
+		nes_put_cqp_request(nesdev, cqp_request);
 		ret = (!ret) ? -ETIME : -EIO;
 		goto failed_leaf_vpbl_pages_alloc;
-	} else {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
 	}
-
+	nes_put_cqp_request(nesdev, cqp_request);
 	nesfmr->nesmr.ibfmr.lkey = stag;
 	nesfmr->nesmr.ibfmr.rkey = stag;
 	nesfmr->attr = *ibfmr_attr;
@@ -556,7 +500,7 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 
 	failed_leaf_vpbl_pages_alloc:
 	/* unroll all allocated pages */
-	for (i = 0; i < nesfmr->leaf_pbl_cnt; i++) {
+	for (i=0; i<nesfmr->leaf_pbl_cnt; i++) {
 		if (nesfmr->root_vpbl.leaf_vpbl[i].pbl_vbase) {
 			pci_free_consistent(nesdev->pcidev, 4096, nesfmr->root_vpbl.leaf_vpbl[i].pbl_vbase,
 					nesfmr->root_vpbl.leaf_vpbl[i].pbl_pbase);
@@ -575,6 +519,16 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
 				nesfmr->root_vpbl.pbl_pbase);
 
 	failed_vpbl_alloc:
+	if (nesfmr->nesmr.pbls_used != 0) {
+		spin_lock_irqsave(&nesadapter->pbl_lock, flags);
+		if (nesfmr->nesmr.pbl_4k)
+			nesadapter->free_4kpbl += nesfmr->nesmr.pbls_used;
+		else
+			nesadapter->free_256pbl += nesfmr->nesmr.pbls_used;
+		spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+	}
+
+failed_vpbl_avail:
 	kfree(nesfmr);
 
 	failed_fmr_alloc:
@@ -590,17 +544,13 @@ static struct ib_fmr *nes_alloc_fmr(struct ib_pd *ibpd,
  */
 static int nes_dealloc_fmr(struct ib_fmr *ibfmr)
 {
+	unsigned long flags;
 	struct nes_mr *nesmr = to_nesmr_from_ibfmr(ibfmr);
 	struct nes_fmr *nesfmr = to_nesfmr(nesmr);
 	struct nes_vnic *nesvnic = to_nesvnic(ibfmr->device);
 	struct nes_device *nesdev = nesvnic->nesdev;
-	struct nes_mr temp_nesmr = *nesmr;
+	struct nes_adapter *nesadapter = nesdev->nesadapter;
 	int i = 0;
-
-	temp_nesmr.ibmw.device = ibfmr->device;
-	temp_nesmr.ibmw.pd = ibfmr->pd;
-	temp_nesmr.ibmw.rkey = ibfmr->rkey;
-	temp_nesmr.ibmw.uobject = NULL;
 
 	/* free the resources */
 	if (nesfmr->leaf_pbl_cnt == 0) {
@@ -617,8 +567,24 @@ static int nes_dealloc_fmr(struct ib_fmr *ibfmr)
 		pci_free_consistent(nesdev->pcidev, 8192, nesfmr->root_vpbl.pbl_vbase,
 				nesfmr->root_vpbl.pbl_pbase);
 	}
+	nesmr->ibmw.device = ibfmr->device;
+	nesmr->ibmw.pd = ibfmr->pd;
+	nesmr->ibmw.rkey = ibfmr->rkey;
+	nesmr->ibmw.uobject = NULL;
 
-	return nes_dealloc_mw(&temp_nesmr.ibmw);
+	if (nesfmr->nesmr.pbls_used != 0) {
+		spin_lock_irqsave(&nesadapter->pbl_lock, flags);
+		if (nesfmr->nesmr.pbl_4k) {
+			nesadapter->free_4kpbl += nesfmr->nesmr.pbls_used;
+			WARN_ON(nesadapter->free_4kpbl > nesadapter->max_4kpbl);
+		} else {
+			nesadapter->free_256pbl += nesfmr->nesmr.pbls_used;
+			WARN_ON(nesadapter->free_256pbl > nesadapter->max_256pbl);
+		}
+		spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+	}
+
+	return nes_dealloc_mw(&nesmr->ibmw);
 }
 
 
@@ -1043,10 +1009,10 @@ static int nes_setup_virt_qp(struct nes_qp *nesqp, struct nes_pbl *nespbl,
 	u8 sq_pbl_entries;
 
 	pbl_entries = nespbl->pbl_size >> 3;
-	nes_debug(NES_DBG_QP, "Userspace PBL, pbl_size=%u, pbl_entries = %d pbl_vbase=%p, pbl_pbase=%p\n",
+	nes_debug(NES_DBG_QP, "Userspace PBL, pbl_size=%u, pbl_entries = %d pbl_vbase=%p, pbl_pbase=%lx\n",
 			nespbl->pbl_size, pbl_entries,
 			(void *)nespbl->pbl_vbase,
-			(void *)nespbl->pbl_pbase);
+			(unsigned long) nespbl->pbl_pbase);
 	pbl = (__le64 *) nespbl->pbl_vbase; /* points to first pbl entry */
 	/* now lets set the sq_vbase as well as rq_vbase addrs we will assign */
 	/* the first pbl to be fro the rq_vbase... */
@@ -1074,9 +1040,9 @@ static int nes_setup_virt_qp(struct nes_qp *nesqp, struct nes_pbl *nespbl,
 	/* nesqp->hwqp.rq_vbase = bus_to_virt(*pbl); */
 	/*nesqp->hwqp.rq_vbase = phys_to_virt(*pbl); */
 
-	nes_debug(NES_DBG_QP, "QP sq_vbase= %p sq_pbase=%p rq_vbase=%p rq_pbase=%p\n",
-			nesqp->hwqp.sq_vbase, (void *)nesqp->hwqp.sq_pbase,
-			nesqp->hwqp.rq_vbase, (void *)nesqp->hwqp.rq_pbase);
+	nes_debug(NES_DBG_QP, "QP sq_vbase= %p sq_pbase=%lx rq_vbase=%p rq_pbase=%lx\n",
+		  nesqp->hwqp.sq_vbase, (unsigned long) nesqp->hwqp.sq_pbase,
+		  nesqp->hwqp.rq_vbase, (unsigned long) nesqp->hwqp.rq_pbase);
 	spin_lock_irqsave(&nesadapter->pbl_lock, flags);
 	if (!nesadapter->free_256pbl) {
 		pci_free_consistent(nesdev->pcidev, nespbl->pbl_size, nespbl->pbl_vbase,
@@ -1264,6 +1230,9 @@ static struct ib_qp *nes_create_qp(struct ib_pd *ibpd,
 	u8 rq_encoded_size;
 	/* int counter; */
 
+	if (init_attr->create_flags)
+		return ERR_PTR(-EINVAL);
+
 	atomic_inc(&qps_created);
 	switch (init_attr->qp_type) {
 		case IB_QPT_RC:
@@ -1275,7 +1244,7 @@ static struct ib_qp *nes_create_qp(struct ib_pd *ibpd,
 			sq_size = init_attr->cap.max_send_wr;
 			rq_size = init_attr->cap.max_recv_wr;
 
-			// check if the encoded sizes are OK or not...
+			/* check if the encoded sizes are OK or not... */
 			sq_encoded_size = nes_get_encoded_size(&sq_size);
 			rq_encoded_size = nes_get_encoded_size(&rq_size);
 
@@ -1483,7 +1452,7 @@ static struct ib_qp *nes_create_qp(struct ib_pd *ibpd,
 			set_wqe_64bit_value(cqp_wqe->wqe_words, NES_CQP_QP_WQE_CONTEXT_LOW_IDX, u64temp);
 
 			atomic_set(&cqp_request->refcount, 2);
-			nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+			nes_post_cqp_request(nesdev, cqp_request);
 
 			/* Wait for CQP */
 			nes_debug(NES_DBG_QP, "Waiting for create iWARP QP%u to complete.\n",
@@ -1496,15 +1465,7 @@ static struct ib_qp *nes_create_qp(struct ib_pd *ibpd,
 					nesqp->hwqp.qp_id, ret, nesdev->cqp.sq_head, nesdev->cqp.sq_tail,
 					cqp_request->major_code, cqp_request->minor_code);
 			if ((!ret) || (cqp_request->major_code)) {
-				if (atomic_dec_and_test(&cqp_request->refcount)) {
-					if (cqp_request->dynamic) {
-						kfree(cqp_request);
-					} else {
-						spin_lock_irqsave(&nesdev->cqp.lock, flags);
-						list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-						spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-					}
-				}
+				nes_put_cqp_request(nesdev, cqp_request);
 				nes_free_resource(nesadapter, nesadapter->allocated_qps, qp_num);
 				nes_free_qp_mem(nesdev, nesqp,virt_wqs);
 				kfree(nesqp->allocated_buffer);
@@ -1513,17 +1474,9 @@ static struct ib_qp *nes_create_qp(struct ib_pd *ibpd,
 				} else {
 					return ERR_PTR(-EIO);
 				}
-			} else {
-				if (atomic_dec_and_test(&cqp_request->refcount)) {
-					if (cqp_request->dynamic) {
-						kfree(cqp_request);
-					} else {
-						spin_lock_irqsave(&nesdev->cqp.lock, flags);
-						list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-						spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-					}
-				}
 			}
+
+			nes_put_cqp_request(nesdev, cqp_request);
 
 			if (ibpd->uobject) {
 				uresp.mmap_sq_db_index = nesqp->mmap_sq_db_index;
@@ -1691,11 +1644,11 @@ static struct ib_cq *nes_create_cq(struct ib_device *ibdev, int entries,
 		nes_ucontext->mcrqf = req.mcrqf;
 		if (nes_ucontext->mcrqf) {
 			if (nes_ucontext->mcrqf & 0x80000000)
-				nescq->hw_cq.cq_number = nesvnic->nic.qp_id + 12 + (nes_ucontext->mcrqf & 0xf) - 1;
+				nescq->hw_cq.cq_number = nesvnic->nic.qp_id + 28 + 2 * ((nes_ucontext->mcrqf & 0xf) - 1);
 			else if (nes_ucontext->mcrqf & 0x40000000)
 				nescq->hw_cq.cq_number = nes_ucontext->mcrqf & 0xffff;
 			else
-				nescq->hw_cq.cq_number = nesvnic->mcrq_qp_id + nes_ucontext->mcrqf - 1;
+				nescq->hw_cq.cq_number = nesvnic->mcrq_qp_id + nes_ucontext->mcrqf-1;
 			nes_free_resource(nesadapter, nesadapter->allocated_cqs, cq_num);
 		}
 		nes_debug(NES_DBG_CQ, "CQ Virtual Address = %08lX, size = %u.\n",
@@ -1769,13 +1722,8 @@ static struct ib_cq *nes_create_cq(struct ib_device *ibdev, int entries,
 			/* use 4k pbl */
 			nes_debug(NES_DBG_CQ, "pbl_entries=%u, use a 4k PBL\n", pbl_entries);
 			if (nesadapter->free_4kpbl == 0) {
-				if (cqp_request->dynamic) {
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-					kfree(cqp_request);
-				} else {
-					list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-				}
+				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+				nes_free_cqp_request(nesdev, cqp_request);
 				if (!context)
 					pci_free_consistent(nesdev->pcidev, nescq->cq_mem_size, mem,
 							nescq->hw_cq.cq_pbase);
@@ -1791,13 +1739,8 @@ static struct ib_cq *nes_create_cq(struct ib_device *ibdev, int entries,
 			/* use 256 byte pbl */
 			nes_debug(NES_DBG_CQ, "pbl_entries=%u, use a 256 byte PBL\n", pbl_entries);
 			if (nesadapter->free_256pbl == 0) {
-				if (cqp_request->dynamic) {
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-					kfree(cqp_request);
-				} else {
-					list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-				}
+				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+				nes_free_cqp_request(nesdev, cqp_request);
 				if (!context)
 					pci_free_consistent(nesdev->pcidev, nescq->cq_mem_size, mem,
 							nescq->hw_cq.cq_pbase);
@@ -1839,7 +1782,7 @@ static struct ib_cq *nes_create_cq(struct ib_device *ibdev, int entries,
 			cpu_to_le32(((u32)((u64temp) >> 33)) & 0x7FFFFFFF);
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	nes_debug(NES_DBG_CQ, "Waiting for create iWARP CQ%u to complete.\n",
@@ -1849,32 +1792,15 @@ static struct ib_cq *nes_create_cq(struct ib_device *ibdev, int entries,
 	nes_debug(NES_DBG_CQ, "Create iWARP CQ%u completed, wait_event_timeout ret = %d.\n",
 			nescq->hw_cq.cq_number, ret);
 	if ((!ret) || (cqp_request->major_code)) {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
+		nes_put_cqp_request(nesdev, cqp_request);
 		if (!context)
 			pci_free_consistent(nesdev->pcidev, nescq->cq_mem_size, mem,
 					nescq->hw_cq.cq_pbase);
 		nes_free_resource(nesadapter, nesadapter->allocated_cqs, cq_num);
 		kfree(nescq);
 		return ERR_PTR(-EIO);
-	} else {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
 	}
+	nes_put_cqp_request(nesdev, cqp_request);
 
 	if (context) {
 		/* free the nespbl */
@@ -1934,13 +1860,13 @@ static int nes_destroy_cq(struct ib_cq *ib_cq)
 		nesadapter->free_256pbl++;
 		if (nesadapter->free_256pbl > nesadapter->max_256pbl) {
 			printk(KERN_ERR PFX "%s: free 256B PBLs(%u) has exceeded the max(%u)\n",
-					__FUNCTION__, nesadapter->free_256pbl, nesadapter->max_256pbl);
+					__func__, nesadapter->free_256pbl, nesadapter->max_256pbl);
 		}
 	} else if (nescq->virtual_cq == 2) {
 		nesadapter->free_4kpbl++;
 		if (nesadapter->free_4kpbl > nesadapter->max_4kpbl) {
 			printk(KERN_ERR PFX "%s: free 4K PBLs(%u) has exceeded the max(%u)\n",
-					__FUNCTION__, nesadapter->free_4kpbl, nesadapter->max_4kpbl);
+					__func__, nesadapter->free_4kpbl, nesadapter->max_4kpbl);
 		}
 		opcode |= NES_CQP_CQ_4KB_CHUNK;
 	}
@@ -1953,7 +1879,7 @@ static int nes_destroy_cq(struct ib_cq *ib_cq)
 		(nescq->hw_cq.cq_number | ((u32)PCI_FUNC(nesdev->pcidev->devfn) << 16)));
 	nes_free_resource(nesadapter, nesadapter->allocated_cqs, nescq->hw_cq.cq_number);
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	nes_debug(NES_DBG_CQ, "Waiting for destroy iWARP CQ%u to complete.\n",
@@ -1964,41 +1890,22 @@ static int nes_destroy_cq(struct ib_cq *ib_cq)
 			" CQP Major:Minor codes = 0x%04X:0x%04X.\n",
 			nescq->hw_cq.cq_number, ret, cqp_request->major_code,
 			cqp_request->minor_code);
-	if ((!ret) || (cqp_request->major_code)) {
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
-		if (!ret) {
-			nes_debug(NES_DBG_CQ, "iWARP CQ%u destroy timeout expired\n",
+	if (!ret) {
+		nes_debug(NES_DBG_CQ, "iWARP CQ%u destroy timeout expired\n",
 					nescq->hw_cq.cq_number);
-			ret = -ETIME;
-		} else {
-			nes_debug(NES_DBG_CQ, "iWARP CQ%u destroy failed\n",
+		ret = -ETIME;
+	} else if (cqp_request->major_code) {
+		nes_debug(NES_DBG_CQ, "iWARP CQ%u destroy failed\n",
 					nescq->hw_cq.cq_number);
-			ret = -EIO;
-		}
+		ret = -EIO;
 	} else {
 		ret = 0;
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
 	}
+	nes_put_cqp_request(nesdev, cqp_request);
 
 	if (nescq->cq_mem_size)
 		pci_free_consistent(nesdev->pcidev, nescq->cq_mem_size,
-				(void *)nescq->hw_cq.cq_vbase, nescq->hw_cq.cq_pbase);
+				    nescq->hw_cq.cq_vbase, nescq->hw_cq.cq_pbase);
 	kfree(nescq);
 
 	return ret;
@@ -2038,13 +1945,8 @@ static int nes_reg_mr(struct nes_device *nesdev, struct nes_pd *nespd,
 			/* Two level PBL */
 			if ((pbl_count+1) > nesadapter->free_4kpbl) {
 				nes_debug(NES_DBG_MR, "Out of 4KB Pbls for two level request.\n");
-				if (cqp_request->dynamic) {
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-					kfree(cqp_request);
-				} else {
-					list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-				}
+				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+				nes_free_cqp_request(nesdev, cqp_request);
 				return -ENOMEM;
 			} else {
 				nesadapter->free_4kpbl -= pbl_count+1;
@@ -2052,13 +1954,8 @@ static int nes_reg_mr(struct nes_device *nesdev, struct nes_pd *nespd,
 		} else if (residual_page_count > 32) {
 			if (pbl_count > nesadapter->free_4kpbl) {
 				nes_debug(NES_DBG_MR, "Out of 4KB Pbls.\n");
-				if (cqp_request->dynamic) {
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-					kfree(cqp_request);
-				} else {
-					list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-				}
+				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+				nes_free_cqp_request(nesdev, cqp_request);
 				return -ENOMEM;
 			} else {
 				nesadapter->free_4kpbl -= pbl_count;
@@ -2066,13 +1963,8 @@ static int nes_reg_mr(struct nes_device *nesdev, struct nes_pd *nespd,
 		} else {
 			if (pbl_count > nesadapter->free_256pbl) {
 				nes_debug(NES_DBG_MR, "Out of 256B Pbls.\n");
-				if (cqp_request->dynamic) {
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-					kfree(cqp_request);
-				} else {
-					list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-					spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
-				}
+				spin_unlock_irqrestore(&nesadapter->pbl_lock, flags);
+				nes_free_cqp_request(nesdev, cqp_request);
 				return -ENOMEM;
 			} else {
 				nesadapter->free_256pbl -= pbl_count;
@@ -2118,7 +2010,7 @@ static int nes_reg_mr(struct nes_device *nesdev, struct nes_pd *nespd,
 	barrier();
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	ret = wait_event_timeout(cqp_request->waitq, (0 != cqp_request->request_done),
@@ -2127,15 +2019,8 @@ static int nes_reg_mr(struct nes_device *nesdev, struct nes_pd *nespd,
 			" CQP Major:Minor codes = 0x%04X:0x%04X.\n",
 			stag, ret, cqp_request->major_code, cqp_request->minor_code);
 	major_code = cqp_request->major_code;
-	if (atomic_dec_and_test(&cqp_request->refcount)) {
-		if (cqp_request->dynamic) {
-			kfree(cqp_request);
-		} else {
-			spin_lock_irqsave(&nesdev->cqp.lock, flags);
-			list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-			spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-		}
-	}
+	nes_put_cqp_request(nesdev, cqp_request);
+
 	if (!ret)
 		return -ETIME;
 	else if (major_code)
@@ -2399,7 +2284,7 @@ static struct ib_mr *nes_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	u8 single_page = 1;
 	u8 stag_key;
 
-	region = ib_umem_get(pd->uobject->context, start, length, acc);
+	region = ib_umem_get(pd->uobject->context, start, length, acc, 0);
 	if (IS_ERR(region)) {
 		return (struct ib_mr *)region;
 	}
@@ -2473,15 +2358,13 @@ static struct ib_mr *nes_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 					region_length += sg_dma_len(&chunk->page_list[nmap_index]);
 					chunk_pages = sg_dma_len(&chunk->page_list[nmap_index]) >> 12;
 					region_length -= skip_pages << 12;
-					for (page_index = skip_pages; page_index < chunk_pages; page_index++) {
+					for (page_index=skip_pages; page_index < chunk_pages; page_index++) {
 						skip_pages = 0;
 						if ((page_count!=0)&&(page_count<<12)-(region->offset&(4096-1))>=region->length)
 							goto enough_pages;
 						if ((page_count&0x01FF) == 0) {
-							if (page_count>(1024*512)) {
+							if (page_count >= 1024 * 512) {
 								ib_umem_release(region);
-								pci_free_consistent(nesdev->pcidev, 4096, vpbl.pbl_vbase,
-										vpbl.pbl_pbase);
 								nes_free_resource(nesadapter,
 										nesadapter->allocated_mrs, stag_index);
 								kfree(nesmr);
@@ -2548,23 +2431,23 @@ static struct ib_mr *nes_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 							if (page_count != 0) {
 								if ((last_dma_addr+4096) !=
 										(sg_dma_address(&chunk->page_list[nmap_index])+
-										(page_index * 4096)))
+										(page_index*4096)))
 									single_page = 0;
 								last_dma_addr = sg_dma_address(&chunk->page_list[nmap_index])+
-										(page_index * 4096);
+										(page_index*4096);
 							} else {
 								first_dma_addr = sg_dma_address(&chunk->page_list[nmap_index])+
-										(page_index * 4096);
+										(page_index*4096);
 								last_dma_addr = first_dma_addr;
 							}
 						}
 
 						vpbl.pbl_vbase[cur_pbl_index].pa_low =
 								cpu_to_le32((u32)(sg_dma_address(&chunk->page_list[nmap_index])+
-								(page_index * 4096)));
+								(page_index*4096)));
 						vpbl.pbl_vbase[cur_pbl_index].pa_high =
 								cpu_to_le32((u32)((((u64)(sg_dma_address(&chunk->page_list[nmap_index])+
-								(page_index * 4096))) >> 32)));
+								(page_index*4096))) >> 32)));
 						cur_pbl_index++;
 						page_count++;
 					}
@@ -2625,7 +2508,7 @@ static struct ib_mr *nes_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 				pci_free_consistent(nesdev->pcidev, 4096, vpbl.pbl_vbase,
 						vpbl.pbl_pbase);
 			} else {
-				for (page_index = 0; page_index < root_pbl_index; page_index++) {
+				for (page_index=0; page_index<root_pbl_index; page_index++) {
 					pci_free_consistent(nesdev->pcidev, 4096,
 							root_vpbl.leaf_vpbl[page_index].pbl_vbase,
 							root_vpbl.leaf_vpbl[page_index].pbl_pbase);
@@ -2679,23 +2562,23 @@ static struct ib_mr *nes_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 
 			nespbl->pbl_vbase = (u64 *)pbl;
 			nespbl->user_base = start;
-			nes_debug(NES_DBG_MR, "Allocated PBL memory, %u bytes, pbl_pbase=%p,"
+			nes_debug(NES_DBG_MR, "Allocated PBL memory, %u bytes, pbl_pbase=%lx,"
 					" pbl_vbase=%p user_base=0x%lx\n",
-					nespbl->pbl_size, (void *)nespbl->pbl_pbase,
-					(void*)nespbl->pbl_vbase, nespbl->user_base);
+				  nespbl->pbl_size, (unsigned long) nespbl->pbl_pbase,
+				  (void *) nespbl->pbl_vbase, nespbl->user_base);
 
 			list_for_each_entry(chunk, &region->chunk_list, list) {
 				for (nmap_index = 0; nmap_index < chunk->nmap; ++nmap_index) {
 					chunk_pages = sg_dma_len(&chunk->page_list[nmap_index]) >> 12;
-					chunk_pages += (sg_dma_len(&chunk->page_list[nmap_index]) & (4096 - 1)) ? 1 : 0;
+					chunk_pages += (sg_dma_len(&chunk->page_list[nmap_index]) & (4096-1)) ? 1 : 0;
 					nespbl->page = sg_page(&chunk->page_list[0]);
-					for (page_index = 0; page_index < chunk_pages; page_index++) {
+					for (page_index=0; page_index<chunk_pages; page_index++) {
 						((__le32 *)pbl)[0] = cpu_to_le32((u32)
-								(sg_dma_address(&chunk->page_list[nmap_index]) +
-								(page_index * 4096)));
+								(sg_dma_address(&chunk->page_list[nmap_index])+
+								(page_index*4096)));
 						((__le32 *)pbl)[1] = cpu_to_le32(((u64)
-								(sg_dma_address(&chunk->page_list[nmap_index]) +
-								(page_index * 4096))) >> 32);
+								(sg_dma_address(&chunk->page_list[nmap_index])+
+								(page_index*4096)))>>32);
 						nes_debug(NES_DBG_MR, "pbl=%p, *pbl=0x%016llx, 0x%08x%08x\n", pbl,
 								(unsigned long long)*pbl,
 								le32_to_cpu(((__le32 *)pbl)[1]), le32_to_cpu(((__le32 *)pbl)[0]));
@@ -2778,7 +2661,7 @@ static int nes_dereg_mr(struct ib_mr *ib_mr)
 	set_wqe_32bit_value(cqp_wqe->wqe_words, NES_CQP_STAG_WQE_STAG_IDX, ib_mr->rkey);
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	nes_debug(NES_DBG_MR, "Waiting for deallocate STag 0x%08X completed\n", ib_mr->rkey);
@@ -2795,15 +2678,9 @@ static int nes_dereg_mr(struct ib_mr *ib_mr)
 
 	major_code = cqp_request->major_code;
 	minor_code = cqp_request->minor_code;
-	if (atomic_dec_and_test(&cqp_request->refcount)) {
-		if (cqp_request->dynamic) {
-			kfree(cqp_request);
-		} else {
-			spin_lock_irqsave(&nesdev->cqp.lock, flags);
-			list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-			spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-		}
-	}
+
+	nes_put_cqp_request(nesdev, cqp_request);
+
 	if (!ret) {
 		nes_debug(NES_DBG_MR, "Timeout waiting to destroy STag,"
 				" ib_mr=%p, rkey = 0x%08X\n",
@@ -2924,7 +2801,6 @@ int nes_hw_modify_qp(struct nes_device *nesdev, struct nes_qp *nesqp,
 	/* struct iw_cm_id *cm_id = nesqp->cm_id; */
 	/* struct iw_cm_event cm_event; */
 	struct nes_cqp_request *cqp_request;
-	unsigned long flags;
 	int ret;
 	u16 major_code;
 
@@ -2952,7 +2828,7 @@ int nes_hw_modify_qp(struct nes_device *nesdev, struct nes_qp *nesqp,
 	set_wqe_64bit_value(cqp_wqe->wqe_words, NES_CQP_QP_WQE_CONTEXT_LOW_IDX, (u64)nesqp->nesqp_context_pbase);
 
 	atomic_set(&cqp_request->refcount, 2);
-	nes_post_cqp_request(nesdev, cqp_request, NES_CQP_REQUEST_RING_DOORBELL);
+	nes_post_cqp_request(nesdev, cqp_request);
 
 	/* Wait for CQP */
 	if (wait_completion) {
@@ -2970,15 +2846,9 @@ int nes_hw_modify_qp(struct nes_device *nesdev, struct nes_qp *nesqp,
 					nesqp->hwqp.qp_id, cqp_request->major_code,
 					cqp_request->minor_code, next_iwarp_state);
 		}
-		if (atomic_dec_and_test(&cqp_request->refcount)) {
-			if (cqp_request->dynamic) {
-				kfree(cqp_request);
-			} else {
-				spin_lock_irqsave(&nesdev->cqp.lock, flags);
-				list_add_tail(&cqp_request->list, &nesdev->cqp_avail_reqs);
-				spin_unlock_irqrestore(&nesdev->cqp.lock, flags);
-			}
-		}
+
+		nes_put_cqp_request(nesdev, cqp_request);
+
 		if (!ret)
 			return -ETIME;
 		else if (major_code)
@@ -3016,7 +2886,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 			nesqp->hwqp.qp_id, attr->qp_state, nesqp->ibqp_state,
 			nesqp->iwarp_state, atomic_read(&nesqp->refcount));
 
-	nes_add_ref(&nesqp->ibqp);
 	spin_lock_irqsave(&nesqp->lock, qplockflags);
 
 	nes_debug(NES_DBG_MOD_QP, "QP%u: hw_iwarp_state=0x%X, hw_tcp_state=0x%X,"
@@ -3031,7 +2900,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 						nesqp->hwqp.qp_id);
 				if (nesqp->iwarp_state > (u32)NES_CQP_QP_IWARP_STATE_IDLE) {
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return -EINVAL;
 				}
 				next_iwarp_state = NES_CQP_QP_IWARP_STATE_IDLE;
@@ -3042,7 +2910,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 						nesqp->hwqp.qp_id);
 				if (nesqp->iwarp_state>(u32)NES_CQP_QP_IWARP_STATE_IDLE) {
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return -EINVAL;
 				}
 				next_iwarp_state = NES_CQP_QP_IWARP_STATE_IDLE;
@@ -3053,14 +2920,12 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 						nesqp->hwqp.qp_id);
 				if (nesqp->iwarp_state>(u32)NES_CQP_QP_IWARP_STATE_RTS) {
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return -EINVAL;
 				}
 				if (nesqp->cm_id == NULL) {
 					nes_debug(NES_DBG_MOD_QP, "QP%u: Failing attempt to move QP to RTS without a CM_ID. \n",
 							nesqp->hwqp.qp_id );
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return -EINVAL;
 				}
 				next_iwarp_state = NES_CQP_QP_IWARP_STATE_RTS;
@@ -3078,7 +2943,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 						nesqp->hwqp.qp_id, nesqp->hwqp.sq_head, nesqp->hwqp.sq_tail);
 				if (nesqp->iwarp_state == (u32)NES_CQP_QP_IWARP_STATE_CLOSING) {
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return 0;
 				} else {
 					if (nesqp->iwarp_state > (u32)NES_CQP_QP_IWARP_STATE_CLOSING) {
@@ -3086,7 +2950,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 								" ignored due to current iWARP state\n",
 								nesqp->hwqp.qp_id);
 						spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-						nes_rem_ref(&nesqp->ibqp);
 						return -EINVAL;
 					}
 					if (nesqp->hw_iwarp_state != NES_AEQE_IWARP_STATE_RTS) {
@@ -3118,7 +2981,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 						nesqp->hwqp.qp_id);
 				if (nesqp->iwarp_state>=(u32)NES_CQP_QP_IWARP_STATE_TERMINATE) {
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return -EINVAL;
 				}
 				/* next_iwarp_state = (NES_CQP_QP_IWARP_STATE_TERMINATE | 0x02000000); */
@@ -3131,7 +2993,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 			case IB_QPS_RESET:
 				if (nesqp->iwarp_state == (u32)NES_CQP_QP_IWARP_STATE_ERROR) {
 					spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-					nes_rem_ref(&nesqp->ibqp);
 					return -EINVAL;
 				}
 				nes_debug(NES_DBG_MOD_QP, "QP%u: new state = error\n",
@@ -3157,7 +3018,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 				break;
 			default:
 				spin_unlock_irqrestore(&nesqp->lock, qplockflags);
-				nes_rem_ref(&nesqp->ibqp);
 				return -EINVAL;
 				break;
 		}
@@ -3237,7 +3097,6 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 							nesqp->hwqp.qp_id, atomic_read(&nesqp->refcount),
 							original_last_aeq, nesqp->last_aeq);
 					/* this one is for the cm_disconnect thread */
-					nes_add_ref(&nesqp->ibqp);
 					spin_lock_irqsave(&nesqp->lock, qplockflags);
 					nesqp->hw_tcp_state = NES_AEQE_TCP_STATE_CLOSED;
 					nesqp->last_aeq = NES_AEQE_AEID_RESET_SENT;
@@ -3246,14 +3105,12 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 				} else {
 					nes_debug(NES_DBG_MOD_QP, "QP%u No fake disconnect, QP refcount=%d\n",
 							nesqp->hwqp.qp_id, atomic_read(&nesqp->refcount));
-					nes_rem_ref(&nesqp->ibqp);
 				}
 			} else {
 				spin_lock_irqsave(&nesqp->lock, qplockflags);
 				if (nesqp->cm_id) {
 					/* These two are for the timer thread */
 					if (atomic_inc_return(&nesqp->close_timer_started) == 1) {
-						nes_add_ref(&nesqp->ibqp);
 						nesqp->cm_id->add_ref(nesqp->cm_id);
 						nes_debug(NES_DBG_MOD_QP, "QP%u Not decrementing QP refcount (%d),"
 								" need ae to finish up, original_last_aeq = 0x%04X."
@@ -3277,14 +3134,12 @@ int nes_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 					" original_last_aeq = 0x%04X. last_aeq = 0x%04X.\n",
 					nesqp->hwqp.qp_id, atomic_read(&nesqp->refcount),
 					original_last_aeq, nesqp->last_aeq);
-			nes_rem_ref(&nesqp->ibqp);
 		}
 	} else {
 		nes_debug(NES_DBG_MOD_QP, "QP%u Decrementing QP refcount (%d), No ae to finish up,"
 				" original_last_aeq = 0x%04X. last_aeq = 0x%04X.\n",
 				nesqp->hwqp.qp_id, atomic_read(&nesqp->refcount),
 				original_last_aeq, nesqp->last_aeq);
-		nes_rem_ref(&nesqp->ibqp);
 	}
 
 	err = 0;
@@ -3333,15 +3188,15 @@ fill_wqe_sg_send(struct nes_hw_qp_wqe *wqe, struct ib_send_wr *ib_wr, u32 uselke
 	int sge_index;
 	int total_payload_length = 0;
 	for (sge_index = 0; sge_index < ib_wr->num_sge; sge_index++) {
-		set_wqe_64bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_FRAG0_LOW_IDX + (sge_index * 4),
+		set_wqe_64bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_FRAG0_LOW_IDX+(sge_index*4),
 			ib_wr->sg_list[sge_index].addr);
-		set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_LENGTH0_IDX + (sge_index * 4),
+		set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_LENGTH0_IDX + (sge_index*4),
 			ib_wr->sg_list[sge_index].length);
 		if (uselkey)
-			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_STAG0_IDX + (sge_index * 4),
+			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_STAG0_IDX + (sge_index*4),
 						(ib_wr->sg_list[sge_index].lkey));
 		else
-			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_STAG0_IDX + (sge_index * 4), 0);
+			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_STAG0_IDX + (sge_index*4), 0);
 
 		total_payload_length += ib_wr->sg_list[sge_index].length;
 	}
@@ -3379,7 +3234,7 @@ static int nes_post_send(struct ib_qp *ibqp, struct ib_send_wr *ib_wr,
 	if (nesqp->ibqp_state > IB_QPS_RTS)
 		return -EINVAL;
 
-		spin_lock_irqsave(&nesqp->lock, flags);
+	spin_lock_irqsave(&nesqp->lock, flags);
 
 	head = nesqp->hwqp.sq_head;
 
@@ -3415,7 +3270,7 @@ static int nes_post_send(struct ib_qp *ibqp, struct ib_send_wr *ib_wr,
 							((nes_drv_opt & NES_DRV_OPT_NO_INLINE_DATA) == 0) &&
 							(ib_wr->sg_list[0].length <= 64)) {
 						memcpy(&wqe->wqe_words[NES_IWARP_SQ_WQE_IMM_DATA_START_IDX],
-						           (void *)(unsigned long)ib_wr->sg_list[0].addr, ib_wr->sg_list[0].length);
+							       (void *)(unsigned long)ib_wr->sg_list[0].addr, ib_wr->sg_list[0].length);
 						set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_TOTAL_PAYLOAD_IDX,
 								ib_wr->sg_list[0].length);
 						wqe_misc |= NES_IWARP_SQ_WQE_IMM_DATA;
@@ -3446,7 +3301,7 @@ static int nes_post_send(struct ib_qp *ibqp, struct ib_send_wr *ib_wr,
 							((nes_drv_opt & NES_DRV_OPT_NO_INLINE_DATA) == 0) &&
 							(ib_wr->sg_list[0].length <= 64)) {
 						memcpy(&wqe->wqe_words[NES_IWARP_SQ_WQE_IMM_DATA_START_IDX],
-								(void *)(unsigned long)ib_wr->sg_list[0].addr, ib_wr->sg_list[0].length);
+							       (void *)(unsigned long)ib_wr->sg_list[0].addr, ib_wr->sg_list[0].length);
 						set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_TOTAL_PAYLOAD_IDX,
 								ib_wr->sg_list[0].length);
 						wqe_misc |= NES_IWARP_SQ_WQE_IMM_DATA;
@@ -3504,7 +3359,7 @@ static int nes_post_send(struct ib_qp *ibqp, struct ib_send_wr *ib_wr,
 				(counter << 24) | 0x00800000 | nesqp->hwqp.qp_id);
 	}
 
-		spin_unlock_irqrestore(&nesqp->lock, flags);
+	spin_unlock_irqrestore(&nesqp->lock, flags);
 
 	if (err)
 		*bad_wr = ib_wr;
@@ -3535,7 +3390,7 @@ static int nes_post_recv(struct ib_qp *ibqp, struct ib_recv_wr *ib_wr,
 	if (nesqp->ibqp_state > IB_QPS_RTS)
 		return -EINVAL;
 
-		spin_lock_irqsave(&nesqp->lock, flags);
+	spin_lock_irqsave(&nesqp->lock, flags);
 
 	head = nesqp->hwqp.rq_head;
 
@@ -3560,12 +3415,12 @@ static int nes_post_recv(struct ib_qp *ibqp, struct ib_recv_wr *ib_wr,
 		set_wqe_64bit_value(wqe->wqe_words, NES_IWARP_SQ_WQE_COMP_SCRATCH_LOW_IDX,
 					u64temp);
 		total_payload_length = 0;
-		for (sge_index = 0; sge_index < ib_wr->num_sge; sge_index++) {
-			set_wqe_64bit_value(wqe->wqe_words, NES_IWARP_RQ_WQE_FRAG0_LOW_IDX + (sge_index * 4),
+		for (sge_index=0; sge_index < ib_wr->num_sge; sge_index++) {
+			set_wqe_64bit_value(wqe->wqe_words, NES_IWARP_RQ_WQE_FRAG0_LOW_IDX+(sge_index*4),
 					ib_wr->sg_list[sge_index].addr);
-			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_RQ_WQE_LENGTH0_IDX + (sge_index * 4),
+			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_RQ_WQE_LENGTH0_IDX+(sge_index*4),
 					ib_wr->sg_list[sge_index].length);
-			set_wqe_32bit_value(wqe->wqe_words, NES_IWARP_RQ_WQE_STAG0_IDX + (sge_index * 4),
+			set_wqe_32bit_value(wqe->wqe_words,NES_IWARP_RQ_WQE_STAG0_IDX+(sge_index*4),
 					ib_wr->sg_list[sge_index].lkey);
 
 			total_payload_length += ib_wr->sg_list[sge_index].length;
@@ -3588,7 +3443,7 @@ static int nes_post_recv(struct ib_qp *ibqp, struct ib_recv_wr *ib_wr,
 		nes_write32(nesdev->regs+NES_WQE_ALLOC, (counter<<24) | nesqp->hwqp.qp_id);
 	}
 
-		spin_unlock_irqrestore(&nesqp->lock, flags);
+	spin_unlock_irqrestore(&nesqp->lock, flags);
 
 	if (err)
 		*bad_wr = ib_wr;
@@ -3620,7 +3475,7 @@ static int nes_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *entry)
 
 	nes_debug(NES_DBG_CQ, "\n");
 
-		spin_lock_irqsave(&nescq->lock, flags);
+	spin_lock_irqsave(&nescq->lock, flags);
 
 	head = nescq->hw_cq.cq_head;
 	cq_size = nescq->hw_cq.cq_size;
@@ -3628,6 +3483,12 @@ static int nes_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *entry)
 	while (cqe_count < num_entries) {
 		if (le32_to_cpu(nescq->hw_cq.cq_vbase[head].cqe_words[NES_CQE_OPCODE_IDX]) &
 				NES_CQE_VALID) {
+			/*
+			 * Make sure we read CQ entry contents *after*
+			 * we've checked the valid bit.
+			 */
+			rmb();
+
 			cqe = nescq->hw_cq.cq_vbase[head];
 			nescq->hw_cq.cq_vbase[head].cqe_words[NES_CQE_OPCODE_IDX] = 0;
 			u32temp = le32_to_cpu(cqe.cqe_words[NES_CQE_COMP_COMP_CTX_LOW_IDX]);
@@ -3723,7 +3584,7 @@ static int nes_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *entry)
 	nes_debug(NES_DBG_CQ, "Reporting %u completions for CQ%u.\n",
 			cqe_count, nescq->hw_cq.cq_number);
 
-		spin_unlock_irqrestore(&nescq->lock, flags);
+	spin_unlock_irqrestore(&nescq->lock, flags);
 
 	return cqe_count;
 }
@@ -3921,13 +3782,10 @@ int nes_register_ofa_device(struct nes_ib_device *nesibdev)
 /**
  * nes_unregister_ofa_device
  */
-void nes_unregister_ofa_device(struct nes_ib_device *nesibdev)
+static void nes_unregister_ofa_device(struct nes_ib_device *nesibdev)
 {
 	struct nes_vnic *nesvnic = nesibdev->nesvnic;
 	int i;
-
-	if (nesibdev == NULL)
-		return;
 
 	for (i = 0; i < ARRAY_SIZE(nes_class_attributes); ++i) {
 		class_device_remove_file(&nesibdev->ibdev.class_dev, nes_class_attributes[i]);

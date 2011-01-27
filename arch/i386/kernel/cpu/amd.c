@@ -213,6 +213,8 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 		set_bit(X86_FEATURE_K7, c->x86_capability); 
 		break;
 	}
+	if (c->x86 < 6)
+		clear_bit(X86_FEATURE_MCE, c->x86_capability);
 	if (c->x86 >= 6)
 		set_bit(X86_FEATURE_FXSAVE_LEAK, c->x86_capability);
 
@@ -245,7 +247,6 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	if (smp_num_cores > 1) {
 		int cpu = smp_processor_id();
 		unsigned bits = (cpuid_ecx(0x80000008) >> 12) & 0xf;
-		int initial_apic_id;
 
 		if (bits == 0) {
 			while ((1 << bits) < smp_num_cores)

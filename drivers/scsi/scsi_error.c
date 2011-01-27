@@ -559,10 +559,16 @@ static int scsi_try_bus_device_reset(struct scsi_cmnd *scmd)
 
 static int __scsi_try_to_abort_cmd(struct scsi_cmnd *scmd)
 {
+	unsigned long flags;
+	int rtn;
+
 	if (!scmd->device->host->hostt->eh_abort_handler)
 		return FAILED;
 
-	return scmd->device->host->hostt->eh_abort_handler(scmd);
+	spin_lock_irqsave(scmd->device->host->host_lock, flags);
+	rtn = scmd->device->host->hostt->eh_abort_handler(scmd);
+	spin_unlock_irqrestore(scmd->device->host->host_lock, flags);
+	return rtn;
 }
 
 /**
@@ -578,7 +584,6 @@ static int __scsi_try_to_abort_cmd(struct scsi_cmnd *scmd)
  **/
 static int scsi_try_to_abort_cmd(struct scsi_cmnd *scmd)
 {
-	unsigned long flags;
 	int rtn = FAILED;
 
 	if (!scmd->device->host->hostt->eh_abort_handler)
@@ -593,11 +598,7 @@ static int scsi_try_to_abort_cmd(struct scsi_cmnd *scmd)
 
 	scmd->owner = SCSI_OWNER_LOWLEVEL;
 
-	spin_lock_irqsave(scmd->device->host->host_lock, flags);
-	rtn = __scsi_try_to_abort_cmd(scmd);
-	spin_unlock_irqrestore(scmd->device->host->host_lock, flags);
-
-	return rtn;
+	return __scsi_try_to_abort_cmd(scmd);
 }
 
 static void scsi_abort_eh_cmnd(struct scsi_cmnd *scmd)
@@ -669,10 +670,8 @@ static int scsi_send_eh_cmnd(struct scsi_cmnd *scmd, int timeout)
 		 * we must give the low level driver a chance
 		 * to abort it. (db) 
 		 */
-		spin_lock_irqsave(scmd->device->host->host_lock, flags);
 		scsi_abort_eh_cmnd(scmd);
-		spin_unlock_irqrestore(scmd->device->host->host_lock, flags);
-			
+
 		scmd->request->rq_status = RQ_SCSI_DONE;
 		scmd->owner = SCSI_OWNER_ERROR_HANDLER;
 			
@@ -1340,8 +1339,7 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 			 * lower down
 			 */
 			break;
-		/* fallthrough */
-
+		goto check_retry_count;
 	case DID_BUS_BUSY:
 	case DID_PARITY:
 		goto maybe_retry;
@@ -1417,15 +1415,17 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 	return FAILED;
 
       maybe_retry:
+	if (blk_noretry_request(scmd->request))
+		return SUCCESS;
 
+      check_retry_count:
 	/* we requeue for retry because the error was retryable, and
 	 * the request was not marked fast fail.  Note that above,
 	 * even if the request is marked fast fail, we still requeue
 	 * for queue congestion conditions (QUEUE_FULL or BUSY) */
-	if ((++scmd->retries) < scmd->allowed 
-	    && !blk_noretry_request(scmd->request)) {
+	if ((++scmd->retries) < scmd->allowed)
 		return NEEDS_RETRY;
-	} else {
+	else {
 		/*
 		 * no more retries - report this one back to upper level.
 		 */

@@ -525,6 +525,8 @@ static void backend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateInitWait:
+		if (dev->state != XenbusStateInitialising)
+			break;
 		if (network_connect(netdev) != 0)
 			break;
 		xenbus_switch_state(dev, XenbusStateConnected);
@@ -1582,7 +1584,6 @@ static void netif_release_rx_bufs_copy(struct netfront_info *np)
 		np->grant_rx_ref[i] = GRANT_INVALID_REF;
 		add_id_to_freelist(np->rx_skbs, i);
 
-		skb_shinfo(skb)->nr_frags = 0;
 		dev_kfree_skb(skb);
 	}
 
@@ -2104,6 +2105,8 @@ static struct notifier_block notifier_netdev = {
 
 static int __init netif_init(void)
 {
+	int err;
+
 	if (!is_running_on_xen())
 		return -ENODEV;
 
@@ -2125,7 +2128,12 @@ static int __init netif_init(void)
 	(void)register_inetaddr_notifier(&notifier_inetdev);
 	(void)register_netdevice_notifier(&notifier_netdev);
 
-	return xenbus_register_frontend(&netfront);
+	err = xenbus_register_frontend(&netfront);
+	if (err) {
+		unregister_netdevice_notifier(&notifier_netdev);
+		unregister_inetaddr_notifier(&notifier_inetdev);
+	}
+	return err;
 }
 module_init(netif_init);
 

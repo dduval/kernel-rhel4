@@ -47,6 +47,7 @@ struct ehci_stats {
 #define	EHCI_MAX_ROOT_PORTS	15		/* see HCS_N_PORTS */
 
 struct ehci_hcd {			/* one per controller */
+	struct usb_hcd		hcd;		/* @offset 0 for kfree() */
 	spinlock_t		lock;
 
 	/* async schedule support */
@@ -69,7 +70,7 @@ struct ehci_hcd {			/* one per controller */
 	unsigned long		reset_done [EHCI_MAX_ROOT_PORTS];
 
 	/* glue to PCI and HCD framework */
-	struct usb_hcd		hcd;
+	/* struct usb_hcd	hcd; */ /* This is relocated to the top */
 	struct ehci_caps __iomem *caps;
 	struct ehci_regs __iomem *regs;
 	__u32			hcs_params;	/* cached register copy */

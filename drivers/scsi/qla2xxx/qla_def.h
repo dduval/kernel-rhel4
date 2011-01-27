@@ -28,6 +28,7 @@
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/sched.h>
+#include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/dmapool.h>
 #include <linux/mempool.h>
@@ -2826,7 +2827,7 @@ struct _qla2x00stats  {
         unsigned long   retry_q_cnt;
 };
 
-#define NVRAM_DELAY()		udelay(10)
+#define NVRAM_DELAY()		qla2xxx_schedule_udelay(10)
 
 #define INVALID_HANDLE	(MAX_OUTSTANDING_COMMANDS+1)
 
@@ -2853,8 +2854,6 @@ struct _qla2x00stats  {
 #define CMD_ACTUAL_SNSLEN(Cmnd)	((Cmnd)->SCp.Message)
 #define CMD_ENTRY_STATUS(Cmnd)	((Cmnd)->SCp.have_data_in)
 
-#endif
-
 #define spin_unlock_irq_dump(host_lock)			\
 	do { 						\
 		if (crashdump_mode())			\
@@ -2862,3 +2861,7 @@ struct _qla2x00stats  {
 		else					\
 			spin_unlock_irq(host_lock);	\
 	} while (0)
+
+extern inline void qla2xxx_schedule_udelay(unsigned long usecs);
+
+#endif

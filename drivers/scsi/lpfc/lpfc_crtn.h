@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_crtn.h 3122 2008-01-07 18:49:20Z sf_support $
+ * $Id: lpfc_crtn.h 3230 2008-11-18 21:15:25Z sf_support $
  */
 
 #ifndef _H_LPFC_CRTN
@@ -273,6 +273,10 @@ void *lpfc_mbuf_alloc(struct lpfc_hba *, int, dma_addr_t *);
 void lpfc_mbuf_free(struct lpfc_hba *, void *, dma_addr_t);
 
 int  lpfc_stop_timer(struct lpfc_hba *);
+
+void lpfc_free_all_delayed_iocbs(struct lpfc_hba *);
+void lpfc_free_delayed_iocbs_tmo(unsigned long);
+void lpfc_free_delayed_iocbs(struct lpfc_hba *, struct lpfc_iocbq *);
 
 
 /* Function prototypes. */

@@ -26,6 +26,8 @@
 #include <asm/semaphore.h>		/* struct semaphore */
 #include <linux/rwsem.h>		/* struct rw_semaphore */
 #include <linux/workqueue.h>		/* struct workqueue_struct */
+#include <linux/mutex.h>
+#include "compat.h"
 
 /* Typedef's */
 typedef struct timespec snd_timestamp_t;
@@ -43,6 +45,12 @@ struct pci_dev;
 struct sbus_dev;
 #endif
 
+#define IRQF_SHARED SA_SHIRQ
+
+#define module_param_array1(name, type, nump, perm) \
+	static unsigned int boot_devs_##name;  \
+	module_param_array_named(name, name, type, boot_devs_##name, perm)
+
 /* device allocation stuff */
 
 #define SNDRV_DEV_TYPE_RANGE_SIZE		0x1000
@@ -57,6 +65,7 @@ typedef enum {
 	SNDRV_DEV_SEQUENCER,
 	SNDRV_DEV_HWDEP,
 	SNDRV_DEV_INFO,
+	SNDRV_DEV_BUS,
 	SNDRV_DEV_LOWLEVEL =		(2*SNDRV_DEV_TYPE_RANGE_SIZE)
 } snd_device_type_t;
 
@@ -72,22 +81,22 @@ typedef enum {
 	SNDRV_DEV_CMD_POST = 2
 } snd_device_cmd_t;
 
-typedef struct _snd_card snd_card_t;
-typedef struct _snd_device snd_device_t;
+typedef struct snd_card snd_card_t;
+typedef struct snd_device snd_device_t;
 
 typedef int (snd_dev_free_t)(snd_device_t *device);
 typedef int (snd_dev_register_t)(snd_device_t *device);
 typedef int (snd_dev_disconnect_t)(snd_device_t *device);
 typedef int (snd_dev_unregister_t)(snd_device_t *device);
 
-typedef struct {
+typedef struct snd_device_ops {
 	snd_dev_free_t *dev_free;
 	snd_dev_register_t *dev_register;
 	snd_dev_disconnect_t *dev_disconnect;
 	snd_dev_unregister_t *dev_unregister;
 } snd_device_ops_t;
 
-struct _snd_device {
+struct snd_device {
 	struct list_head list;		/* list of registered devices */
 	snd_card_t *card;		/* card which holds this device */
 	snd_device_state_t state;	/* state of the device */
@@ -101,16 +110,16 @@ struct _snd_device {
 /* various typedefs */
 
 typedef struct snd_info_entry snd_info_entry_t;
-typedef struct _snd_pcm snd_pcm_t;
+typedef struct snd_pcm snd_pcm_t;
 typedef struct _snd_pcm_str snd_pcm_str_t;
-typedef struct _snd_pcm_substream snd_pcm_substream_t;
+typedef struct snd_pcm_substream snd_pcm_substream_t;
 typedef struct _snd_mixer snd_kmixer_t;
 typedef struct _snd_rawmidi snd_rawmidi_t;
 typedef struct _snd_ctl_file snd_ctl_file_t;
-typedef struct _snd_kcontrol snd_kcontrol_t;
+typedef struct snd_kcontrol snd_kcontrol_t;
 typedef struct _snd_timer snd_timer_t;
 typedef struct _snd_timer_instance snd_timer_instance_t;
-typedef struct _snd_hwdep snd_hwdep_t;
+typedef struct snd_hwdep snd_hwdep_t;
 #if defined(CONFIG_SND_MIXER_OSS) || defined(CONFIG_SND_MIXER_OSS_MODULE)
 typedef struct _snd_oss_mixer snd_mixer_oss_t;
 #endif
@@ -126,7 +135,7 @@ struct snd_shutdown_f_ops;	/* define it later */
 
 /* main structure for soundcard */
 
-struct _snd_card {
+struct snd_card {
 	int number;			/* number of soundcard (index to snd_cards) */
 
 	char id[16];			/* id string of this card */

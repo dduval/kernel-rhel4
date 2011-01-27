@@ -90,36 +90,17 @@ __qla4xxx_suspend_lun(scsi_qla_host_t *ha,
 
 		/* now suspend the lun */
 		lun_entry->lun_state = LS_LUN_SUSPENDED;
-		lun_entry->fclun->fcport->vis_ha = ha;
 		if (delay) {
 			set_bit(LF_LUN_DELAYED, &lun_entry->flags);
 		}
 		status = 1;
 
 	}
-	spin_unlock_irqrestore(&lun_entry->lun_lock, flags);
 
-#if 0
-	if (status) {
-		spin_lock_irqsave(&ha->list_lock, flags);
-		list_for_each_entry_safe(sp, stemp, &ha->pending_srb_q,
-		    list_entry) {
-			if (sp->lun_queue != lun_entry)
-				continue;
-
-			__del_from_pending_srb_q(ha, sp);
-
-			if (retries > sp->cmd->allowed)
-				sp->cmd->allowed = retries;
-			__add_to_retry_srb_q(ha,sp);
-
-		}
-		spin_unlock_irqrestore(&ha->list_lock, flags);
-	}
-#endif
 	if( srb )
-		add_to_retry_srb_q(ha,srb);
+		__add_to_retry_srb_q(ha,srb);
 
+	spin_unlock_irqrestore(&lun_entry->lun_lock, flags);
 }
 
 /**************************************************************************
@@ -189,7 +170,6 @@ qla4xxx_check_and_copy_sense(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry, srb_t
 		 */
 		if (test_bit(AF_INIT_DONE, &ha->flags) &&
 		    lun_entry != NULL &&
-		    (fcport->flags & FCF_TAPE_PRESENT) == 0 &&
 		    lun_entry->lun_state != LS_LUN_TIMEOUT) {
 			/*
 			 * If target is in process of being ready then suspend
@@ -265,8 +245,6 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 	srb_t *srb;
 	uint8_t scsi_status;
 
-	ENTER("qla4xxx_status_entry");
-
 	/* Fast path completion. */
 	if (sts_entry->completionStatus == SCS_COMPLETE &&
 	    sts_entry->scsiStatus == 0) {
@@ -299,19 +277,31 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 			printk("%s srb_flags=0x%x no fclun\n", __func__,
 					srb->flags);
 			cmd->result = DID_NO_CONNECT << 16;
-			goto status_entry_exit;
+	
+			set_bit(DPC_RESET_HA, &ha->dpc_flags);
+			if (ha->dpc_wait && !ha->dpc_active)
+				up(ha->dpc_wait);
+			return;
 		}
 		if (srb->fclun->fcport == NULL) {
 			printk("%s srb_flags=0x%x no fcport\n", __func__,
 					srb->flags);
 			cmd->result = DID_NO_CONNECT << 16;
-			goto status_entry_exit;
+	
+			set_bit(DPC_RESET_HA, &ha->dpc_flags);
+			if (ha->dpc_wait && !ha->dpc_active)
+				up(ha->dpc_wait);
+			return;
 		}
 
 		ddb_entry = srb->fclun->fcport->ddbptr;
 		if (ddb_entry == NULL) {
 			cmd->result = DID_NO_CONNECT << 16;
-			goto status_entry_exit;
+	
+			set_bit(DPC_RESET_HA, &ha->dpc_flags);
+			if (ha->dpc_wait && !ha->dpc_active)
+				up(ha->dpc_wait);
+			return;
 		}
 		/*
 		 * Translate ISP error to a Linux SCSI error
@@ -377,7 +367,6 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 
 			/* Check for sense errors */
 			if (qla4xxx_check_and_copy_sense(ha, sts_entry ,srb) == QLA_ERROR) {
-				LEAVE("qla4xxx_status_entry");
 				return;	 /* DO NOT complete request, lun suspended */
 			}
 
@@ -402,7 +391,7 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 				cmd->result = DID_RESET << 16;
 			}
 			else {
-				qla4xxx_device_suspend(ha, srb->lun_queue, srb);
+				qla4xxx_device_suspend(ha, srb);
 				return;
 			}
 
@@ -418,15 +407,15 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 						   __func__));
 
 			cmd->result = DID_ABORT << 16;
-			// ha->aborted_io_count++;
 			break;
 
 		case SCS_TIMEOUT:
-			QL4PRINT(QLP2, printk("scsi%d:%d:%d:%d: cmd=%p "
+			QL4PRINT(QLP2, printk("scsi%d:%d:%d:%d: cmd=%p pid=%ld"
 					      "Timeout\n",
 					      ha->host_no, cmd->device->channel,
 					      cmd->device->id,
-					      cmd->device->lun, cmd));
+					      cmd->device->lun, cmd,
+					      cmd->serial_number));
 
 			/* F/W logout the connection when this occurs */
 			cmd->result = DID_BUS_BUSY << 16;
@@ -437,7 +426,7 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 			 * AEN soon.
 			 */
 			if ((atomic_read(&ddb_entry->state) == DEV_STATE_ONLINE))
-				qla4xxx_mark_device_missing(ha, ddb_entry);
+				qla4xxx_set_device_state(ha, ddb_entry, DEV_STATE_MISSING);
 			break;
 
 		case SCS_DATA_UNDERRUN:
@@ -497,7 +486,6 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 
 				/* Check for sense errors */
 				if (qla4xxx_check_and_copy_sense(ha, sts_entry ,srb) == QLA_ERROR) {
-					LEAVE("qla4xxx_status_entry");
 					return;	 /* DO NOT complete request, lun suspended */
 				}
 			}
@@ -560,10 +548,10 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 
 		case SCS_DEVICE_LOGGED_OUT:
 		case SCS_DEVICE_UNAVAILABLE:
-			QL4PRINT(QLP2, printk("scsi%d:%d:%d:%d: cmd=%p %s,  req_q_cnt=%d, num_entries=%d\n",
+			QL4PRINT(QLP2, printk("scsi%d:%d:%d:%d: cmd=%p pid=%ld %s,  req_q_cnt=%d, num_entries=%d\n",
 					      ha->host_no, cmd->device->channel,
 					      cmd->device->id,
-					      cmd->device->lun,	cmd,
+					      cmd->device->lun,	cmd, cmd->serial_number,
 					      (sts_entry->completionStatus == SCS_DEVICE_LOGGED_OUT)?
 					      "DEVICE_LOGGED_OUT": "DEVICE_UNAVAILABLE",
 				ha->req_q_count, srb->entry_count));
@@ -575,17 +563,14 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 
 			if ((atomic_read(&ddb_entry->state) ==
 			    	DEV_STATE_ONLINE))
-				qla4xxx_mark_device_missing(ha, ddb_entry);
+				qla4xxx_set_device_state(ha, ddb_entry, DEV_STATE_MISSING);
 
-			if ((srb->flags & (SRB_IOCTL_CMD | SRB_TAPE)) ||
-			    (atomic_read(&ddb_entry->fcport->state)
-			     == FCS_DEVICE_DEAD)) {
+			if ((srb->flags & (SRB_IOCTL_CMD | SRB_TAPE))) {
 				cmd->result = DID_NO_CONNECT << 16;
 			}
 			else {
 				cmd->result = DID_ERROR << 16;
-				qla4xxx_extend_timeout(cmd, EXTEND_CMD_TOV);
-				add_to_retry_srb_q(ha, srb);
+				qla4xxx_device_suspend(ha, srb);
 				return;	 /* DO NOT complete request */
 			}
 
@@ -599,9 +584,6 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 			cmd->result = DID_ERROR << 16;
 			break;
 		}
-
-		status_entry_exit:
-
 
 		/* fill in info for passthru command */
 		CMD_SCSI_STATUS(cmd)    = sts_entry->scsiStatus;
@@ -644,9 +626,11 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 		// QL4PRINT(QLP2, printk("scsi%d: %s: sts_entry 0x%p\n",
 				      // ha->host_no, __func__, sts_entry));
 		// qla4xxx_dump_bytes(QLP2, sts_entry, sizeof(*sts_entry));
-	}
 
-	LEAVE("qla4xxx_status_entry");
+		set_bit(DPC_RESET_HA, &ha->dpc_flags);
+		if (ha->dpc_wait && !ha->dpc_active)
+			up(ha->dpc_wait);
+	}
 }
 
 static inline void
@@ -691,7 +675,7 @@ qla4xxx_ramp_up_queue_depth(scsi_qla_host_t *ha, srb_t *srb)
 }
 
 /**
- * qla2x00_process_completed_request() - Process a Fast Post response.
+ * qla4xxx_process_completed_request() - Process a Fast Post response.
  * @ha: SCSI driver HA context
  * @index: SRB index
  */
@@ -749,8 +733,6 @@ qla4xxx_process_response_queue(scsi_qla_host_t *ha)
 	srb_t    *srb = NULL;
 	STATUS_ENTRY *sts_entry;
 
-	ENTER("qla4xxx_process_response_queue");
-
 	/* Process all responses from response queue */
 	while ((ha->response_in = (uint16_t)
 	    le32_to_cpu(ha->shadow_regs->rsp_q_in)) != ha->response_out) {
@@ -780,6 +762,38 @@ qla4xxx_process_response_queue(scsi_qla_host_t *ha)
 			    (PASSTHRU_STATUS_ENTRY *) sts_entry);
 			break;
 #endif
+                case ET_ASYNC_PDU:
+		{
+			ASYNC_PDU_ENTRY *apdu;
+			ISCSI_PDU_HEADER *iscsi_hdr;
+			async_pdu_iocb_t *apdu_iocb;
+ 
+			apdu = (ASYNC_PDU_ENTRY *)sts_entry;
+			if (apdu->status != APDU_STATUS_OK)
+				break;
+ 
+			iscsi_hdr = (ISCSI_PDU_HEADER *)apdu->iscsi_pdu_header;
+			if (iscsi_hdr->addl_hdr_seg_len ||
+			    iscsi_hdr->data_seg_len[0] ||
+			    iscsi_hdr->data_seg_len[1] ||
+			    iscsi_hdr->data_seg_len[2]) {
+
+				apdu_iocb = kmalloc(sizeof(*apdu_iocb),
+						    GFP_ATOMIC);
+				if (apdu_iocb) {
+					memcpy(&apdu_iocb->iocb, apdu,
+					       sizeof(ASYNC_PDU_ENTRY));
+					list_add_tail(&apdu_iocb->list_entry,
+						      &ha->async_iocb_list);
+					set_bit(DPC_ASYNC_PDU, &ha->dpc_flags);
+				} else {
+					QL4PRINT(QLP2, printk("scsi%d: %s: "
+						"Unable to alloc ASYNC PDU\n",
+						ha->host_no, __func__));
+				}
+			}
+			break;
+		}
 		case ET_STATUS_CONTINUATION:
 			/* Just throw away the status continuation entries */
 			QL4PRINT(QLP2,
@@ -850,7 +864,6 @@ qla4xxx_process_response_queue(scsi_qla_host_t *ha)
 	WRT_REG_DWORD(&ha->reg->rsp_q_out, ha->response_out);
 	PCI_POSTING(&ha->reg->rsp_q_out);
 
-	LEAVE("qla4xxx_process_response_queue");
 	return(QLA_SUCCESS);
 
 	exit_prq_invalid_handle:
@@ -864,8 +877,6 @@ qla4xxx_process_response_queue(scsi_qla_host_t *ha)
 	PCI_POSTING(&ha->reg->rsp_q_out);
 
 	set_bit(DPC_RESET_HA, &ha->dpc_flags);
-
-	LEAVE("qla4xxx_process_response_queue");
 	return(QLA_ERROR);
 }
 
@@ -916,17 +927,6 @@ qla4xxx_isr_decode_mailbox(scsi_qla_host_t *ha, uint32_t  mbox_status)
 			set_bit(AF_MBOX_COMMAND_DONE, &ha->flags);
 			wake_up(&ha->mailbox_wait_queue);
 		}
-		#if 0
-		else {
-			QL4PRINT(QLP2,
-				 printk("scsi%d: ERROR: Receiving mailbox "
-					"status %08X when no mailbox command "
-					"active.\n",
-					ha->host_no, mbox_status));
-
-			__dump_registers(ha);
-		}
-		#endif
 	}
 	else if (mbox_status >> 12 == MBOX_ASYNC_EVENT_STATUS) {
 		/*
@@ -940,28 +940,10 @@ qla4xxx_isr_decode_mailbox(scsi_qla_host_t *ha, uint32_t  mbox_status)
 		     mbox_status == MBOX_ASTS_DATABASE_CHANGED)) {
 			int i;
 
-			ha->aen_count++;
-			if (ha->aen_count == 0) {
-				/* We overflowed the counter */
-				ha->aen_report = 0;
+			for (i = 0; i < MBOX_AEN_REG_COUNT; i++) {
+				mbox_sts[i] = RD_REG_DWORD(&ha->reg->mailbox[i]);
 			}
-
-			if (ha->aen_count - ha->aen_report == MAX_AEN_ENTRIES) {
-				/* We wrapped the queue,
-				 * update starting point for SDMAPI copy */
-				ha->aen_report++;
-			}
-
-			if (ha->aen_in == (MAX_AEN_ENTRIES - 1))
-				ha->aen_in = 0;
-			else
-				ha->aen_in++;
-
-			for (i = 1; i < MBOX_AEN_REG_COUNT; i++) {
-				ha->aen_q[ha->aen_in].mbox_sts[i] =
-				    RD_REG_DWORD(&ha->reg->mailbox[i]);
-			}
-			ha->aen_q[ha->aen_in].mbox_sts[0] = mbox_status;
+			qla4xxx_queue_aen(ha, &mbox_sts[0]);
 		}
 
 
@@ -1229,8 +1211,6 @@ qla4xxx_isr_decode_mailbox(scsi_qla_host_t *ha, uint32_t  mbox_status)
 void
 qla4xxx_interrupt_service_routine(scsi_qla_host_t *ha, uint32_t intr_status)
 {
-	ENTER("qla4xxx_interrupt_service_routine");
-
 	if (intr_status & CSR_SCSI_COMPLETION_INTR) {
 		qla4xxx_process_response_queue(ha);
 	}
@@ -1244,8 +1224,6 @@ qla4xxx_interrupt_service_routine(scsi_qla_host_t *ha, uint32_t intr_status)
 		    SET_RMASK(CSR_SCSI_PROCESSOR_INTR));
 		PCI_POSTING(&ha->reg->ctrl_status);
 	}
-
-	LEAVE("qla4xxx_interrupt_service_routine");
 }
 
 uint8_t
@@ -1254,7 +1232,6 @@ qla4xxx_poll_and_ack_scsi_reset(scsi_qla_host_t *ha)
 	uint8_t status = QLA_ERROR;
 	unsigned long flags = 0;
 
-	ENTER(__func__);
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	if (RD_REG_DWORD(&ha->reg->ctrl_status) & CSR_SCSI_RESET_INTR) {
 		QL4PRINT(QLP2, printk("scsi%d: Soft Reset requested by "
@@ -1274,7 +1251,6 @@ qla4xxx_poll_and_ack_scsi_reset(scsi_qla_host_t *ha)
 	}
 
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
-	LEAVE(__func__);
 	return (status);
  }
 
@@ -1301,7 +1277,6 @@ qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	unsigned long flags = 0;
 	uint8_t reqs_count = 0;
 
-	ENTER("qla4xxx_intr_handler");
 	ha = (scsi_qla_host_t *) dev_id;
 	if (!ha) {
 		DEBUG2( printk("qla4xxx: Interrupt with NULL host ptr\n"));
@@ -1341,6 +1316,9 @@ qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		 * Service interrupt
 		 */
 		if (intr_status & CSR_FATAL_ERROR) {
+			ql4_printk(KERN_WARNING, ha,  "Fatal Error, "
+				  "Status 0x%04x\n",
+                                  RD_REG_DWORD(ISP_PORT_ERROR_STATUS(ha)));
 			QL4PRINT(QLP2,
 				 printk("scsi%d: Fatal Error, "
 					"Status 0x%04x\n", ha->host_no,
@@ -1413,8 +1391,6 @@ qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	if (!list_empty(&ha->done_srb_q))
 		qla4xxx_done(ha);
 
-	LEAVE("qla4xxx_intr_handler");
-
 	return IRQ_HANDLED;
 }
 
@@ -1443,8 +1419,6 @@ qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t process_aen)
 	int     i;
 	unsigned long flags;
 
-	ENTER("qla4xxx_process_aen");
-
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	while (ha->aen_out != ha->aen_in) {
 
@@ -1463,7 +1437,7 @@ qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t process_aen)
 		spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 		QL4PRINT(QLP2|QLP7, printk(
-		    "scsi%d: AEN[%d] %04x, index [%d] state=%04x mod=%x conerr=%08x \n",
+		    "scsi%d: AEN[%d] %04x, DDB [%d] state=%04x mod=%x conerr=%08x \n",
 		    ha->host_no, ha->aen_out, mbox_sts[0], mbox_sts[2],
 		    mbox_sts[3], mbox_sts[1], mbox_sts[4]));
 
@@ -1472,7 +1446,7 @@ qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t process_aen)
 			switch (process_aen) {
 			case FLUSH_DDB_CHANGED_AENS:
 				DEBUG2(printk(
-				    "scsi%d: AEN[%d] %04x, index [%d] "
+				    "scsi%d: AEN[%d] %04x, DDB [%d] "
 				    "state=%04x FLUSHED!\n", ha->host_no,
 				    ha->aen_out, mbox_sts[0], mbox_sts[2],
 				    mbox_sts[3]));
@@ -1484,19 +1458,22 @@ qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t process_aen)
 				 * ddbs that are now active */
 				ddb_entry_t *ddb_entry;
 				uint32_t fw_ddb_device_state =  mbox_sts[3];
+				uint32_t fw_ddb_index =  mbox_sts[2];
 
-				ddb_entry = qla4xxx_lookup_ddb_by_fw_index(ha, mbox_sts[2]);
+				ddb_entry = qla4xxx_find_ddb_internally(ha, fw_ddb_index);
 				if (ddb_entry) {
-					qla4xxx_update_ddb_entry (ha, ddb_entry, mbox_sts[2]);
+					qla4xxx_update_ddb_entry (ha, ddb_entry, fw_ddb_index);
 
 					if (fw_ddb_device_state == DDB_DS_SESSION_ACTIVE) {
 						/* Updated device state will now
 						 * allow a SCSI target to get
 						 * mapped to this ddb */
 						QL4PRINT(QLP7, printk(
-						    "scsi%d: index [%d] now active\n",
+						    "scsi%d: DDB [%d] now active\n",
 						    ha->host_no,
 						    ddb_entry->fw_ddb_index));
+
+						qla4xxx_set_device_state(ha, ddb_entry, DEV_STATE_ONLINE);
 					} else if ((fw_ddb_device_state == DDB_DS_SESSION_FAILED) ||
                                                    (fw_ddb_device_state == DDB_DS_NO_CONNECTION_ACTIVE)){
 						ddb_entry->dev_scan_wait_to_complete_relogin = 0;
@@ -1504,13 +1481,13 @@ qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t process_aen)
 							jiffies + ((ddb_entry->default_time2wait + 4) * HZ);
 
 						QL4PRINT(QLP7, printk(
-						    "scsi%d: index [%d] initate relogin "
+						    "scsi%d: DDB [%d] initate relogin "
 						    "after %d seconds\n", ha->host_no,
 						    ddb_entry->fw_ddb_index,
 						    ddb_entry->default_time2wait+4));
 					}
 				} else {
-					qla4xxx_add_ddb_to_list(ha, mbox_sts[2], NULL);
+					qla4xxx_add_ddb_to_list(ha, fw_ddb_index, NULL);
 				}
 				break;
 			}
@@ -1539,8 +1516,6 @@ qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t process_aen)
 		spin_lock_irqsave(&ha->hardware_lock, flags);
 	}
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
-
-	LEAVE("qla4xxx_process_aen");
 }
 
 

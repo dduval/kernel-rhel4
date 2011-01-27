@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.h 3037 2007-05-22 14:02:22Z sf_support $
+ * $Id: lpfc_sli.h 3134 2008-02-05 21:09:27Z sf_support $
  */
 
 #ifndef _H_LPFC_SLI
@@ -76,7 +76,9 @@ typedef struct lpfcMboxq {
 	void *context2;		/* caller context information */
 
 	void (*mbox_cmpl) (struct lpfc_hba *, struct lpfcMboxq *);
-
+	uint16_t in_ext_byte_len;
+	uint16_t out_ext_byte_len;
+	uint8_t  mbox_offset_word;
 } LPFC_MBOXQ_t;
 
 #define MBX_POLL        1	/* poll mailbox till command done, then
@@ -182,6 +184,7 @@ struct lpfc_sli {
 #define LPFC_SLI_MBOX_ACTIVE      0x100	/* HBA mailbox is currently active */
 #define LPFC_SLI2_ACTIVE          0x200	/* SLI2 overlay in firmware is active */
 #define LPFC_PROCESS_LA           0x400	/* Able to process link attention */
+#define LPFC_MENLO_MAINT	  0x1000 /* menlo maint mode active  */
 
 	struct lpfc_sli_ring ring[LPFC_MAX_RING];
 	int fcp_ring;		/* ring used for FCP initiator commands */

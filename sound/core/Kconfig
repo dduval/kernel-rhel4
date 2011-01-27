@@ -98,3 +98,5 @@ config SND_DEBUG_DETECT
 	bool "Debug detection"
 	depends on SND_DEBUG
 
+config SND_VMASTER
+	bool

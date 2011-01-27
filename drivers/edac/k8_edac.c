@@ -1492,7 +1492,7 @@ static inline void decode_gart_tlb_error(struct mem_ctl_info *mci,
 	ec_tt = (err_code >> 2) & 0x03UL;
 	ec_ll = (err_code >> 0) & 0x03UL;
 	k8_mc_printk(mci, KERN_ERR,
-		     "GART TLB errorr: transaction type(%s), "
+		     "GART TLB error: transaction type(%s), "
 		     "cache level(%s)\n", tt_msgs[ec_tt], ll_msgs[ec_ll]);
 }
 

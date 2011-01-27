@@ -58,8 +58,8 @@ static inline void switch_mm(struct mm_struct *prev,
 		tsk->thread_info->user_pgd = (void *)__pa(tsk->mm->pgd);
 #endif
 	if (likely(prev != next)) {
-		if (!test_bit(PG_pinned, &virt_to_page(next->pgd)->flags))
-			mm_pin(next);
+		BUG_ON(!xen_feature(XENFEAT_writable_page_tables) &&
+		       !test_bit(PG_pinned, &virt_to_page(next->pgd)->flags));
 
 		/* stop flush ipis for the previous mm */
 		cpu_clear(cpu, prev->cpu_vm_mask);
@@ -108,7 +108,11 @@ static inline void switch_mm(struct mm_struct *prev,
 #define deactivate_mm(tsk, mm) \
 	asm("movl %0,%%fs ; movl %0,%%gs": :"r" (0))
 
-#define activate_mm(prev, next) \
-	switch_mm((prev),(next),current)
+static inline void activate_mm(struct mm_struct *prev, struct mm_struct *next)
+{
+	if (!test_bit(PG_pinned, &virt_to_page(next->pgd)->flags))
+		mm_pin(next);
+	switch_mm(prev, next, NULL);
+}
 
 #endif

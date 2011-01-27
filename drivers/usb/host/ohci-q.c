@@ -59,6 +59,9 @@ finish_urb (struct ohci_hcd *ohci, struct urb *urb, struct pt_regs *regs)
 	switch (usb_pipetype (urb->pipe)) {
 	case PIPE_ISOCHRONOUS:
 		hcd_to_bus (&ohci->hcd)->bandwidth_isoc_reqs--;
+		if (hcd_to_bus (&ohci->hcd)->bandwidth_isoc_reqs == 0)
+			if (ohci->flags & OHCI_QUIRK_AMD_ISO)
+				quirk_amd_pll(1);
 		break;
 	case PIPE_INTERRUPT:
 		hcd_to_bus (&ohci->hcd)->bandwidth_int_reqs--;
@@ -169,9 +172,6 @@ static void periodic_link (struct ohci_hcd *ohci, struct ed *ed)
 static int ed_schedule (struct ohci_hcd *ohci, struct ed *ed)
 {	 
 	int	branch;
-
-	if (ohci->hcd.state == USB_STATE_QUIESCING)
-		return -EAGAIN;
 
 	ed->state = ED_OPER;
 	ed->ed_prev = NULL;
@@ -685,6 +685,9 @@ static void td_submit_urb (
 				data + urb->iso_frame_desc [cnt].offset,
 				urb->iso_frame_desc [cnt].length, urb, cnt);
 		}
+		if (hcd_to_bus (&ohci->hcd)->bandwidth_isoc_reqs == 0)
+			if (ohci->flags & OHCI_QUIRK_AMD_ISO)
+				quirk_amd_pll(0);
 		periodic = hcd_to_bus (&ohci->hcd)->bandwidth_isoc_reqs++ == 0
 			&& hcd_to_bus (&ohci->hcd)->bandwidth_int_reqs == 0;
 		break;

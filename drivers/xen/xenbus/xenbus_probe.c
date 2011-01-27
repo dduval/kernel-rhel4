@@ -65,16 +65,7 @@ int xen_store_evtchn;
 struct xenstore_domain_interface *xen_store_interface;
 static unsigned long xen_store_mfn;
 
-static int xenpv_notify_ide_disable = 0;
 extern struct semaphore xenwatch_mutex;
-
-/* struct & lock to remove unconnected vbd's at boostrap */
-struct xendev_rem {
-	struct list_head list;
-	struct xenbus_device* xendev;
-};
-struct xendev_rem xendev_rem_hd;
-static spinlock_t xendev_rem_lock = SPIN_LOCK_UNLOCKED;
 
 static struct notifier_block *xenstore_chain;
 
@@ -472,6 +463,9 @@ static int xenbus_register_driver_common(struct xenbus_driver *drv,
 {
 	int ret;
 
+	if (bus->error)
+		return bus->error;
+
 	drv->driver.name = drv->name;
 	drv->driver.bus = &bus->bus;
 	drv->driver.probe = xenbus_dev_probe;
@@ -631,6 +625,9 @@ static int xenbus_probe_node(struct xen_bus_type *bus,
 
 	enum xenbus_state state = xenbus_read_driver_state(nodename);
 
+	if (bus->error)
+		return bus->error;
+
 	if (state != XenbusStateInitialising) {
 		/* Device is not new, so ignore it.  This can happen if a
 		   device is going away after switching to Closed.  */
@@ -641,6 +638,8 @@ static int xenbus_probe_node(struct xen_bus_type *bus,
 	xendev = kzalloc(sizeof(*xendev) + stringlen, GFP_KERNEL);
 	if (!xendev)
 		return -ENOMEM;
+
+	xendev->state = XenbusStateInitialising;
 
 	/* Copy the strings into the extra space. */
 
@@ -666,10 +665,18 @@ static int xenbus_probe_node(struct xen_bus_type *bus,
 	if (err)
 		goto fail;
 
-	device_create_file(&xendev->dev, &dev_attr_nodename);
-	device_create_file(&xendev->dev, &dev_attr_devtype);
+	err = device_create_file(&xendev->dev, &dev_attr_nodename);
+	if (err)
+		goto unregister;
+	err = device_create_file(&xendev->dev, &dev_attr_devtype);
+	if (err)
+		goto unregister;
 
 	return 0;
+unregister:
+	device_remove_file(&xendev->dev, &dev_attr_nodename);
+	device_remove_file(&xendev->dev, &dev_attr_devtype);
+	device_unregister(&xendev->dev);
 fail:
 	kfree(xendev);
 	return err;
@@ -769,6 +776,9 @@ static int xenbus_probe_devices(struct xen_bus_type *bus)
 	char **dir;
 	unsigned int i, dir_n;
 
+	if (bus->error)
+		return bus->error;
+
 	dir = xenbus_directory(XBT_NIL, bus->root, "", &dir_n);
 	if (IS_ERR(dir))
 		return PTR_ERR(dir);
@@ -812,7 +822,7 @@ static void dev_changed(const char *node, struct xen_bus_type *bus)
 	char type[BUS_ID_SIZE];
 	const char *p, *root;
 
-	if (char_count(node, '/') < 2)
+	if (bus->error || char_count(node, '/') < 2)
  		return;
 
 	exists = xenbus_exists(XBT_NIL, node, "");
@@ -1149,10 +1159,6 @@ static int __init xenbus_probe_init(void)
 #ifdef CONFIG_XEN
 	bus_register(&xenbus_backend.bus);
 #endif
-	device_register(&xenbus_frontend.dev);
-#ifdef CONFIG_XEN
-	device_register(&xenbus_backend.dev);
-#endif
 
 	if (is_initial_xendomain()) {
 		struct evtchn_alloc_unbound alloc_unbound;
@@ -1221,6 +1227,19 @@ static int __init xenbus_probe_init(void)
 		goto err;
 	}
 
+	if (!xenbus_frontend.error) {
+		xenbus_frontend.error = device_register(&xenbus_frontend.dev);
+		if (xenbus_frontend.error) {
+			bus_unregister(&xenbus_frontend.bus);
+			printk(KERN_WARNING
+			       "XENBUS: Error registering frontend device: %i\n",
+			       xenbus_frontend.error);
+		}
+	}
+#ifdef CONFIG_XEN
+	device_register(&xenbus_backend.dev);
+#endif
+
 	if (!is_initial_xendomain())
 		xenbus_probe(NULL);
 
@@ -1280,49 +1299,6 @@ static int exists_disconnected_device(struct device_driver *drv)
 				is_disconnected_device);
 }
 
-static void xendev_rem_add(struct xenbus_device *dev)
-{
-	struct xendev_rem *new;
-	struct xendev_rem *ptr;
-
-	/*
-	 * do nothing if ide is disabled, since
-	 * may need vbd in this case;
-	 */
-	if (xenpv_notify_ide_disable == 1) {
-		printk("xenpv_notify_ide_disable set \n");
-		return;
-	}
-
-	/* only add vbd devices */
-	if (strncmp(dev->dev.bus_id, "vbd", 3)) 
-		return;
-
-	new = kmalloc(sizeof(*new), GFP_KERNEL);
-	if (new == 0L) {
-		printk(KERN_INFO "XENBUS: failed xendev_rem struct alloc\n");
-		printk(KERN_INFO "- couldn't removed %s from avail dev list\n",
-			dev->nodename);
-		return;
-	}
-	new->xendev = dev;
-
-	spin_lock(&xendev_rem_lock);
-	/* make sure xendev not already on the list */
-	list_for_each_entry(ptr, &xendev_rem_hd.list, list) {
-		struct xenbus_device *xendev = ptr->xendev;
-		if (xendev == dev) {
-			/* ok to have dev added via multiple code paths */
-			spin_unlock(&xendev_rem_lock);
-			kfree(new);
-			return;
-		}
-	}
-	list_add_tail(&new->list, &xendev_rem_hd.list);
-	spin_unlock(&xendev_rem_lock);
-
-	return;
-}
 static int print_device_status(struct device *dev, void *data)
 {
 	struct xenbus_device *xendev = to_xenbus_device(dev);
@@ -1336,40 +1312,13 @@ static int print_device_status(struct device *dev, void *data)
 		/* Information only: is this too noisy? */
 		printk(KERN_INFO "XENBUS: Device with no driver: %s\n",
 		       xendev->nodename);
-		xendev_rem_add(xendev);
 	} else if (xendev->state != XenbusStateConnected) {
 		printk(KERN_WARNING "XENBUS: Timeout connecting "
 		       "to device: %s (state %d)\n",
 		       xendev->nodename, xendev->state);
-		xendev_rem_add(xendev);
 	}
 
 	return 0;
-}
-
-/*
- * Remove unused xvd's (vbd devices) at bootstrap so anaconda
- * doesn't have a nutty seeing xvd's that are not connected
- */
-static void 
-xvd_dev_shutdown(void)
-{
-	struct xendev_rem *ptr;
-	struct xendev_rem *tmp;
-	
-	spin_lock(&xendev_rem_lock);
-	list_for_each_entry_safe(ptr, tmp, &xendev_rem_hd.list, list) {
-		struct device *dev = &ptr->xendev->dev;
-		device_remove_file(dev, &dev_attr_devtype);
-		device_remove_file(dev, &dev_attr_nodename);
-		device_unregister(dev);
-		put_device(dev);
-		/* remove list entry once processed */
-		list_del(&ptr->list);
-		/* free memory of this list entry */
-		kfree(ptr);
-	}
-	spin_unlock(&xendev_rem_lock);
 }
 
 /* We only wait for device setup after most initcalls have run. */
@@ -1406,18 +1355,11 @@ static void wait_for_devices(struct xenbus_driver *xendrv)
 
 	bus_for_each_dev(&xenbus_frontend.bus, NULL, drv,
 			 print_device_status);
-
-#ifdef CONFIG_XEN_PV_ON_HVM
-	/* now see about removing unused xvd's */
-	xvd_dev_shutdown();
-#endif
-
 }
 
 #ifndef MODULE
 static int __init boot_wait_for_devices(void)
 {
-	INIT_LIST_HEAD(&xendev_rem_hd.list);
 	if (!xenbus_frontend.error) {
 		ready_to_wait_for_devices = 1;
 		wait_for_devices(NULL);
@@ -1427,46 +1369,3 @@ static int __init boot_wait_for_devices(void)
 
 late_initcall(boot_wait_for_devices);
 #endif
-
-
-/*
- * xen_ide_cmdline_check_setup() gets called VERY EARLY during initialization,
- * to scan kernel "command line" strings beginning with "ide0=noprobe" 
- * or "ide=disable".
- *
- * Note: always return 0, so as not to indicate consumption of cmdline,
- *       enabling ide subsystem to receive & parse it.
- */
-int __init xen_ide_cmdline_check_setup(char *s)
-{
-
-	/*
-	 * only look at cmdline args starting with 'ide'
-	 */
-	if (strncmp(s, "ide", 3))
-		return 0;
-
-/*	printk(KERN_DEBUG "XENBUS: xen_ide_cmdline_check_setup: %s \n", s); */
-
-	/* assume disable */
-	xenpv_notify_ide_disable=1;
-	if (strncmp(s, "ide=disable", 11) == 0) { 
-		printk(KERN_INFO "drivers/ide subsystem to be disabled ");
-		printk("-- skipping xvd_dev_shutdown()\n");
-		return 0;
-	}
-
-	if (strncmp(s, "ide0=noprobe", 12) == 0) { 
-		printk(KERN_INFO "ide0 not going to be probed ");
-		printk("-- skipping xvd_dev_shutdown()\n");
-		return 0;
-	}
-	/* re-enable xvd_dev_shutdown if ide isn't disabled */
-	xenpv_notify_ide_disable=0;
-/*	printk(KERN_DEBUG " -- xvd_dev_shutdown to be exec'd \n"); */
-
-	return 0;
-}
-
-/* scan entire kernel cmdline, as ide subys does */
-__setup("", xen_ide_cmdline_check_setup);

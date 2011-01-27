@@ -66,12 +66,14 @@
 #define USER_PARAM_BLOCK	2
 
 static int fallback_on_err = 1;
+static int halt_on_err = 0;
 static int allow_risky_dumps = 1;
 static unsigned int block_order = 2;
 static int sample_rate = 8;
 static int dump_level = 0;
 static int compress = 0;
 module_param_named(fallback_on_err, fallback_on_err, bool, S_IRUGO|S_IWUSR);
+module_param_named(halt_on_err, halt_on_err, bool, S_IRUGO|S_IWUSR);
 module_param_named(allow_risky_dumps, allow_risky_dumps, bool, S_IRUGO|S_IWUSR);
 module_param_named(block_order, block_order, uint, S_IRUGO|S_IWUSR);
 module_param_named(sample_rate, sample_rate, int, S_IRUGO|S_IWUSR);
@@ -132,6 +134,7 @@ enum disk_dump_states disk_dump_state = DISK_DUMP_INITIAL;
 EXPORT_SYMBOL_GPL(disk_dump_state);
 
 extern int panic_timeout;
+extern int halt_on_dump_err;
 extern unsigned long max_pfn;
 
 static asmlinkage void disk_dump(struct pt_regs *, void *);
@@ -358,7 +361,7 @@ static int check_dump_partition(struct disk_dump_partition *dump_part,
 	 * If the device has limitations of transfer size, use it.
 	 */
 	chunk_blks = 1 << block_order;
-	if (dump_part->device->max_blocks < chunk_blks)
+	if (dump_part->device->max_blocks <= chunk_blks)
 		Warn("I/O size exceeds the maximum block size of SCSI device. Signature check may fail");
 	skips = chunk_blks << sample_rate;
 
@@ -870,11 +873,14 @@ static void start_disk_dump(struct pt_regs *regs)
 done:
 	/*
 	 * If diskdump failed and fallback_on_err is set,
-	 * We just return and leave panic to netdump.
+	 * we just return and leave panic to netdump.
+	 * If halt_on_err is set and netdump isn't enabled,
+	 * the system doesn't reboot after dump failure.
 	 */
 	if (dump_err) {
 		disk_dump_state = DISK_DUMP_FAILURE;
 		if (fallback_on_err && dump_err) {
+			halt_on_dump_err = halt_on_err;
 			Info("diskdump failed, fall back to trying netdump");
 			return;
 		}
@@ -887,7 +893,8 @@ done:
 	Dbg("notify panic.");
 	notifier_call_chain(&panic_notifier_list, 0, NULL);
 
-	if (panic_timeout > 0) {
+	if (panic_timeout > 0
+		&& (!dump_err || (dump_err && !halt_on_err))) {
 		int i;
 		/*
 	 	 * Delay timeout seconds before rebooting the machine. 
@@ -1222,7 +1229,7 @@ static int add_dump(struct device *dev, struct block_device *bdev)
 		}
 
 		/* If the device has limitations of transfer size, print warning. */
-		if (dump_device->max_blocks < (1 << block_order))
+		if (dump_device->max_blocks <= (1 << block_order))
 			Warn("I/O size exceeds the maximum block size of SCSI device. Signature check may fail");
 
 		if (!try_module_get(dump_type->owner)) {
@@ -1332,6 +1339,7 @@ static int disk_dump_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, "# sample_rate: %u\n", sample_rate);
 		seq_printf(seq, "# block_order: %u\n", block_order);
 		seq_printf(seq, "# fallback_on_err: %u\n", fallback_on_err);
+		seq_printf(seq, "# halt_on_err: %u\n", halt_on_err);
 		seq_printf(seq, "# allow_risky_dumps: %u\n", allow_risky_dumps);
 		seq_printf(seq, "# dump_level: %d\n", dump_level);
 		seq_printf(seq, "# compress: %d\n", compress);

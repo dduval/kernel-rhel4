@@ -42,6 +42,13 @@
  * POSSIBILITY OF SUCH DAMAGES.
  */
 
+#include <linux/gfp.h>
+#include <linux/mm.h>
+
+#ifdef CONFIG_IA64
+#include <asm/machvec.h>
+#endif
+#include <asm/system.h>
 
 #include <acpi/acpi.h>
 #include <acpi/acnamesp.h>
@@ -375,6 +382,10 @@ acpi_get_table (
 	struct acpi_table_header        *tbl_ptr;
 	acpi_status                     status;
 	acpi_size                       table_length;
+#ifdef CONFIG_IA64
+	struct page *p;
+#endif
+
 
 
 	ACPI_FUNCTION_TRACE ("acpi_get_table");
@@ -429,7 +440,24 @@ acpi_get_table (
 
 	/* Validate/Allocate/Clear caller buffer */
 
-	status = acpi_ut_initialize_buffer (ret_buffer, table_length);
+#ifdef CONFIG_IA64
+	if ((table_type == ACPI_TABLE_DSDT) && ia64_platform_is("hpzx1")) {
+		/* Allocate a new buffer */
+		p = alloc_pages(GFP_KERNEL, get_order(table_length));
+		ret_buffer->pointer = page_address(p);
+		if (!ret_buffer->pointer)
+			return_ACPI_STATUS (AE_NO_MEMORY);
+
+		/* Clear the buffer */
+		ACPI_MEMSET (ret_buffer->pointer, 0, table_length);
+
+		ret_buffer->length = table_length;
+		status = AE_OK;
+	}
+	else
+#endif
+		status = acpi_ut_initialize_buffer (ret_buffer, table_length);
+
 	if (ACPI_FAILURE (status)) {
 		return_ACPI_STATUS (status);
 	}

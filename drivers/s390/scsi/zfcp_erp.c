@@ -12,6 +12,7 @@
  *            Wolfgang Taphorn
  *            Stefan Bader <stefan.bader@de.ibm.com> 
  *            Heiko Carstens <heiko.carstens@de.ibm.com> 
+ *            Andreas Herrmann <aherrman@de.ibm.com>
  * 
  * This program is free software; you can redistribute it and/or modify 
  * it under the terms of the GNU General Public License as published by 
@@ -31,7 +32,7 @@
 #define ZFCP_LOG_AREA			ZFCP_LOG_AREA_ERP
 
 /* this drivers version (do not edit !!! generated and updated by cvs) */
-#define ZFCP_ERP_REVISION "$Revision: 1.65 $"
+#define ZFCP_ERP_REVISION "$Revision: 1.69 $"
 
 #include "zfcp_ext.h"
 
@@ -316,7 +317,9 @@ zfcp_els(struct zfcp_port *port, u8 ls_code)
 	send_els->req->offset = 0;
 	send_els->resp->offset = PAGE_SIZE >> 1;
 
+	send_els->adapter = port->adapter;
 	send_els->port = port;
+	send_els->d_id = port->d_id;
 	send_els->ls_code = ls_code;
 	send_els->handler = zfcp_els_handler;
 	send_els->handler_data = (unsigned long)send_els;
@@ -1100,7 +1103,9 @@ zfcp_erp_action_dismiss(struct zfcp_erp_action *erp_action)
 	debug_text_event(adapter->erp_dbf, 2, "a_adis");
 	debug_event(adapter->erp_dbf, 2, &erp_action->action, sizeof (int));
 
-	zfcp_erp_async_handler_nolock(erp_action, ZFCP_STATUS_ERP_DISMISSED);
+	erp_action->status |= ZFCP_STATUS_ERP_DISMISSED;
+	if (zfcp_erp_action_exists(erp_action) == ZFCP_ERP_ACTION_RUNNING)
+		zfcp_erp_action_ready(erp_action);
 
 	return 0;
 }
@@ -1193,7 +1198,7 @@ zfcp_erp_thread(void *data)
 				 &adapter->status)) {
 
 		write_lock_irqsave(&adapter->erp_lock, flags);
-		next = adapter->erp_ready_head.prev;
+		next = adapter->erp_ready_head.next;
 		write_unlock_irqrestore(&adapter->erp_lock, flags);
 
 		if (next != &adapter->erp_ready_head) {
@@ -1283,15 +1288,13 @@ zfcp_erp_strategy(struct zfcp_erp_action *erp_action)
 
 	/*
 	 * check for dismissed status again to avoid follow-up actions,
-	 * failing of targets and so on for dismissed actions
+	 * failing of targets and so on for dismissed actions,
+	 * we go through down() here because there has been an up()
 	 */
-	retval = zfcp_erp_strategy_check_action(erp_action, retval);
+	if (erp_action->status & ZFCP_STATUS_ERP_DISMISSED)
+		retval = ZFCP_ERP_CONTINUES;
 
 	switch (retval) {
-	case ZFCP_ERP_DISMISSED:
-		/* leave since this action has ridden to its ancestors */
-		debug_text_event(adapter->erp_dbf, 6, "a_st_dis2");
-		goto unlock;
 	case ZFCP_ERP_NOMEM:
 		/* no memory to continue immediately, let it sleep */
 		if (!(erp_action->status & ZFCP_STATUS_ERP_LOWMEM)) {
@@ -1662,9 +1665,13 @@ static void
 zfcp_erp_scsi_scan(void *data)
 {
 	struct zfcp_erp_add_work *p;
+	struct scsi_device *sdev;
 	p = data;
-	scsi_add_device(p->unit->port->adapter->scsi_host, 0,
- 			p->unit->port->scsi_id, p->unit->scsi_lun);
+	sdev = scsi_add_device(p->unit->port->adapter->scsi_host, 0,
+ 			       p->unit->port->scsi_id, p->unit->scsi_lun);
+	/* workaround for old SCSI layer when recovering already known device */
+	if (!IS_ERR(sdev))
+		scsi_device_set_state(sdev, SDEV_RUNNING);
 	atomic_clear_mask(ZFCP_STATUS_UNIT_SCSI_WORK_PENDING, &p->unit->status);
 	wake_up(&p->unit->scsi_scan_wq);
 	zfcp_unit_put(p->unit);
@@ -2675,6 +2682,23 @@ zfcp_erp_port_strategy_open_common(struct zfcp_erp_action *erp_action)
 	case ZFCP_ERP_STEP_UNINITIALIZED:
 	case ZFCP_ERP_STEP_PHYS_PORT_CLOSING:
 	case ZFCP_ERP_STEP_PORT_CLOSING:
+		if (adapter->fc_topology == FSF_TOPO_P2P) {
+			if (port->wwpn != adapter->peer_wwpn) {
+				ZFCP_LOG_NORMAL("Failed to open port 0x%016Lx "
+						"on adapter %s.\nPeer WWPN "
+						"0x%016Lx does not match\n",
+						port->wwpn,
+						zfcp_get_busid_by_adapter(adapter),
+						adapter->peer_wwpn);
+				zfcp_erp_port_failed(port);
+				retval = ZFCP_ERP_FAILED;
+				break;
+			}
+			port->d_id = adapter->peer_d_id;
+			atomic_set_mask(ZFCP_STATUS_PORT_DID_DID, &port->status);
+			retval = zfcp_erp_port_strategy_open_port(erp_action);
+			break;
+		}
 		if (!(adapter->nameserver_port)) {
 			retval = zfcp_nameserver_enqueue(adapter);
 			if (retval != 0) {
@@ -3378,7 +3402,7 @@ zfcp_erp_action_enqueue(int action,
 	++adapter->erp_total_count;
 
 	/* finally put it into 'ready' queue and kick erp thread */
-	list_add(&erp_action->list, &adapter->erp_ready_head);
+	list_add_tail(&erp_action->list, &adapter->erp_ready_head);
 	up(&adapter->erp_ready_sem);
 	retval = 0;
  out:
@@ -3431,9 +3455,9 @@ zfcp_erp_action_dequeue(struct zfcp_erp_action *erp_action)
 /**
  * zfcp_erp_action_cleanup
  *
- * registers unit with scsi stack if appropiate and fixes reference counts
+ * Register unit with scsi stack if appropiate and fix reference counts.
+ * Note: Temporary units are not registered with scsi stack.
  */
-
 static void
 zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 			struct zfcp_port *port, struct zfcp_unit *unit,
@@ -3444,9 +3468,9 @@ zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 		if ((result == ZFCP_ERP_SUCCEEDED)
 		    && (!atomic_test_mask(ZFCP_STATUS_UNIT_TEMPORARY,
 					  &unit->status))
-		    && (!unit->device)
 		    && (atomic_test_mask(ZFCP_STATUS_UNIT_SCSI_WORK_PENDING,
-				&unit->status) == 0))
+				&unit->status) == 0)
+		    && (!unit->device))
 			zfcp_erp_schedule_work(unit);
 		zfcp_unit_put(unit);
 		break;

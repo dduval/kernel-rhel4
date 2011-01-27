@@ -138,8 +138,8 @@ struct ixgbe_ring {
 	u16 head;
 	u16 tail;
 
-	/* To protect race between sender and clean_tx_irq */
-	spinlock_t tx_lock;
+	unsigned int total_bytes;
+	unsigned int total_packets;
 
 	struct ixgbe_queue_stats stats;
 
@@ -176,8 +176,12 @@ struct ixgbe_adapter {
 	struct vlan_group *vlgrp;
 	u16 bd_number;
 	u16 rx_buf_len;
-	atomic_t irq_sem;
 	struct work_struct reset_task;
+
+	/* Interrupt Throttle Rate */
+	u32 itr_setting;
+	u16 eitr_low;
+	u16 eitr_high;
 
 	/* TX */
 	struct ixgbe_ring *tx_ring;	/* One per active queue */
@@ -210,6 +214,7 @@ struct ixgbe_adapter {
 #define IXGBE_FLAG_IN_NETPOLL			(u32)(1 << 4)
 
 	/* Interrupt Throttle Rate */
+#define IXGBE_FLAG_FAN_FAIL_CAPABLE             (u32)(1 << 20)
 	u32 rx_eitr;
 	u32 tx_eitr;
 
@@ -246,6 +251,7 @@ extern const char ixgbe_driver_version[];
 
 extern int ixgbe_up(struct ixgbe_adapter *adapter);
 extern void ixgbe_down(struct ixgbe_adapter *adapter);
+extern void ixgbe_reinit_locked(struct ixgbe_adapter *adapter);
 extern void ixgbe_reset(struct ixgbe_adapter *adapter);
 extern void ixgbe_update_stats(struct ixgbe_adapter *adapter);
 extern void ixgbe_set_ethtool_ops(struct net_device *netdev);

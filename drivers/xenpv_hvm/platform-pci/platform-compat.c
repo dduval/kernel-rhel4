@@ -12,7 +12,8 @@ static int system_state = 1;
 EXPORT_SYMBOL(system_state);
 #endif
 
-#if 0
+#ifdef MODULE
+/* Need to include this for modular build; in kernel/sys.c if built into kernel */
 void ctrl_alt_del(void)
 {
 	kill_proc(1, SIGINT, 1); /* interrupt init */
@@ -81,7 +82,7 @@ out:
 EXPORT_SYMBOL(wait_for_completion_timeout);
 #endif
 
-#if 0 // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,12)
 /*
     fake do_exit using complete_and_exit
  */

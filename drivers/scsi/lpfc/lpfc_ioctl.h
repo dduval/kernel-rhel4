@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_ioctl.h 3037 2007-05-22 14:02:22Z sf_support $
+ * $Id: lpfc_ioctl.h 3240 2008-11-25 21:47:29Z sf_support $
  */
 
 #ifndef _H_LPFC_IOCTL
@@ -28,7 +28,7 @@
 #define MAX_LPFC_BRDS 32
 
 #define DFC_MAJOR_REV	80
-#define DFC_MINOR_REV	164
+#define DFC_MINOR_REV	208
 
 /* Duplicate definitions */
 /*   Make sure these stay in sync with their counterparts in the */
@@ -69,7 +69,8 @@
 #define LPFC_IOINFO  		0x30	/* get I/O stats */
 #define LPFC_NODEINFO  		0x31	/* get node (NPort) information */
 #define LPFC_LIST_BIND		0x38	/* List binding */
-/*	LPFC_LAST_IOCTL_USED	0x38	Last LPFC Ioctl used  */
+#define LPFC_MENLO		0x39	/* Issue menlo cmd */
+/*	LPFC_LAST_IOCTL_USED	0x39	Last LPFC Ioctl used  */
 
 
 /* LPFC Ioctls() 0x40 - 0x7F */
@@ -207,6 +208,14 @@ struct rec {
 	void *arg3;
 };
 
+/* Structure used for transfering mailbox extension data */
+struct ioctl_mailbox_ext_data {
+	uint32_t in_ext_byte_len;
+	uint32_t out_ext_byte_len;
+	uint8_t  mbox_extension_data[MAILBOX_EXT_SIZE];
+	uint8_t  mbox_offset_word;
+};
+
 /*
  * This structure needs to fit in di->fc_dataout alloc'ed memory
  * array in dfc_un for dfc.c / C_TRACE
@@ -223,6 +232,7 @@ typedef struct DFCREVINFO {
 } DfcRevInfo;
 
 
+#define DFC_DRVID_STR_SZ 16     /* make big enough to include null term */
 
 
 /* the brdinfo structure */
@@ -243,7 +253,7 @@ typedef struct BRDINFO {
 	uint8_t a_ddi;		/* identifier device driver instance number */
 	uint32_t a_onmask;	/* mask of ONDI primatives supported */
 	uint32_t a_offmask;	/* mask of OFFDI primatives supported */
-	uint8_t a_drvrid[16];	/* driver version */
+	uint8_t a_drvrid[DFC_DRVID_STR_SZ];	/* driver version */
 	uint8_t a_fwname[32];	/* firmware version */
 } brdinfo;
 
@@ -264,7 +274,7 @@ typedef struct DFC_BRDINFO {
 	uint16_t a_ddi;		/* identifier device driver instance number */
 	uint32_t a_onmask;	/* mask of ONDI primatives supported */
 	uint32_t a_offmask;	/* mask of OFFDI primatives supported */
-	uint8_t  a_drvrid[16];	/* driver version */
+	uint8_t  a_drvrid[DFC_DRVID_STR_SZ];	/* driver version */
 	uint8_t  a_fwname[32];	/* firmware version */
 	uint8_t  a_wwpn[8];	/* worldwide portname */
 } dfc_brdinfo;
@@ -284,7 +294,7 @@ struct dfc_info {
 	uint32_t a_ddi;
 	uint32_t a_onmask;
 	uint32_t a_offmask;
-	uint8_t  a_drvrid[16];
+	uint8_t  a_drvrid[DFC_DRVID_STR_SZ];
 	uint8_t  a_fwname[32];
 	uint8_t  a_wwpn[8];
 };

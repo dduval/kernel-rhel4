@@ -17,6 +17,8 @@
  *
  ******************************************************************************/
 
+#ifndef __QLA_DBG_H
+#define __QLA_DBG_H
 /*
  * Driver debug definitions.
  */
@@ -337,3 +339,4 @@ struct qla2xxx_fw_dump {
 		struct qla25xx_fw_dump isp25;
 	} isp;
 };
+#endif //__QLA_DBG_H

@@ -314,7 +314,7 @@ dasd_3990_erp_alternate_path(struct dasd_ccw_req * erp)
 		/* reset status to queued to handle the request again... */
 		if (erp->status > DASD_CQR_QUEUED)
 			erp->status = DASD_CQR_QUEUED;
-		erp->retries = 1;
+		erp->retries = 10;
 	} else {
 		DEV_MESSAGE(KERN_ERR, device,
 			    "No alternate channel path left (lpum=%x / "
@@ -452,7 +452,7 @@ dasd_3990_erp_action_4(struct dasd_ccw_req * erp, char *sense)
 
 	} else {
 
-		if (sense[25] == 0x1D) {	/* state change pending */
+		if (sense && (sense[25] == 0x1D)) {	/* state change pending */
 
 			DEV_MESSAGE(KERN_INFO, device, 
 				    "waiting for state change pending "
@@ -461,7 +461,7 @@ dasd_3990_erp_action_4(struct dasd_ccw_req * erp, char *sense)
 			
 			dasd_3990_erp_block_queue(erp, 30*HZ);
 
-                } else if (sense[25] == 0x1E) {	/* busy */
+                } else if (sense && (sense[25] == 0x1E)) {	/* busy */
 			DEV_MESSAGE(KERN_INFO, device,
 				    "busy - redriving request later, "
 				    "%d retries left",
@@ -2232,6 +2232,34 @@ dasd_3990_erp_inspect_32(struct dasd_ccw_req * erp, char *sense)
  */
 
 /*
+ * DASD_3990_ERP_CONTROL_CHECK
+ *
+ * DESCRIPTION
+ *   Does a generic inspection if a control check occurs and set up
+ *   the related error recovery procedure
+ *
+ * PARAMETER
+ *   erp		 		 pointer to the currently created default ERP
+ *   sense              sense data of the actual error
+ * RETURN VALUES
+ *   erp_filled		 		 pointer to the erp
+ */
+
+static struct dasd_ccw_req *
+dasd_3990_erp_control_check(struct dasd_ccw_req *erp)
+{
+		 struct dasd_device *device = erp->device;
+
+		 if (erp->refers->irb.scsw.cstat & (SCHN_STAT_INTF_CTRL_CHK
+		 		 		 		 		    | SCHN_STAT_CHN_CTRL_CHK)) {
+		 		 DEV_MESSAGE(KERN_DEBUG, device, "%s",
+		 		 		     "channel or interface control check");
+		 		 erp = dasd_3990_erp_action_4(erp, NULL);
+		 }
+		 return erp;
+}
+
+/*
  * DASD_3990_ERP_INSPECT
  *
  * DESCRIPTION
@@ -2252,8 +2280,11 @@ dasd_3990_erp_inspect(struct dasd_ccw_req * erp)
 	/* already set up new ERP !			      */
 	char *sense = erp->refers->irb.ecw;
 
+	/* check if no concurrent sens is available */
+	if (!erp->refers->irb.esw.esw0.erw.cons)
+		erp_new = dasd_3990_erp_control_check(erp);
 	/* distinguish between 24 and 32 byte sense data */
-	if (sense[27] & DASD_SENSE_BIT_0) {
+	else if (sense[27] & DASD_SENSE_BIT_0) {
 
 		/* inspect the 24 byte sense data */
 		erp_new = dasd_3990_erp_inspect_24(erp, sense);

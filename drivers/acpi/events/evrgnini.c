@@ -240,7 +240,7 @@ acpi_ev_pci_config_region_setup (
 						 */
 						status = AE_OK;
 					} else {
-						ACPI_EXCEPTION((AE_INFO, status,
+						ACPI_DEBUG_PRINT((ACPI_DB_ERROR, status,
 								"Could not install PciConfig handler for Root Bridge %4.4s",
 								acpi_ut_get_node_name
 								(pci_root_node)));

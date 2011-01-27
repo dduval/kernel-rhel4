@@ -87,6 +87,13 @@
  */
 #define SD_MAX_RETRIES		5
 
+/*
+ * Size of the initial data buffer for mode and read capacity data
+ * May be >= 255, may not be less than 255 unless you change hard coded
+ * assumptions in the code.
+ */
+#define SD_BUF_SIZE            512
+
 static void scsi_disk_release(struct kref *kref);
 
 struct scsi_disk {
@@ -736,7 +743,7 @@ static int sd_issue_flush(struct device *dev, sector_t *error_sector)
 static void sd_rescan(struct device *dev)
 {
 	struct scsi_disk *sdkp = dev_get_drvdata(dev);
-	sd_revalidate_disk(sdkp->disk);
+	revalidate_disk(sdkp->disk);
 }
 
 static struct block_device_operations sd_fops = {
@@ -823,7 +830,6 @@ static void sd_rw_intr(struct scsi_cmnd * SCpnt)
 			break;
 
 		case RECOVERED_ERROR: /* an error occurred, but it recovered */
-		case NO_SENSE: /* LLDD got sense data */
 			/*
 			 * Inform the user, but make sure that it's not treated
 			 * as a hard error.
@@ -833,7 +839,15 @@ static void sd_rw_intr(struct scsi_cmnd * SCpnt)
 			SCpnt->sense_buffer[0] = 0x0;
 			good_bytes = this_count;
 			break;
-
+		case NO_SENSE:
+			/* This indicates a false check condition, so ignore
+			 * it.  An unknown amount of data was transferred so
+			 * treat it as an error.
+			 */
+			scsi_print_sense("sd", SCpnt);
+			SCpnt->result = 0;
+			memset(SCpnt->sense_buffer, 0, SCSI_SENSE_BUFFERSIZE);
+			break;
 		case ILLEGAL_REQUEST:
 			if (SCpnt->device->use_10_for_rw &&
 			    (SCpnt->cmnd[0] == READ_10 ||
@@ -901,7 +915,8 @@ sd_spinup_disk(struct scsi_disk *sdkp, char *diskname,
 			SRpnt->sr_data_direction = DMA_NONE;
 
 			scsi_wait_req (SRpnt, (void *) cmd, (void *) buffer,
-				       0/*512*/, SD_TIMEOUT, SD_MAX_RETRIES);
+				       0/*SD_BUF_SIZE*/,
+				       SD_TIMEOUT, SD_MAX_RETRIES);
 
 			the_result = SRpnt->sr_result;
 			retries++;
@@ -960,7 +975,8 @@ sd_spinup_disk(struct scsi_disk *sdkp, char *diskname,
 
 				SRpnt->sr_data_direction = DMA_NONE;
 				scsi_wait_req(SRpnt, (void *)cmd, 
-					      (void *) buffer, 0/*512*/, 
+					      (void *) buffer,
+					      0/*SD_BUF_SIZE*/, 
 					      SD_TIMEOUT, SD_MAX_RETRIES);
 				spintime_value = jiffies;
 			}
@@ -994,7 +1010,7 @@ sd_spinup_disk(struct scsi_disk *sdkp, char *diskname,
 }
 
 /*
- * read disk capacity
+ * read disk capacity, called with a buffer size of SD_BUF_SIZE
  */
 static void
 sd_read_capacity(struct scsi_disk *sdkp, char *diskname,
@@ -1176,7 +1192,7 @@ got_data:
 	sdkp->device->sector_size = sector_size;
 }
 
-/* called with buffer of length 512 */
+/* called with buffer of length SD_BUF_SIZE */
 static inline int
 sd_do_mode_sense(struct scsi_request *SRpnt, int dbd, int modepage,
 		 unsigned char *buffer, int len, struct scsi_mode_data *data)
@@ -1187,7 +1203,7 @@ sd_do_mode_sense(struct scsi_request *SRpnt, int dbd, int modepage,
 
 /*
  * read write protect setting, if possible - called only in sd_revalidate_disk()
- * called with buffer of length 512
+ * called with buffer of length SD_BUF_SIZE
  */
 static void
 sd_read_write_protect_flag(struct scsi_disk *sdkp, char *diskname,
@@ -1243,7 +1259,7 @@ sd_read_write_protect_flag(struct scsi_disk *sdkp, char *diskname,
 
 /*
  * sd_read_cache_type - called only from sd_revalidate_disk()
- * called with buffer of length 512
+ * called with buffer of length SD_BUF_SIZE
  */
 static void
 sd_read_cache_type(struct scsi_disk *sdkp, char *diskname,
@@ -1277,6 +1293,8 @@ sd_read_cache_type(struct scsi_disk *sdkp, char *diskname,
 
 	/* Take headers and block descriptors into account */
 	len += data.header_length + data.block_descriptor_length;
+	if (len > SD_BUF_SIZE)
+		goto bad_sense;
 
 	/* Get the data */
 	res = sd_do_mode_sense(SRpnt, dbd, modepage, buffer, len, &data);
@@ -1289,6 +1307,12 @@ sd_read_cache_type(struct scsi_disk *sdkp, char *diskname,
 		int ct = 0;
 		int offset = data.header_length +
 			data.block_descriptor_length + 2;
+
+		if (offset >= SD_BUF_SIZE) {
+			printk(KERN_ERR "%s: malformed MODE SENSE response",
+			       diskname);
+			goto defaults;
+		}
 
 		sdkp->WCE = ((buffer[offset] & 0x04) != 0);
 		sdkp->RCD = ((buffer[offset] & 0x01) != 0);
@@ -1349,7 +1373,7 @@ static int sd_revalidate_disk(struct gendisk *disk)
 		goto out;
 	}
 
-	buffer = kmalloc(512, GFP_KERNEL | __GFP_DMA);
+	buffer = kmalloc(SD_BUF_SIZE, GFP_KERNEL | __GFP_DMA);
 	if (!buffer) {
 		printk(KERN_WARNING "(sd_revalidate_disk:) Memory allocation "
 		       "failure.\n");

@@ -825,21 +825,26 @@ qeth_add_ip(struct qeth_card *card, struct qeth_ipaddr *addr)
 static inline void
 __qeth_delete_all_mc(struct qeth_card *card, unsigned long *flags)
 {
+	struct list_head fail_list;
 	struct qeth_ipaddr *addr, *tmp;
 	int rc;
+
+	INIT_LIST_HEAD(&fail_list);
 again:
 	list_for_each_entry_safe(addr, tmp, &card->ip_list, entry) {
 		if (addr->is_multicast) {
+			list_del(&addr->entry);
 			spin_unlock_irqrestore(&card->ip_lock, *flags);
 			rc = qeth_deregister_addr_entry(card, addr);
 			spin_lock_irqsave(&card->ip_lock, *flags);
-			if (!rc) {
-				list_del(&addr->entry);
+			if (!rc || (rc == 0xe00b))
 				kfree(addr);
-				goto again;
-			}
+			else
+				list_add_tail(&addr->entry, &fail_list);
+			goto again;
 		}
 	}
+	list_splice(&fail_list, &card->ip_list);
 }
 
 static void
@@ -881,7 +886,7 @@ qeth_set_ip_addr_list(struct qeth_card *card)
 			spin_unlock_irqrestore(&card->ip_lock, flags);
 			rc = qeth_register_addr_entry(card, todo);
 			spin_lock_irqsave(&card->ip_lock, flags);
-			if (!rc)
+			if (!rc || (rc == 0xe080))
 				list_add_tail(&todo->entry, &card->ip_list);
 			else
 				kfree(todo);
@@ -891,7 +896,7 @@ qeth_set_ip_addr_list(struct qeth_card *card)
 			spin_unlock_irqrestore(&card->ip_lock, flags);
 			rc = qeth_deregister_addr_entry(card, addr);
 			spin_lock_irqsave(&card->ip_lock, flags);
-			if (!rc)
+			if (!rc || (rc == 0xe010))
 				kfree(addr);
 			else
 				list_add_tail(&addr->entry, &card->ip_list);
@@ -1500,8 +1505,13 @@ qeth_idx_write_cb(struct qeth_channel *channel, struct qeth_cmd_buffer *iob)
 	card = CARD_FROM_CDEV(channel->ccwdev);
 
 	if (!(QETH_IS_IDX_ACT_POS_REPLY(iob->data))) {
-		PRINT_ERR("IDX_ACTIVATE on write channel device %s: negative "
-			  "reply\n", CARD_WDEV_ID(card));
+		if (QETH_IDX_ACT_CAUSE_CODE(iob->data) == 0x19)
+			PRINT_ERR("IDX_ACTIVATE on write channel device %s: "
+				"adapter exclusively used by another host\n",
+				CARD_WDEV_ID(card));
+		else
+			PRINT_ERR("IDX_ACTIVATE on write channel device %s: "
+				"negative reply\n", CARD_WDEV_ID(card));
 		goto out;
 	}
 	memcpy(&temp, QETH_IDX_ACT_FUNC_LEVEL(iob->data), 2);
@@ -1555,8 +1565,13 @@ qeth_idx_read_cb(struct qeth_channel *channel, struct qeth_cmd_buffer *iob)
 			goto out;
 	}
 	if (!(QETH_IS_IDX_ACT_POS_REPLY(iob->data))) {
-		PRINT_ERR("IDX_ACTIVATE on read channel device %s: negative "
-			  "reply\n", CARD_RDEV_ID(card));
+		if (QETH_IDX_ACT_CAUSE_CODE(iob->data) == 0x19)
+			PRINT_ERR("IDX_ACTIVATE on read channel device %s: "
+				"adapter exclusively used by another host\n",
+				CARD_RDEV_ID(card));
+		else
+			PRINT_ERR("IDX_ACTIVATE on read channel device %s: "
+				"negative reply\n", CARD_RDEV_ID(card));
 		goto out;
 	}
 
@@ -1672,6 +1687,7 @@ qeth_check_ipa_data(struct qeth_card *card, struct qeth_cmd_buffer *iob)
 					   QETH_CARD_IFNAME(card),
 					   card->info.chpid);
 				netif_carrier_on(card->dev);
+				card->lan_online = 1;
 				qeth_schedule_recovery(card);
 				return NULL;
 			case IPA_CMD_MODCCID:
@@ -2475,7 +2491,8 @@ qeth_layer2_rebuild_skb(struct qeth_card *card, struct sk_buff *skb,
 		skb_pull(skb, VLAN_HLEN);
 	}
 #endif
-	*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
+	if (skb->protocol == htons(ETH_P_802_2))
+		*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
 	return vlan_id;
 }
 
@@ -2806,6 +2823,7 @@ qeth_flush_buffers(struct qeth_qdio_out_q *queue, int under_int,
 	struct qeth_qdio_out_buffer *buf;
 	int rc;
 	int i;
+	unsigned int qdio_flags;
 
 	QETH_DBF_TEXT(trace, 6, "flushbuf");
 
@@ -2848,13 +2866,13 @@ qeth_flush_buffers(struct qeth_qdio_out_q *queue, int under_int,
 	queue->card->perf_stats.outbound_do_qdio_cnt++;
 	queue->card->perf_stats.outbound_do_qdio_start_time = qeth_get_micros();
 #endif
+	qdio_flags = QDIO_FLAG_SYNC_OUTPUT;
 	if (under_int)
-		rc = do_QDIO(CARD_DDEV(queue->card),
-			     QDIO_FLAG_SYNC_OUTPUT | QDIO_FLAG_UNDER_INTERRUPT,
-			     queue->queue_no, index, count, NULL);
-	else
-		rc = do_QDIO(CARD_DDEV(queue->card), QDIO_FLAG_SYNC_OUTPUT,
-			     queue->queue_no, index, count, NULL);
+		qdio_flags |= QDIO_FLAG_UNDER_INTERRUPT;
+	if (atomic_read(&queue->set_pci_flags_count))
+		qdio_flags |= QDIO_FLAG_PCI_OUT;
+	rc = do_QDIO(CARD_DDEV(queue->card), qdio_flags,
+		     queue->queue_no, index, count, NULL);
 #ifdef CONFIG_QETH_PERF_STATS
 	queue->card->perf_stats.outbound_do_qdio_time += qeth_get_micros() -
 		queue->card->perf_stats.outbound_do_qdio_start_time;
@@ -5812,9 +5830,9 @@ qeth_add_vlan_mc6(struct qeth_card *card)
 		in_dev = in6_dev_get(vg->vlan_devices[i]);
 		if (!in_dev)
 			continue;
-		read_lock(&in_dev->lock);
+		read_lock_bh(&in_dev->lock);
 		qeth_add_mc6(card,in_dev);
-		read_unlock(&in_dev->lock);
+		read_unlock_bh(&in_dev->lock);
 		in6_dev_put(in_dev);
 	}
 #endif /* CONFIG_QETH_VLAN */
@@ -5831,10 +5849,10 @@ qeth_add_multicast_ipv6(struct qeth_card *card)
 	in6_dev = in6_dev_get(card->dev);
 	if (in6_dev == NULL)
 		return;
-	read_lock(&in6_dev->lock);
+	read_lock_bh(&in6_dev->lock);
 	qeth_add_mc6(card, in6_dev);
 	qeth_add_vlan_mc6(card);
-	read_unlock(&in6_dev->lock);
+	read_unlock_bh(&in6_dev->lock);
 	in6_dev_put(in6_dev);
 }
 #endif /* CONFIG_QETH_IPV6 */
@@ -7034,12 +7052,6 @@ qeth_softsetup_ipv6(struct qeth_card *card)
 
 	QETH_DBF_TEXT(trace,3,"softipv6");
 
-	rc = qeth_send_startlan(card, QETH_PROT_IPV6);
-	if (rc) {
-		PRINT_ERR("IPv6 startlan failed on %s\n",
-			  QETH_CARD_IFNAME(card));
-		return rc;
-	}
 	rc = qeth_query_ipassists(card,QETH_PROT_IPV6);
 	if (rc) {
 		PRINT_ERR("IPv6 query ipassist failed on %s\n",
@@ -8436,6 +8448,7 @@ qeth_reboot_event(struct notifier_block *this, unsigned long event, void *ptr)
 	               card = (struct qeth_card *) entry->driver_data;
 		       qeth_clear_ip_list(card, 0, 0);
 		       qeth_qdio_clear_card(card, 0);
+		       qeth_clear_qdio_buffers(card);
 	       }
 	up_read(&qeth_ccwgroup_driver.driver.bus->subsys.rwsem);
 	return NOTIFY_DONE;

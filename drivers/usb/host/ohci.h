@@ -338,6 +338,8 @@ typedef struct urb_priv {
  */
 
 struct ohci_hcd {
+	struct usb_hcd		hcd;		/* @offset 0 kfree() */
+
 	spinlock_t		lock;
 
 	/*
@@ -387,12 +389,8 @@ struct ohci_hcd {
 	unsigned long		flags;		/* for HC bugs */
 #define	OHCI_QUIRK_AMD756	0x01			/* erratum #4 */
 #define	OHCI_QUIRK_SUPERIO	0x02			/* natsemi */
+#define	OHCI_QUIRK_AMD_ISO	0x200			/* ISO transfers */
 	// there are also chip quirks/bugs in init logic
-
-	/*
-	 * framework state
-	 */
-	struct usb_hcd		hcd;
 };
 
 #define hcd_to_ohci(hcd_ptr) container_of(hcd_ptr, struct ohci_hcd, hcd)

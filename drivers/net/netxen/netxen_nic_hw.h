@@ -82,19 +82,9 @@ struct netxen_adapter;
 
 #define NETXEN_PCI_MAPSIZE_BYTES  (NETXEN_PCI_MAPSIZE << 20)
 
-#define NETXEN_NIC_LOCKED_READ_REG(X, Y)	\
-	addr = pci_base_offset(adapter, X);	\
-	*(u32 *)Y = readl((void __iomem*) addr);
-
 struct netxen_port;
 void netxen_nic_set_link_parameters(struct netxen_adapter *adapter);
 void netxen_nic_flash_print(struct netxen_adapter *adapter);
-int netxen_nic_hw_write_wx(struct netxen_adapter *adapter, u64 off,
-			   void *data, int len);
-void netxen_crb_writelit_adapter(struct netxen_adapter *adapter,
-				 unsigned long off, int data);
-int netxen_nic_hw_read_wx(struct netxen_adapter *adapter, u64 off,
-			  void *data, int len);
 
 typedef u8 netxen_ethernet_macaddr_t[6];
 
@@ -181,31 +171,28 @@ typedef enum {
 #define netxen_gb_set_hugeframes(config_word)	\
 		((config_word) |= 1 << 5)
 #define netxen_gb_set_preamblelen(config_word, val)	\
-		((config_word) |= ((val) << 12) & 0xF000)
+		((config_word) &= ~(0xf<<12), (config_word) |= (val & 0xf)<< 12)
 #define netxen_gb_set_intfmode(config_word, val)		\
-		((config_word) |= ((val) << 8) & 0x300)
+		((config_word) &= ~(0x3<<8), (config_word) |= (val & 0x3) << 8)
 
 #define netxen_gb_get_stationaddress_low(config_word) ((config_word) >> 16)
 
 #define netxen_gb_set_mii_mgmt_clockselect(config_word, val)	\
-		((config_word) |= ((val) & 0x07))
+		((config_word) &= ~(0x7<<0), (config_word) |= (val & 0x7) << 0)
 #define netxen_gb_mii_mgmt_reset(config_word)	\
 		((config_word) |= 1 << 31)
-#define netxen_gb_mii_mgmt_unset(config_word)	\
-		((config_word) &= ~(1 << 31))
 
 /*
  * NIU GB MII Mgmt Command Register (applies to GB0, GB1, GB2, GB3)
  * Bit 0 : read_cycle => 1:perform single read cycle, 0:no-op
  * Bit 1 : scan_cycle => 1:perform continuous read cycles, 0:no-op
  */
-
 #define netxen_gb_mii_mgmt_set_read_cycle(config_word)	\
-		((config_word) |= 1 << 0)
+	((config_word) |= 1 << 0)
 #define netxen_gb_mii_mgmt_reg_addr(config_word, val)	\
-		((config_word) |= ((val) & 0x1F))
+	((config_word) &= ~(0x1f<<0), (config_word) |= (val & 0x1f)<< 0)
 #define netxen_gb_mii_mgmt_phy_addr(config_word, val)	\
-		((config_word) |= (((val) & 0x1F) << 8))
+	((config_word) &= ~(0x1f<<8), (config_word) |= (val & 0x1f)<< 8)
 
 /*
  * NIU GB MII Mgmt Indicators Register (applies to GB0, GB1, GB2, GB3)
@@ -335,7 +322,7 @@ typedef enum {
 #define netxen_get_phy_speed(config_word) (((config_word) >> 14) & 0x03)
 
 #define netxen_set_phy_speed(config_word, val)	\
-		((config_word) |= ((val & 0x03) << 14))
+	((config_word) &= ~(0x3<<14), (config_word) |= (val & 0x3)<< 14)
 #define netxen_set_phy_duplex(config_word)	\
 		((config_word) |= 1 << 13)
 #define netxen_clear_phy_duplex(config_word)	\
@@ -429,11 +416,9 @@ typedef enum {
 #define netxen_get_niu_enable_ge(config_word)	\
 		_netxen_crb_get_bit(config_word, 1)
 
-/* Promiscous mode options (GbE mode only) */
-typedef enum {
-	NETXEN_NIU_PROMISC_MODE = 0,
-	NETXEN_NIU_NON_PROMISC_MODE
-} netxen_niu_prom_mode_t;
+#define NETXEN_NIU_NON_PROMISC_MODE	0
+#define NETXEN_NIU_PROMISC_MODE		1
+#define NETXEN_NIU_ALLMULTI_MODE	2
 
 /*
  * NIU GB Drop CRC Register
@@ -478,57 +463,17 @@ typedef enum {
 #define netxen_xg_soft_reset(config_word)	\
 		((config_word) |= 1 << 4)
 
-/*
- * MAC Control Register
- * 
- * Bit 0-1   : id_pool0
- * Bit 2     : enable_xtnd0
- * Bit 4-5   : id_pool1
- * Bit 6     : enable_xtnd1
- * Bit 8-9   : id_pool2
- * Bit 10    : enable_xtnd2
- * Bit 12-13 : id_pool3
- * Bit 14    : enable_xtnd3
- * Bit 24-25 : mode_select
- * Bit 28-31 : enable_pool
- */
-
-#define netxen_nic_mcr_set_id_pool0(config, val)	\
-		((config) |= ((val) &0x03))
-#define netxen_nic_mcr_set_enable_xtnd0(config)	\
-		((config) |= 1 << 3)
-#define netxen_nic_mcr_set_id_pool1(config, val)	\
-		((config) |= (((val) & 0x03) << 4))
-#define netxen_nic_mcr_set_enable_xtnd1(config)	\
-		((config) |= 1 << 6)
-#define netxen_nic_mcr_set_id_pool2(config, val)	\
-		((config) |= (((val) & 0x03) << 8))
-#define netxen_nic_mcr_set_enable_xtnd2(config)	\
-		((config) |= 1 << 10)
-#define netxen_nic_mcr_set_id_pool3(config, val)	\
-		((config) |= (((val) & 0x03) << 12))
-#define netxen_nic_mcr_set_enable_xtnd3(config)	\
-		((config) |= 1 << 14)
-#define netxen_nic_mcr_set_mode_select(config, val)	\
-		((config) |= (((val) & 0x03) << 24))
-#define netxen_nic_mcr_set_enable_pool(config, val)	\
-		((config) |= (((val) & 0x0f) << 28))
-
 /* Set promiscuous mode for a GbE interface */
 int netxen_niu_set_promiscuous_mode(struct netxen_adapter *adapter,
-				    netxen_niu_prom_mode_t mode);
+				    u32 mode);
 int netxen_niu_xg_set_promiscuous_mode(struct netxen_adapter *adapter,
-				       netxen_niu_prom_mode_t mode);
+				       u32 mode);
 
 /* get/set the MAC address for a given MAC */
-int netxen_niu_macaddr_get(struct netxen_adapter *adapter,
-			   netxen_ethernet_macaddr_t * addr);
 int netxen_niu_macaddr_set(struct netxen_adapter *adapter,
 			   netxen_ethernet_macaddr_t addr);
 
 /* XG versons */
-int netxen_niu_xg_macaddr_get(struct netxen_adapter *adapter,
-			      netxen_ethernet_macaddr_t * addr);
 int netxen_niu_xg_macaddr_set(struct netxen_adapter *adapter,
 			      netxen_ethernet_macaddr_t addr);
 
@@ -541,5 +486,16 @@ int netxen_niu_xg_init_port(struct netxen_adapter *adapter, int port);
 int netxen_niu_disable_gbe_port(struct netxen_adapter *adapter);
 
 int netxen_niu_disable_xg_port(struct netxen_adapter *adapter);
+
+typedef struct {
+	unsigned valid;
+	unsigned start_128M;
+	unsigned end_128M;
+	unsigned start_2M;
+} crb_128M_2M_sub_block_map_t;
+
+typedef struct {
+	crb_128M_2M_sub_block_map_t sub_block[16];
+} crb_128M_2M_block_map_t;
 
 #endif				/* __NETXEN_NIC_HW_H_ */

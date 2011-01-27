@@ -23,11 +23,11 @@
  * unfortunately this can't be (QDIO_MAX_BUFFERS_PER_Q*4/3) or so -- as
  * we never know, whether we'll get initiative again, e.g. to give the
  * transmit skb's back to the stack, however the stack may be waiting for
- * them... therefore we define 4 as threshold to start polling (which
+ * them... therefore we define 65 as threshold to start polling (which
  * will stop as soon as the asynchronous queue catches up)
  * btw, this only applies to the asynchronous HiperSockets queue
  */
-#define IQDIO_FILL_LEVEL_TO_POLL 4
+#define IQDIO_FILL_LEVEL_TO_POLL 65
 
 #define TIQDIO_THININT_ISC 3
 #define TIQDIO_DELAY_TARGET 0
@@ -63,6 +63,7 @@
 #define QDIO_ACTIVATE_TIMEOUT ((5*HZ)>>10)
 #define QDIO_CLEANUP_CLEAR_TIMEOUT (20*HZ)
 #define QDIO_CLEANUP_HALT_TIMEOUT (10*HZ)
+#define QDIO_FORCE_CHECK_TIMEOUT (10*HZ)
 
 enum qdio_irq_states {
 	QDIO_IRQ_STATE_INACTIVE,
@@ -558,8 +559,8 @@ struct qdio_q {
 
 	void *irq_ptr;
 
-#ifdef QDIO_USE_TIMERS_FOR_POLLING
 	struct timer_list timer;
+#ifdef QDIO_USE_TIMERS_FOR_POLLING
 	atomic_t timer_already_set;
 	spinlock_t timer_lock;
 #else /* QDIO_USE_TIMERS_FOR_POLLING */
@@ -604,6 +605,7 @@ struct qdio_q {
 	} timing;
 	atomic_t busy_siga_counter;
         unsigned int queue_type;
+	unsigned int is_pci_out;
 
 	/* leave this member at the end. won't be cleared in qdio_fill_qs */
 	struct slib *slib; /* a page is allocated under this pointer,

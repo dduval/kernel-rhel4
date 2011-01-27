@@ -739,6 +739,9 @@ e1000_reset_hw(struct e1000_hw *hw)
         E1000_WRITE_REG(hw, KABGTXD, kab);
     }
 
+    /* Reinitialize the 82571 serdes link state machine */
+    hw->serdes_link_state = e1000_serdes_link_down;
+
     return E1000_SUCCESS;
 }
 
@@ -2141,6 +2144,27 @@ e1000_configure_kmrn_for_1000(struct e1000_hw *hw)
     return ret_val;
 }
 
+int32_t
+e1000_link_cfg_80003es2lan(struct e1000_hw *hw,
+                           uint16_t speed,
+                           uint16_t duplex)
+{
+    int32_t ret_val;
+
+    DEBUGFUNC("e1000_link_cfg_80003es2lan");
+
+    if (hw->media_type == e1000_media_type_copper) {
+        if (speed == SPEED_1000)
+            ret_val = e1000_configure_kmrn_for_1000(hw);
+        else
+            ret_val = e1000_configure_kmrn_for_10_100(hw, duplex);
+        if (ret_val)
+            return ret_val;
+    }
+
+    return E1000_SUCCESS;
+}
+
 /******************************************************************************
 * Configures PHY autoneg and flow control advertisement settings
 *
@@ -2900,6 +2924,126 @@ e1000_config_fc_after_link_up(struct e1000_hw *hw)
     return E1000_SUCCESS;
 }
 
+static int32_t
+e1000_check_for_serdes_link_82571(struct e1000_hw *hw)
+{
+	u32 rxcw;
+	u32 ctrl;
+	u32 status;
+	s32 ret_val = 0;
+
+	DEBUGFUNC("e1000_check_for_serdes_link_82571");
+
+	ctrl = E1000_READ_REG(hw, CTRL);
+	status = E1000_READ_REG(hw, STATUS);
+	rxcw = E1000_READ_REG(hw, RXCW);
+
+	if ((rxcw & E1000_RXCW_SYNCH) && !(rxcw & E1000_RXCW_IV)) {
+
+		/* Receiver is synchronized with no invalid bits.  */
+		switch (hw->serdes_link_state) {
+		case e1000_serdes_link_autoneg_complete:
+			if (!(status & E1000_STATUS_LU)) {
+				/*
+				 * We have lost link, retry autoneg before
+				 * reporting link failure
+				 */
+				hw->serdes_link_state =
+				    e1000_serdes_link_autoneg_progress;
+				DEBUGOUT("AN_UP     -> AN_PROG\n");
+			}
+		break;
+
+		case e1000_serdes_link_forced_up:
+			/*
+			 * If we are receiving /C/ ordered sets, re-enable
+			 * auto-negotiation in the TXCW register and disable
+			 * forced link in the Device Control register in an
+			 * attempt to auto-negotiate with our link partner.
+			 */
+			if (rxcw & E1000_RXCW_C) {
+				/* Enable autoneg, and unforce link up */
+				E1000_WRITE_REG(hw, TXCW, hw->txcw);
+				E1000_WRITE_REG(hw, CTRL,
+				    (ctrl & ~E1000_CTRL_SLU));
+				hw->serdes_link_state =
+				    e1000_serdes_link_autoneg_progress;
+				DEBUGOUT("FORCED_UP -> AN_PROG\n");
+			}
+			break;
+
+		case e1000_serdes_link_autoneg_progress:
+			/*
+			 * If the LU bit is set in the STATUS register,
+			 * autoneg has completed sucessfully. If not,
+			 * try foring the link because the far end may be
+			 * available but not capable of autonegotiation.
+			 */
+			if (status & E1000_STATUS_LU)  {
+				hw->serdes_link_state =
+				    e1000_serdes_link_autoneg_complete;
+				DEBUGOUT("AN_PROG   -> AN_UP\n");
+			} else {
+				/*
+				 * Disable autoneg, force link up and
+				 * full duplex, and change state to forced
+				 */
+				E1000_WRITE_REG(hw, TXCW,
+				    (hw->txcw & ~E1000_TXCW_ANE));
+				ctrl |= (E1000_CTRL_SLU | E1000_CTRL_FD);
+				E1000_WRITE_REG(hw, CTRL, ctrl);
+
+				/* Configure Flow Control after link up. */
+				ret_val =
+				    e1000_config_fc_after_link_up(hw);
+				if (ret_val) {
+					DEBUGOUT("Error config flow control\n");
+					break;
+				}
+				hw->serdes_link_state =
+				    e1000_serdes_link_forced_up;
+				DEBUGOUT("AN_PROG   -> FORCED_UP\n");
+			}
+			hw->serdes_link_down = FALSE;
+			break;
+
+		case e1000_serdes_link_down:
+		default:
+			/* The link was down but the receiver has now gained
+			 * valid sync, so lets see if we can bring the link
+			 * up. */
+			E1000_WRITE_REG(hw, TXCW, hw->txcw);
+			E1000_WRITE_REG(hw, CTRL,
+			    (ctrl & ~E1000_CTRL_SLU));
+			hw->serdes_link_state =
+			    e1000_serdes_link_autoneg_progress;
+			DEBUGOUT("DOWN      -> AN_PROG\n");
+			break;
+		}
+	} else {
+		if (!(rxcw & E1000_RXCW_SYNCH)) {
+			hw->serdes_link_down = TRUE;
+			hw->serdes_link_state = e1000_serdes_link_down;
+			DEBUGOUT("ANYSTATE  -> DOWN\n");
+		} else {
+			/*
+			 * We have sync, and can tolerate one
+			 * invalid (IV) codeword before declaring
+			 * link down, so reread to look again
+			 */
+			udelay(10);
+			rxcw = E1000_READ_REG(hw, RXCW);
+			if (rxcw & E1000_RXCW_IV) {
+				hw->serdes_link_state = e1000_serdes_link_down;
+				hw->serdes_link_down = TRUE;
+				DEBUGOUT("ANYSTATE  -> DOWN\n");
+			}
+		}
+	}
+
+	return ret_val;
+}
+
 /******************************************************************************
  * Checks to see if the link status of the hardware has changed.
  *
@@ -2920,6 +3064,13 @@ e1000_check_for_link(struct e1000_hw *hw)
     uint16_t phy_data;
 
     DEBUGFUNC("e1000_check_for_link");
+
+    if (hw->media_type == e1000_media_type_internal_serdes &&
+            (hw->device_id == E1000_DEV_ID_82571EB_SERDES ||
+             hw->device_id == E1000_DEV_ID_82572EI_SERDES ||
+             hw->device_id == E1000_DEV_ID_82571EB_SERDES_DUAL ||
+             hw->device_id == E1000_DEV_ID_82571EB_SERDES_QUAD ))
+        return e1000_check_for_serdes_link_82571(hw);
 
     ctrl = E1000_READ_REG(hw, CTRL);
     status = E1000_READ_REG(hw, STATUS);
@@ -3199,16 +3350,6 @@ e1000_get_speed_and_duplex(struct e1000_hw *hw,
                (*speed == SPEED_10 && !(phy_data & NWAY_LPAR_10T_FD_CAPS)))
                 *duplex = HALF_DUPLEX;
         }
-    }
-
-    if ((hw->mac_type == e1000_80003es2lan) &&
-        (hw->media_type == e1000_media_type_copper)) {
-        if (*speed == SPEED_1000)
-            ret_val = e1000_configure_kmrn_for_1000(hw);
-        else
-            ret_val = e1000_configure_kmrn_for_10_100(hw, *duplex);
-        if (ret_val)
-            return ret_val;
     }
 
     if ((hw->phy_type == e1000_phy_igp_3) && (*speed == SPEED_1000)) {

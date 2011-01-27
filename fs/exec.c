@@ -168,6 +168,7 @@ asmlinkage long sys_uselib(const char __user * library)
 out:
   	return error;
 exit:
+	do_lookup_undo(&nd);
 	path_release(&nd);
 	goto out;
 }
@@ -510,6 +511,7 @@ out:
 				return file;
 			}
 		}
+		do_lookup_undo(&nd);
 		path_release(&nd);
 	}
 	goto out;

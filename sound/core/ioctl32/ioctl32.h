@@ -38,9 +38,23 @@
 	CVT_##sndrv_##type();\
 }
 
+#define convert_from_32_1(type, dstp, srcp)\
+{\
+	struct snd_##type *dst = dstp;\
+	struct sndrv_##type##32 *src = srcp;\
+	CVT_##sndrv_##type();\
+}
+
 #define convert_to_32(type, dstp, srcp)\
 {\
 	struct sndrv_##type *src = srcp;\
+	struct sndrv_##type##32 *dst = dstp;\
+	CVT_##sndrv_##type();\
+}
+
+#define convert_to_32_1(type, dstp, srcp)\
+{\
+	struct snd_##type *src = srcp;\
 	struct sndrv_##type##32 *dst = dstp;\
 	CVT_##sndrv_##type();\
 }

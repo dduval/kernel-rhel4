@@ -1038,6 +1038,14 @@ out:
 					pgoff, flags & MAP_NONBLOCK);
 		down_write(&mm->mmap_sem);
 	}
+	if (file && file->f_op &&
+	    file->f_op->mmap == generic_file_noatime_mmap) {
+		if (!(file->f_flags & O_NOATIME)) {
+			up_write(&mm->mmap_sem);
+			update_atime(file->f_dentry->d_inode);
+			down_write(&mm->mmap_sem);
+		}
+	}
 	return addr;
 
 unmap_and_free_vma:

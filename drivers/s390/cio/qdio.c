@@ -71,7 +71,7 @@ static const char version[] = "QDIO base support version 2 ("
 
 #ifdef QDIO_PERFORMANCE_STATS
 static int proc_perf_file_registration;
-static unsigned long i_p_c, i_p_nc, o_p_c, o_p_nc, ii_p_c, ii_p_nc;
+static unsigned long i_p_c, i_p_nc, o_p_c, o_p_nc, ii_p_c, ii_p_nc, i_poll;
 static struct qdio_perf_stats perf_stats;
 #endif /* QDIO_PERFORMANCE_STATS */
 
@@ -453,7 +453,8 @@ qdio_get_outbound_buffer_frontier(struct qdio_q *q)
 	first_not_to_check=f+qdio_min(atomic_read(&q->number_of_buffers_used),
 				      (QDIO_MAX_BUFFERS_PER_Q-1));
 
-	if ((!q->is_iqdio_q)&&(!q->hydra_gives_outbound_pcis))
+	if (((!q->is_iqdio_q)&&(!q->hydra_gives_outbound_pcis)) ||
+	    (q->queue_type == QDIO_IQDIO_QFMT_ASYNCH))
 		SYNC_MEMORY;
 
 check_next:
@@ -714,20 +715,24 @@ __qdio_outbound_processing(struct qdio_q *q)
 	if (qdio_has_outbound_q_moved(q))
 		qdio_kick_outbound_handler(q);
 
-	if (q->is_iqdio_q) {
-		/* 
-		 * for asynchronous queues, we better check, if the fill
-		 * level is too high. for synchronous queues, the fill
-		 * level will never be that high. 
-		 */
-		if (atomic_read(&q->number_of_buffers_used)>
-		    IQDIO_FILL_LEVEL_TO_POLL)
+	if (q->queue_type == QDIO_ZFCP_QFMT) {
+		if ((!q->hydra_gives_outbound_pcis) &&
+		    (!qdio_is_outbound_q_done(q)))
 			qdio_mark_q(q);
-
-	} else if (!q->hydra_gives_outbound_pcis)
-		if (!qdio_is_outbound_q_done(q))
-			qdio_mark_q(q);
-
+	} else if ((q->is_iqdio_q) && (atomic_read(&q->number_of_buffers_used) >
+				       IQDIO_FILL_LEVEL_TO_POLL))
+		/* for asynchronous queues check if fill level is high */
+		qdio_mark_q(q);
+	else if (((!q->is_iqdio_q) && (!q->is_pci_out)) ||
+		 (q->queue_type == QDIO_IQDIO_QFMT_ASYNCH)) {
+		if (qdio_is_outbound_q_done(q)) {
+			del_timer(&q->timer);
+		} else {
+			if (!timer_pending(&q->timer))
+				mod_timer(&q->timer, jiffies + 
+					  QDIO_FORCE_CHECK_TIMEOUT);
+		}
+	}
 	qdio_release_q(q);
 }
 
@@ -751,6 +756,8 @@ qdio_get_inbound_buffer_frontier(struct qdio_q *q)
 #endif /* CONFIG_QDIO_DEBUG */
 #ifdef QDIO_USE_PROCESSING_STATE
 	int last_position=-1;
+	int processed;
+	int was_polling;
 #endif /* QDIO_USE_PROCESSING_STATE */
 
 	QDIO_DBF_TEXT4(0,trace,"getibfro");
@@ -764,6 +771,9 @@ qdio_get_inbound_buffer_frontier(struct qdio_q *q)
 	 */
 	first_not_to_check=f+qdio_min(atomic_read(&q->number_of_buffers_used),
 				      (QDIO_MAX_BUFFERS_PER_Q-1));
+#ifdef QDIO_USE_PROCESSING_STATE
+	was_polling = atomic_read(&q->polling);
+#endif
 
 	/* 
 	 * we don't use this one, as a PCI or we after a thin interrupt
@@ -853,13 +863,23 @@ check_next:
 		break;
 	}
 out:
-	q->first_to_check=f_mod_no;
-
 #ifdef QDIO_USE_PROCESSING_STATE
-	if (last_position>=0)
+	if (last_position>=0) {
 		set_slsb(&slsb[last_position],SLSB_P_INPUT_PROCESSING);
+		if (was_polling) {
+			/* change previous SLSB_P_INPUT_PROCESSING slsb */
+			processed = (q->first_to_check + QDIO_MAX_BUFFERS_PER_Q - 1) &
+				(QDIO_MAX_BUFFERS_PER_Q - 1);
+			if (q->slsb.acc.val[processed] == SLSB_P_INPUT_PROCESSING)
+				set_slsb(&slsb[processed], SLSB_P_INPUT_NOT_INIT);
+#ifdef QDIO_PERFORMANCE_STATS
+			i_poll++;
+#endif /* QDIO_PERFORMANCE_STATS */
+		}
+	}
 #endif /* QDIO_USE_PROCESSING_STATE */
 
+	q->first_to_check=f_mod_no;
 	QDIO_DBF_HEX4(0,trace,&q->first_to_check,sizeof(int));
 
 	return q->first_to_check;
@@ -1101,7 +1121,7 @@ __tiqdio_inbound_processing(struct qdio_q *q, int spare_ind_was_set)
 	 * q->dev_st_chg_ind is the indicator, be it shared or not.
 	 * only clear it, if indicator is non-shared
 	 */
-	if (!spare_ind_was_set)
+	if (q->dev_st_chg_ind != &spare_indicator)
 		tiqdio_clear_summary_bit((__u32*)q->dev_st_chg_ind);
 
 	if (q->hydra_gives_outbound_pcis) {
@@ -1545,8 +1565,13 @@ qdio_fill_qs(struct qdio_irq *irq_ptr, struct ccw_device *cdev,
 			q->sbal[j]=*(outbound_sbals_array++);
 
                 q->queue_type=q_format;
+		if ((q->queue_type == QDIO_IQDIO_QFMT) &&
+		    (no_output_qs > 1) &&
+		    (i == no_output_qs-1))
+			q->queue_type = QDIO_IQDIO_QFMT_ASYNCH;
 		q->int_parm=int_parm;
 		q->is_input_q=0;
+		q->is_pci_out = 0;
 		q->irq=irq_ptr->irq;
 		q->cdev = cdev;
 		q->irq_ptr = irq_ptr;
@@ -1559,6 +1584,10 @@ qdio_fill_qs(struct qdio_irq *irq_ptr, struct ccw_device *cdev,
 		q->tasklet.data=(unsigned long)q;
 		q->tasklet.func=(void(*)(unsigned long))
 			&qdio_outbound_processing;
+		q->timer.function=(void(*)(unsigned long))
+			&qdio_outbound_processing;
+		q->timer.data = (long)q;
+		init_timer(&q->timer);
 
 		atomic_set(&q->busy_siga_counter,0);
 		q->timing.busy_start=0;
@@ -1810,7 +1839,6 @@ qdio_timeout_handler(struct ccw_device *cdev)
 	default:
 		BUG();
 	}
-	ccw_device_set_timeout(cdev, 0);
 	wake_up(&cdev->private->wait_q);
 }
 
@@ -1849,6 +1877,8 @@ qdio_handler(struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 		case -EIO:
 			QDIO_PRINT_ERR("i/o error on device %s\n",
 				       cdev->dev.bus_id);
+			qdio_set_state(irq_ptr, QDIO_IRQ_STATE_ERR);
+			wake_up(&cdev->private->wait_q);
 			return;
 		case -ETIMEDOUT:
 			qdio_timeout_handler(cdev);
@@ -2293,6 +2323,7 @@ qdio_shutdown(struct ccw_device *cdev, int how)
 
 	for (i=0;i<irq_ptr->no_output_qs;i++) {
 		tasklet_kill(&irq_ptr->output_qs[i]->tasklet);
+		del_timer(&irq_ptr->output_qs[i]->timer);
 		wait_event_interruptible_timeout(cdev->private->wait_q,
 						 !atomic_read(&irq_ptr->
 							      output_qs[i]->
@@ -2329,12 +2360,12 @@ qdio_shutdown(struct ccw_device *cdev, int how)
 		spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
 	} else if (rc == 0) {
 		qdio_set_state(irq_ptr, QDIO_IRQ_STATE_CLEANUP);
-		ccw_device_set_timeout(cdev, timeout);
 		spin_unlock_irqrestore(get_ccwdev_lock(cdev),flags);
 
-		wait_event(cdev->private->wait_q,
-			   irq_ptr->state == QDIO_IRQ_STATE_INACTIVE ||
-			   irq_ptr->state == QDIO_IRQ_STATE_ERR);
+		wait_event_interruptible_timeout(cdev->private->wait_q,
+			irq_ptr->state == QDIO_IRQ_STATE_INACTIVE ||
+			irq_ptr->state == QDIO_IRQ_STATE_ERR,
+			timeout);
 	} else {
 		QDIO_PRINT_INFO("ccw_device_{halt,clear} returned %d for "
 				"device %s\n", result, cdev->dev.bus_id);
@@ -2354,7 +2385,6 @@ qdio_shutdown(struct ccw_device *cdev, int how)
 
 	/* Ignore errors. */
 	qdio_set_state(irq_ptr, QDIO_IRQ_STATE_INACTIVE);
-	ccw_device_set_timeout(cdev, 0);
 out:
 	up(&irq_ptr->setting_up_sema);
 	return result;
@@ -2381,7 +2411,6 @@ qdio_free(struct ccw_device *cdev)
 	up(&irq_ptr->setting_up_sema);
 
 	qdio_release_irq_memory(irq_ptr);
-	module_put(THIS_MODULE);
 	return 0;
 }
 
@@ -2567,13 +2596,10 @@ qdio_establish_handle_irq(struct ccw_device *cdev, int cstat, int dstat)
 	QDIO_DBF_TEXT0(0,setup,dbf_text);
 	QDIO_DBF_TEXT0(0,trace,dbf_text);
 
-	if (qdio_establish_irq_check_for_errors(cdev, cstat, dstat)) {
-		ccw_device_set_timeout(cdev, 0);
+	if (qdio_establish_irq_check_for_errors(cdev, cstat, dstat))
 		return;
-	}
 
 	qdio_set_state(irq_ptr,QDIO_IRQ_STATE_ESTABLISHED);
-	ccw_device_set_timeout(cdev, 0);
 }
 
 int
@@ -2722,12 +2748,6 @@ int qdio_fill_irq(struct qdio_initialize *init_data)
 	   	     init_data->input_sbal_addr_array,
    		     init_data->output_sbal_addr_array);
 
-	if (!try_module_get(THIS_MODULE)) {
-		QDIO_PRINT_CRIT("try_module_get() failed!\n");
-		qdio_release_irq_memory(irq_ptr);
-		return -EINVAL;
-	}
-
 	qdio_fill_thresholds(irq_ptr,init_data->no_input_qs,
 			     init_data->no_output_qs,
 			     init_data->min_input_threshold,
@@ -2841,13 +2861,11 @@ qdio_establish(struct qdio_initialize *init_data)
 	spin_lock_irqsave(get_ccwdev_lock(cdev),saveflags);
 
 	ccw_device_set_options(cdev, 0);
-	result=ccw_device_start_timeout(cdev,&irq_ptr->ccw,
-					QDIO_DOING_ESTABLISH,0, 0,
-					QDIO_ESTABLISH_TIMEOUT);
+	result = ccw_device_start(cdev, &irq_ptr->ccw,
+				QDIO_DOING_ESTABLISH, 0, 0);
 	if (result) {
-		result2=ccw_device_start_timeout(cdev,&irq_ptr->ccw,
-						 QDIO_DOING_ESTABLISH,0,0,
-						 QDIO_ESTABLISH_TIMEOUT);
+		result2 = ccw_device_start(cdev, &irq_ptr->ccw,
+					QDIO_DOING_ESTABLISH, 0, 0);
 		sprintf(dbf_text,"eq:io%4x",result);
 		QDIO_DBF_TEXT2(1,setup,dbf_text);
 		if (result2) {
@@ -2858,8 +2876,6 @@ qdio_establish(struct qdio_initialize *init_data)
                            "returned %i, next try returned %i\n",
                            irq_ptr->irq,result,result2);
 		result=result2;
-		if (result)
-			ccw_device_set_timeout(cdev, 0);
 	}
 
 	spin_unlock_irqrestore(get_ccwdev_lock(cdev),saveflags);
@@ -2871,9 +2887,10 @@ qdio_establish(struct qdio_initialize *init_data)
 	}
 
 	/* Timeout is cared for already by using ccw_device_start_timeout(). */
-	wait_event_interruptible(cdev->private->wait_q,
+	wait_event_interruptible_timeout(cdev->private->wait_q,
 		irq_ptr->state == QDIO_IRQ_STATE_ESTABLISHED ||
-		irq_ptr->state == QDIO_IRQ_STATE_ERR);
+		irq_ptr->state == QDIO_IRQ_STATE_ERR,
+		QDIO_ESTABLISH_TIMEOUT);
 
 	if (irq_ptr->state == QDIO_IRQ_STATE_ESTABLISHED)
 		result = 0;
@@ -2941,7 +2958,6 @@ qdio_activate(struct ccw_device *cdev, int flags)
 
 	spin_lock_irqsave(get_ccwdev_lock(cdev),saveflags);
 
-	ccw_device_set_timeout(cdev, 0);
 	ccw_device_set_options(cdev, CCWDEV_REPORT_ALL);
 	result=ccw_device_start(cdev,&irq_ptr->ccw,QDIO_DOING_ACTIVATE,
 				0, DOIO_DENY_PREFETCH);
@@ -3099,6 +3115,10 @@ do_qdio_handle_outbound(struct qdio_q *q, unsigned int callflags,
 #endif /* QDIO_PERFORMANCE_STATS */
 		return;
 	}
+	if (callflags & QDIO_FLAG_PCI_OUT)
+		q->is_pci_out = 1;
+	else
+		q->is_pci_out = 0;
 	if (q->is_iqdio_q) {
 		/* one siga for every sbal */
 		while (count--)
@@ -3210,6 +3230,7 @@ qdio_perf_procfile_read(char *buffer, char **buffer_location, off_t offset,
 	_OUTP_IT("i_p_nc/c=%lu/%lu\n",i_p_nc,i_p_c);
 	_OUTP_IT("ii_p_nc/c=%lu/%lu\n",ii_p_nc,ii_p_c);
 	_OUTP_IT("o_p_nc/c=%lu/%lu\n",o_p_nc,o_p_c);
+	_OUTP_IT("i_poll/c=%lu\n",i_poll);
 	_OUTP_IT("Number of tasklet runs (total)                  : %u\n",
 		 perf_stats.tl_runs);
 	_OUTP_IT("\n");

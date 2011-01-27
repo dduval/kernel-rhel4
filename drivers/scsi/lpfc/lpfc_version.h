@@ -19,13 +19,13 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_version.h 3127 2008-01-21 20:11:18Z sf_support $
+ * $Id: lpfc_version.h 3238 2008-11-25 19:56:13Z sf_support $
  */
 
 #ifndef _H_LPFC_VERSION
 #define _H_LPFC_VERSION
 
-#define LPFC_DRIVER_VERSION "8.0.16.40"
+#define LPFC_DRIVER_VERSION "8.0.16.46"
 
 #define LPFC_DRIVER_NAME "lpfc"
 

@@ -245,7 +245,7 @@ static int
 __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	if (!atomic_read(&inode->i_count))
-		WARN_ON(!(inode->i_state & I_WILL_FREE));
+		WARN_ON(!(inode->i_state & I_WILL_FREE|I_FREEING));
 	else
 		WARN_ON(inode->i_state & I_WILL_FREE);
 

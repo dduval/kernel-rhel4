@@ -176,8 +176,7 @@ nlmsvc_create_block(struct svc_rqst *rqstp, struct nlm_file *file,
 	struct nlm_rqst		*call;
 
 	/* Create host handle for callback */
-	host = nlmclnt_lookup_host(&rqstp->rq_addr,
-				rqstp->rq_prot, rqstp->rq_vers);
+	host = nlmsvc_lookup_host(rqstp);
 	if (host == NULL)
 		return NULL;
 
@@ -556,14 +555,19 @@ callback:
 	block->b_granted = 1;
 	block->b_incall  = 1;
 
-	/* Schedule next grant callback in 30 seconds */
-	nlmsvc_insert_block(block, 30 * HZ);
+	/* keep block on the list, but don't reattempt until the RPC
+	 * completes or the submission fails
+	 */
+	nlmsvc_insert_block(block, NLM_NEVER);
 
 	/* Call the client */
 	nlm_get_host(block->b_call.a_host);
 	if (nlmsvc_async_call(&block->b_call, NLMPROC_GRANTED_MSG,
-						nlmsvc_grant_callback) < 0)
+						nlmsvc_grant_callback) < 0) {
 		nlm_release_host(block->b_call.a_host);
+		/* RPC submission failed, wait a bit and retry */
+		nlmsvc_insert_block(block, 10 * HZ);
+	}
 	up(&file->f_sema);
 }
 
@@ -593,6 +597,15 @@ nlmsvc_grant_callback(struct rpc_task *task)
 			NIPQUAD(peer_addr->sin_addr.s_addr));
 		return;
 	}
+
+	/* if the block is not queued at this point then it has
+	 * been invalidated. Don't try to requeue it.
+	 *
+	 * The BKL makes sure that lockd doesn't dequeue the block
+	 * after we check this.
+	 */
+	if (!block->b_queued)
+		return;
 
 	/* Technically, we should down the file semaphore here. Since we
 	 * move the block towards the head of the queue only, no harm

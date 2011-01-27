@@ -152,6 +152,7 @@ enum {
 
 	ATA_DFLAG_DETACH	= (1 << 16),
 	ATA_DFLAG_DETACHED	= (1 << 17),
+	ATA_DFLAG_USER_SCAN     = (1 << 18),
 
 	ATA_DEV_UNKNOWN		= 0,	/* unknown device */
 	ATA_DEV_ATA		= 1,	/* ATA device */

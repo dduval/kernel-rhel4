@@ -181,5 +181,6 @@ struct iscsi_function_template {
 
 struct scsi_transport_template *iscsi_attach_transport(struct iscsi_function_template *);
 void iscsi_release_transport(struct scsi_transport_template *);
+void iscsi_scan_target(struct Scsi_Host *shost, unsigned int id);
 
 #endif

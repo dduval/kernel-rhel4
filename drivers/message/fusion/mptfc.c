@@ -3,7 +3,7 @@
  *      For use with LSI PCI chip/adapter(s)
  *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Corporation
+ *  Copyright (c) 1999-2008 LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
@@ -317,6 +317,7 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	sh->max_channel = ioc->NumberOfBuses - 1;
 	sh->this_id = ioc->pfacts[0].PortSCSIID;
 
+
 	/* Required entry.
 	 */
 	sh->unique_id = ioc->id;
@@ -400,8 +401,11 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->name,
 		mpt_pq_filter));
 
-	init_waitqueue_head(&hd->scandv_waitq);
-	hd->scandv_wait_done = 0;
+	init_timer(&hd->InternalCmdTimer);
+	hd->InternalCmdTimer.data = (unsigned long) hd;
+	hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
+	init_waitqueue_head(&hd->InternalCmd_waitq);
+	hd->InternalCmd_wait_done = 0;
 	hd->last_queue_full = 0;
 
 	init_waitqueue_head(&hd->TM_waitq);
@@ -505,7 +509,7 @@ mptfc_init(void)
 
 	mptfcDoneCtx = mpt_register(mptscsih_io_done, MPTFC_DRIVER);
 	mptfcTaskCtx = mpt_register(mptscsih_taskmgmt_complete, MPTFC_DRIVER);
-	mptfcInternalCtx = mpt_register(mptscsih_scandv_complete, MPTFC_DRIVER);
+	mptfcInternalCtx = mpt_register(mptscsih_InternalCmd_complete, MPTFC_DRIVER);
 
 	if (mpt_event_register(mptfcDoneCtx, mptfc_event_process) == 0) {
 		devtprintk((KERN_INFO MYNAM

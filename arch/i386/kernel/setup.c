@@ -916,7 +916,7 @@ efi_find_max_pfn(unsigned long start, unsigned long end, void *arg)
 	return 0;
 }
 
-
+#define MAX_PAE36_PFN 1024*1024*16
 /*
  * Find the highest page frame number we have available
  */
@@ -941,6 +941,11 @@ void __init find_max_pfn(void)
 			continue;
 		if (end > max_pfn)
 			max_pfn = end;
+	}
+
+	if (max_pfn > MAX_PAE36_PFN) {
+		printk("RAM exceeds maximum supported size for 32-bit mode x86, using 64GB\n");
+		max_pfn = MAX_PAE36_PFN;
 	}
 }
 

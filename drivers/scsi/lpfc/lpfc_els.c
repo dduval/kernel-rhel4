@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_els.c 3094 2007-11-19 16:15:45Z sf_support $
+ * $Id: lpfc_els.c 3230 2008-11-18 21:15:25Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -477,7 +477,11 @@ flogifail:
 	}
 
 out:
-	lpfc_els_free_iocb(phba, cmdiocb);
+	if ((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		(irsp->un.ulpWord[4] == IOERR_SLI_ABORTED))
+		lpfc_free_delayed_iocbs(phba, cmdiocb);
+	else
+		lpfc_els_free_iocb(phba, cmdiocb);
 	return;
 }
 
@@ -797,7 +801,11 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 	}
 
 out:
-	lpfc_els_free_iocb(phba, cmdiocb);
+	if ((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		(irsp->un.ulpWord[4] == IOERR_SLI_ABORTED))
+		lpfc_free_delayed_iocbs(phba, cmdiocb);
+	else
+		lpfc_els_free_iocb(phba, cmdiocb);
 	return;
 }
 
@@ -910,7 +918,12 @@ lpfc_cmpl_els_prli(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 	}
 
 out:
-	lpfc_els_free_iocb(phba, cmdiocb);
+	if ((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		(irsp->un.ulpWord[4] == IOERR_SLI_ABORTED))
+		lpfc_free_delayed_iocbs(phba, cmdiocb);
+	else
+		lpfc_els_free_iocb(phba, cmdiocb);
+
 	return;
 }
 
@@ -1125,7 +1138,11 @@ lpfc_cmpl_els_adisc(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		}
 	}
 out:
-	lpfc_els_free_iocb(phba, cmdiocb);
+	if ((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		(irsp->un.ulpWord[4] == IOERR_SLI_ABORTED))
+		lpfc_free_delayed_iocbs(phba, cmdiocb);
+	else
+		lpfc_els_free_iocb(phba, cmdiocb);
 	return;
 }
 
@@ -1229,7 +1246,11 @@ lpfc_cmpl_els_logo(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 	}
 
 out:
-	lpfc_els_free_iocb(phba, cmdiocb);
+	if ((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		(irsp->un.ulpWord[4] == IOERR_SLI_ABORTED))
+		lpfc_free_delayed_iocbs(phba, cmdiocb);
+	else
+		lpfc_els_free_iocb(phba, cmdiocb);
 	return;
 }
 
@@ -1293,7 +1314,11 @@ lpfc_cmpl_els_cmd(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 
 	/* Check to see if link went down during discovery */
 	lpfc_els_chk_latt(phba);
-	lpfc_els_free_iocb(phba, cmdiocb);
+	if ((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		(irsp->un.ulpWord[4] == IOERR_SLI_ABORTED))
+		lpfc_free_delayed_iocbs(phba, cmdiocb);
+	else
+		lpfc_els_free_iocb(phba, cmdiocb);
 	return;
 }
 
@@ -1767,6 +1792,73 @@ lpfc_els_retry(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 			cmd, did, cmdiocb->retry);
 
 	return (0);
+}
+
+/*
+ * This function is called without lock held. This function will free
+ * all the delayed iocb resources.
+ */
+void
+lpfc_free_all_delayed_iocbs(struct lpfc_hba * phba)
+{
+	struct lpfc_iocbq *iocb, *next_iocb;
+	unsigned long iflag;
+
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	list_for_each_entry_safe(iocb, next_iocb, &phba->delayed_iocbs, list) {
+		list_del(&iocb->list);
+		lpfc_els_free_iocb(phba, iocb);
+	}
+	phba->delayed_iocb_count = 0;
+	phba->next_delayed_timer = 0;
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+}
+
+/*
+ * This function is called from the timer context to free the delayed iocbs
+ */
+void
+lpfc_free_delayed_iocbs_tmo(unsigned long ptr)
+{
+	struct lpfc_hba *phba = (struct lpfc_hba *) ptr;
+	struct lpfc_iocbq *iocb, *next_iocb;
+	unsigned long iflag;
+	unsigned long iocb_time_out;
+
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	phba->next_delayed_timer = 0;
+	list_for_each_entry_safe(iocb, next_iocb, &phba->delayed_iocbs, list) {
+		iocb_time_out = (unsigned long) iocb->context1;
+		/* Free all the iocbs timing out within next second */
+		if (time_before_eq(iocb_time_out, jiffies + HZ)) {
+			list_del(&iocb->list);
+			phba->delayed_iocb_count--;
+			lpfc_els_free_iocb(phba, iocb);
+		} else {
+			mod_timer(&phba->delayed_iocb_tmo,
+				iocb_time_out);
+			phba->next_delayed_timer = iocb_time_out;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+}
+
+/*
+ * This function is called with host_lock held to free iocb resource after
+ * a delay to allow all DMA to the buffer to complete.
+ */
+void
+lpfc_free_delayed_iocbs(struct lpfc_hba * phba, struct lpfc_iocbq * elsiocb)
+{
+	unsigned long iocb_time_out = jiffies + ELS_IOCB_DELAY_TIME * HZ;
+	elsiocb->context1 = (void *) iocb_time_out;
+	list_add_tail(&elsiocb->list, &phba->delayed_iocbs);
+	phba->delayed_iocb_count++;
+	if (!phba->next_delayed_timer) {
+		phba->next_delayed_timer = iocb_time_out;
+		mod_timer(&phba->delayed_iocb_tmo, iocb_time_out);
+	}
 }
 
 int
@@ -2374,34 +2466,27 @@ lpfc_rscn_payload_check(struct lpfc_hba * phba, uint32_t did)
 			rscn_did.un.word = *lp++;
 			rscn_did.un.word = be32_to_cpu(rscn_did.un.word);
 			payload_len -= sizeof (uint32_t);
-			switch (rscn_did.un.b.resv) {
-			case 0:	/* Single N_Port ID effected */
+			switch (rscn_did.un.b.resv & RSCN_ADDRESS_FORMAT_MASK) {
+			case RSCN_ADDRESS_FORMAT_PORT:
 				if (ns_did.un.word == rscn_did.un.word) {
 					match = did;
 				}
 				break;
-			case 1:	/* Whole N_Port Area effected */
+			case RSCN_ADDRESS_FORMAT_AREA:
 				if ((ns_did.un.b.domain == rscn_did.un.b.domain)
 				    && (ns_did.un.b.area == rscn_did.un.b.area))
 					{
 						match = did;
 					}
 				break;
-			case 2:	/* Whole N_Port Domain effected */
+			case RSCN_ADDRESS_FORMAT_DOMAIN:
 				if (ns_did.un.b.domain == rscn_did.un.b.domain)
 					{
 						match = did;
 					}
 				break;
-			case 3:	/* Whole Fabric effected */
+			case RSCN_ADDRESS_FORMAT_FABRIC:
 				match = did;
-				break;
-			default:
-				/* Unknown Identifier in RSCN list */
-				lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY,
-						"%d:0217 Unknown Identifier in "
-						"RSCN payload Data: x%x\n",
-						phba->brd_no, rscn_did.un.word);
 				break;
 			}
 			if (match) {
@@ -3459,8 +3544,15 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_PLOGI:
 		phba->fc_stat.elsRcvPLOGI++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = 1;
-			break;
+			if (!(phba->fc_flag & FC_PT2PT) ||
+				(phba->fc_flag & FC_PT2PT_PLOGI)) {
+				rjt_err = 1;
+				break;
+			}
+			/* We get here, and drop thru, if we are PT2PT with
+			 * another NPort and the other side has initiated
+			 * the PLOGI before responding to our FLOGI.
+			 */
 		}
 		ndlp = lpfc_plogi_confirm_nport(phba, mp, ndlp);
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_PLOGI);

@@ -28,20 +28,27 @@ typedef struct sndrv_aes_iec958 snd_aes_iec958_t;
 typedef struct sndrv_ctl_card_info snd_ctl_card_info_t;
 typedef enum sndrv_ctl_elem_type snd_ctl_elem_type_t;
 typedef enum sndrv_ctl_elem_iface snd_ctl_elem_iface_t;
-typedef struct sndrv_ctl_elem_id snd_ctl_elem_id_t;
+typedef struct snd_ctl_elem_id snd_ctl_elem_id_t;
 typedef struct sndrv_ctl_elem_list snd_ctl_elem_list_t;
-typedef struct sndrv_ctl_elem_info snd_ctl_elem_info_t;
-typedef struct sndrv_ctl_elem_value snd_ctl_elem_value_t;
+typedef struct snd_ctl_elem_info snd_ctl_elem_info_t;
+typedef struct snd_ctl_elem_value snd_ctl_elem_value_t;
 typedef enum sndrv_ctl_event_type snd_ctl_event_type_t;
 typedef struct sndrv_ctl_event snd_ctl_event_t;
+
+#define sndrv_ctl_elem_info snd_ctl_elem_info
+#define sndrv_ctl_elem_value snd_ctl_elem_value
 
 #define snd_kcontrol_chip(kcontrol) ((kcontrol)->private_data)
 
 typedef int (snd_kcontrol_info_t) (snd_kcontrol_t * kcontrol, snd_ctl_elem_info_t * uinfo);
 typedef int (snd_kcontrol_get_t) (snd_kcontrol_t * kcontrol, snd_ctl_elem_value_t * ucontrol);
 typedef int (snd_kcontrol_put_t) (snd_kcontrol_t * kcontrol, snd_ctl_elem_value_t * ucontrol);
+typedef int (snd_kcontrol_tlv_rw_t) (snd_kcontrol_t * kcontrol,
+				     int op_flag,
+				     unsigned int size,
+				     unsigned int __user *tlv);
 
-typedef struct _snd_kcontrol_new {
+typedef struct snd_kcontrol_new {
 	snd_ctl_elem_iface_t iface;	/* interface identifier */
 	unsigned int device;		/* device/client number */
 	unsigned int subdevice;		/* subdevice (substream) number */
@@ -52,6 +59,10 @@ typedef struct _snd_kcontrol_new {
 	snd_kcontrol_info_t *info;
 	snd_kcontrol_get_t *get;
 	snd_kcontrol_put_t *put;
+	union {
+		snd_kcontrol_tlv_rw_t *c;
+		const unsigned int *p;
+	} tlv;
 	unsigned long private_value;
 } snd_kcontrol_new_t;
 
@@ -61,7 +72,7 @@ typedef struct _snd_kcontrol_volatile {
 	unsigned int access;	/* access rights */
 } snd_kcontrol_volatile_t;
 
-struct _snd_kcontrol {
+struct snd_kcontrol {
 	struct list_head list;		/* list of controls */
 	snd_ctl_elem_id_t id;
 	unsigned int count;		/* count of same elements */
@@ -153,5 +164,20 @@ static inline snd_ctl_elem_id_t *snd_ctl_build_ioff(snd_ctl_elem_id_t *dst_id,
 	dst_id->numid += offset;
 	return dst_id;
 }
+
+/*
+ * Frequently used control callbacks
+ */
+int snd_ctl_boolean_mono_info(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_info *uinfo);
+int snd_ctl_boolean_stereo_info(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_info *uinfo);
+
+/*
+ * virtual master control
+ */
+struct snd_kcontrol *snd_ctl_make_virtual_master(char *name,
+						 const unsigned int *tlv);
+int snd_ctl_add_slave(struct snd_kcontrol *master, struct snd_kcontrol *slave);
 
 #endif	/* __SOUND_CONTROL_H */

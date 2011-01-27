@@ -122,47 +122,26 @@ void ehea_dump(void *adr, int len, char *msg) {
 	}
 }
 
+void ehea_schedule_port_reset(struct ehea_port *port)
+{
+	if (!test_bit(__EHEA_DISABLE_PORT_RESET, &port->flags))
+		schedule_work(&port->reset_task);
+}
+
 static struct net_device_stats *ehea_get_stats(struct net_device *dev)
 {
 	struct ehea_port *port = netdev_priv(dev);
 	struct net_device_stats *stats = &port->stats;
-	struct hcp_ehea_port_cb2 *cb2;
-	u64 hret, rx_packets;
 	int i;
 
 	memset(stats, 0, sizeof(*stats));
 
-	cb2 = kzalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!cb2) {
-		ehea_error("no mem for cb2");
-		goto out;
-	}
+	for (i = 0; i < EHEA_MAX_PORT_RES; i++)
+		stats->tx_packets += port->port_res[i].tx_packets;
 
-	hret = ehea_h_query_ehea_port(port->adapter->handle,
-				      port->logical_port_id,
-				      H_PORT_CB2, H_PORT_CB2_ALL, cb2);
-	if (hret != H_SUCCESS) {
-		ehea_error("query_ehea_port failed");
-		goto out_herr;
-	}
+	for (i = 0; i < EHEA_MAX_PORT_RES; i++)
+		stats->rx_packets += port->port_res[i].rx_packets;
 
-	if (netif_msg_hw(port))
-		ehea_dump(cb2, sizeof(*cb2), "net_device_stats");
-
-	rx_packets = 0;
-	for (i = 0; i < port->num_def_qps; i++)
-		rx_packets += port->port_res[i].rx_packets;
-
-	stats->tx_packets = cb2->txucp + cb2->txmcp + cb2->txbcp;
-	stats->multicast = cb2->rxmcp;
-	stats->rx_errors = cb2->rxuerr;
-	stats->rx_bytes = cb2->rxo;
-	stats->tx_bytes = cb2->txo;
-	stats->rx_packets = rx_packets;
-
-out_herr:
-	kfree(cb2);
-out:
 	return stats;
 }
 
@@ -368,11 +347,6 @@ static int ehea_treat_poll_error(struct ehea_port_res *pr, int rq,
 	if (cqe->status & EHEA_CQE_STAT_ERR_CRC)
 		pr->p_stats.err_frame_crc++;
 
-	if (netif_msg_rx_err(pr->port)) {
-		ehea_error("CQE Error for QP %d", pr->qp->init_attr.qp_nr);
-		ehea_dump(cqe, sizeof(*cqe), "CQE");
-	}
-
 	if (rq == 2) {
 		*processed_rq2 += 1;
 		skb = get_skb_by_index(pr->rq2_skba.arr, pr->rq2_skba.len, cqe);
@@ -384,8 +358,12 @@ static int ehea_treat_poll_error(struct ehea_port_res *pr, int rq,
 	}
 
 	if (cqe->status & EHEA_CQE_STAT_FAT_ERR_MASK) {
-		ehea_error("Critical receive error. Resetting port.");
-		schedule_work(&pr->port->reset_task);
+		if (netif_msg_rx_err(pr->port)) {
+			ehea_error("Critical receive error for QP %d. "
+				   "Resetting port.", pr->qp->init_attr.qp_nr);
+			ehea_dump(cqe, sizeof(*cqe), "CQE");
+		}
+		ehea_schedule_port_reset(pr->port);
 		return 1;
 	}
 
@@ -413,7 +391,7 @@ static int get_skb_hdr(struct sk_buff *skb, void **iphdr,
 	tcp_len = ((struct tcphdr *)(*tcph))->doff * 4;
 
 	/* check if ip header and tcp header are complete */
-	if (iph->tot_len < ip_len + tcp_len)
+	if (ntohs(iph->tot_len) < ip_len + tcp_len)
 		return -1;
 
 	*hdr_flags = LRO_IPV4 | LRO_TCP;
@@ -563,7 +541,7 @@ static struct ehea_cqe *ehea_proc_cqes(struct ehea_port_res *pr, int my_quota)
 			ehea_error("Send Completion Error: Resetting port");
 			if (netif_msg_tx_err(pr->port))
 				ehea_dump(cqe, sizeof(*cqe), "Send CQE");
-			schedule_work(&pr->port->reset_task);
+			ehea_schedule_port_reset(pr->port);
 			break;
 		}
 
@@ -687,7 +665,7 @@ static irqreturn_t ehea_qp_aff_irq_handler(int irq, void *param,
 		eqe = ehea_poll_eq(port->qp_eq);
 	}
 
-	schedule_work(&port->reset_task);
+	ehea_schedule_port_reset(port);
 
 	return IRQ_HANDLED;
 }
@@ -1578,16 +1556,20 @@ static int ehea_set_mac_addr(struct net_device *dev, void *sa)
 	memcpy(dev->dev_addr, mac_addr->sa_data, dev->addr_len);
 
 	/* Deregister old MAC in pHYP */
-	ret = ehea_broadcast_reg_helper(port, H_DEREG_BCMC);
-	if (ret)
-		goto out_free;
+	if (port->state == EHEA_PORT_UP) {
+		ret = ehea_broadcast_reg_helper(port, H_DEREG_BCMC);
+		if (ret)
+			goto out_free;
+	}
 
 	port->mac_addr = cb0->port_mac_addr << 16;
 
 	/* Register new MAC in pHYP */
-	ret = ehea_broadcast_reg_helper(port, H_REG_BCMC);
-	if (ret)
-		goto out_free;
+	if (port->state == EHEA_PORT_UP) {
+		ret = ehea_broadcast_reg_helper(port, H_REG_BCMC);
+		if (ret)
+			goto out_free;
+	}
 
 	ret = 0;
 out_free:
@@ -2013,8 +1995,6 @@ static void ehea_vlan_rx_register(struct net_device *dev,
 		goto out;
 	}
 
-	memset(cb1->vlan_filter, 0, sizeof(cb1->vlan_filter));
-
 	hret = ehea_h_modify_ehea_port(adapter->handle, port->logical_port_id,
 				       H_PORT_CB1, H_PORT_CB1_ALL, cb1);
 	if (hret != H_SUCCESS)
@@ -2362,11 +2342,14 @@ static int ehea_stop(struct net_device *dev)
 	if (netif_msg_ifdown(port))
 		ehea_info("disabling port %s", dev->name);
 
-	flush_scheduled_work();
+	set_bit(__EHEA_DISABLE_PORT_RESET, &port->flags);
+	while (cancel_delayed_work(&port->reset_task))
+		msleep(10);
 	down(&port->port_lock);
 	netif_stop_queue(dev);
 	ret = ehea_down(dev);
 	up(&port->port_lock);
+	clear_bit(__EHEA_DISABLE_PORT_RESET, &port->flags);
 	return ret;
 }
 
@@ -2404,7 +2387,7 @@ static void ehea_tx_watchdog(struct net_device *dev)
 	struct ehea_port *port = netdev_priv(dev);
 
 	if (netif_carrier_ok(dev))
-		schedule_work(&port->reset_task);
+		ehea_schedule_port_reset(port);
 }
 
 int ehea_sense_adapter_attr(struct ehea_adapter *adapter)
@@ -2694,12 +2677,13 @@ out_err:
 
 static void ehea_shutdown_single_port(struct ehea_port *port)
 {
+	struct ehea_adapter *adapter = port->adapter;
 	unregister_netdev(port->netdev);
 	ehea_unregister_port(port);
 	ehea_broadcast_reg_helper(port, H_DEREG_BCMC);
 	kfree(port->mc_list);
 	free_netdev(port->netdev);
-	port->adapter->active_ports--;
+	adapter->active_ports--;
 }
 
 static int ehea_setup_ports(struct ehea_adapter *adapter)

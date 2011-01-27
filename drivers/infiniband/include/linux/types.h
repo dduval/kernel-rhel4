@@ -7,3 +7,11 @@
 #define __bitwise__
 
 #endif
+#ifndef LINUX_TYPES_BAcKPORT_TO_2_6_18_H
+#define LINUX_TYPES_BAcKPORT_TO_2_6_18_H
+
+#include_next <linux/types.h>
+
+typedef _Bool bool;
+
+#endif

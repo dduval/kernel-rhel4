@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2007, 2008 QLogic Corporation. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -484,7 +484,8 @@ static int ipath_user_sdma_queue_pkts(const struct ipath_devdata *dd,
 			const unsigned long faddr =
 				(unsigned long) iov[idx].iov_base;
 
-			if (slen & 3 || faddr & 3 || !slen || slen > PAGE_SIZE) {
+			if (slen & 3 || faddr & 3 || !slen ||
+			    slen > PAGE_SIZE) {
 				ret = -EINVAL;
 				goto free_pbc;
 			}
@@ -550,6 +551,12 @@ free_list:
 	ipath_user_sdma_free_pkt_list(&dd->pcidev->dev, pq, list);
 done:
 	return ret;
+}
+
+static void ipath_user_sdma_set_complete_counter(struct ipath_user_sdma_queue *pq,
+						 u32 c)
+{
+	pq->sent_counter = c;
 }
 
 /* try to clean out queue -- needs pq->lock */
@@ -756,7 +763,7 @@ static int ipath_user_sdma_push_pkts(struct ipath_devdata *dd,
 		if (ofs >= IPATH_SMALLBUF_DWORDS) {
 			for (i = 0; i < pkt->naddr; i++) {
 				dd->ipath_sdma_descq[dtail].qw[0] |=
-					1ULL<<14;
+					__constant_cpu_to_le64(1ULL << 14);
 				if (++dtail == dd->ipath_sdma_descq_cnt)
 					dtail = 0;
 			}
@@ -860,24 +867,9 @@ int ipath_user_sdma_make_progress(struct ipath_devdata *dd,
 	return ret;
 }
 
-int ipath_user_sdma_pkt_sent(const struct ipath_user_sdma_queue *pq,
-			     u32 counter)
-{
-	const u32 scounter = ipath_user_sdma_complete_counter(pq);
-	const s32 dcounter = scounter - counter;
-
-	return dcounter >= 0;
-}
-
 u32 ipath_user_sdma_complete_counter(const struct ipath_user_sdma_queue *pq)
 {
 	return pq->sent_counter;
-}
-
-void ipath_user_sdma_set_complete_counter(struct ipath_user_sdma_queue *pq,
-					  u32 c)
-{
-	pq->sent_counter = c;
 }
 
 u32 ipath_user_sdma_inflight_counter(struct ipath_user_sdma_queue *pq)

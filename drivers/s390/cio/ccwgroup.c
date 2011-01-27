@@ -82,9 +82,14 @@ ccwgroup_ungroup_store(struct device *dev, const char *buf, size_t count)
 	struct ccwgroup_device *gdev;
 
 	gdev = to_ccwgroupdev(dev);
-
-	if (gdev->state != CCWGROUP_OFFLINE)
+	/* Prevent concurrent online/offline processing and ungrouping. */
+	if (atomic_compare_and_swap(0, 1, &gdev->onoff))
+		return -EAGAIN;
+	if (gdev->state != CCWGROUP_OFFLINE) {
+		/* Release onoff "lock" when ungrouping failed. */
+		atomic_set(&gdev->onoff, 0);
 		return -EINVAL;
+	}
 
 	__ccwgroup_remove_symlinks(gdev);
 	device_unregister(dev);

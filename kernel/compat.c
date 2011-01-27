@@ -249,9 +249,11 @@ asmlinkage long compat_sys_futex(u32 __user *uaddr, int op, int val,
 	unsigned long timeout = MAX_SCHEDULE_TIMEOUT;
 	int val2 = 0;
 
-	if ((op == FUTEX_WAIT) && utime) {
+	if (utime && (op == FUTEX_WAIT)) {
 		if (get_compat_timespec(&t, utime))
 			return -EFAULT;
+		if ((t.tv_sec < 0) || (((unsigned) t.tv_nsec) >= NSEC_PER_SEC))
+			return -EINVAL;
 		timeout = timespec_to_jiffies(&t) + 1;
 	}
 	if (op >= FUTEX_REQUEUE)

@@ -164,6 +164,7 @@ MODULE_PARM_DESC(ql2xfwloadbin,
 		"      firmware image) should be hotplug accessible."
 		" 1 -- load firmware from flash."
 		" 0 -- load firmware embedded with driver (default).");
+EXPORT_SYMBOL_GPL(ql2xfwloadbin);
 
 int ql2xfdmienable;
 module_param(ql2xfdmienable, int, S_IRUGO|S_IRUSR);
@@ -222,7 +223,7 @@ static int qla2xxx_eh_abort(struct scsi_cmnd *);
 static int qla2xxx_eh_device_reset(struct scsi_cmnd *);
 static int qla2xxx_eh_bus_reset(struct scsi_cmnd *);
 static int qla2xxx_eh_host_reset(struct scsi_cmnd *);
-static int qla2x00_loop_reset(scsi_qla_host_t *ha);
+static int qla2x00_loop_reset(scsi_qla_host_t *ha, int);
 static int qla2x00_device_reset(scsi_qla_host_t *, fc_port_t *);
 
 static int qla2x00_proc_info(struct Scsi_Host *, char *, char **,
@@ -501,20 +502,6 @@ static struct bin_attribute sysfs_fw_dump_attr = {
 	.read = qla2x00_sysfs_read_fw_dump,
 	.write = qla2x00_sysfs_write_fw_dump,
 };
-static ssize_t qla2x00_sysfs_read_nvram(struct kobject *, char *, loff_t,
-    size_t);
-static ssize_t qla2x00_sysfs_write_nvram(struct kobject *, char *, loff_t,
-    size_t);
-static struct bin_attribute sysfs_nvram_attr = {
-	.attr = {
-		.name = "nvram",
-		.mode = S_IRUSR | S_IWUSR,
-		.owner = THIS_MODULE,
-	},
-	.size = 0,
-	.read = qla2x00_sysfs_read_nvram,
-	.write = qla2x00_sysfs_write_nvram,
-};
 
 /* -------------------------------------------------------------------------- */
 
@@ -613,66 +600,6 @@ static ssize_t qla2x00_sysfs_write_fw_dump(struct kobject *kobj, char *buf,
 	return (count);
 }
 
-static ssize_t qla2x00_sysfs_read_nvram(struct kobject *kobj, char *buf,
-    loff_t off, size_t count)
-{
-	struct scsi_qla_host *ha = to_qla_host(dev_to_shost(container_of(kobj,
-	    struct device, kobj)));
-	unsigned long	flags;
-
-	if (!capable(CAP_SYS_ADMIN) || off != 0 || count != ha->nvram_size)
-		return 0;
-
-	/* Read NVRAM. */
-	spin_lock_irqsave(&ha->hardware_lock, flags);
-	qla2x00_read_nvram_data(ha, (uint8_t *)buf, ha->nvram_base,
-	    ha->nvram_size);
-	spin_unlock_irqrestore(&ha->hardware_lock, flags);
-
-	return (count);
-}
-
-static ssize_t qla2x00_sysfs_write_nvram(struct kobject *kobj, char *buf,
-    loff_t off, size_t count)
-{
-	struct scsi_qla_host *ha = to_qla_host(dev_to_shost(container_of(kobj,
-	    struct device, kobj)));
-	unsigned long	flags;
-	uint16_t	cnt;
-
-	if (!capable(CAP_SYS_ADMIN) || off != 0 || count != ha->nvram_size)
-		return 0;
-
-	/* Checksum NVRAM. */
-	if (IS_FWI2_CAPABLE(ha)) {
-		uint32_t *iter;
-		uint32_t chksum;
-
-		iter = (uint32_t *)buf;
-		chksum = 0;
-		for (cnt = 0; cnt < ((count >> 2) - 1); cnt++)
-			chksum += le32_to_cpu(*iter++);
-		chksum = ~chksum + 1;
-		*iter = cpu_to_le32(chksum);
-	} else {
-		uint8_t *iter;
-		uint8_t chksum;
-
-		iter = (uint8_t *)buf;
-		chksum = 0;
-		for (cnt = 0; cnt < count - 1; cnt++)
-			chksum += *iter++;
-		chksum = ~chksum + 1;
-		*iter = chksum;
-	}
-
-	/* Write NVRAM. */
-	spin_lock_irqsave(&ha->hardware_lock, flags);
-	qla2x00_write_nvram_data(ha, (uint8_t *)buf, ha->nvram_base, count);
-	spin_unlock_irqrestore(&ha->hardware_lock, flags);
-
-	return (count);
-}
 
 /* -------------------------------------------------------------------------- */
 static char *
@@ -1788,7 +1715,7 @@ qla2xxx_eh_bus_reset(struct scsi_cmnd *cmd)
 	}
 
 	if (qla2x00_wait_for_loop_ready(ha) == QLA_SUCCESS) {
-		if (qla2x00_loop_reset(ha) == QLA_SUCCESS) 
+		if (qla2x00_loop_reset(ha, 1) == QLA_SUCCESS) 
 			rval = SUCCESS;
 	}
 	if (rval == FAILED)
@@ -1894,60 +1821,64 @@ eh_host_reset_done:
 *
 * Input:
 *      ha = adapter block pointer.
+*      wait = wait for loop ready, not needed if called from dpc context
 *
 * Returns:
 *      0 = success
 */
 static int
-qla2x00_loop_reset(scsi_qla_host_t *ha)
+qla2x00_loop_reset(scsi_qla_host_t *ha, int wait)
 {
-	int status = QLA_SUCCESS;
+	int ret;
 	uint16_t t;
-	os_tgt_t        *tq;
+	os_tgt_t *tq;
+
+	if (ha->flags.enable_lip_full_login) {
+
+	        ret = qla2x00_full_login_lip(ha);
+                if (ret != QLA_SUCCESS) {
+                        DEBUG2_3(printk("%s(%ld): bus_reset failed: "
+                            "full_login_lip=%d.\n", __func__, ha->host_no,
+                            ret));
+                }
+                atomic_set(&ha->loop_state, LOOP_DOWN);
+                atomic_set(&ha->loop_down_timer, LOOP_DOWN_TIME);
+                qla2x00_mark_all_devices_lost(ha);
+                if (wait)
+                        qla2x00_wait_for_loop_ready(ha);
+	}
 
 	if (ha->flags.enable_lip_reset) {
-		status = qla2x00_lip_reset(ha);
+                ret = qla2x00_lip_reset(ha);
+                if (ret != QLA_SUCCESS) {
+                        DEBUG2_3(printk("%s(%ld): bus_reset failed: "
+                            "lip_reset=%d.\n", __func__, ha->host_no, ret));
+                }
+                if (wait)
+                        qla2x00_wait_for_loop_ready(ha);
 	}
 
-	if (status == QLA_SUCCESS && ha->flags.enable_target_reset) {
+	if (ha->flags.enable_target_reset) {
 		for (t = 0; t < MAX_FIBRE_DEVICES; t++) {
-			if ((tq = TGT_Q(ha, t)) == NULL)
-				continue;
+                        if ((tq = TGT_Q(ha, t)) == NULL)
+                                continue;
 
-			if (tq->fcport == NULL)
-				continue;
+                        if (tq->fcport == NULL)
+                                continue;
 
-			status = qla2x00_device_reset(ha, tq->fcport);
-			if (status != QLA_SUCCESS) {
-				break;
-			}
-		}
-	}
-
-	if (status == QLA_SUCCESS &&
-		((!ha->flags.enable_target_reset && 
-		  !ha->flags.enable_lip_reset) ||
-		ha->flags.enable_lip_full_login)) {
-
-		status = qla2x00_full_login_lip(ha);
+                        ret = qla2x00_device_reset(ha, tq->fcport);
+                        if (ret != QLA_SUCCESS) {
+                                DEBUG2_3(printk("%s(%ld): bus_reset failed: "
+                                    "target_reset=%d d_id=%x.\n", __func__,
+                                    ha->host_no, ret, tq->fcport->d_id.b24));
+                        }
+                }
 	}
 
 	/* Issue marker command only when we are going to start the I/O */
 	ha->marker_needed = 1;
 
-	if (status) {
-		/* Empty */
-		DEBUG2_3(printk("%s(%ld): **** FAILED ****\n",
-				__func__,
-				ha->host_no);)
-	} else {
-		/* Empty */
-		DEBUG3(printk("%s(%ld): exiting normally.\n",
-				__func__,
-				ha->host_no);)
-	}
-
-	return(status);
+	return QLA_SUCCESS;
 }
 
 /*
@@ -2432,8 +2363,6 @@ int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 		goto probe_failed;
 
 	sysfs_create_bin_file(&host->shost_gendev.kobj, &sysfs_fw_dump_attr);
-	sysfs_nvram_attr.size = ha->nvram_size;
-	sysfs_create_bin_file(&host->shost_gendev.kobj, &sysfs_nvram_attr);
 
 	qla_printk(KERN_INFO, ha, "\n"
 	    " QLogic Fibre Channel HBA Driver: %s\n"
@@ -2474,7 +2403,6 @@ void qla2x00_remove_one(struct pci_dev *pdev)
 
 	sysfs_remove_bin_file(&ha->host->shost_gendev.kobj,
 	    &sysfs_fw_dump_attr);
-	sysfs_remove_bin_file(&ha->host->shost_gendev.kobj, &sysfs_nvram_attr);
 
 	qla84xx_put_chip(ha);
 
@@ -3760,7 +3688,7 @@ __qla2x00_do_dpc(scsi_qla_host_t *ha)
 			DEBUG(printk("scsi(%ld): dpc: sched loop_reset()\n",
 			    ha->host_no));
 
-			qla2x00_loop_reset(ha);
+			qla2x00_loop_reset(ha, 0);
 		}
 
 		if (test_and_clear_bit(RESET_MARKER_NEEDED, &ha->dpc_flags) &&

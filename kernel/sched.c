@@ -231,6 +231,9 @@ struct runqueue {
 	unsigned long nr_running;
 #ifdef CONFIG_SMP
 	unsigned long cpu_load;
+	unsigned int irq_pct;
+	int irq_quantum;
+	u64 prev_irq_ticks;
 #endif
 	unsigned long long nr_switches;
 
@@ -966,7 +969,12 @@ inline int task_curr(const task_t *p)
 	return cpu_curr(task_cpu(p)) == p;
 }
 
+int wake_balance=1;
+
 #ifdef CONFIG_SMP
+
+#define LOWLAT_ENABLED()		(wake_balance == 2)
+
 enum request_type {
 	REQ_MOVE_TASK,
 	REQ_SET_DOMAIN,
@@ -1059,6 +1067,15 @@ void kick_process(task_t *p)
 	preempt_enable();
 }
 
+static unsigned long current_load(runqueue_t *rq)
+{
+	unsigned long load = rq->nr_running * SCHED_LOAD_SCALE;
+
+	if (LOWLAT_ENABLED())
+		load += (SCHED_LOAD_SCALE * rq->irq_pct) / 100;
+	return load;
+}
+
 /*
  * Return a low guess at the load of a migration-source cpu.
  *
@@ -1068,9 +1085,8 @@ void kick_process(task_t *p)
 static inline unsigned long source_load(int cpu)
 {
 	runqueue_t *rq = cpu_rq(cpu);
-	unsigned long load_now = rq->nr_running * SCHED_LOAD_SCALE;
 
-	return min(rq->cpu_load, load_now);
+	return min(rq->cpu_load, current_load(rq));
 }
 
 /*
@@ -1079,9 +1095,8 @@ static inline unsigned long source_load(int cpu)
 static inline unsigned long target_load(int cpu)
 {
 	runqueue_t *rq = cpu_rq(cpu);
-	unsigned long load_now = rq->nr_running * SCHED_LOAD_SCALE;
 
-	return max(rq->cpu_load, load_now);
+	return max(rq->cpu_load, current_load(rq));
 }
 
 #endif
@@ -1100,19 +1115,39 @@ static int wake_idle(int cpu, task_t *p)
 	runqueue_t *rq = cpu_rq(cpu);
 	struct sched_domain *sd;
 	int i;
+	unsigned long load = current_load(rq) + SCHED_LOAD_SCALE;
 
-	if (idle_cpu(cpu))
+	if (LOWLAT_ENABLED()) {
+		if (idle_cpu(cpu))
+			load -= SCHED_LOAD_SCALE;
+		if (load <= SCHED_LOAD_SCALE)
+			return cpu;
+	} else if (idle_cpu(cpu)) {
 		return cpu;
+	}
 
 	sd = rq->sd;
-	if (!(sd->flags & SD_WAKE_IDLE))
+	if (!(sd->flags & SD_WAKE_IDLE) && !LOWLAT_ENABLED())
 		return cpu;
 
 	cpus_and(tmp, sd->span, p->cpus_allowed);
 
 	for_each_cpu_mask(i, tmp) {
-		if (idle_cpu(i))
+		if (LOWLAT_ENABLED()) {
+			unsigned long l = current_load(cpu_rq(i))
+							+ SCHED_LOAD_SCALE;
+
+			if (idle_cpu(i))
+				l -= SCHED_LOAD_SCALE;
+			if (l <= SCHED_LOAD_SCALE)
+				return i;
+			if (l < load) {
+				cpu = i;
+				load = l;
+			}
+		} else if (idle_cpu(i)) {
 			return i;
+		}
 	}
 
 	return cpu;
@@ -1123,8 +1158,6 @@ static inline int wake_idle(int cpu, task_t *p)
 	return cpu;
 }
 #endif
-
-int wake_balance=1;
 
 /***
  * try_to_wake_up - wake up a thread
@@ -2315,6 +2348,8 @@ out:
 /* Don't have all balancing operations going off at once */
 #define CPU_OFFSET(cpu) (HZ * cpu / NR_CPUS)
 
+#define IRQ_QUANTUM	(HZ / 10)
+
 static void rebalance_tick(int this_cpu, runqueue_t *this_rq,
 			   enum idle_type idle)
 {
@@ -2322,9 +2357,20 @@ static void rebalance_tick(int this_cpu, runqueue_t *this_rq,
 	unsigned long j = jiffies + CPU_OFFSET(this_cpu);
 	struct sched_domain *sd;
 
+	if (unlikely(--this_rq->irq_quantum <= 0)) {
+		struct cpu_usage_stat *cpustat = &kstat_this_cpu.cpustat;
+		u64 irq_ticks = cpustat->irq + cpustat->softirq;
+		unsigned int ticks = irq_ticks - this_rq->prev_irq_ticks;
+		unsigned int pct = (ticks * 100) / IRQ_QUANTUM;
+
+		this_rq->irq_pct = (this_rq->irq_pct + pct) / 2;
+		this_rq->prev_irq_ticks = irq_ticks;
+		this_rq->irq_quantum = IRQ_QUANTUM;
+	}
+
 	/* Update our load */
 	old_load = this_rq->cpu_load;
-	this_load = this_rq->nr_running * SCHED_LOAD_SCALE;
+	this_load = current_load(this_rq);
 	/*
 	 * Round up the averaging division if load is increasing. This
 	 * prevents us from getting stuck on 9 if the load is 10, for
@@ -5061,6 +5107,9 @@ void __init sched_init(void)
 		rq->migration_thread = NULL;
 		INIT_LIST_HEAD(&rq->migration_queue);
 		rq->cpu = i;
+		rq->irq_pct = 0;
+		rq->irq_quantum = IRQ_QUANTUM;
+		rq->prev_irq_ticks = 0;
 #endif
 		atomic_set(&rq->nr_iowait, 0);
 

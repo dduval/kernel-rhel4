@@ -15,6 +15,7 @@ sp_put( scsi_qla_host_t *ha, srb_t *sp)
 	if (atomic_read(&sp->ref_count) == 0) {
 		QL4PRINT(QLP2, printk("scsi%d: %s: sp->ref_count zero\n",
 				      ha->host_no, __func__));
+		qla4xxx_print_srb_info(QLP2, sp);
 		DEBUG2(BUG());
 		return;
 	}
@@ -22,7 +23,7 @@ sp_put( scsi_qla_host_t *ha, srb_t *sp)
 	if (!atomic_dec_and_test(&sp->ref_count)) {
 		return;
 	}
-	
+
 	qla4xxx_complete_request(ha, sp);
 }
 
@@ -51,6 +52,16 @@ __add_to_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
 }
 
 static inline void
+add_to_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	__add_to_retry_srb_q(ha ,srb);
+	spin_unlock_irqrestore(&ha->list_lock, flags);
+}
+
+static inline void
 __del_from_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
 {
 	QL4PRINT(QLP8, printk("scsi%d: %s: ha %d, srb = %p\n",
@@ -58,6 +69,17 @@ __del_from_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
 	list_del_init(&srb->list_entry);
 	srb->state = SRB_NO_QUEUE_STATE;
 	ha->retry_srb_q_count--;
+}
+
+
+static inline void
+del_from_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	__del_from_retry_srb_q(ha ,srb);
+	spin_unlock_irqrestore(&ha->list_lock, flags);
 }
 
 /*************************************/
@@ -71,6 +93,17 @@ __add_to_done_srb_q(scsi_qla_host_t *ha, srb_t *srb)
 	srb->state = SRB_DONE_STATE;
 	ha->done_srb_q_count++;
 	srb->ha = ha;
+	qla4xxx_delete_timer_from_cmd(srb);
+}
+
+static inline void
+add_to_done_srb_q(scsi_qla_host_t *ha, srb_t *srb)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	__add_to_done_srb_q(ha ,srb);
+	spin_unlock_irqrestore(&ha->list_lock, flags);
 }
 
 static inline void
@@ -81,6 +114,16 @@ __del_from_done_srb_q(scsi_qla_host_t *ha, srb_t *srb)
 	list_del_init(&srb->list_entry);
 	srb->state = SRB_NO_QUEUE_STATE;
 	ha->done_srb_q_count--;
+}
+
+static inline void
+del_from_done_srb_q(scsi_qla_host_t *ha, srb_t *srb)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	__del_from_done_srb_q(ha ,srb);
+	spin_unlock_irqrestore(&ha->list_lock, flags);
 }
 
 static inline srb_t *__del_from_done_srb_q_head(scsi_qla_host_t *ha)
@@ -104,6 +147,18 @@ static inline srb_t *__del_from_done_srb_q_head(scsi_qla_host_t *ha)
 	return(srb);
 }
 
+static inline srb_t *
+del_from_done_srb_q_head(scsi_qla_host_t *ha)
+{
+	unsigned long flags;
+	srb_t *srb;
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	srb = __del_from_done_srb_q_head(ha);
+	spin_unlock_irqrestore(&ha->list_lock, flags);
+	return(srb);
+}
+
 /*************************************/
 
 static inline void
@@ -113,10 +168,20 @@ __add_to_free_srb_q(scsi_qla_host_t *ha, srb_t *srb)
 			      ha->host_no, __func__, ha->instance,
 			      srb ));
 
-	atomic_set(&srb->ref_count, 0);
+	memset(srb, 0, sizeof(srb_t));
 	list_add_tail(&srb->list_entry, &ha->free_srb_q);
 	ha->free_srb_q_count++;
 	srb->state = SRB_FREE_STATE;
+}
+
+static inline void
+add_to_free_srb_q(scsi_qla_host_t *ha, srb_t *srb)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	__add_to_free_srb_q(ha ,srb);
+	spin_unlock_irqrestore(&ha->list_lock, flags);
 }
 
 static inline void __del_from_free_srb_q(scsi_qla_host_t *ha, srb_t *srb)
@@ -154,75 +219,6 @@ static inline srb_t *__del_from_free_srb_q_head(scsi_qla_host_t *ha)
 	return(srb);
 }
 
-
-/*************************************/
-
-static inline void
-add_to_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ha->list_lock, flags);
-	__add_to_retry_srb_q(ha ,srb);
-	spin_unlock_irqrestore(&ha->list_lock, flags);
-}
-
-static inline void
-del_from_retry_srb_q(scsi_qla_host_t *ha, srb_t *srb)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ha->list_lock, flags);
-	__del_from_retry_srb_q(ha ,srb);
-	spin_unlock_irqrestore(&ha->list_lock, flags);
-}
-
-/*************************************/
-
-static inline void
-add_to_done_srb_q(scsi_qla_host_t *ha, srb_t *srb)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ha->list_lock, flags);
-	__add_to_done_srb_q(ha ,srb);
-	spin_unlock_irqrestore(&ha->list_lock, flags);
-}
-
-static inline void
-del_from_done_srb_q(scsi_qla_host_t *ha, srb_t *srb)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ha->list_lock, flags);
-	__del_from_done_srb_q(ha ,srb);
-	spin_unlock_irqrestore(&ha->list_lock, flags);
-}
-
-static inline srb_t *
-del_from_done_srb_q_head(scsi_qla_host_t *ha)
-{
-	unsigned long flags;
-	srb_t *srb;
-
-	spin_lock_irqsave(&ha->list_lock, flags);
-	srb = __del_from_done_srb_q_head(ha);
-	spin_unlock_irqrestore(&ha->list_lock, flags);
-	return(srb);
-}
-
-/*************************************/
-
-static inline void
-add_to_free_srb_q(scsi_qla_host_t *ha, srb_t *srb)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&ha->list_lock, flags);
-	__add_to_free_srb_q(ha ,srb);
-	spin_unlock_irqrestore(&ha->list_lock, flags);
-}
-
 static inline srb_t *
 del_from_free_srb_q_head(scsi_qla_host_t *ha)
 {
@@ -236,4 +232,3 @@ del_from_free_srb_q_head(scsi_qla_host_t *ha)
 	return(srb);
 }
 
-/*************************************/

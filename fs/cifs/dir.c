@@ -139,6 +139,7 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 {
 	int rc = -ENOENT;
 	int xid;
+	int create_options = CREATE_NOT_DIR;
 	int oplock = 0;
 	int desiredAccess = GENERIC_READ | GENERIC_WRITE;
 	__u16 fileHandle;
@@ -207,9 +208,19 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 		FreeXid(xid);
 		return -ENOMEM;
 	}
+
+	mode &= ~current->fs->umask;
+
+	/*
+	 * if we're not using unix extensions, see if we need to set
+	 * ATTR_READONLY on the create call
+	 */
+	if (!pTcon->unix_ext && (mode & S_IWUGO) == 0)
+		create_options |= CREATE_OPTION_READONLY;
+
 	if (cifs_sb->tcon->ses->capabilities & CAP_NT_SMBS)
 		rc = CIFSSMBOpen(xid, pTcon, full_path, disposition,
-			 desiredAccess, CREATE_NOT_DIR,
+			 desiredAccess, create_options,
 			 &fileHandle, &oplock, buf, cifs_sb->local_nls,
 			 cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR);
 	else
@@ -218,7 +229,7 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 	if (rc == -EIO) {
 		/* old server, retry the open legacy style */
 		rc = SMBLegacyOpen(xid, pTcon, full_path, disposition,
-			desiredAccess, CREATE_NOT_DIR,
+			desiredAccess, create_options,
 			&fileHandle, &oplock, buf, cifs_sb->local_nls,
 			cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR);
 	}
@@ -228,24 +239,28 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 		/* If Open reported that we actually created a file
 		then we now have to set the mode if possible */
 		if ((pTcon->unix_ext) && (oplock & CIFS_CREATE_ACTION)) {
-			mode &= ~current->fs->umask;
+			struct cifs_unix_set_info_args args = {
+				.mode	= mode,
+				.ctime	= NO_CHANGE_64,
+				.atime	= NO_CHANGE_64,
+				.mtime	= NO_CHANGE_64,
+				.device	= 0,
+			};
+
 			if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID) {
-				CIFSSMBUnixSetPerms(xid, pTcon, full_path, mode,
-					(__u64)current->fsuid,
-					(__u64)current->fsgid,
-					0 /* dev */,
-					cifs_sb->local_nls,
-					cifs_sb->mnt_cifs_flags &
-						CIFS_MOUNT_MAP_SPECIAL_CHR);
+				args.uid = (__u64) current->fsuid;
+				if (inode->i_mode & S_ISGID)
+					args.gid = (__u64) inode->i_gid;
+				else
+					args.gid = (__u64) current->fsgid;
 			} else {
-				CIFSSMBUnixSetPerms(xid, pTcon, full_path, mode,
-					(__u64)-1,
-					(__u64)-1,
-					0 /* dev */,
-					cifs_sb->local_nls,
-					cifs_sb->mnt_cifs_flags &
-						CIFS_MOUNT_MAP_SPECIAL_CHR);
+				args.uid = NO_CHANGE_64;
+				args.gid = NO_CHANGE_64;
 			}
+			CIFSSMBUnixSetInfo(xid, pTcon, full_path, &args,
+				cifs_sb->local_nls,
+				cifs_sb->mnt_cifs_flags &
+					CIFS_MOUNT_MAP_SPECIAL_CHR);
 		} else {
 			/* BB implement mode setting via Windows security
 			   descriptors e.g. */
@@ -262,12 +277,19 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 			rc = cifs_get_inode_info(&newinode, full_path,
 						 buf, inode->i_sb, xid);
 			if (newinode) {
-				newinode->i_mode = mode;
+				if (cifs_sb->mnt_cifs_flags &
+				    CIFS_MOUNT_DYNPERM)
+					newinode->i_mode = mode;
 				if ((oplock & CIFS_CREATE_ACTION) &&
 				    (cifs_sb->mnt_cifs_flags &
 				     CIFS_MOUNT_SET_UID)) {
 					newinode->i_uid = current->fsuid;
-					newinode->i_gid = current->fsgid;
+					if (inode->i_mode & S_ISGID)
+						newinode->i_gid =
+							inode->i_gid;
+					else
+						newinode->i_gid =
+							current->fsgid;
 				}
 			}
 		}
@@ -372,21 +394,24 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode, int devic
 	if (full_path == NULL)
 		rc = -ENOMEM;
 	else if (pTcon->unix_ext) {
-		mode &= ~current->fs->umask;
+		struct cifs_unix_set_info_args args = {
+			.mode	= mode & ~current->fs->umask,
+			.ctime	= NO_CHANGE_64,
+			.atime	= NO_CHANGE_64,
+			.mtime	= NO_CHANGE_64,
+			.device	= device_number,
+		};
 		if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_SET_UID) {
-			rc = CIFSSMBUnixSetPerms(xid, pTcon, full_path,
-				mode, (__u64)current->fsuid,
-				(__u64)current->fsgid,
-				device_number, cifs_sb->local_nls,
-				cifs_sb->mnt_cifs_flags &
-					CIFS_MOUNT_MAP_SPECIAL_CHR);
+			args.uid = (__u64) current->fsuid;
+			args.gid = (__u64) current->fsgid;
 		} else {
-			rc = CIFSSMBUnixSetPerms(xid, pTcon,
-				full_path, mode, (__u64)-1, (__u64)-1,
-				device_number, cifs_sb->local_nls,
-				cifs_sb->mnt_cifs_flags &
-					CIFS_MOUNT_MAP_SPECIAL_CHR);
+			args.uid = NO_CHANGE_64;
+			args.gid = NO_CHANGE_64;
 		}
+		rc = CIFSSMBUnixSetInfo(xid, pTcon, full_path,
+			&args, cifs_sb->local_nls,
+			cifs_sb->mnt_cifs_flags &
+				CIFS_MOUNT_MAP_SPECIAL_CHR);
 
 		if (!rc) {
 			rc = cifs_get_inode_info_unix(&newinode, full_path,
@@ -557,12 +582,10 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry)
 		d_add(direntry, NULL);
 	/*	if it was once a directory (but how can we tell?) we could do
 		shrink_dcache_parent(direntry); */
-	} else {
-		cERROR(1, ("Error 0x%x on cifs_get_inode_info in lookup of %s",
-			   rc, full_path));
-		/* BB special case check for Access Denied - watch security
-		exposure of returning dir info implicitly via different rc
-		if file exists or not but no access BB */
+	} else if (rc != -EACCES) {
+		cERROR(1, ("Unexpected lookup error %d", rc));
+		/* We special case check for Access Denied - since that
+		is a common return code */
 	}
 
 	kfree(full_path);

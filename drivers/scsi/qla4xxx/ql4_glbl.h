@@ -29,12 +29,12 @@ extern scsi_qla_host_t *qla4xxx_get_adapter_handle(uint16_t instance);
 extern void qla4xxx_free_ddb_list(scsi_qla_host_t *ha);
 
 extern void qla4xxx_tgt_free(scsi_qla_host_t *ha, uint16_t t);
-extern os_tgt_t *qla4xxx_tgt_alloc(scsi_qla_host_t *, uint16_t);
 extern os_lun_t * qla4xxx_lun_alloc(scsi_qla_host_t *, uint16_t, uint16_t);
 extern void qla4xxx_extend_timeout(struct scsi_cmnd *cmd, int timeout);
 extern int qla4xxx_done(scsi_qla_host_t *old_ha);
-extern int qla4xxx_device_suspend( scsi_qla_host_t *, os_lun_t *, srb_t * );
-extern void qla4xxx_add_timer_to_cmd(srb_t *, int );
+extern void qla4xxx_device_suspend( scsi_qla_host_t *, srb_t * );
+extern void qla4xxx_add_timer_to_cmd(scsi_qla_host_t *ha, srb_t *, int );
+extern void qla4xxx_request_cleanup(scsi_qla_host_t *ha, srb_t *srb);
 extern int ql4xdontresethba;
 extern int ql4xqfullrampup;
 extern int ql4xmaxqdepth;
@@ -74,13 +74,13 @@ extern ddb_entry_t *qla4xxx_alloc_ddb(scsi_qla_host_t *ha, uint32_t fw_ddb_index
 extern uint8_t qla4xxx_update_ddb_entry(scsi_qla_host_t *ha, ddb_entry_t
     *ddb_entry, uint32_t fw_ddb_index);
 extern uint8_t qla4xxx_get_fwddb_entry(scsi_qla_host_t *ha, uint16_t fw_ddb_index, DEV_DB_ENTRY *fw_ddb_entry, dma_addr_t fw_ddb_entry_dma, uint32_t *num_valid_ddb_entries, uint32_t *next_ddb_index, uint32_t *fw_ddb_device_state, uint32_t *time2wait, uint16_t *tcp_source_port_num, uint16_t *connection_id);
-extern uint8_t qla4xxx_relogin_device(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry);
+extern void qla4xxx_relogin_device(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry);
 extern uint8_t qla4xxx_send_command_to_isp(scsi_qla_host_t *, srb_t *);
 extern int qla4xxx_get_prop_12chars(scsi_qla_host_t *ha, uint8_t *propname, uint8_t *propval, uint8_t *db);
 extern void qla4xxx_free_ddb(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry);
 extern uint8_t qla4xxx_resize_ioctl_dma_buf(scsi_qla_host_t *ha, uint32_t size);
 extern uint8_t qla4xxx_set_ddb_entry(scsi_qla_host_t *ha, uint16_t fw_ddb_index, DEV_DB_ENTRY *fw_ddb_entry, dma_addr_t fw_ddb_entry_dma);
-extern uint8_t qla4xxx_process_ddb_changed(scsi_qla_host_t *ha, uint32_t fw_ddb_index, uint32_t state);
+extern uint8_t qla4xxx_process_ddb_changed(scsi_qla_host_t *ha, uint32_t fw_ddb_index, uint32_t fw_ddb_device_state);
 extern uint8_t qla4xxx_init_rings(scsi_qla_host_t *ha);
 extern uint8_t qla4xxx_reinitialize_ddb_list(scsi_qla_host_t *ha);
 extern fc_lun_t * qla4xxx_add_fclun(fc_port_t *fcport, uint16_t lun);
@@ -90,6 +90,8 @@ extern void qla4xxx_flush_all_srbs(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry, 
 extern int qla4xxx_lock_drvr_wait(struct scsi_qla_host *a);
 extern uint8_t qla4xxx_reindex_ddb(scsi_qla_host_t *ha, uint32_t old_fw_ddb_index, uint32_t new_fw_ddb_index);
 void qla4xxx_add_ddb_to_list(scsi_qla_host_t *ha, uint32_t fw_ddb_index, uint32_t *next_fw_ddb_index);
+extern ddb_entry_t * qla4xxx_find_ddb_internally(scsi_qla_host_t *ha, uint32_t fw_ddb_index);
+void qla4xxx_set_device_state(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry, uint32_t state);
 
 
 /*
@@ -97,7 +99,7 @@ void qla4xxx_add_ddb_to_list(scsi_qla_host_t *ha, uint32_t fw_ddb_index, uint32_
  */
 extern void qla4xxx_process_aen(scsi_qla_host_t *ha, uint8_t flush_ddb_chg_aens);
 extern uint8_t qla4xxx_mailbox_command(scsi_qla_host_t *ha, uint8_t inCount, uint8_t outCount, uint32_t *mbx_cmd, uint32_t *mbx_sts);
-extern uint8_t qla4xxx_issue_iocb(scsi_qla_host_t *ha, void*  buffer, dma_addr_t phys_addr, size_t size);
+extern uint8_t qla4xxx_issue_iocb(scsi_qla_host_t *ha, uint32_t cmpl_sts_offset, dma_addr_t phys_addr);
 
 #if ENABLE_ISNS
 extern uint8_t qla4xxx_isns_enable(scsi_qla_host_t *, uint32_t, uint16_t);

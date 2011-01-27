@@ -28,7 +28,7 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
-
+#include <scsi/scsi_transport_iscsi.h>
 /* XXX(dg): move to pci_ids.h */
 #ifndef PCI_DEVICE_ID_QLOGIC_ISP4010
 #define PCI_DEVICE_ID_QLOGIC_ISP4010	0x4010
@@ -339,7 +339,7 @@
 #define INTERNAL_PASSTHRU_TOV		60
 #define EXTEND_CMD_TOV			60
 #define WAIT_CMD_TOV			30
-#define EH_WAIT_CMD_TOV			120
+#define EH_WAIT_CMD_TOV			10
 #define FIRMWARE_UP_TOV			60
 #define RESET_FIRMWARE_TOV        	30
 #define LOGOUT_TOV			10
@@ -369,6 +369,7 @@ typedef struct _srb_t {
 
 	#define SRB_RETRY		BIT_9	/* needs retrying. */
 	#define SRB_TAPE		BIT_10	/* FCP2 (Tape) command. */
+	#define SRB_NO_TIMER		BIT_11
 
 
 	uint8_t     state;		/* (1) Status flags. */
@@ -379,7 +380,6 @@ typedef struct _srb_t {
 	#define SRB_ACTIVE_TIMEOUT_STATE 4
 	#define SRB_RETRY_STATE	 	 5
 	#define SRB_DONE_STATE	 	 6
-	#define SRB_SUSPENDED_STATE  	 7    /* Request in suspended state */
 
 	#define SRB_STATE_TBL()	  	  \
 	{	    			  \
@@ -390,7 +390,6 @@ typedef struct _srb_t {
 	    "ACTIVE_TIMEOUT"        	, \
 	    "RETRY"	        	, \
 	    "DONE"	        	, \
-	    "SUSPENDED"	        	, \
 	    NULL			  \
 	}
 
@@ -552,16 +551,17 @@ typedef struct ddb_entry {
 	#define DEV_STATE_DEAD		0 /* We can no longer talk to this device */
 	#define DEV_STATE_ONLINE	1 /* Device ready to accept commands */
 	#define DEV_STATE_MISSING	2 /* Device logged off, trying to re-login */
+	#define DEV_STATE_DELETED	3 /* Deleted by GUI */
 	#define DEV_STATE_TBL(){	  \
 		"DEAD"			, \
 		"ONLINE"		, \
 		"MISSING"		, \
+		"DELETED"		, \
 		NULL			  \
 	}
 	unsigned long flags;		/* 68 x44 */
 	#define DF_RELOGIN		0  /* Relogin to device */
 	#define DF_NO_RELOGIN		1  /* Do not relogin if IOCTL logged it out */
-	#define DF_ISNS_DISCOVERED	2  /* Device was discovered via iSNS */
 
 	unsigned long dev_scan_wait_to_start_relogin;    /* 72 x48 */
 	unsigned long dev_scan_wait_to_complete_relogin; /* 76 x4c */
@@ -627,6 +627,7 @@ typedef struct fc_port {
 #define FCS_NOT_SUPPORTED	5
 #define FCS_FAILOVER		6
 #define FCS_FAILOVER_FAILED	7
+#define FCS_DEVICE_DELETED	8
 
 /*
  * FC port flags.
@@ -719,6 +720,7 @@ typedef struct scsi_qla_host {
 	#define AF_INIT_DONE		      1 /* 0x00000002 */
 	#define AF_MBOX_COMMAND 	      2 /* 0x00000004 */
 	#define AF_MBOX_COMMAND_DONE 	      3 /* 0x00000008 */
+	#define AF_INIT_ACTIVE	              4 /* 0x00000010 */
 	#define AF_DPC_SCHEDULED	      5 /* 0x00000020 */
 	#define AF_INTERRUPTS_ON	      6 /* 0x00000040 Not Used */
 	#define AF_GET_CRASH_RECORD	      7 /* 0x00000080 */
@@ -742,8 +744,8 @@ typedef struct scsi_qla_host {
 	#define DPC_WAIT_TO_RELOGIN_DEVICE   13 /* 0x00002000 */
 	#define DPC_CHECK_LUN		     14 /* 0x00004000 */
 	#define DPC_GET_DHCP_IP_ADDR	     15 /* 0x00008000 */
-	#define DPC_RESET_NIC_TEST	     17 /* 0x00020000 */
 	#define DPC_RESET_HA_INTR_COMPLETION 18 /* 0x00040000 */
+	#define DPC_ASYNC_PDU        	     21 /* 0x00200000 */
 
 	uint16_t        iocb_cnt;
 	uint16_t        iocb_hiwat;
@@ -970,9 +972,7 @@ typedef struct scsi_qla_host {
 	aen_t           aen_q[MAX_AEN_ENTRIES];
 
 	/* pdu variables */
-	uint16_t        pdu_count;	/* Number of available aen_q entries */
-	uint16_t        pdu_in;		/* Current indexes */
-	uint16_t        pdu_out;
+	uint16_t        resvd4[3];
 
 	uint16_t        pdu_active;
 	PDU_ENTRY       *free_pdu_top;
@@ -1036,7 +1036,19 @@ typedef struct scsi_qla_host {
 	uint8_t		ipv6_addr0_state;
 	uint8_t		ipv6_addr1_state;
 	uint8_t		ipv6_default_router_state;
+
+	struct list_head async_iocb_list;
+	void		*gen_req_rsp_iocb;
+	dma_addr_t	gen_req_rsp_iocb_dma;
 }scsi_qla_host_t;
+
+/*
+ * structure to buffer Async PDUs
+ */
+typedef struct  {
+	struct list_head list_entry;
+	ASYNC_PDU_ENTRY iocb;
+} async_pdu_iocb_t;
 
 #define ADAPTER_UP(ha) ((test_bit(AF_ONLINE, &ha->flags) != 0) && \
 			(test_bit(AF_LINK_UP, &ha->flags) != 0))

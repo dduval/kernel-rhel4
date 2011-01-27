@@ -552,7 +552,7 @@ qim_send_ioctl(struct scsi_device *dev, int cmd, void *arg)
 		num_hosts = qim_get_host_count();
 		read_unlock(*qim_hostlist_lock_ptr);
 
-		if (pext->Instance < num_hosts) {
+		if (pext->Instance < EXT_DEF_MAX_DRVR_HBAS) {
 			/*
 			 * Return host number via pext->HbaSelect for
 			 * specified API instance number.
@@ -2258,6 +2258,9 @@ static int
 qim_query_chip(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 {
 	int		ret = 0;
+	int		pcie_reg;
+	uint32_t	pcie_lcap;
+	uint16_t 	pcie_lstat;
 	uint32_t	transfer_size, i;
 	EXT_CHIP		*ptmp_isp;
 	struct Scsi_Host	*host;
@@ -2297,6 +2300,18 @@ qim_query_chip(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 
 	for (i = 0; i < 8; i++)
 		ptmp_isp->OutMbx[i] = 0;
+
+	pcie_reg = pci_find_capability(dr_ha->pdev, PCI_CAP_ID_EXP);
+	if (pcie_reg) {
+		pcie_reg += 0x0c;
+		pci_read_config_dword(dr_ha->pdev, pcie_reg, &pcie_lcap);
+
+		pcie_reg += 0x06;
+		pci_read_config_word(dr_ha->pdev, pcie_reg, &pcie_lstat);
+
+		ptmp_isp->PcieLinkCap = pcie_lcap;
+		ptmp_isp->PcieLinkStat = pcie_lstat;
+	}
 
 	/* now copy up the ISP to user */
 	if (pext->ResponseLen < sizeof(EXT_CHIP))

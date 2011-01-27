@@ -37,6 +37,7 @@
 
 #include <linux/mm.h>
 #include <linux/utsname.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/sunrpc/clnt.h>
@@ -638,35 +639,32 @@ struct nfs4_state *nfs4_do_open(struct inode *dir, struct qstr *name, int flags,
 }
 
 /*
- * NFSv4 has a complex open scheme where the actual OPEN call is done in the
- * in the lookup, and the file pointer is initialized in the open. If the
- * lookup completes successfully, but open_namei returns an error, then the
- * nfs4_state is left "dangling". The obvious way for this to occur is if
- * a setattr that's eventually called from open_namei returns an error. We
- * start tracking this info in nfs4_atomic_open, and then remove the tracking
- * here. If this returns true then a dangling open was found and removed. In
- * error condition we'll want to do an extra nfs4_close_state based on this
- * return value to clean up the dangling open.
+ * open_namei is going to fail but we have a successful lookup. We need to
+ * clean up the state so that we don't leave the inode dangling.
  */
-static int nfs4_remove_incomplete_open(struct nfs4_state *state,
-					unsigned long *flags) {
-	struct list_head	*entry;
-	struct nfs4_inc_open	*inc_open;
+void nfs4_lookup_undo(struct nameidata *nd)
+{
+	struct inode *inode = nd->dentry->d_inode;
+	struct rpc_cred	*cred;
+	struct nfs4_state *state;
+	int flags = nd->intent.open.flags & (FMODE_READ|FMODE_WRITE);
 
-	spin_lock(&state->inode->i_lock);
-	list_for_each(entry, &state->inc_open) {
-		inc_open = list_entry(entry, struct nfs4_inc_open, state);
-		if (inc_open->task == current) {
-			list_del(&inc_open->state);
-			spin_unlock(&state->inode->i_lock);
-			if (flags)
-				*flags = inc_open->flags;
-			kfree(inc_open);
-			return 1;
-		}
+	/* sanity check: don't do anything if not atomic open */
+	if (!is_atomic_open(nd->dentry->d_parent->d_inode, nd))
+		return;
+
+	cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
+	state = nfs4_find_state(inode, cred, flags);
+	put_rpccred(cred);
+
+	/*
+	 * one close for the dangling open and one for the reference we
+	 * just picked up from nfs4_find_state
+	 */
+	if (state) {
+		nfs4_close_state(state, flags);
+		nfs4_close_state(state, flags);
 	}
-	spin_unlock(&state->inode->i_lock);
-	return 0;
 }
 
 static int _nfs4_do_setattr(struct nfs_server *server, struct nfs_fattr *fattr,
@@ -835,7 +833,6 @@ nfs4_atomic_open(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 	struct iattr attr;
 	struct rpc_cred *cred;
 	struct nfs4_state *state;
-	struct nfs4_inc_open *inc_open;
 
 	if (nd->flags & LOOKUP_CREATE) {
 		attr.ia_mode = nd->intent.open.create_mode;
@@ -847,22 +844,11 @@ nfs4_atomic_open(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 		BUG_ON(nd->intent.open.flags & O_CREAT);
 	}
 
-	/* track info in case the open never completes */
-	if (!(inc_open = kmalloc(sizeof(*inc_open), GFP_KERNEL)))
-		return ERR_PTR(-ENOMEM);
 	cred = rpcauth_lookupcred(NFS_SERVER(dir)->client->cl_auth, 0);
 	state = nfs4_do_open(dir, &dentry->d_name, nd->intent.open.flags, &attr, cred);
 	put_rpccred(cred);
-	if (IS_ERR(state)) {
-		kfree(inc_open);
+	if (IS_ERR(state))
 		return (struct inode *)state;
-	}
-	inc_open->task = current;
-	inc_open->flags = nd->intent.open.flags;
-	INIT_LIST_HEAD(&inc_open->state);
-	spin_lock(&state->inode->i_lock);
-	list_add(&inc_open->state, &state->inc_open);
-	spin_unlock(&state->inode->i_lock);
 	return state->inode;
 }
 
@@ -1090,14 +1076,11 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 	struct nfs4_state	*state = NULL;
 	int need_iput = 0;
 	int status;
-	unsigned long 		flags;
-	struct rpc_cred 	*cred;
-	mode_t			mode = 0;
 
 	nfs_fattr_init(fattr);
 	
 	if (size_change) {
-		cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
+		struct rpc_cred *cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
 		state = nfs4_find_state(inode, cred, FMODE_WRITE);
 		if (state == NULL) {
 			state = nfs4_open_delegated(dentry->d_inode,
@@ -1108,7 +1091,6 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 						NULL, cred);
 			need_iput = 1;
 		}
-		mode = FMODE_WRITE;
 		put_rpccred(cred);
 		if (IS_ERR(state))
 			return PTR_ERR(state);
@@ -1124,20 +1106,9 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 	if (status == 0)
 		nfs_setattr_update_inode(inode, sattr);
 out:
-	/* if we're erroring out, clean up incomplete open (if any) */
-	if (status != 0) {
-		if (state == NULL) {
-			cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
-			state = nfs4_find_state(inode, cred, 0);
-			put_rpccred(cred);
-		}
-		if (state && nfs4_remove_incomplete_open(state, &flags))
-			nfs4_close_state(state, flags);
-	}
-
 	if (state) {
 		inode = state->inode;
-		nfs4_close_state(state, mode);
+		nfs4_close_state(state, FMODE_WRITE);
 		if (need_iput)
 			iput(inode);
 	}
@@ -2136,7 +2107,6 @@ nfs4_proc_file_open(struct inode *inode, struct file *filp)
 	state = nfs4_find_state(inode, cred, filp->f_mode);
 	if (unlikely(state == NULL))
 		goto no_state;
-	nfs4_remove_incomplete_open(state, NULL);
 	ctx->state = state;
 	nfs4_close_state(state, filp->f_mode);
 	ctx->mode = filp->f_mode;
@@ -2271,9 +2241,7 @@ int nfs4_handle_exception(struct nfs_server *server, int errorcode, struct nfs4_
 
 int nfs4_proc_setclientid(struct nfs4_client *clp, u32 program, unsigned short port)
 {
-	static nfs4_verifier sc_verifier;
-	static int initialized;
-	
+	nfs4_verifier sc_verifier;
 	struct nfs4_setclientid setclientid = {
 		.sc_verifier = &sc_verifier,
 		.sc_prog = program,
@@ -2284,27 +2252,38 @@ int nfs4_proc_setclientid(struct nfs4_client *clp, u32 program, unsigned short p
 		.rpc_resp = clp,
 		.rpc_cred = clp->cl_cred,
 	};
+	u32 *p;
+	int loop = 0;
+	int status;
 
-	if (!initialized) {
-		struct timespec boot_time;
-		u32 *p;
+	p = (u32*)sc_verifier.data;
+	*p++ = htonl((u32)clp->cl_boot_time.tv_sec);
+	*p = htonl((u32)clp->cl_boot_time.tv_nsec);
 
-		initialized = 1;
-		boot_time = CURRENT_TIME;
-		p = (u32*)sc_verifier.data;
-		*p++ = htonl((u32)boot_time.tv_sec);
-		*p = htonl((u32)boot_time.tv_nsec);
+	for(;;) {
+		setclientid.sc_name_len = scnprintf(setclientid.sc_name,
+				sizeof(setclientid.sc_name), "%s/%u.%u.%u.%u %s %u",
+				clp->cl_ipaddr, NIPQUAD(clp->cl_addr.s_addr),
+				clp->cl_cred->cr_auth->au_ops->au_name,
+				clp->cl_id_uniquifier);
+		setclientid.sc_netid_len = scnprintf(setclientid.sc_netid,
+				sizeof(setclientid.sc_netid), "tcp");
+		setclientid.sc_uaddr_len = scnprintf(setclientid.sc_uaddr,
+				sizeof(setclientid.sc_uaddr), "%s.%d.%d",
+				clp->cl_ipaddr, port >> 8, port & 255);
+
+		status = rpc_call_sync(clp->cl_rpcclient, &msg, 0);
+		if (status != -NFS4ERR_CLID_INUSE)
+			break;
+		if (signalled())
+			break;
+		if (loop++ & 1)
+			ssleep(clp->cl_lease_time + 1);
+		else
+			if (++clp->cl_id_uniquifier == 0)
+				break;
 	}
-	setclientid.sc_name_len = scnprintf(setclientid.sc_name,
-			sizeof(setclientid.sc_name), "%s/%u.%u.%u.%u",
-			clp->cl_ipaddr, NIPQUAD(clp->cl_addr.s_addr));
-	setclientid.sc_netid_len = scnprintf(setclientid.sc_netid,
-			sizeof(setclientid.sc_netid), "tcp");
-	setclientid.sc_uaddr_len = scnprintf(setclientid.sc_uaddr,
-			sizeof(setclientid.sc_uaddr), "%s.%d.%d",
-			clp->cl_ipaddr, port >> 8, port & 255);
-
-	return rpc_call_sync(clp->cl_rpcclient, &msg, 0);
+	return status;
 }
 
 int
@@ -2527,8 +2506,8 @@ static int _nfs4_proc_unlck(struct nfs4_state *state, int cmd, struct file_lock 
 	nfs4_put_lock_state(lsp);
 out:
 	up(&state->lock_sema);
-	if (status == 0)
-		posix_lock_file(request->fl_file, request);
+	/* we have to clean up local lock regardless of RPC status */
+	posix_lock_file(request->fl_file, request);
 	up_read(&clp->cl_sem);
 	return status;
 }

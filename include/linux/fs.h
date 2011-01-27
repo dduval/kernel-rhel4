@@ -128,6 +128,7 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define MS_ONE_SECOND	(1<<17)	/* fs has 1 sec time resolution (obsolete) */
 #define MS_TIME_GRAN	(1<<18)	/* fs has s_time_gran field */
 #define MS_NO_LEASES	(1<<19)	/* fs does not support leases */
+#define MS_LOOKUP_UNDO	(1<<28)	/* must cleanup after open-intent lookup */
 #define MS_HAS_INO64	(1<<29)	/* has 64-bit inode numbers */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
@@ -189,6 +190,7 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define IS_POSIXACL(inode)	__IS_FLG(inode, MS_POSIXACL)
 #define IS_ONE_SECOND(inode)	__IS_FLG(inode, MS_ONE_SECOND)
 #define IS_INO64(inode)		__IS_FLG(inode, MS_HAS_INO64)
+#define IS_LOOKUP_UNDO(inode)	__IS_FLG(inode, MS_LOOKUP_UNDO)
 
 #define IS_DEADDIR(inode)	((inode)->i_flags & S_DEAD)
 #define IS_NOCMTIME(inode)	((inode)->i_flags & S_NOCMTIME)
@@ -997,6 +999,7 @@ struct inode_operations_ext {
 	
 	/* get attributes with 64-bit inode number if MS_HAS_INO64 is set */
 	int (*getattr64)(struct vfsmount *mnt, struct dentry *, struct kstat64 *);
+	void (*lookup_undo)(struct nameidata *);
 };
 
 extern ssize_t vfs_read(struct file *, char __user *, size_t, loff_t *);
@@ -1373,6 +1376,9 @@ extern int fs_may_remount_ro(struct super_block *);
  */
 #define bio_data_dir(bio)	((bio)->bi_rw & 1)
 
+extern void check_disk_size_change(struct gendisk *disk,
+				   struct block_device *bdev);
+extern int revalidate_disk(struct gendisk *);
 extern int check_disk_change(struct block_device *);
 extern int invalidate_inodes(struct super_block *);
 extern int __invalidate_device(struct block_device *, int);
@@ -1465,6 +1471,7 @@ static inline struct inode *iget(struct super_block *sb, unsigned long ino)
 }
 
 extern void __iget(struct inode * inode);
+extern void iget_failed(struct inode *);
 extern void clear_inode(struct inode *);
 extern void destroy_inode(struct inode *);
 extern struct inode *new_inode(struct super_block *);
@@ -1492,6 +1499,7 @@ extern int sb_min_blocksize(struct super_block *, int);
 
 extern int generic_file_mmap(struct file *, struct vm_area_struct *);
 extern int generic_file_readonly_mmap(struct file *, struct vm_area_struct *);
+extern int generic_file_noatime_mmap(struct file *, struct vm_area_struct *);
 extern int file_read_actor(read_descriptor_t * desc, struct page *page, unsigned long offset, unsigned long size);
 extern int file_send_actor(read_descriptor_t * desc, struct page *page, unsigned long offset, unsigned long size);
 extern ssize_t generic_file_read(struct file *, char __user *, size_t, loff_t *);

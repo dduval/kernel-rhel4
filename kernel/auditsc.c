@@ -855,7 +855,7 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 					const char *p)
 {
 	char arg_num_len_buf[12];
-	/* how many digits are in arg_num? 3 is the length of a=\n */
+	/* how many digits are in arg_num? 3 is the length of " a=" */
 	size_t arg_num_len = snprintf(arg_num_len_buf, 12, "%d", arg_num) + 3;
 	size_t len, len_left, to_send;
 	size_t max_execve_audit_len = MAX_EXECVE_AUDIT_LEN;
@@ -903,11 +903,11 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 		 * so we can be sure nothing was lost.
 		 */
 		if ((i == 0) && (too_long))
-			audit_log_format(*ab, "a%d_len=%ld ", arg_num,
+			audit_log_format(*ab, " a%d_len=%ld", arg_num,
 					 has_cntl ? 2*len : len);
 
 		/* actually log it */
-		audit_log_format(*ab, "a%d", arg_num);
+		audit_log_format(*ab, " a%d", arg_num);
 		if (too_long)
 			audit_log_format(*ab, "[%d]", i);
 		audit_log_format(*ab, "=");
@@ -915,7 +915,6 @@ static int audit_log_single_execve_arg(struct audit_context *context,
 			audit_log_hex(*ab, p, to_send);
 		else
 			audit_log_n_string(*ab, to_send, p);
-		audit_log_format(*ab, "\n");
 
 		p += to_send;
 		len_left -= to_send;
@@ -938,7 +937,7 @@ static void audit_log_execve_info(struct audit_context *context,
 
 	p = axi->mem;
 
-	audit_log_format(*ab, "argc=%d ", axi->argc);
+	audit_log_format(*ab, "argc=%d", axi->argc);
 
 	for (i = 0; i < axi->argc; i++) {
 		len = audit_log_single_execve_arg(context, ab, i, &len_sent, p);
@@ -1071,7 +1070,7 @@ static void audit_log_exit(struct audit_context *context,
 			audit_log_format(ab, "name=");
 			audit_log_untrustedstring(ab, context->names[i].name);
 		}
-		audit_log_format(ab, " flags=%x\n", context->names[i].flags);
+		audit_log_format(ab, " flags=%x", context->names[i].flags);
 			 
 		if (context->names[i].ino != (unsigned long)-1)
 			audit_log_format(ab, " inode=%lu dev=%02x:%02x mode=%#o"

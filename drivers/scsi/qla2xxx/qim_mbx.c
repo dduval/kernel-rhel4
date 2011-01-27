@@ -424,22 +424,11 @@ qim_get_isp_stats(struct qla_host_ioctl *ioctlha, uint32_t *dwbuf,
 	dma_addr_t sbuf_dma;
 	struct scsi_qla_host *ha = ioctlha->dr_data;
 
-
 	DEBUG11(printk("%s(%ld): entered.\n", __func__, ha->host_no);)
 
-	if (dwords > (DMA_POOL_SIZE / 4)) {
-		DEBUG2_3_11(printk("%s(%ld): Unabled to retrieve %d DWORDs "
-		    "(max %d).\n", __func__, ha->host_no, dwords,
-		    DMA_POOL_SIZE / 4));
-		return BIT_0;
-	}
-	sbuf = dma_pool_alloc(ha->s_dma_pool, GFP_ATOMIC, &sbuf_dma);
-	if (sbuf == NULL) {
-		DEBUG2_3_11(printk("%s(%ld): Failed to allocate memory.\n",
-		    __func__, ha->host_no));
-		return BIT_0;
-	}
-	memset(sbuf, 0, DMA_POOL_SIZE);
+	sbuf_dma = ioctlha->ioctl_mem_phys;
+	sbuf = ioctlha->ioctl_mem;
+	memset(sbuf, 0, ioctlha->ioctl_mem_size);
 
 	mcp->mb[0] = MBC_GET_LINK_PRIV_STATS;
 	mcp->mb[2] = MSW(sbuf_dma);
@@ -455,10 +444,10 @@ qim_get_isp_stats(struct qla_host_ioctl *ioctlha, uint32_t *dwbuf,
 	rval = qim_mailbox_command(ha, mcp);
 
 	if (rval != QLA_FUNCTION_TIMEOUT) {
+		status[0] = mcp->mb[0];
 		if (mcp->mb[0] != MBS_COMMAND_COMPLETE) {
 			DEBUG2_3_11(printk("%s(%ld): cmd failed. mbx0=%x.\n",
 			    __func__, ha->host_no, mcp->mb[0]));
-			status[0] = mcp->mb[0];
 			rval = BIT_1;
 		} else {
 			/* Copy over data -- firmware data is LE. */
@@ -472,8 +461,6 @@ qim_get_isp_stats(struct qla_host_ioctl *ioctlha, uint32_t *dwbuf,
 		    ha->host_no, rval));
 		rval = BIT_1;
 	}
-
-	dma_pool_free(ha->s_dma_pool, sbuf, sbuf_dma);
 
 	return rval;
 }

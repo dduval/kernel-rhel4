@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfcdfc_version.h 3127 2008-01-21 20:11:18Z sf_support $
+ * $Id: lpfcdfc_version.h 3238 2008-11-25 19:56:13Z sf_support $
  */
 
 #ifndef H_LPFCDFC_VERSION
@@ -29,7 +29,7 @@
 
 #define LPFCDFC_DRIVER_NAME "lpfcdfc"
 
-#define LPFCDFC_DRIVER_VERSION "2.0.30"
+#define LPFCDFC_DRIVER_VERSION "2.0.38"
 
 #define LPFCDFC_COPYRIGHT "Copyright(c) 2003-2008 Emulex.  All rights reserved."
 

@@ -41,7 +41,14 @@ typedef struct _drive_info_struct
 				   *to prevent it from being opened or it's queue
 				   *from being started.
 				  */
+	char	vendor[9];
+	char	model[17];
+	char 	rev[5];
+	BYTE	uid[16];	/* from page 0x83, not neccesarily
+				 * NULL terminated
+				 */
 	struct device *dev_info;
+	int	ctlr;
 } drive_info_struct;
 
 #ifdef CONFIG_CISS_SCSI_TAPE
@@ -68,7 +75,7 @@ struct ctlr_info
 	int	interrupts_enabled;
 	int	major;
 	int 	max_commands;
-	int	max_nr_cmds;
+	int	nr_cmds;
 	int	commands_outstanding;
 	int 	max_outstanding; /* Debug */ 
 	int	num_luns;
@@ -81,6 +88,7 @@ struct ctlr_info
 	unsigned int intr[4];
 	unsigned int msix_vector;
 	unsigned int msi_vector;
+	int cciss_sector_size; /* For setting blk_queue_max_sectors */
 	BYTE	cciss_read;
 	BYTE	cciss_write;
 
@@ -122,6 +130,8 @@ struct ctlr_info
 	struct sendcmd_reject_list scsi_rejects;
 #endif
 	unsigned char alive;
+	struct completion *rescan_wait;
+	struct task_struct *cciss_scan_thread;
 };
 
 /*  Defining the diffent access_menthods */

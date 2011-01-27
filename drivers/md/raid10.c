@@ -663,6 +663,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
 	struct bio *read_bio;
 	int i;
 	int chunk_sects = conf->chunk_mask + 1;
+	const int do_sync = bio_sync(bio);
 
 	if (unlikely(bio_barrier(bio))) {
 		bio_endio(bio, bio->bi_size, -EOPNOTSUPP);
@@ -747,7 +748,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
 			mirror->rdev->data_offset;
 		read_bio->bi_bdev = mirror->rdev->bdev;
 		read_bio->bi_end_io = raid10_end_read_request;
-		read_bio->bi_rw = READ;
+		read_bio->bi_rw = READ | do_sync;
 		read_bio->bi_private = r10_bio;
 
 		generic_make_request(read_bio);
@@ -789,7 +790,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
 			conf->mirrors[d].rdev->data_offset;
 		mbio->bi_bdev = conf->mirrors[d].rdev->bdev;
 		mbio->bi_end_io	= raid10_end_write_request;
-		mbio->bi_rw = WRITE;
+		mbio->bi_rw = WRITE | do_sync;
 		mbio->bi_private = r10_bio;
 
 		atomic_inc(&r10_bio->remaining);
@@ -800,6 +801,9 @@ static int make_request(request_queue_t *q, struct bio * bio)
 		md_write_end(mddev);
 		raid_end_bio_io(r10_bio);
 	}
+
+	if (do_sync)
+		md_wakeup_thread(mddev->thread);
 
 	return 0;
 }
@@ -1247,6 +1251,7 @@ static void raid10d(mddev_t *mddev)
 				       (unsigned long long)r10_bio->sector);
 				raid_end_bio_io(r10_bio);
 			} else {
+				const int do_sync = bio_sync(r10_bio->master_bio);
 				rdev = conf->mirrors[mirror].rdev;
 				if (printk_ratelimit())
 					printk(KERN_ERR "raid10: %s: redirecting sector %llu to"
@@ -1258,7 +1263,7 @@ static void raid10d(mddev_t *mddev)
 				bio->bi_sector = r10_bio->devs[r10_bio->read_slot].addr
 					+ rdev->data_offset;
 				bio->bi_bdev = rdev->bdev;
-				bio->bi_rw = READ;
+				bio->bi_rw = READ | do_sync;
 				bio->bi_private = r10_bio;
 				bio->bi_end_io = raid10_end_read_request;
 				unplug = 1;

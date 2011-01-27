@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -201,7 +201,6 @@ typedef enum _ipath_ureg {
 #define IPATH_RUNTIME_RCVHDR_COPY	0x8
 #define IPATH_RUNTIME_MASTER	0x10
 #define IPATH_RUNTIME_NODMA_RTAIL 0x80
-#define IPATH_RUNTIME_SPECIAL_TRIGGER 0x100
 #define IPATH_RUNTIME_SDMA	      0x200
 #define IPATH_RUNTIME_FORCE_PIOAVAIL 0x400
 #define IPATH_RUNTIME_PIO_REGSWAPPED 0x800
@@ -451,8 +450,6 @@ struct ipath_user_info {
 /* 30 is unused */
 #define IPATH_CMD_SDMA_INFLIGHT 31	/* sdma inflight counter request */
 #define IPATH_CMD_SDMA_COMPLETE 32	/* sdma completion counter request */
-
-#define IPATH_CMD_MAX		31
 
 /*
  * Poll types

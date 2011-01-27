@@ -265,6 +265,8 @@ static void ioctl32_insert_translation(struct ioctl_trans *trans)
 	unsigned long hash;
 	struct ioctl_trans *t;
 
+	init_rwsem(&trans->inuse);
+
 	hash = ioctl32_hash (trans->cmd);
 	if (!ioctl32_hash_table[hash])
 		ioctl32_hash_table[hash] = trans;
@@ -338,46 +340,28 @@ static inline int builtin_ioctl(struct ioctl_trans *t)
 int unregister_ioctl32_conversion(unsigned int cmd)
 {
 	unsigned long hash = ioctl32_hash(cmd);
-	struct ioctl_trans *t, *t1;
+	struct ioctl_trans **pt, *t;
 
 	down_write(&ioctl32_sem);
-
-	t = ioctl32_hash_table[hash];
-	if (!t) { 
-		up_write(&ioctl32_sem);
-		return -EINVAL;
-	} 
-
-	if (t->cmd == cmd) { 
+	for (pt = ioctl32_hash_table + hash; (t = *pt) != NULL; pt = &t->next) {
+		if (t->cmd != cmd)
+			continue;
 		if (builtin_ioctl(t)) {
-			printk("%p tried to unregister builtin ioctl %x\n",
-			       __builtin_return_address(0), cmd);
-		} else { 
-			ioctl32_hash_table[hash] = t->next;
-			up_write(&ioctl32_sem);
-			kfree(t);
-			return 0;
+			printk(KERN_ERR "%p tried to unregister builtin ioctl %x\n",
+				__builtin_return_address(0), cmd);
+			goto out;
 		}
-	} 
-	while (t->next) {
-		t1 = t->next;
-		if (t1->cmd == cmd) { 
-			if (builtin_ioctl(t1)) {
-				printk("%p tried to unregister builtin "
-					"ioctl %x\n",
-					__builtin_return_address(0), cmd);
-				goto out;
-			} else { 
-				t->next = t1->next;
-				up_write(&ioctl32_sem);
-				kfree(t1);
-				return 0;
-			}
-		}
-		t = t1;
+
+		*pt = t->next;
+		up_write(&ioctl32_sem);
+
+		down_write(&t->inuse);	/* wait for ->handler() in flight */
+		up_write(&t->inuse);
+		kfree(t);
+
+		return 0;
 	}
-	printk(KERN_ERR "Trying to free unknown 32bit ioctl handler %x\n",
-				cmd);
+	printk(KERN_ERR "Trying to free unknown 32bit ioctl handler %x\n", cmd);
 out:
 	up_write(&ioctl32_sem);
 	return -EINVAL;
@@ -407,11 +391,13 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 	while (t && t->cmd != cmd)
 		t = t->next;
 	if (t) {
-		if (t->handler) { 
+		if (t->handler) {
+			down_read(&t->inuse);
+			up_read(&ioctl32_sem);
 			lock_kernel();
 			error = t->handler(fd, cmd, arg, filp);
 			unlock_kernel();
-			up_read(&ioctl32_sem);
+			up_read(&t->inuse);
 		} else {
 			up_read(&ioctl32_sem);
 			error = sys_ioctl(fd, cmd, arg);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -37,11 +37,12 @@
 
 #include "ipath_kernel.h"
 #include "ipath_common.h"
+#include "ipath_wc_pat.h"
 
 /*
  * min buffers we want to have per port, after driver
  */
-#define IPATH_MIN_USER_PORT_BUFCNT 8
+#define IPATH_MIN_USER_PORT_BUFCNT 7
 
 /*
  * Number of ports we are configured to use (to allow for more pio
@@ -54,13 +55,9 @@ MODULE_PARM_DESC(cfgports, "Set max number of ports to use");
 
 /*
  * Number of buffers reserved for driver (verbs and layered drivers.)
- * Reserved at end of buffer list.   Initialized based on
- * number of PIO buffers if not set via module interface.
+ * Initialized based on number of PIO buffers if not set via module interface.
  * The problem with this is that it's global, but we'll use different
- * numbers for different chip types.  So the default value is not
- * very useful.  I've redefined it for the 1.3 release so that it's
- * zero unless set by the user to something else, in which case we
- * try to respect it.
+ * numbers for different chip types.
  */
 static ushort ipath_kpiobufs;
 
@@ -180,10 +177,13 @@ static int bringup_link(struct ipath_devdata *dd)
 	/*
 	 * Want to start out with both LINKCMD and LINKINITCMD in NOP
 	 * (0 and 0).  Don't put linkinitcmd in ipath_ibcctrl, want that
-	 * to stay a NOP
+	 * to stay a NOP. Flag that we are disabled, for the (unlikely)
+	 * case that some recovery path is trying to bring the link up
+	 * before we are ready.
 	 */
 	ibc |= INFINIPATH_IBCC_LINKINITCMD_DISABLE <<
 		INFINIPATH_IBCC_LINKINITCMD_SHIFT;
+	dd->ipath_flags |= IPATH_IB_LINK_DISABLED;
 	ipath_cdbg(VERBOSE, "Writing 0x%llx to ibcctrl\n",
 		   (unsigned long long) ibc);
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl, ibc);
@@ -221,6 +221,131 @@ static struct ipath_portdata *create_portdata0(struct ipath_devdata *dd)
 	return pd;
 }
 
+static int init_chip_wc_pat(struct ipath_devdata *dd)
+{
+	int ret = 0;
+	u64 __iomem *ipath_kregbase = NULL;
+	void __iomem *ipath_piobase = NULL;
+	u64 __iomem *ipath_userbase = NULL;
+	u64 ipath_kreglen;
+	u64 ipath_pio2koffset = dd->ipath_piobufbase & 0xffffffff;
+	u64 ipath_pio4koffset = dd->ipath_piobufbase >> 32;
+	u64 ipath_pio2klen = dd->ipath_piobcnt2k * dd->ipath_palign;
+	u64 ipath_pio4klen = dd->ipath_piobcnt4k * dd->ipath_4kalign;
+	u64 ipath_physaddr = dd->ipath_physaddr;
+	u64 ipath_piolen;
+	u64 ipath_userlen = 0;
+
+	/* Assumes chip address space looks like:
+		- kregs + sregs + cregs + uregs (in any order)
+		- piobufs (2K and 4K bufs in either order)
+	   or:
+		- kregs + sregs + cregs (in any order)
+		- piobufs (2K and 4K bufs in either order)
+		- uregs
+	*/
+	if (dd->ipath_piobcnt4k == 0) {
+		ipath_kreglen = ipath_pio2koffset;
+		ipath_piolen = ipath_pio2klen;
+	} else if (ipath_pio2koffset < ipath_pio4koffset) {
+		ipath_kreglen = ipath_pio2koffset;
+		ipath_piolen = ipath_pio4koffset + ipath_pio4klen -
+			ipath_kreglen;
+	} else {
+		ipath_kreglen = ipath_pio4koffset;
+		ipath_piolen = ipath_pio2koffset + ipath_pio2klen -
+			ipath_kreglen;
+	}
+	if (dd->ipath_sregbase > ipath_kreglen) {
+		ipath_dbg("Unexpected sregbase layout\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	if (dd->ipath_cregbase > ipath_kreglen) {
+		ipath_dbg("Unexpected cregbase layout\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	if (dd->ipath_uregbase > ipath_kreglen)
+		/* Map just the configured ports (not all hw ports) */
+		ipath_userlen = dd->ipath_ureg_align *
+				dd->ipath_cfgports;
+
+	/* Sanity checks passed, now create the new mappings */
+	ipath_kregbase = ioremap_nocache(ipath_physaddr,
+					 ipath_kreglen);
+	if (!ipath_kregbase) {
+		ipath_dbg("Unable to remap io addr %llx to kvirt\n",
+			  ipath_physaddr);
+		ret = -ENOMEM;
+		goto done;
+	}
+	ipath_cdbg(VERBOSE, "WC PAT remapped io addr %llx"
+		   " to kregbase %p for %llu bytes\n",
+		   ipath_physaddr, ipath_kregbase, ipath_kreglen);
+
+	ipath_piobase = (void __iomem *) ioremap_wc(
+				ipath_physaddr + ipath_kreglen,
+				ipath_piolen);
+	if (!ipath_piobase) {
+		ipath_dbg("Unable to remap io addr %llx to kvirt\n",
+			  ipath_physaddr + ipath_kreglen);
+		ret = -ENOMEM;
+		goto done_kregbase;
+	}
+	ipath_cdbg(VERBOSE, "WC PAT remapped io addr %llx"
+		   " to piobase %p for %llu bytes\n",
+		   ipath_physaddr + ipath_kreglen,
+		   ipath_piobase, ipath_piolen);
+
+	if (ipath_userlen) {
+		ipath_userbase = (void __iomem *) ioremap_nocache(
+					ipath_physaddr +
+					dd->ipath_uregbase,
+					ipath_userlen);
+		if (!ipath_userbase) {
+			ipath_dbg("Unable to remap io addr %llx "
+				  "to kvirt\n",
+				  ipath_physaddr + dd->ipath_uregbase);
+			ret = -ENOMEM;
+			goto done_piobase;
+		}
+		ipath_cdbg(VERBOSE, "WC PAT remapped io addr %llx"
+			   " to userbase %p for %llu bytes\n",
+			   ipath_physaddr + dd->ipath_uregbase,
+			   ipath_userbase, ipath_userlen);
+	}
+
+	/* All remapping successful, get rid of old mapping */
+	iounmap((volatile void __iomem *) dd->ipath_kregbase);
+
+	/* Finally update dd with the changes */
+	dd->ipath_kregbase = ipath_kregbase;
+	dd->ipath_kregend = (u64 __iomem *)
+		((char __iomem *) ipath_kregbase + ipath_kreglen);
+	dd->ipath_piobase = ipath_piobase;
+	dd->ipath_pio2kbase = (void __iomem *)
+		(((char __iomem *) dd->ipath_piobase) +
+		 ipath_pio2koffset - ipath_kreglen);
+	if (dd->ipath_piobcnt4k)
+		dd->ipath_pio4kbase = (void __iomem *)
+			(((char __iomem *) dd->ipath_piobase) +
+			 ipath_pio4koffset - ipath_kreglen);
+	if (ipath_userlen)
+		/* ureg will now be accessed relative to dd->ipath_userbase */
+		dd->ipath_userbase = ipath_userbase;
+	goto done;
+
+done_piobase:
+	iounmap((volatile void __iomem *) ipath_piobase);
+
+done_kregbase:
+	iounmap((volatile void __iomem *) ipath_kregbase);
+
+done:
+	return ret;
+}
+
 static int init_chip_first(struct ipath_devdata *dd)
 {
 	struct ipath_portdata *pd;
@@ -230,6 +355,7 @@ static int init_chip_first(struct ipath_devdata *dd)
 	spin_lock_init(&dd->ipath_kernel_tid_lock);
 	spin_lock_init(&dd->ipath_user_tid_lock);
 	spin_lock_init(&dd->ipath_sendctrl_lock);
+	spin_lock_init(&dd->ipath_uctxt_lock);
 	spin_lock_init(&dd->ipath_sdma_lock);
 	spin_lock_init(&dd->ipath_gpio_lock);
 	spin_lock_init(&dd->ipath_eep_st_lock);
@@ -315,6 +441,15 @@ static int init_chip_first(struct ipath_devdata *dd)
 		 */
 		dd->ipath_4kalign = ALIGN(dd->ipath_piosize4k,
 					  dd->ipath_palign);
+	}
+
+	if (ipath_wc_pat) {
+		ret = init_chip_wc_pat(dd);
+		if (ret)
+			goto done;
+	}
+
+	if (dd->ipath_piobcnt4k) {
 		ipath_dbg("%u 2k(%x) piobufs @ %p, %u 4k(%x) @ %p "
 			  "(%x aligned)\n",
 			  dd->ipath_piobcnt2k, dd->ipath_piosize2k,
@@ -486,8 +621,6 @@ static void enable_chip(struct ipath_devdata *dd, int reinit)
 	/* Enable PIO send, and update of PIOavail regs to memory. */
 	dd->ipath_sendctrl = INFINIPATH_S_PIOENABLE |
 		INFINIPATH_S_PIOBUFAVAILUPD;
-	if (dd->ipath_flags & IPATH_USE_SPCL_TRIG)
-		dd->ipath_sendctrl |= INFINIPATH_S_SPECIALTRIGGER;
 
 	/*
 	 * Set the PIO avail update threshold to host memory
@@ -538,18 +671,21 @@ static void enable_chip(struct ipath_devdata *dd, int reinit)
 	 * initial values of the generation bit correct.
 	 */
 	for (i = 0; i < dd->ipath_pioavregs; i++) {
-		__le64 tmp;
+		__le64 pioavail;
 
 		/*
 		 * Chip Errata bug 6641; even and odd qwords>3 are swapped.
 		 */
 		if (i > 3 && (dd->ipath_flags & IPATH_SWAP_PIOBUFS))
-			tmp = dd->ipath_pioavailregs_dma[i ^ 1];
+			pioavail = dd->ipath_pioavailregs_dma[i ^ 1];
 		else
-			tmp = dd->ipath_pioavailregs_dma[i];
-		dd->ipath_pioavailshadow[i] = le64_to_cpu(tmp) |
-			(~dd->ipath_pioavailkernel[i] <<
-			INFINIPATH_SENDPIOAVAIL_BUSY_SHIFT);
+			pioavail = dd->ipath_pioavailregs_dma[i];
+		/*
+		 * don't need to worry about ipath_pioavailkernel here
+		 * because we will call ipath_chg_pioavailkernel() later
+		 * in initialization, to busy out buffers as needed
+		 */
+		dd->ipath_pioavailshadow[i] = le64_to_cpu(pioavail);
 	}
 	/* can get counters, stats, etc. */
 	dd->ipath_flags |= IPATH_PRESENT;
@@ -655,10 +791,7 @@ static int init_housekeeping(struct ipath_devdata *dd, int reinit)
 			    INFINIPATH_R_SOFTWARE_SHIFT) &
 		 INFINIPATH_R_SOFTWARE_MASK);
 
-	if (dd->ipath_revision & INFINIPATH_R_EMULATOR_MASK)
-		dev_info(&dd->pcidev->dev, "%s", dd->ipath_boardversion);
-	else
-		ipath_dbg("%s", dd->ipath_boardversion);
+	ipath_dbg("%s", dd->ipath_boardversion);
 
 	if (ret)
 		goto done;
@@ -672,7 +805,6 @@ done:
 	return ret;
 }
 
-
 static void verify_interrupt(unsigned long opaque)
 {
 	struct ipath_devdata *dd = (struct ipath_devdata *) opaque;
@@ -681,7 +813,7 @@ static void verify_interrupt(unsigned long opaque)
 		return; /* being torn down */
 
 	/*
-	 * If we don't have a lid or any interrupts, let the user know and
+	 * If we don't have any interrupts, let the user know and
 	 * don't bother checking again.
 	 */
 	if (dd->ipath_int_counter == 0) {
@@ -694,7 +826,6 @@ static void verify_interrupt(unsigned long opaque)
 		ipath_cdbg(VERBOSE, "%u interrupts at timer check\n",
 			dd->ipath_int_counter);
 }
-
 
 /**
  * ipath_init_chip - do the actual initialization sequence on the chip
@@ -714,12 +845,11 @@ static void verify_interrupt(unsigned long opaque)
 int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 {
 	int ret = 0;
-	u32 val32, kpiobufs;
+	u32 kpiobufs, defkbufs;
 	u32 piobufs, uports;
 	u64 val;
 	struct ipath_portdata *pd;
 	gfp_t gfp_flags = GFP_USER | __GFP_REPEAT;
-	unsigned long flags;
 
 	ret = init_housekeeping(dd, reinit);
 	if (ret)
@@ -759,68 +889,51 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	dd->ipath_pioavregs = ALIGN(piobufs, sizeof(u64) * BITS_PER_BYTE / 2)
 		/ (sizeof(u64) * BITS_PER_BYTE / 2);
 	uports = dd->ipath_cfgports ? dd->ipath_cfgports - 1 : 0;
-	if (ipath_kpiobufs == 0) {
-		/* not set by user (this is default) */
-		if (piobufs > 144)
-			kpiobufs = 32;
-		else
-			kpiobufs = 16;
-	}
+	if (piobufs > 144)
+		defkbufs = 32 + dd->ipath_pioreserved;
 	else
-		kpiobufs = ipath_kpiobufs;
+		defkbufs = 16 + dd->ipath_pioreserved;
 
-	if (kpiobufs + (uports * IPATH_MIN_USER_PORT_BUFCNT) > piobufs) {
+	if (ipath_kpiobufs && (ipath_kpiobufs +
+		(uports * IPATH_MIN_USER_PORT_BUFCNT)) > piobufs) {
 		int i = (int) piobufs -
 			(int) (uports * IPATH_MIN_USER_PORT_BUFCNT);
 		if (i < 1)
 			i = 1;
 		dev_info(&dd->pcidev->dev, "Allocating %d PIO bufs of "
 			 "%d for kernel leaves too few for %d user ports "
-			 "(%d each); using %u\n", kpiobufs,
+			 "(%d each); using %u\n", ipath_kpiobufs,
 			 piobufs, uports, IPATH_MIN_USER_PORT_BUFCNT, i);
 		/*
 		 * shouldn't change ipath_kpiobufs, because could be
 		 * different for different devices...
 		 */
 		kpiobufs = i;
-	}
+	} else if (ipath_kpiobufs)
+		kpiobufs = ipath_kpiobufs;
+	else
+		kpiobufs = defkbufs;
 	dd->ipath_lastport_piobuf = piobufs - kpiobufs;
 	dd->ipath_pbufsport =
 		uports ? dd->ipath_lastport_piobuf / uports : 0;
-	val32 = dd->ipath_lastport_piobuf - (dd->ipath_pbufsport * uports);
-	if (val32 > 0) {
-		ipath_dbg("allocating %u pbufs/port leaves %u unused, "
-			  "add to kernel\n", dd->ipath_pbufsport, val32);
-		dd->ipath_lastport_piobuf -= val32;
-		kpiobufs += val32;
-		ipath_dbg("%u pbufs/port leaves %u unused, add to kernel\n",
-			  dd->ipath_pbufsport, val32);
-	}
+	/* if not an even divisor, some user ports get extra buffers */
+	dd->ipath_ports_extrabuf = dd->ipath_lastport_piobuf -
+		(dd->ipath_pbufsport * uports);
+	if (dd->ipath_ports_extrabuf)
+		ipath_dbg("%u pbufs/port leaves some unused, add 1 buffer to "
+			"ports <= %u\n", dd->ipath_pbufsport,
+			dd->ipath_ports_extrabuf);
 	dd->ipath_lastpioindex = 0;
-	dd->ipath_lastpioindexl = dd->ipath_lastport_piobuf;
-	ipath_chg_pioavailkernel(dd, 0, piobufs, 1);
+	dd->ipath_lastpioindexl = dd->ipath_piobcnt2k;
+	/* ipath_pioavailshadow initialized earlier */
 	ipath_cdbg(VERBOSE, "%d PIO bufs for kernel out of %d total %u "
 		   "each for %u user ports\n", kpiobufs,
 		   piobufs, dd->ipath_pbufsport, uports);
-	if (dd->ipath_pioupd_thresh) {
-		if (dd->ipath_pbufsport < dd->ipath_pioupd_thresh)
-			dd->ipath_pioupd_thresh = dd->ipath_pbufsport;
-		if (kpiobufs < dd->ipath_pioupd_thresh)
-			dd->ipath_pioupd_thresh = kpiobufs;
-	}
-
 	ret = dd->ipath_f_early_init(dd);
 	if (ret) {
 		ipath_dev_err(dd, "Early initialization failure\n");
 		goto done;
 	}
-
-	/*
-	 * Cancel any possible active sends from early driver load.
-	 * Follows early_init because some chips have to initialize
-	 * PIO buffers in early_init to avoid false parity errors.
-	 */
-	ipath_cancel_sends(dd, 0);
 
 	/*
 	 * Early_init sets rcvhdrentsize and rcvhdrsize, so this must be
@@ -842,6 +955,7 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_sendpioavailaddr,
 			 dd->ipath_pioavailregs_phys);
+
 	/*
 	 * this is to detect s/w errors, which the h/w works around by
 	 * ignoring the low 6 bits of address, if it wasn't aligned.
@@ -867,12 +981,6 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_hwerrclear,
 			 ~0ULL&~INFINIPATH_HWE_MEMBISTFAILED);
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_control, 0ULL);
-
-	spin_lock_irqsave(&dd->ipath_sendctrl_lock, flags);
-	dd->ipath_sendctrl = INFINIPATH_S_PIOENABLE;
-	ipath_write_kreg(dd, dd->ipath_kregs->kr_sendctrl, dd->ipath_sendctrl);
-	ipath_read_kreg64(dd, dd->ipath_kregs->kr_scratch);
-	spin_unlock_irqrestore(&dd->ipath_sendctrl_lock, flags);
 
 	/*
 	 * before error clears, since we expect serdes pll errors during
@@ -945,6 +1053,19 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	}
 	else
 		enable_chip(dd, reinit);
+
+	/* after enable_chip, so pioavailshadow setup */
+	ipath_chg_pioavailkernel(dd, 0, piobufs, 1);
+
+	/*
+	 * Cancel any possible active sends from early driver load.
+	 * Follows early_init because some chips have to initialize
+	 * PIO buffers in early_init to avoid false parity errors.
+	 * After enable and ipath_chg_pioavailkernel so we can safely
+	 * enable pioavail updates and PIOENABLE; packets are now
+	 * ready to go out.
+	 */
+	ipath_cancel_sends(dd, 1);
 
 	if (!reinit) {
 		/*

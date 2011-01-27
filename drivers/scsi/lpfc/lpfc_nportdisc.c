@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_nportdisc.c 2917 2006-05-12 16:22:57Z sf_support $
+ * $Id: lpfc_nportdisc.c 3229 2008-11-05 16:05:13Z sf_support $
  */
 
 #include <linux/version.h>
@@ -1957,10 +1957,10 @@ lpfc_device_recov_npr_node(struct lpfc_hba * phba,
 			    struct lpfc_nodelist * ndlp, void *arg,
 			    uint32_t evt)
 {
-	ndlp->nlp_flag &= ~(NLP_NODEV_REMOVE | NLP_NPR_2B_DISC);
 	if (ndlp->nlp_flag & NLP_DELAY_TMO) {
 		lpfc_cancel_retry_delay_tmo(phba, ndlp);
 	}
+	ndlp->nlp_flag &= ~(NLP_NODEV_REMOVE | NLP_NPR_2B_DISC);
 	return (ndlp->nlp_state);
 }
 

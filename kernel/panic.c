@@ -24,8 +24,10 @@ int panic_timeout;
 int panic_on_oops = 1;
 int panic_on_unrecovered_nmi;
 int tainted;
+int halt_on_dump_err = 0;
 
 EXPORT_SYMBOL(panic_timeout);
+EXPORT_SYMBOL_GPL(halt_on_dump_err);
 
 struct notifier_block *panic_notifier_list;
 
@@ -76,12 +78,13 @@ NORET_TYPE void panic(const char * fmt, ...)
 	bust_spinlocks(0);
 
 #ifdef CONFIG_SMP
-	smp_send_stop();
+	if (!crashdump_mode())
+		smp_send_stop();
 #endif
 
        notifier_call_chain(&panic_notifier_list, 0, buf);
 
-	if (panic_timeout > 0)
+	if (panic_timeout > 0 && !halt_on_dump_err)
 	{
 		/*
 	 	 * Delay timeout seconds before rebooting the machine. 

@@ -343,9 +343,11 @@ void machine_restart(char * __unused)
 		smp_send_stop();
 #elif defined(CONFIG_X86_LOCAL_APIC)
 	if (cpu_has_apic) {
-		local_irq_disable();
+		if (!crashdump_mode())
+			local_irq_disable();
 		disable_local_APIC();
-		local_irq_enable();
+		if (!crashdump_mode())
+			local_irq_enable();
 	}
 #endif
 #ifdef CONFIG_X86_IO_APIC

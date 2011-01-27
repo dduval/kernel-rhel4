@@ -1292,7 +1292,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 				    cp->device->lun, resid,
 				    cp->request_bufflen));
 
-				cp->result = DID_BUS_BUSY << 16;
+				cp->result = DID_ERROR << 16;
 				ha->dropped_frame_error_cnt++;
 				break;
 			}
@@ -1397,7 +1397,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		break;
 
 	case CS_TIMEOUT:
-		cp->result = DID_BUS_BUSY << 16;
+		cp->result = DID_ERROR << 16;
 
 		if (IS_FWI2_CAPABLE(ha)) {
 			DEBUG2(printk(KERN_INFO

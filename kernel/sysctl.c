@@ -73,6 +73,7 @@ extern int percpu_pagelist_fraction;
 extern int wake_balance;
 extern int sysctl_drop_caches;
 extern int write_mapped;
+extern int max_writeback_pages;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 int unknown_nmi_panic;
@@ -1010,6 +1011,27 @@ static ctl_table vm_table[] = {
 		.extra1		= &zero,
 	},
 #endif
+#ifdef CONFIG_SWAP
+	{
+		.ctl_name	= VM_SWAP_TOKEN_TIMEOUT,
+		.procname	= "swap_token_timeout",
+		.data		= &swap_token_default_timeout,
+		.maxlen		= sizeof(swap_token_default_timeout),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_jiffies,
+		.strategy	= &sysctl_jiffies,
+	},
+#endif
+{
+		.ctl_name	= VM_MAX_WRITEBACK_PAGES,
+		.procname	= "max_writeback_pages",
+		.data		= &max_writeback_pages,
+		.maxlen		= sizeof(max_writeback_pages),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+},
 	{ .ctl_name = 0 }
 };
 

@@ -60,15 +60,22 @@ static void proc_delete_inode(struct inode *inode)
 {
 	struct proc_dir_entry *de;
 	struct task_struct *tsk;
+	struct proc_inode *ei = PROC_I(inode);
 
 	/* Let go of any associated process */
-	tsk = PROC_I(inode)->task;
+	tsk = ei->task;
 	if (tsk)
 		put_task_struct(tsk);
 
 	/* Let go of any associated proc directory entry */
-	de = PROC_I(inode)->pde;
+	de = ei->pde;
 	if (de) {
+		if (de->owner) {
+			if (atomic_add_negative(1, &ei->mod_refs))
+				module_put(de->owner);
+			else
+				atomic_dec(&ei->mod_refs);
+		}
 		de_put(de);
 	}
 	clear_inode(inode);
@@ -95,6 +102,7 @@ static struct inode *proc_alloc_inode(struct super_block *sb)
 	ei->type = 0;
 	ei->op.proc_get_link = NULL;
 	ei->pde = NULL;
+	atomic_set(&ei->mod_refs, -1);
 	inode = &ei->vfs_inode;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
 	return inode;
@@ -190,6 +198,7 @@ struct inode *proc_get_inode(struct super_block *sb, unsigned int ino,
 				struct proc_dir_entry *de)
 {
 	struct inode * inode;
+	struct proc_inode *ei;
 
 	/*
 	 * Increment the use count so the dir entry can't disappear.
@@ -202,7 +211,8 @@ struct inode *proc_get_inode(struct super_block *sb, unsigned int ino,
 	if (!inode)
 		goto out_fail;
 	
-	PROC_I(inode)->pde = de;
+	ei = PROC_I(inode);
+	ei->pde = de;
 	if (de) {
 		if (de->mode) {
 			inode->i_mode = de->mode;
@@ -213,6 +223,12 @@ struct inode *proc_get_inode(struct super_block *sb, unsigned int ino,
 			inode->i_size = de->size;
 		if (de->nlink)
 			inode->i_nlink = de->nlink;
+		/* get a module reference if owner is non-NULL */
+		if (de->owner) {
+			if (!try_module_get(de->owner))
+				goto out_fail;
+			atomic_dec(&ei->mod_refs);
+		}
 		if (de->proc_iops)
 			inode->i_op = de->proc_iops;
 		if (de->proc_fops)

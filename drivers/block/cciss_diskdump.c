@@ -38,7 +38,7 @@ void *cciss_probe(struct gendisk *disk);
 static CommandList_struct * cmd_alloc(ctlr_info_t *h, int get_from_pool);
 static int cciss_dump_sanity_check(void *device);
 static int cciss_sanity_check(int ctlr, int lun);
-static int find_ctlr_lun_ids(int *ctlr, int *lun, __u32 LunID);
+static int find_ctlr_lun_ids(int ctlr, int *lun, __u32 LunID);
 static int cciss_dump_rw_block(void *device, int rw,
 			       unsigned long dump_block_nr, void *buf,
 			       int len, unsigned long start_sect,
@@ -91,7 +91,8 @@ static int cciss_dump_quiesce(void *device)
 	int ret, ctlr, lun;
 	char flush_buf[4];
 
-	if (find_ctlr_lun_ids(&ctlr, &lun, dev->LunID))
+	ctlr = dev->ctlr;
+	if (find_ctlr_lun_ids(ctlr, &lun, dev->LunID))
 		return -1;
 
 	memset(flush_buf, 0, 4);
@@ -124,7 +125,8 @@ static int cciss_dump_rw_block(void *device, int rw,
 	int ctlr, lun;
 	__u8 cmd;
 
-	if (find_ctlr_lun_ids(&ctlr, &lun, dev->LunID)){
+	ctlr = dev->ctlr;
+	if (find_ctlr_lun_ids(ctlr, &lun, dev->LunID)){
 		return -1;
 	}
 	
@@ -196,16 +198,14 @@ static int cciss_sanity_check(int ctlr, int lun)
 
 /*Will set ctlr and lun numbers if found and return 0.  If not found it
   will return 1 to indicate an error */
-static int find_ctlr_lun_ids(int *ctlr, int *lun, __u32 LunID)
+static int find_ctlr_lun_ids(int ctlr, int *lun, __u32 LunID)
 {
 	int i, j;
-	*ctlr = -1;
 	*lun = -1;
 	for (i=0; i<MAX_CTLR; i++){
-		if (hba[i] != NULL){
+		if (i == ctlr && hba[i] != NULL){
 			for (j=0; j<CISS_MAX_LUN; j++){
 				if (hba[i]->drv[j].LunID == LunID) {
-					*ctlr = i;
 					*lun = j;
 					return 0;
 				}
@@ -225,7 +225,8 @@ static int cciss_dump_sanity_check(void *device)
 
 	/* Find the controller and LUN by searching for the LUNID in our list
 	   of known devices.  If not found then throw an error */
-	if (find_ctlr_lun_ids(&ctlr, &lun, dev->LunID)){
+	ctlr = dev->ctlr;
+	if (find_ctlr_lun_ids(ctlr, &lun, dev->LunID)){
 		sanity = -1;
 		return sanity;
 	}

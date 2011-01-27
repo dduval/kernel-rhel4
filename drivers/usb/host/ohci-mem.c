@@ -40,10 +40,12 @@ static struct usb_hcd *ohci_hcd_alloc (void)
 	return NULL;
 }
 
+#if 0 /* Not used in RHEL as shipped, left in as a courtesy to patchers. */
 static void ohci_hcd_free (struct usb_hcd *hcd)
 {
 	kfree (hcd_to_ohci (hcd));
 }
+#endif
 
 /*-------------------------------------------------------------------------*/
 

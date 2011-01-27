@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2007 QLogic Corporation. All rights reserved.
+ * Copyright (c) 2006, 2007, 2008 QLogic Corporation. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -482,7 +482,6 @@ done:
 	return (idx >= 0) ? i2c_chains + idx : NULL;
 }
 
-
 static int ipath_eeprom_internal_read(struct ipath_devdata *dd,
 					u8 eeprom_offset, void *buffer, int len)
 {
@@ -561,7 +560,8 @@ static int ipath_eeprom_internal_write(struct ipath_devdata *dd, u8 eeprom_offse
 
 	while (len > 0) {
 		if (icd->eeprom_dev == IPATH_NO_DEV) {
-			if (i2c_startcmd(dd, (eeprom_offset << 1) | WRITE_CMD)) {
+			if (i2c_startcmd(dd,
+					 (eeprom_offset << 1) | WRITE_CMD)) {
 				ipath_dbg("Failed to start cmd offset %u\n",
 					eeprom_offset);
 				goto failed_write;

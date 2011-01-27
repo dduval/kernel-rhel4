@@ -54,8 +54,11 @@ enum {
 	RDMA_CQ_DISABLE		= 16,
 	RDMA_CTRL_QP_SETUP	= 17,
 	RDMA_GET_MEM		= 18,
+	RDMA_GET_MIB		= 19,
 
 	GET_RX_PAGE_INFO	= 50,
+
+	GET_EMBEDDED_INFO	= 70,
 };
 
 /*
@@ -110,10 +113,7 @@ struct ulp_iscsi_info {
 	unsigned int llimit;
 	unsigned int ulimit;
 	unsigned int tagmask;
-	unsigned int pgsz3;
-	unsigned int pgsz2;
-	unsigned int pgsz1;
-	unsigned int pgsz0;
+	u8 pgsz_factor[4];
 	unsigned int max_rxsz;
 	unsigned int max_txsz;
 	struct pci_dev *pdev;
@@ -170,5 +170,13 @@ struct rdma_ctrlqp_setup {
 struct ofld_page_info {
 	unsigned int page_size;  /* Page size, should be a power of 2 */
 	unsigned int num;        /* Number of pages */
+};
+
+/*
+ * Structure used to get firmware and protocol engine versions.
+ */
+struct ch_embedded_info {
+	u32 fw_vers;
+	u32 tp_vers;
 };
 #endif				/* _CXGB3_OFFLOAD_CTL_DEFS_H */

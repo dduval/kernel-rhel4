@@ -671,6 +671,13 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 #define MBOX_STS_TARGET_MODE_INIT_FAIL          0x4007
 #define MBOX_STS_INITIATOR_MODE_INIT_FAIL       0x4008
 
+#define MBOX_DRVR_ASYNC_EVENT_STATUS		7
+#define MBOX_DRVR_ASTS_SMDAPI_RESERVED          0x7001
+#define MBOX_DRVR_ASTS_ISNS_STATUS_CHANGE       0x7002
+		#define ISNS_CHG_SERVER_OFFLINE		0x0001
+		#define ISNS_CHG_TGT_DATABASE		0x0002
+#define MBOX_DRVR_ASTS_LUN_STATUS_CHANGE       	0x7003
+
 #define MBOX_ASYNC_EVENT_STATUS			8
 #define MBOX_ASTS_SYSTEM_ERROR                  0x8002
 #define MBOX_ASTS_REQUEST_TRANSFER_ERROR        0x8003
@@ -1226,12 +1233,13 @@ typedef struct _HEADER {
    #define ET_CTIO4                 0x1E
    #define ET_CTIO3                 0x1F
    #define ET_PERFORMANCE_STATUS    0x20
+   #define ET_ASYNC_PDU             0x37
    #define ET_MAILBOX_CMD           0x38
    #define ET_MAILBOX_STATUS        0x39
    #define ET_PASSTHRU0             0x3A
    #define ET_PASSTHRU1             0x3B
    #define ET_PASSTHRU_STATUS       0x3C
-   #define ET_ASYNCH_MSG            0x3D
+   #define ET_ASYNC_MSG             0x3D
    #define ET_CTIO5                 0x3E
    #define ET_CTIO6                 0x3F
 
@@ -1738,7 +1746,8 @@ typedef struct _PASSTHRU0_ENTRY {
 	DATA_SEG_A64 outDataSeg64;	  /* 10-1B */
 	uint32_t  res1;			  /* 1C-1F */
 	DATA_SEG_A64 inDataSeg64;	  /* 20-2B */
-	uint8_t   res2[20];		  /* 2C-3F */
+	uint8_t   res2[16];		  /* 2C-3B */
+	uint32_t  async_pdu_handle;	  /* 3C-3F */
 } PASSTHRU0_ENTRY ;
 
 typedef struct _PASSTHRU1_ENTRY {
@@ -1794,7 +1803,59 @@ typedef struct _PASSTHRU_STATUS_ENTRY {
 	uint8_t   res4[16];		  /* 30-3F */
 } PASSTHRU_STATUS_ENTRY ;
 
-typedef struct _ASYNCHMSG_ENTRY {
+typedef struct _ASYNC_PDU_ENTRY {
+	HEADER   hdr;		     	  /* 00-03 */
+	uint32_t handle;			  /* 04-07 */
+	uint16_t target_id;		  /* 08-09  fw_ddb_index */
+	uint8_t  status;			  /* 0A    */
+   #define APDU_STATUS_OK				0x01
+   #define APDU_STATUS_DATA_DIGEST_ERROR		0x33
+   #define APDU_STATUS_STATSN_ERROR			0x35
+	uint8_t  rsvd[5];		  /* 0B-0F */
+	uint8_t  iscsi_pdu_header[48];	  /* 10-3F */
+} ASYNC_PDU_ENTRY;
+
+typedef struct _ASYNC_PDU_SENSE {
+	uint16_t  sense_len;		  /* 00-01 */
+	uint8_t   sense_data[0];		
+} ASYNC_PDU_SENSE;
+
+typedef struct {
+	uint8_t  rsvd1:2;                  /* 00 */
+	uint8_t  opcode:6;
+    #define ISCSI_PDU_OP_ASYNC_MSG				0x32
+
+	uint8_t  final_pdu:1;              /* 01 */
+	uint8_t  rsvd2:7;
+
+	uint8_t  rsvd3[2];                 /* 02-03 */
+
+	uint8_t  addl_hdr_seg_len;   	  /* 04 */
+	uint8_t  data_seg_len[3];          /* 05-07 */
+	uint8_t  lun[8];                   /* 08-0F */
+	uint32_t initiator_task_tag;       /* 10-13 */
+	uint32_t rsvd4;                    /* 14-17 */
+	uint32_t stat_sn;                  /* 18-1B */
+        uint32_t exp_cmd_sn;               /* 1C-1F */
+        uint32_t max_cmd_sn;               /* 20-23 */
+	uint8_t  async_event;              /* 24 */
+    #define ISCSI_PDU_ASYNC_EVENT_SCSI_SENSE_DATA		0x00
+    #define ISCSI_PDU_ASYNC_EVENT_LOGOUT_REQ			0x01
+    #define ISCSI_PDU_ASYNC_EVENT_CONNECTION_DROPPED  		0x02
+    #define ISCSI_PDU_ASYNC_EVENT_ALL_CONNECTIONS_DROPPED    	0x03
+    #define ISCSI_PDU_ASYNC_EVENT_PARAM_NEG_REQ			0x04
+    #define ISCSI_PDU_ASYNC_EVENT_VCODE				0xFF
+
+	uint8_t  async_vcode;              /* 25 */
+	uint16_t param1;                   /* 26-27 */
+	uint16_t param2;                   /* 28-29 */
+	uint16_t param3;                   /* 2A-2B */
+	uint32_t rsvd5;                    /* 2C-2F */
+} ISCSI_PDU_HEADER;
+
+
+
+typedef struct _ASYNC_MSG_ENTRY {
 	HEADER  hdr;
 	uint32_t  handle;
 	uint16_t  target;
@@ -1819,7 +1880,7 @@ typedef struct _ASYNCHMSG_ENTRY {
 	uint16_t  senseDataCnt;
 	uint16_t  reserved;
 	uint32_t  senseData[IOCB_MAX_SENSEDATA_LEN];
-} ASYNCHMSG_ENTRY ;
+} ASYNC_MSG_ENTRY ;
 
 /* Timer entry structure, this is an internal generated structure
    which causes the QLA4000 initiator to send a NOP-OUT or the

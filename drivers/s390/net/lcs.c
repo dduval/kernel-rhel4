@@ -1420,7 +1420,8 @@ lcs_irq(struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 	}
 	/* How far in the ccw chain have we processed? */
 	if ((channel->state != CH_STATE_INIT) &&
-	    (irb->scsw.fctl & SCSW_FCTL_START_FUNC)) {
+	    (irb->scsw.fctl & SCSW_FCTL_START_FUNC) &&
+	    (irb->scsw.cpa !=0 )) {
 		index = (struct ccw1 *) __va((addr_t) irb->scsw.cpa) 
 			- channel->ccws;
 		if ((irb->scsw.actl & SCSW_ACTL_SUSPENDED) ||
@@ -1805,7 +1806,8 @@ lcs_get_skb(struct lcs_card *card, char *skb_data, unsigned int skb_len)
 	skb->protocol =	card->lan_type_trans(skb, card->dev);
 	card->stats.rx_bytes += skb_len;
 	card->stats.rx_packets++;
-	*((__u32 *)skb->cb) = ++card->pkt_seq;
+	if (skb->protocol == htons(ETH_P_802_2))
+		*((__u32 *)skb->cb) = ++card->pkt_seq;
 	netif_rx(skb);
 }
 

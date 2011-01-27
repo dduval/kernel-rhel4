@@ -580,6 +580,152 @@ Module parameters
     pcm_voices	- reserved PCM voices
 
     Module supports up to 8 cards and autoprobe.
+
+  Module snd-hda-intel
+  --------------------
+
+    Module for Intel HD Audio (ICH6, ICH6M, ESB2, ICH7, ICH8),
+		ATI SB450, SB600, RS600,
+		VIA VT8251/VT8237A,
+		SIS966, ULI M5461
+
+    [Multiple options for each card instance]
+    model	- force the model name
+    position_fix - Fix DMA pointer (0 = auto, 1 = none, 2 = POSBUF, 3 = FIFO size)
+    single_cmd  - Use single immediate commands to communicate with
+		codecs (for debugging only)
+    probe_mask  - Bitmask to probe codecs (default = -1, meaning all slots)
+    bdl_pos_adj       - Specifies the DMA IRQ timing delay in samples.
+               Passing -1 will make the driver to choose the appropriate
+               value based on the controller chip. 
+
+    [Single (global) options]
+    single_cmd  - Use single immediate commands to communicate with
+                codecs (for debugging only)
+    enable_msi  - Enable Message Signaled Interrupt (MSI) (default = off)
+    power_save  - Automatic power-saving timtout (in second, 0 =
+                disable)
+    power_save_controller - Reset HD-audio controller in power-saving mode
+                (default = on)
+
+    This module supports one card and autoprobe.
+
+    Each codec may have a model table for different configurations.
+    If your machine isn't listed there, the default (usually minimal)
+    configuration is set up.  You can pass "model=<name>" option to
+    specify a certain model in such a case.  There are different
+    models depending on the codec chip.
+
+	  Model name	Description
+	  ----------    -----------
+	ALC880
+	  3stack	3-jack in back and a headphone out
+	  3stack-digout	3-jack in back, a HP out and a SPDIF out
+	  5stack	5-jack in back, 2-jack in front
+	  5stack-digout	5-jack in back, 2-jack in front, a SPDIF out
+	  6stack	6-jack in back, 2-jack in front
+	  6stack-digout	6-jack with a SPDIF out
+	  w810		3-jack
+	  z71v		3-jack (HP shared SPDIF)
+	  asus		3-jack
+	  uniwill	3-jack
+	  F1734		2-jack
+	  lg		LG laptop (m1 express dual)
+	  lg-lw		LG LW20 laptop
+	  test		for testing/debugging purpose, almost all controls can be
+			adjusted.  Appearing only when compiled with
+			$CONFIG_SND_DEBUG=y
+	  auto		auto-config reading BIOS (default)
+
+	ALC260
+	  hp		HP machines
+	  fujitsu	Fujitsu S7020
+	  acer		Acer TravelMate
+	  basic		fixed pin assignment (old default model)
+	  auto		auto-config reading BIOS (default)
+
+	ALC262
+	  fujitsu	Fujitsu Laptop
+	  basic		fixed pin assignment w/o SPDIF
+	  auto		auto-config reading BIOS (default)
+
+	ALC882/885
+	  3stack-dig	3-jack with SPDIF I/O
+	  6stck-dig	6-jack digital with SPDIF I/O
+	  auto		auto-config reading BIOS (default)
+
+	ALC883/888
+	  3stack-dig	3-jack with SPDIF I/O
+	  6stack-dig	6-jack digital with SPDIF I/O
+	  6stack-dig-demo  6-stack digital for Intel demo board
+	  auto		auto-config reading BIOS (default)
+
+	ALC861/660
+	  3stack	3-jack
+	  3stack-dig	3-jack with SPDIF I/O
+	  6stack-dig	6-jack with SPDIF I/O
+	  auto		auto-config reading BIOS (default)
+
+	CMI9880
+	  minimal	3-jack in back
+	  min_fp	3-jack in back, 2-jack in front
+	  full		6-jack in back, 2-jack in front
+	  full_dig	6-jack in back, 2-jack in front, SPDIF I/O
+	  allout	5-jack in back, 2-jack in front, SPDIF out
+	  auto		auto-config reading BIOS (default)
+
+	AD1882
+	  3stack	3-stack mode (default)
+	  6stack	6-stack mode
+
+	AD1981
+	  basic		3-jack (default)
+	  hp		HP nx6320
+	  thinkpad	Lenovo Thinkpad T60/X60/Z60
+
+	AD1986A
+	  6stack	6-jack, separate surrounds (default)
+	  3stack	3-stack, shared surrounds
+	  laptop	2-channel only (FSC V2060, Samsung M50)
+	  laptop-eapd	2-channel with EAPD (Samsung R65, ASUS A6J)
+
+	AD1988
+	  6stack	6-jack
+	  6stack-dig	ditto with SPDIF
+	  3stack	3-jack
+	  3stack-dig	ditto with SPDIF
+	  laptop	3-jack with hp-jack automute
+	  laptop-dig	ditto with SPDIF
+	  auto		auto-confgi reading BIOS (default)
+
+	STAC7661(?)
+	  vaio		Setup for VAIO FE550G/SZ110
+
+    If the default configuration doesn't work and one of the above
+    matches with your device, report it together with the PCI
+    subsystem ID (output of "lspci -nv") to ALSA BTS or alsa-devel
+    ML (see the section "Links and Addresses").
+
+    Note 2: If you get click noises on output, try the module option
+	    position_fix=1 or 2.  position_fix=1 will use the SD_LPIB
+	    register value without FIFO size correction as the current
+	    DMA pointer.  position_fix=2 will make the driver to use
+	    the position buffer instead of reading SD_LPIB register.
+	    (Usually SD_LPLIB register is more accurate than the
+	    position buffer.)
+
+    NB: If you get many "azx_get_response timeout" messages at
+    loading, it's likely a problem of interrupts (e.g. ACPI irq
+    routing).  Try to boot with options like "pci=noacpi".  Also, you
+    can try "single_cmd=1" module option.  This will switch the
+    communication method between HDA controller and codecs to the
+    single immediate commands instead of CORB/RIRB.  Basically, the
+    single command mode is provided only for BIOS, and you won't get
+    unsolicited events, too.  But, at least, this works independently
+    from the irq.  Remember this is a last resort, and should be
+    avoided as much as possible...
+    
+    The power-management is supported.
     
   Module snd-hdsp
   ---------------

@@ -2,7 +2,7 @@ include $(src)/../overrides.mk
 
 EXTRA_CFLAGS += -I$(src)/../platform-pci
 
-obj-y += xen-platform-pci.o
+obj-m += xen-platform-pci.o
 
 xen-platform-pci-objs := evtchn.o platform-compat.o platform-pci.o xen_support.o
 xen-platform-pci-objs += ../../xen/core/gnttab.o

@@ -4,7 +4,7 @@
  *      For use with LSI PCI chip/adapters
  *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Corporation
+ *  Copyright (c) 1999-2008 LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
@@ -67,7 +67,7 @@
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
 
-#define COPYRIGHT	"Copyright (c) 1999-2007 LSI Corporation"
+#define COPYRIGHT	"Copyright (c) 1999-2008 LSI Corporation"
 #define MODULEAUTHOR	"LSI Corporation"
 #include "mptbase.h"
 #include "mptctl.h"
@@ -242,12 +242,12 @@ mptctl_syscall_down(MPT_ADAPTER *ioc, int nonblock)
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
- *  This is the callback for any message we have posted. The message itself
- *  will be returned to the message pool when we return from the IRQ
+ *  This is the callback for any message we have posted.
  *
  *  This runs in irq context so be short and sweet.
  *
- *  Returns 1 indicating alloc'd request frame ptr should be freed.
+ *  Returns 1 indicating alloc'd request frame should be freed.
+ *  Returns 0 indicating alloc'd request frame should not be freed.
  */
 static int
 mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
@@ -255,12 +255,12 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 	char *sense_data;
 	int sz, req_index;
 	u16 iocStatus;
-	u8 cmd;
+	u8 function;
 	u8 buffType;
 
 	dctlprintk(("mptctl_reply()!\n"));
 	if (req)
-		 cmd = req->u.hdr.Function;
+		 function = req->u.hdr.Function;
 	else
 		return 1;
 
@@ -268,7 +268,7 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 
 		if (reply==NULL) {
 
-			dctlprintk(("mptctl_reply() NULL Reply Function=%x!\n", cmd));
+			dctlprintk(("mptctl_reply() NULL Reply Function=%x!\n", function));
 
 			ioc->ioctl->status |= MPT_IOCTL_STATUS_COMMAND_GOOD;
 			ioc->ioctl->reset &= ~MPTCTL_RESET_OK;
@@ -281,7 +281,7 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 
 		}
 
-		dctlprintk(("mptctl_reply() with req=%p reply=%p Function=%x!\n", req, reply, cmd));
+		dctlprintk(("mptctl_reply() with req=%p reply=%p Function=%x!\n", req, reply, function));
 
 		/* Copy the reply frame (which much exist
 		 * for non-SCSI I/O) to the IOC structure.
@@ -293,17 +293,19 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 		ioc->ioctl->status |= MPT_IOCTL_STATUS_RF_VALID;
 
 		/* Set the command status to GOOD if IOC Status is GOOD
-		 * OR if SCSI I/O cmd and data underrun or recovered error.
+		 * OR if SCSI I/O and data underrun or recovered error.
 		 */
 		iocStatus = le16_to_cpu(reply->u.reply.IOCStatus) & MPI_IOCSTATUS_MASK;
-		if (iocStatus  == MPI_IOCSTATUS_SUCCESS)
+		if (iocStatus == MPI_IOCSTATUS_SUCCESS)
 			ioc->ioctl->status |= MPT_IOCTL_STATUS_COMMAND_GOOD;
 
-		if ((cmd == MPI_FUNCTION_SCSI_IO_REQUEST) ||
-			(cmd == MPI_FUNCTION_RAID_SCSI_IO_PASSTHROUGH)) {
+		if ((function == MPI_FUNCTION_SCSI_IO_REQUEST) ||
+			(function == MPI_FUNCTION_RAID_SCSI_IO_PASSTHROUGH)) {
 
-			dcsmisasprintk(ioc, printk(KERN_DEBUG "\tiocstatus = 0x%x, "
+			dctlprintk((MYIOC_s_INFO_FMT
+				"\tiocstatus = 0x%x, "
 				"scsi_status = 0x%x, scsi_state = 0x%x\n",
+				ioc->name,
 				reply->u.sreply.IOCStatus,
 				reply->u.sreply.SCSIStatus,
 				reply->u.sreply.SCSIState));
@@ -319,8 +321,8 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 
 		/* Copy the sense data - if present
 		 */
-		if ((cmd == MPI_FUNCTION_SCSI_IO_REQUEST) &&
-			(reply->u.sreply.SCSIState & MPI_SCSI_STATE_AUTOSENSE_VALID)){
+		if ((function == MPI_FUNCTION_SCSI_IO_REQUEST) &&
+			(reply->u.sreply.SCSIState & MPI_SCSI_STATE_AUTOSENSE_VALID)) {
 			sz = req->u.scsireq.SenseBufferLength;
 			req_index = le16_to_cpu(req->u.frame.hwhdr.msgctxu.fld.req_idx);
 			sense_data = ((u8 *)ioc->sense_buf_pool + (req_index * MPT_SENSE_BUFFER_ALLOC));
@@ -328,14 +330,12 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 			ioc->ioctl->status |= MPT_IOCTL_STATUS_SENSE_VALID;
 		}
 
-		if (cmd == MPI_FUNCTION_SCSI_TASK_MGMT) {
+		if (function == MPI_FUNCTION_SCSI_TASK_MGMT) {
 			mptctl_free_tm_flags(ioc);
 			del_timer(&ioc->TMtimer);
 			dctlprintk((MYIOC_s_INFO_FMT "%s: TM completed\n",
 				ioc->name, __FUNCTION__));
-		}
-
-		if (cmd == MPI_FUNCTION_DIAG_BUFFER_POST) {
+		} else if (function == MPI_FUNCTION_DIAG_BUFFER_POST) {
 
 			DiagBufferPostReply_t *DiagBufferPostReply =
 				(DiagBufferPostReply_t *)reply;
@@ -360,6 +360,11 @@ mptctl_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply)
 		 */
 		ioc->ioctl->wait_done = 1;
 		wake_up (&mptctl_wait);
+	}
+	if (reply->u.reply.MsgFlags & MPI_MSGFLAGS_CONTINUATION_REPLY) {
+		dctlprintk((MYIOC_s_WARN_FMT "reply MsgFlags has CONTINUATION flag function=%02x\n",
+			ioc->name, function));
+		return 0;
 	}
 	return 1;
 }
@@ -431,6 +436,9 @@ mptctl_timeout_expired (MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf)
 	dctlprintk((KERN_NOTICE MYNAM ": Timeout Expired! Host %d\n",
 				ioc->id));
 
+	if(mpt_fwfault_debug)
+		mpt_halt_firmware(ioc);
+
 	ioctl->wait_done = 0;
 	if (ioctl->reset & MPTCTL_RESET_OK)
 		rc = mptctl_bus_reset(ioctl);
@@ -459,7 +467,7 @@ mptctl_bus_reset(MPT_IOCTL *ioctl)
 	SCSITaskMgmt_t	*pScsiTm;
 	MPT_SCSI_HOST	*hd;
 	int		 ii;
-	int		 retval;
+	int		 retval=0;
 
 
 	ioctl->reset &= ~MPTCTL_RESET_OK;
@@ -511,9 +519,9 @@ mptctl_bus_reset(MPT_IOCTL *ioctl)
 	DBG_DUMP_TM_REQUEST_FRAME((u32 *)mf);
 
 	ioctl->wait_done=0;
-	if ((retval = mpt_send_handshake_request(mptctl_id, ioctl->ioc,
+	if ((retval = mpt_send_special_message(mptctl_id, ioctl->ioc,
 	    sizeof(SCSITaskMgmt_t), (u32*)pScsiTm, 10, CAN_SLEEP)) != 0) {
-		dfailprintk((MYIOC_s_ERR_FMT "_send_handshake FAILED!"
+		dfailprintk((MYIOC_s_ERR_FMT "_send_special_message FAILED!"
 			" (hd %p, ioc %p, mf %p) \n", hd->ioc->name, hd,
 			hd->ioc, mf));
 		goto mptctl_bus_reset_done;
@@ -1015,7 +1023,7 @@ mptctl_do_fw_download(int ioc, char __user *ufwbuf, size_t fwlen)
 	 *	64		4
 	 */
 	maxfrags = (iocp->req_sz - sizeof(MPIHeader_t) - sizeof(FWDownloadTCSGE_t))
-			/ (sizeof(dma_addr_t) + sizeof(u32));
+			/ iocp->SGE_size;
 	if (numfrags > maxfrags) {
 		ret = -EMLINK;
 		goto fwdl_out;
@@ -1054,7 +1062,7 @@ mptctl_do_fw_download(int ioc, char __user *ufwbuf, size_t fwlen)
 		}
 		sgIn++;
 		bl++;
-		sgOut += (sizeof(dma_addr_t) + sizeof(u32));
+		sgOut += iocp->SGE_size;
 	}
 
 #ifdef MPT_DEBUG
@@ -1296,7 +1304,7 @@ kbuf_alloc_2_sgl(int bytes, u32 sgdir, int sge_offset, int *frags,
 	 *
 	 */
 	sgl = sglbuf;
-	sg_spill = ((ioc->req_sz - sge_offset)/(sizeof(dma_addr_t) + sizeof(u32))) - 1;
+	sg_spill = ((ioc->req_sz - sge_offset)/ioc->SGE_size) - 1;
 	while (bytes_allocd < bytes) {
 		this_alloc = min(alloc_sz, bytes-bytes_allocd);
 		buflist[buflist_ent].len = this_alloc;
@@ -1317,7 +1325,7 @@ kbuf_alloc_2_sgl(int bytes, u32 sgdir, int sge_offset, int *frags,
 			dma_addr_t dma_addr;
 
 			bytes_allocd += this_alloc;
-			sgl->FlagsLength = (0x10000000|MPT_SGE_FLAGS_ADDRESSING|sgdir|this_alloc);
+			sgl->FlagsLength = (0x10000000|sgdir|this_alloc);
 			dma_addr = pci_map_single(ioc->pcidev, buflist[buflist_ent].kptr, this_alloc, dir);
 			sgl->Address = dma_addr;
 
@@ -2181,6 +2189,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 	MPT_FRAME_HDR	*SAS_handshake_mf=NULL;
 	char		*SAS_handshake_reply=NULL;
 	u16		msgSize=0;
+	u8		Function;
 
 	bufIn.kptr = bufOut.kptr = NULL;
 
@@ -2206,9 +2215,9 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 	 */
 	sz = karg.dataSgeOffset * 4;
 	if (karg.dataInSize > 0)
-		sz += sizeof(dma_addr_t) + sizeof(u32);
+		sz += ioc->SGE_size;
 	if (karg.dataOutSize > 0)
-		sz += sizeof(dma_addr_t) + sizeof(u32);
+		sz += ioc->SGE_size;
 
 	if (sz > ioc->req_sz) {
 		printk(KERN_ERR "%s@%d: mptctl_do_mpt_command - "
@@ -2265,13 +2274,15 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 
 	/* Verify that this request is allowed.
 	 */
-	switch (hdr->Function) {
+	Function = hdr->Function;
+	switch (Function) {
 	case MPI_FUNCTION_IOC_FACTS:
 	case MPI_FUNCTION_PORT_FACTS:
 		karg.dataOutSize  = karg.dataInSize = 0;
 		break;
 
 	case MPI_FUNCTION_CONFIG:
+		dctlprintk(("ioc%d: mptctl_do_mpt_command MPI_FUNCTION_CONFIG request\n", iocnum));
 	case MPI_FUNCTION_FC_COMMON_TRANSPORT_SEND:
 	case MPI_FUNCTION_FC_EX_LINK_SRVC_SEND:
 	case MPI_FUNCTION_FW_UPLOAD:
@@ -2318,7 +2329,8 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 			}
 
 			pScsiReq->MsgFlags &= ~MPI_SCSIIO_MSGFLGS_SENSE_WIDTH;
-			pScsiReq->MsgFlags |= mpt_msg_flags();
+			if (ioc->sg_addr_size == sizeof(u64))
+				pScsiReq->MsgFlags |= MPI_SCSIIO_MSGFLGS_SENSE_WIDTH_64;
 
 			/* verify that app has not requested
 			 * more sense data than driver
@@ -2369,6 +2381,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 		break;
 
 	case MPI_FUNCTION_SMP_PASSTHROUGH:
+		dctlprintk(("ioc%d: SMP_PASSTHRU via mptctl_do_mpt_command\n", iocnum));
 		/* Check mf->PassthruFlags to determine if
 		 * transfer is ImmediateMode or not.
 		 * Immediate mode returns data in the ReplyFrame.
@@ -2400,7 +2413,8 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 			int dataSize;
 
 			pScsiReq->MsgFlags &= ~MPI_SCSIIO_MSGFLGS_SENSE_WIDTH;
-			pScsiReq->MsgFlags |= mpt_msg_flags();
+			if (ioc->sg_addr_size == sizeof(u64))
+				pScsiReq->MsgFlags = MPI_SCSIIO_MSGFLGS_SENSE_WIDTH_64;
 
 			/* verify that app has not requested
 			 *	more sense data than driver
@@ -2470,7 +2484,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 			/* Verify that all entries in the IOC INIT match
 			 * existing setup (and in LE format).
 			 */
-			if (sizeof(dma_addr_t) == sizeof(u64)) {
+			if (ioc->sg_addr_size == sizeof(u64)) {
 				high_addr = cpu_to_le32((u32)((u64)ioc->req_frames_dma >> 32));
 				sense_high= cpu_to_le32((u32)((u64)ioc->sense_buf_pool_dma >> 32));
 			} else {
@@ -2525,7 +2539,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 
 		printk(KERN_ERR "%s@%d: mptctl_do_mpt_command - "
 			"Illegal request (function 0x%x) \n",
-			__FILE__, __LINE__, hdr->Function);
+			__FILE__, __LINE__, Function);
 		rc = -EFAULT;
 		goto done_free_mem;
 	}
@@ -2556,8 +2570,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 			if (karg.dataInSize > 0) {
 				flagsLength = ( MPI_SGE_FLAGS_SIMPLE_ELEMENT |
 						MPI_SGE_FLAGS_END_OF_BUFFER |
-						MPI_SGE_FLAGS_DIRECTION |
-						mpt_addr_size() )
+						MPI_SGE_FLAGS_DIRECTION )
 						<< MPI_SGE_FLAGS_SHIFT;
 			} else {
 				flagsLength = MPT_SGE_FLAGS_SSIMPLE_WRITE;
@@ -2575,7 +2588,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 				 * Copy to MF and to sglbuf
 				 */
 				ioc->add_sge(psge, flagsLength, dma_addr_out);
-				psge += (sizeof(u32) + sizeof(dma_addr_t));
+				psge += ioc->SGE_size;
 
 				/* Copy user data to kernel space.
 				 */
@@ -2624,11 +2637,12 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 
 		DBG_DUMP_TM_REQUEST_FRAME((u32 *)mf);
 
-		if (mpt_send_handshake_request(mptctl_id, ioc,
-		    sizeof(SCSITaskMgmt_t), (u32*)mf, 10, CAN_SLEEP) != 0) {
-			dfailprintk((MYIOC_s_ERR_FMT "_send_handshake FAILED!"
-				" (ioc %p, mf %p) \n", ioc->name,
-				ioc, mf));
+		rc = mpt_send_special_message(mptctl_id, ioc,
+			sizeof(SCSITaskMgmt_t), (u32*)mf, 10, CAN_SLEEP);
+		if (rc != 0) {
+			dfailprintk((MYIOC_s_ERR_FMT
+			    "mpt_send_special_message FAILED! (ioc %p, mf %p)\n",
+			    ioc->name, ioc, mf));
 			mptctl_free_tm_flags(ioc);
 			rc = -ENODATA;
 			goto done_free_mem;
@@ -2690,6 +2704,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 				goto done_free_mem;
 			}
 		} else {
+			DBG_DUMP_CSMI_FRAME(mf);
 			mpt_put_msg_frame(mptctl_id, ioc, mf);
 			/* Now wait for the command to complete */
 			timeout = (karg.timeout > 0) ? karg.timeout : MPT_IOCTL_DEFAULT_TIMEOUT;
@@ -2752,15 +2767,21 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 	/* If the overall status is _GOOD and data in, copy data
 	 * to user.
 	 */
-	if ((ioc->ioctl->status & MPT_IOCTL_STATUS_COMMAND_GOOD) &&
-				(karg.dataInSize > 0) && (bufIn.kptr)) {
-		if (copy_to_user(karg.dataInBufPtr,
-			 bufIn.kptr, karg.dataInSize)) {
-			printk(KERN_ERR "%s@%d: mptctl_do_mpt_command - "
-				"Unable to write data to user %p\n",
-				__FILE__, __LINE__,
-				karg.dataInBufPtr);
-			rc =  -ENODATA;
+	if (ioc->ioctl->status & MPT_IOCTL_STATUS_COMMAND_GOOD) {
+		if ((karg.dataInSize > 0) && (bufIn.kptr)) {
+			if (copy_to_user(karg.dataInBufPtr,
+				 bufIn.kptr, karg.dataInSize)) {
+				printk(KERN_ERR "%s@%d: mptctl_do_mpt_command - "
+					"Unable to write data to user %p\n",
+					__FILE__, __LINE__,
+					karg.dataInBufPtr);
+				rc =  -ENODATA;
+			}
+			if (Function == MPI_FUNCTION_CONFIG) {
+				dctlprintk(("ioc%d: mptctl_do_mpt_command MPI_FUNCTION_CONFIG Data\n", 
+					iocnum));
+				DBG_DUMP_REQUEST_FRAME_HDR(bufIn.kptr);
+			}
 		}
 	}
 
@@ -3190,8 +3211,8 @@ mptctl_register_diag_buffer (unsigned long arg)
 	buffType = karg.data.BufferType;
 	if ( !(ioc->facts.IOCCapabilities &
 		MPT_DIAG_CAPABILITY(buffType)) ) {
-		printk("mptctl_register_diag_buffer: ioc%d does not have Capability for BufferType=%x\n",
-				iocnum, buffType);
+		printk("mptctl_register_diag_buffer: ioc%d no Capability=%08x for BufferType=%x\n",
+				iocnum, ioc->facts.IOCCapabilities, buffType);
 		return -ENODEV;
 	}
 
@@ -3215,7 +3236,8 @@ allocDiagBuffer:
 	    		ioc->pcidev, request_data_sz, &request_data_dma);
 
 		if (request_data == NULL) {
-			printk("mptctl_register_diag_buffer: pci_alloc_consistent FAILED\n");
+			printk("mptctl_register_diag_buffer: pci_alloc_consistent FAILED for sz=%d\n",
+				request_data_sz);
 			mpt_free_msg_frame(ioc, mf);
                 	return -EAGAIN;
 		}
@@ -3260,7 +3282,7 @@ allocDiagBuffer:
 		DiagBufferPostRequest->ProductSpecific[ii] =
 			cpu_to_le32(ioc->ProductSpecific[buffType][ii]);
 	}
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
+	if (ioc->sg_addr_size == sizeof(u64)) {
 		tmp = (u32) ((u64)request_data_dma >> 32);
 		DiagBufferPostRequest->BufferAddress.High = cpu_to_le32(tmp);
 	} else {
@@ -3301,7 +3323,7 @@ allocDiagBuffer:
 			ioc->DiagBuffer_Status[buffType] |= 
 				MPT_DIAG_BUFFER_IS_REGISTERED;
 		} else {
-			dctlprintk(("DiagBufferPostReply: IOCStatus=%x IOCLogInfo=%x\n",
+			dctlprintk(("DiagBufferPostReply: IOCStatus=%04x IOCLogInfo=%08x\n",
 			    DiagBufferPostReply->IOCStatus,
 			    DiagBufferPostReply->IOCLogInfo));
 			rc = -EFAULT;
@@ -3345,6 +3367,7 @@ mptctl_release_diag_buffer (unsigned long arg)
   	DiagReleaseRequest_t 	*DiagRelease;
   	DiagReleaseReply_t	*DiagReleaseReply;
 	u8			buffType;
+	u16			iocstatus;
 
 	dctlprintk(("mptctl_release_diag_buffer called.\n"));
 	if (copy_from_user(&karg, uarg, sizeof(mpt_diag_release_t))) {
@@ -3364,8 +3387,8 @@ mptctl_release_diag_buffer (unsigned long arg)
 	buffType = karg.data.UniqueId & 0x000000ff;
 	if ( !(ioc->facts.IOCCapabilities &
 		MPT_DIAG_CAPABILITY(buffType)) ) {
-		printk("mptctl_release_diag_buffer: ioc%d does not have Capability for BufferType=%x\n",
-				iocnum, buffType);
+		printk("mptctl_release_diag_buffer: ioc%d no Capability=%08x for BufferType=%x\n",
+				iocnum, ioc->facts.IOCCapabilities, buffType);
 		return -ENODEV;
 	}
 
@@ -3432,14 +3455,17 @@ mptctl_release_diag_buffer (unsigned long arg)
 		DiagReleaseReply =
 		    (DiagReleaseReply_t *)ioc->ioctl->reply;
 
-		if ( le16_to_cpu(DiagReleaseReply->IOCStatus) != MPI_IOCSTATUS_DIAGNOSTIC_RELEASED) {
-			dctlprintk(("DiagReleaseReply: IOCStatus=%x IOCLogInfo=%x\n",
-			    DiagReleaseReply->IOCStatus,
-			    DiagReleaseReply->IOCLogInfo));
-			rc = -EFAULT;
-		} else {
+		iocstatus = le16_to_cpu(DiagReleaseReply->IOCStatus);
+		if ( (iocstatus == MPI_IOCSTATUS_SUCCESS) ||
+		     (iocstatus == MPI_IOCSTATUS_DIAGNOSTIC_RELEASED) ) {
+			dctlprintk(("DiagReleaseReply: IOCStatus=%04x SUCCESS\n",
+			    iocstatus));
 			ioc->DiagBuffer_Status[buffType] |=
 				MPT_DIAG_BUFFER_IS_RELEASED;
+		} else {
+			dctlprintk(("DiagReleaseReply: IOCStatus=%04x IOCLogInfo=%x\n",
+			    iocstatus, DiagReleaseReply->IOCLogInfo));
+			rc = -EFAULT;
 		}
 	} else {
 		dctlprintk(("DiagReleaseReply: status=%x\n",
@@ -3493,8 +3519,8 @@ mptctl_unregister_diag_buffer (unsigned long arg)
 	buffType = karg.data.UniqueId & 0x000000ff;
 	if ( !(ioc->facts.IOCCapabilities &
 		MPT_DIAG_CAPABILITY(buffType)) ) {
-		printk("mptctl_unregister_diag_buffer: ioc%d does not have Capability for BufferType=%x\n",
-				iocnum, buffType);
+		printk("mptctl_unregister_diag_buffer: ioc%d no Capability=%08x for BufferType=%x\n",
+				iocnum, ioc->facts.IOCCapabilities, buffType);
 		return -ENODEV;
 	}
 
@@ -3574,8 +3600,8 @@ mptctl_query_diag_buffer (unsigned long arg)
 	buffType = karg.data.BufferType;
 	if ( !(ioc->facts.IOCCapabilities &
 		MPT_DIAG_CAPABILITY(buffType)) ) {
-		printk("mptctl_query_diag_buffer: ioc%d does not have Capability for BufferType=%x\n",
-			iocnum, buffType);
+		printk("mptctl_query_diag_buffer: ioc%d no Capability=%08x for BufferType=%x\n",
+				iocnum, ioc->facts.IOCCapabilities, buffType);
 		goto copy_back;
 	}
 
@@ -3672,8 +3698,8 @@ mptctl_read_diag_buffer (unsigned long arg)
 	buffType = karg.data.UniqueId & 0x000000ff;
 	if ( !(ioc->facts.IOCCapabilities &
 		MPT_DIAG_CAPABILITY(buffType)) ) {
-		printk("mptctl_read_diag_buffer: ioc%d does not have Capability for BufferType=%x\n",
-				iocnum, buffType);
+		printk("mptctl_read_diag_buffer: ioc%d no Capability=%08x for BufferType=%x\n",
+				iocnum, ioc->facts.IOCCapabilities, buffType);
 		return -EFAULT;
 	}
 
@@ -3735,7 +3761,7 @@ mptctl_read_diag_buffer (unsigned long arg)
 				cpu_to_le32(ioc->ProductSpecific[buffType][ii]);
 		}
 		request_data_dma = ioc->DiagBuffer_dma[buffType];
-		if (sizeof(dma_addr_t) == sizeof(u64)) {
+		if (ioc->sg_addr_size == sizeof(u64)) {
 			tmp = (u32) ((u64)request_data_dma >> 32);
 			DiagBufferPostRequest->BufferAddress.High = cpu_to_le32(tmp);
 		} else {

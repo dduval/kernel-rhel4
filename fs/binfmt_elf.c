@@ -1233,8 +1233,6 @@ whole:
 	return vma->vm_end - vma->vm_start;
 }
 
-#define roundup(x, y)  ((((x)+((y)-1))/(y))*(y))
-
 /* An ELF note in memory */
 struct memelfnote
 {

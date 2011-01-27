@@ -1050,7 +1050,10 @@ static void stex_hard_reset(struct st_hba *hba)
 static int stex_reset(struct scsi_cmnd *cmd)
 {
 	struct st_hba *hba;
-	unsigned long before;
+	int i;
+	void __iomem *base;
+	u32 data;
+
 	hba = (struct st_hba *) &cmd->device->host->hostdata[0];
 
 	printk(KERN_INFO DRV_NAME
@@ -1083,18 +1086,31 @@ static int stex_reset(struct scsi_cmnd *cmd)
 	}
 
 	/* st_yosemite */
-	writel(MU_INBOUND_DOORBELL_RESET, hba->mmio_base + IDBL);
-	readl(hba->mmio_base + IDBL); /* flush */
-	before = jiffies;
-	while (hba->out_req_cnt > 0) {
-		if (time_after(jiffies, before + ST_INTERNAL_TIMEOUT * HZ)) {
-			spin_lock_irq(hba->host->host_lock);
-			printk(KERN_WARNING DRV_NAME
-				"(%s): reset timeout\n", pci_name(hba->pdev));
-			return FAILED;
+	base = hba->mmio_base;
+	writel(MU_INBOUND_DOORBELL_RESET, base + IDBL);
+	readl(base + IDBL); /* flush */
+	for (i = 0;i < MU_HARD_RESET_WAIT;i++) {
+		if(!(hba->out_req_cnt))
+			break;
+		if (crashdump_mode()) {
+			data = readl(base + ODBL);
+
+			if (data && data != 0xffffffff) {
+				writel(data, base + ODBL);
+				readl(base + ODBL);
+				stex_mu_intr(hba, data);
+			}
 		}
 		diskdump_msleep(1);
 	}
+
+	if (hba->out_req_cnt > 0) {
+		spin_lock_irq(hba->host->host_lock);
+		printk(KERN_WARNING DRV_NAME
+			"(%s): reset timeout\n", pci_name(hba->pdev));
+		return FAILED;
+	}
+
 	spin_lock_irq(hba->host->host_lock);
 	hba->mu_status = MU_STATE_STARTED;
 	return SUCCESS;

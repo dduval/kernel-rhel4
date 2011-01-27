@@ -468,23 +468,34 @@ static int qh_schedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	 * uframes have enough periodic bandwidth available.
 	 */
 	if (status) {
-		frame = qh->period - 1;
-		do {
-			for (uframe = 0; uframe < 8; uframe++) {
-				status = check_intr_schedule (ehci,
-						frame, uframe, qh,
-						&c_mask);
-				if (status == 0)
-					break;
-			}
-		} while (status && frame--);
+		/* "normal" case, uframing flexible except with splits */
+		if (qh->period) {
+			frame = qh->period - 1;
+			do {
+				for (uframe = 0; uframe < 8; uframe++) {
+					status = check_intr_schedule (ehci,
+							frame, uframe, qh,
+							&c_mask);
+					if (status == 0)
+						break;
+				}
+			} while (status && frame--);
+
+		/* qh->period == 0 means every uframe */
+		} else {
+			frame = 0;
+			status = check_intr_schedule (ehci, 0, 0, qh, &c_mask);
+		}
 		if (status)
 			goto done;
 		qh->start = frame;
 
 		/* reset S-frame and (maybe) C-frame masks */
 		qh->hw_info2 &= ~__constant_cpu_to_le32(0xffff);
-		qh->hw_info2 |= cpu_to_le32 (1 << uframe) | c_mask;
+		qh->hw_info2 |= qh->period
+			? cpu_to_le32 (1 << uframe)
+			: __constant_cpu_to_le32 (0xff);
+		qh->hw_info2 |= c_mask;
 	} else
 		dbg ("reused previous qh %p schedule", qh);
 

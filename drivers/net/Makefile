@@ -56,6 +56,7 @@ obj-$(CONFIG_FEALNX) += fealnx.o
 obj-$(CONFIG_TIGON3) += tg3.o
 obj-$(CONFIG_BNX2) += bnx2.o
 obj-$(CONFIG_BNX2X) += bnx2x.o
+bnx2x-objs := bnx2x_main.o bnx2x_link.o
 obj-$(CONFIG_TC35815) += tc35815.o
 obj-$(CONFIG_SKGE) += skge.o
 obj-$(CONFIG_SKY2) += sky2.o
@@ -209,3 +210,4 @@ obj-$(CONFIG_NETXEN_NIC) += netxen/
 
 obj-$(CONFIG_NETCONSOLE) += netconsole.o
 obj-$(CONFIG_NETDUMP) += netdump.o
+obj-$(CONFIG_VIRTIO_NET) += virtio_net.o

@@ -1008,6 +1008,10 @@ static int encode_read(struct xdr_stream *xdr, const struct nfs_readargs *args)
 static int encode_readdir(struct xdr_stream *xdr, const struct nfs4_readdir_arg *readdir, struct rpc_rqst *req)
 {
 	struct rpc_auth *auth = req->rq_task->tk_auth;
+	uint32_t attrs[2] = {
+		FATTR4_WORD0_RDATTR_ERROR|FATTR4_WORD0_FILEID,
+		FATTR4_WORD1_MOUNTED_ON_FILEID,
+	};
 	int replen;
 	uint32_t *p;
 
@@ -1018,13 +1022,13 @@ static int encode_readdir(struct xdr_stream *xdr, const struct nfs4_readdir_arg 
 	WRITE32(readdir->count >> 1);  /* We're not doing readdirplus */
 	WRITE32(readdir->count);
 	WRITE32(2);
-	if (readdir->bitmask[1] & FATTR4_WORD1_MOUNTED_ON_FILEID) {
-		WRITE32(0);
-		WRITE32(FATTR4_WORD1_MOUNTED_ON_FILEID);
-	} else {
-		WRITE32(FATTR4_WORD0_FILEID);
-		WRITE32(0);
-	}
+	/* Switch to mounted_on_fileid if the server supports it */
+	if (readdir->bitmask[1] & FATTR4_WORD1_MOUNTED_ON_FILEID)
+		attrs[0] &= ~FATTR4_WORD0_FILEID;
+	else
+		attrs[1] &= ~FATTR4_WORD1_MOUNTED_ON_FILEID;
+	WRITE32(attrs[0] & readdir->bitmask[0]);
+	WRITE32(attrs[1] & readdir->bitmask[1]);
 
 	/* set up reply kvec
 	 *    toplevel_status + taglen + rescount + OP_PUTFH + status
@@ -3021,7 +3025,7 @@ static int decode_readdir(struct xdr_stream *xdr, struct rpc_rqst *req, struct n
 	struct xdr_buf	*rcvbuf = &req->rq_rcv_buf;
 	struct page	*page = *rcvbuf->pages;
 	struct kvec	*iov = rcvbuf->head;
-	unsigned int	nr, pglen = rcvbuf->page_len;
+	unsigned int	nr = 0, pglen = rcvbuf->page_len;
 	uint32_t	*end, *entry, *p, *kaddr;
 	uint32_t	len, attrlen;
 	int 		hdrlen, recvd, status;
@@ -3042,7 +3046,12 @@ static int decode_readdir(struct xdr_stream *xdr, struct rpc_rqst *req, struct n
 	kaddr = p = (uint32_t *) kmap_atomic(page, KM_USER0);
 	end = (uint32_t *) ((char *)p + pglen + readdir->pgbase);
 	entry = p;
-	for (nr = 0; *p++; nr++) {
+
+	/* Make sure the packet actually has a value_follows and EOF entry */
+	if ((entry + 1) > end)
+		goto short_pkt;
+
+	for (; *p++; nr++) {
 		if (p + 3 > end)
 			goto short_pkt;
 		p += 2;			/* cookie */
@@ -3064,19 +3073,31 @@ static int decode_readdir(struct xdr_stream *xdr, struct rpc_rqst *req, struct n
 			goto short_pkt;
 		entry = p;
 	}
-	if (!nr && (entry[0] != 0 || entry[1] == 0))
-		goto short_pkt;
+	/*
+	 * Apparently some server sends responses that are a valid size, but
+	 * contain no entries, and have value_follows==0 and EOF==0. For
+	 * those, just set the EOF marker.
+	 */
+	if (!nr && entry[1] == 0) {
+		dprintk("NFS: readdir reply truncated!\n");
+		entry[1] = 1;
+	}
 out:	
 	kunmap_atomic(kaddr, KM_USER0);
 	return 0;
 short_pkt:
+	/*
+	 * When we get a short packet there are 2 possibilities. We can
+	 * return an error, or fix up the response to look like a valid
+	 * response and return what we have so far. If there are no
+	 * entries and the packet was short, then return -EIO. If there
+	 * are valid entries in the response, return them and pretend that
+	 * the call was successful, but incomplete. The caller can retry the
+	 * readdir starting at the last cookie.
+	 */
 	entry[0] = entry[1] = 0;
-	/* truncate listing ? */
-	if (!nr) {
-		printk(KERN_NOTICE "NFS: readdir reply truncated!\n");
-		entry[1] = 1;
-	}
-	goto out;
+	if (nr)
+		goto out;
 err_unmap:
 	kunmap_atomic(kaddr, KM_USER0);
 	return -errno_NFSERR_IO;
@@ -3214,7 +3235,7 @@ static int decode_setclientid(struct xdr_stream *xdr, struct nfs4_client *clp)
 		READ_BUF(4);
 		READ32(len);
 		READ_BUF(len);
-		return -EEXIST;
+		return -NFSERR_CLID_INUSE;
 	} else
 		return -nfs_stat_to_errno(nfserr);
 
@@ -3939,6 +3960,12 @@ uint32_t *nfs4_decode_dirent(uint32_t *p, struct nfs_entry *entry, int plus)
 	}
 	len = XDR_QUADLEN(ntohl(*p++));	/* attribute buffer length */
 	if (len > 0) {
+		if (bitmap[0] & FATTR4_WORD0_RDATTR_ERROR) {
+			bitmap[0] &= ~FATTR4_WORD0_RDATTR_ERROR;
+			/* Ignore the return value of rdattr_error for now */
+			p++;
+			len--;
+		}
 		if (bitmap[0] == 0 && bitmap[1] == FATTR4_WORD1_MOUNTED_ON_FILEID)
 			xdr_decode_hyper(p, &entry->ino);
 		else if (bitmap[0] == FATTR4_WORD0_FILEID)

@@ -5,6 +5,7 @@
 
 #define IRQF_PROBE_SHARED	0
 #define IRQF_SHARED		SA_SHIRQ
+#define IRQF_SAMPLE_RANDOM	SA_SAMPLE_RANDOM
 
 #define skb_header_cloned(skb) 0
 

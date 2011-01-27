@@ -91,7 +91,11 @@ static inline int cifs_convert_flags(unsigned int flags)
 		return (GENERIC_READ | GENERIC_WRITE);
 	}
 
-	return 0x20197;
+	return (READ_CONTROL | FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES |
+		FILE_WRITE_EA | FILE_APPEND_DATA | FILE_WRITE_DATA |
+		FILE_READ_DATA);
+
+
 }
 
 static inline int cifs_get_disposition(unsigned int flags)
@@ -118,11 +122,7 @@ static inline int cifs_open_inode_helper(struct inode *inode, struct file *file,
 	struct cifsTconInfo *pTcon, int *oplock, FILE_ALL_INFO *buf,
 	char *full_path, int xid)
 {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct timespec temp;
-#else
-	time_t temp;
-#endif
 	int rc;
 
 	/* want handles we can use to read with first
@@ -146,66 +146,36 @@ static inline int cifs_open_inode_helper(struct inode *inode, struct file *file,
 	/* if not oplocked, invalidate inode pages if mtime or file
 	   size changed */
 	temp = cifs_NTtimeToUnix(le64_to_cpu(buf->LastWriteTime));
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)
 	if (timespec_equal(&file->f_dentry->d_inode->i_mtime, &temp) &&
 			   (file->f_dentry->d_inode->i_size ==
 			    (loff_t)le64_to_cpu(buf->EndOfFile))) {
 		cFYI(1, ("inode unchanged on server"));
 	} else {
 		if (file->f_dentry->d_inode->i_mapping) {
-#else
-	if (timespec_equal(&file->f_path.dentry->d_inode->i_mtime, &temp) &&
-			   (file->f_path.dentry->d_inode->i_size ==
-			    (loff_t)le64_to_cpu(buf->EndOfFile))) {
-		cFYI(1, ("inode unchanged on server"));
-	} else {
-		if (file->f_path.dentry->d_inode->i_mapping) {
-#endif
 		/* BB no need to lock inode until after invalidate
 		   since namei code should already have it locked? */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
-			rc = cifs_filemap_write_and_wait(file->f_path.dentry->d_inode->i_mapping);		   
-#else
 			rc = cifs_filemap_write_and_wait(file->f_dentry->d_inode->i_mapping);
-#endif
 			if (rc != 0)
 				CIFS_I(file->f_dentry->d_inode)->write_behind_rc = rc;
 		}
 		cFYI(1, ("invalidating remote inode since open detected it "
 			 "changed"));
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)
 		invalidate_remote_inode(file->f_dentry->d_inode);
-#else			 
-		invalidate_remote_inode(file->f_path.dentry->d_inode);
-#endif
 	}
 
 client_can_cache:
 	if (pTcon->unix_ext)
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)
 		rc = cifs_get_inode_info_unix(&file->f_dentry->d_inode,
-#else	
-		rc = cifs_get_inode_info_unix(&file->f_path.dentry->d_inode,
-#endif
 			full_path, inode->i_sb, xid);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)
+	else
 		rc = cifs_get_inode_info(&file->f_dentry->d_inode,
-#else
-		rc = cifs_get_inode_info(&file->f_path.dentry->d_inode,
-#endif
 			full_path, buf, inode->i_sb, xid);
 
 	if ((*oplock & 0xF) == OPLOCK_EXCLUSIVE) {
 		pCifsInode->clientCanCacheAll = TRUE;
 		pCifsInode->clientCanCacheRead = TRUE;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 20)
 		cFYI(1, ("Exclusive Oplock granted on inode %p",
 			 file->f_dentry->d_inode));
-#else
-		cFYI(1, ("Exclusive Oplock granted on inode %p",
-			 file->f_path.dentry->d_inode));
-#endif
 	} else if ((*oplock & 0xF) == OPLOCK_READ)
 		pCifsInode->clientCanCacheRead = TRUE;
 
@@ -372,18 +342,19 @@ int cifs_open(struct inode *inode, struct file *file)
 		/* time to set mode which we can not set earlier due to
 		   problems creating new read-only files */
 		if (pTcon->unix_ext) {
-			CIFSSMBUnixSetPerms(xid, pTcon, full_path,
-					    inode->i_mode,
-					    (__u64)-1, (__u64)-1, 0 /* dev */,
+			struct cifs_unix_set_info_args args = {
+				.mode	= inode->i_mode,
+				.uid	= NO_CHANGE_64,
+				.gid	= NO_CHANGE_64,
+				.ctime	= NO_CHANGE_64,
+				.atime	= NO_CHANGE_64,
+				.mtime	= NO_CHANGE_64,
+				.device	= 0,
+			};
+			CIFSSMBUnixSetInfo(xid, pTcon, full_path, &args,
 					    cifs_sb->local_nls,
 					    cifs_sb->mnt_cifs_flags &
 						CIFS_MOUNT_MAP_SPECIAL_CHR);
-		} else {
-			/* BB implement via Windows security descriptors eg
-			   CIFSSMBWinSetPerms(xid, pTcon, full_path, mode,
-					      -1, -1, local_nls);
-			   in the meantime could set r/o dos attribute when
-			   perms are eg: mode & 0222 == 0 */
 		}
 	}
 
@@ -580,12 +551,13 @@ int cifs_close(struct inode *inode, struct file *file)
 	pTcon = cifs_sb->tcon;
 	if (pSMBFile) {
 		struct cifsLockInfo *li, *tmp;
-
+		write_lock(&GlobalSMBSeslock);
 		pSMBFile->closePend = TRUE;
 		if (pTcon) {
 			/* no sense reconnecting to close a file that is
 			   already closed */
-			if (pTcon->tidStatus != CifsNeedReconnect) {
+			if (!pTcon->need_reconnect) {
+				write_unlock(&GlobalSMBSeslock);
 				timeout = 2;
 				while ((atomic_read(&pSMBFile->wrtPending) != 0)
 					&& (timeout <= 2048)) {
@@ -603,12 +575,15 @@ int cifs_close(struct inode *inode, struct file *file)
 					timeout *= 4;
 				}
 				if (atomic_read(&pSMBFile->wrtPending))
-					cERROR(1,
-						("close with pending writes"));
-				rc = CIFSSMBClose(xid, pTcon,
+					cERROR(1, ("close with pending write"));
+				if (!pTcon->need_reconnect &&
+				    !pSMBFile->invalidHandle)
+					rc = CIFSSMBClose(xid, pTcon,
 						  pSMBFile->netfid);
-			}
-		}
+			} else
+				write_unlock(&GlobalSMBSeslock);
+		} else
+			write_unlock(&GlobalSMBSeslock);
 
 		/* Delete any outstanding lock records.
 		   We'll lose them when the file is closed anyway. */
@@ -640,7 +615,6 @@ int cifs_close(struct inode *inode, struct file *file)
 			msleep(timeout);
 			timeout *= 8;
 		}
-		kfree(pSMBFile->search_resume_name);
 		kfree(file->private_data);
 		file->private_data = NULL;
 	} else
@@ -685,15 +659,18 @@ int cifs_closedir(struct inode *inode, struct file *file)
 		pTcon = cifs_sb->tcon;
 
 		cFYI(1, ("Freeing private data in close dir"));
+		write_lock(&GlobalSMBSeslock);
 		if ((pCFileStruct->srch_inf.endOfSearch == FALSE) &&
 		   (pCFileStruct->invalidHandle == FALSE)) {
 			pCFileStruct->invalidHandle = TRUE;
+			write_unlock(&GlobalSMBSeslock);
 			rc = CIFSFindClose(xid, pTcon, pCFileStruct->netfid);
 			cFYI(1, ("Closing uncompleted readdir with rc %d",
 				 rc));
 			/* not much we can do if it fails anyway, ignore rc */
 			rc = 0;
-		}
+		} else
+			write_unlock(&GlobalSMBSeslock);
 		ptmp = pCFileStruct->srch_inf.ntwrk_buf_start;
 		if (ptmp) {
 			cFYI(1, ("closedir free smb buf in srch struct"));
@@ -702,12 +679,6 @@ int cifs_closedir(struct inode *inode, struct file *file)
 				cifs_small_buf_release(ptmp);
 			else
 				cifs_buf_release(ptmp);
-		}
-		ptmp = pCFileStruct->search_resume_name;
-		if (ptmp) {
-			cFYI(1, ("closedir free resume name"));
-			pCFileStruct->search_resume_name = NULL;
-			kfree(ptmp);
 		}
 		kfree(file->private_data);
 		file->private_data = NULL;
@@ -1200,6 +1171,7 @@ static ssize_t cifs_write(struct file *file, const char *write_data,
 struct cifsFileInfo *find_writable_file(struct cifsInodeInfo *cifs_inode)
 {
 	struct cifsFileInfo *open_file;
+	int any_available = FALSE;
 	int rc;
 
 	/* Having a null inode here (because mapping->host was set to zero by
@@ -1217,8 +1189,10 @@ struct cifsFileInfo *find_writable_file(struct cifsInodeInfo *cifs_inode)
 	read_lock(&GlobalSMBSeslock);
 refind_writable:
 	list_for_each_entry(open_file, &cifs_inode->openFileList, flist) {
-		if (open_file->closePend)
+		if (open_file->closePend ||
+		    (!any_available && open_file->pid != current->tgid))
 			continue;
+
 		if (open_file->pfile &&
 		    ((open_file->pfile->f_flags & O_RDWR) ||
 		     (open_file->pfile->f_flags & O_WRONLY))) {
@@ -1270,6 +1244,11 @@ refind_writable:
 			   of the loop here. */
 		}
 	}
+	/* couldn't find useable FH with same pid, try any available */
+	if (!any_available) {
+		any_available = TRUE;
+		goto refind_writable;
+	}
 	read_unlock(&GlobalSMBSeslock);
 	return NULL;
 }
@@ -1319,12 +1298,10 @@ static int cifs_partialpagewrite(struct page *page, unsigned from, unsigned to)
 		atomic_dec(&open_file->wrtPending);
 		/* Does mm or vfs already set times? */
 		inode->i_atime = inode->i_mtime = current_fs_time(inode->i_sb);
-		if ((bytes_written > 0) && (offset)) {
+		if ((bytes_written > 0) && (offset))
 			rc = 0;
-		} else if (bytes_written < 0) {
-			if (rc != -EBADF)
-				rc = bytes_written;
-		}
+		else if (bytes_written < 0)
+			rc = bytes_written;
 	} else {
 		cFYI(1, ("No writeable filehandles for inode"));
 		rc = -EIO;
@@ -1562,7 +1539,10 @@ retry:
 			if ((wbc->nr_to_write -= n_iov) <= 0)
 				done = 1;
 			index = next;
-		}
+		} else
+			/* Need to re-find the pages we skipped */
+			index = pvec.pages[0]->index + 1;
+
 		pagevec_release(&pvec);
 	}
 	if (!scanned && !done) {
@@ -2019,7 +1999,7 @@ static int cifs_readpages(struct file *file, struct address_space *mapping,
 
 	pagevec_init(&lru_pvec, 0);
 #ifdef CONFIG_CIFS_DEBUG2
-		cFYI(1, ("rpages: num pages %d", num_pages));
+	cFYI(1, ("rpages: num pages %d", num_pages));
 #endif
 	for (i = 0; i < num_pages; ) {
 		unsigned contig_pages;
@@ -2326,7 +2306,10 @@ static int cifs_prepare_write(struct file *file, struct page *page,
 	return 0;
 }
 
-const struct address_space_operations cifs_addr_ops = {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
+const
+#endif
+struct address_space_operations cifs_addr_ops = {
 	.readpage = cifs_readpage,
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	.readpages = cifs_readpages,
@@ -2349,7 +2332,10 @@ const struct address_space_operations cifs_addr_ops = {
  * contain the header plus one complete page of data.  Otherwise, we need
  * to leave cifs_readpages out of the address space operations.
  */
-const struct address_space_operations cifs_addr_ops_smallbuf = {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
+const
+#endif
+struct address_space_operations cifs_addr_ops_smallbuf = {
 	.readpage = cifs_readpage,
 	.writepage = cifs_writepage,
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 14)

@@ -65,7 +65,7 @@ extern unsigned long wall_jiffies;
  */
 unsigned long long sched_clock(void)
 {
-	return ((get_clock() - jiffies_timer_cc) * 1000) >> 12;
+	return ((get_clock() - jiffies_timer_cc) * 125) >> 9;
 }
 
 /*
@@ -255,6 +255,7 @@ void account_ticks(struct pt_regs *regs)
 	while (ticks--)
 		do_timer(regs);
 #endif
+	leap_second_message();
 	s390_do_profile(regs);
 }
 
@@ -272,7 +273,9 @@ int sysctl_hz_timer = 1;
  */
 static inline void stop_hz_timer(void)
 {
-	__u64 timer;
+	unsigned long flags;
+	unsigned long seq, next;
+	__u64 timer, todval;
 
 	if (sysctl_hz_timer != 0)
 		return;
@@ -292,9 +295,19 @@ static inline void stop_hz_timer(void)
 	 * This cpu is going really idle. Set up the clock comparator
 	 * for the next event.
 	 */
-	timer = (__u64) (next_timer_interrupt() - jiffies) + jiffies_64;
-	timer = jiffies_timer_cc + timer * CLK_TICKS_PER_JIFFY;
-	asm volatile ("SCKC %0" : : "m" (timer));
+	next = next_timer_interrupt();
+	do {
+		seq = read_seqbegin_irqsave(&xtime_lock, flags);
+		timer = ((__u64) next) - ((__u64) jiffies) + jiffies_64;
+	} while (read_seqretry_irqrestore(&xtime_lock, seq, flags));
+	todval = -1ULL;
+	/* Be careful about overflows. */
+	if (timer < (-1ULL / CLK_TICKS_PER_JIFFY)) {
+		timer = jiffies_timer_cc + timer * CLK_TICKS_PER_JIFFY;
+		if (timer >= jiffies_timer_cc)
+			todval = timer;
+	}
+	asm volatile ("SCKC %0" : : "m" (todval));
 }
 
 /*

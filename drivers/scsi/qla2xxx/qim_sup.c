@@ -18,7 +18,6 @@
  ******************************************************************************/
 
 #include "qim_def.h"
-#include <linux/delay.h>
 
 int qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 			     uint32_t dwords);
@@ -37,6 +36,12 @@ uint32_t *qim24xx_read_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr,
 	(ha)->pdev->subsystem_vendor == 0x1028 && \
 	(ha)->pdev->subsystem_device == 0x0170)
 
+inline void
+qla2xxx_schedule_udelay(unsigned long usecs)
+{
+	schedule();
+	udelay(usecs);
+}
 
 inline void 
 qim_enable_intrs(scsi_qla_host_t *ha)
@@ -250,13 +255,12 @@ qim24xx_read_flash_dword(scsi_qla_host_t *ha, uint32_t addr)
 	    (RD_REG_DWORD(&reg->flash_addr) & FARX_DATA_FLAG) == 0 &&
 	    rval == QLA_SUCCESS; cnt--) {
 		if (cnt)
-			udelay(10);
-		else
-{
-printk("%s: read reg %x timed out. addr=%x.\n",
-    __func__, addr & ~FARX_DATA_FLAG, addr);
+			qla2xxx_schedule_udelay(10);
+		else {
+			printk("%s: read reg %x timed out. addr=%x.\n",
+			    __func__, addr & ~FARX_DATA_FLAG, addr);
 			rval = QLA_FUNCTION_TIMEOUT;
-}
+		}
 	}
 
 	/* TODO: What happens if we time out? */
@@ -283,9 +287,12 @@ qim24xx_write_flash_dword(scsi_qla_host_t *ha, uint32_t addr, uint32_t data)
 	for (cnt = 500000; (RD_REG_DWORD(&reg->flash_addr) & FARX_DATA_FLAG) &&
 	    rval == QLA_SUCCESS; cnt--) {
 		if (cnt)
-			udelay(10);
-		else
+			qla2xxx_schedule_udelay(10);
+		else {
+			printk("%s: read reg %x timed out. addr=%x.\n",
+			    __func__, addr & ~FARX_DATA_FLAG, addr);
 			rval = QLA_FUNCTION_TIMEOUT;
+		}
 	}
 	return rval;
 }
@@ -401,21 +408,21 @@ qim_lock_nvram_access(scsi_qla_host_t *ha)
 	if (!IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA2300(ha)) {
 		data = RD_REG_WORD(&reg->nvram);
 		while (data & NVR_BUSY) {
-			udelay(100);
+			qla2xxx_schedule_udelay(100);
 			data = RD_REG_WORD(&reg->nvram);
 		}
 
 		/* Lock resource */
 		WRT_REG_WORD(&reg->u.isp2300.host_semaphore, 0x1);
 		RD_REG_WORD(&reg->u.isp2300.host_semaphore);
-		udelay(5);
+		qla2xxx_schedule_udelay(5);
 		data = RD_REG_WORD(&reg->u.isp2300.host_semaphore);
 		while ((data & BIT_0) == 0) {
 			/* Lock failed */
-			udelay(100);
+			qla2xxx_schedule_udelay(100);
 			WRT_REG_WORD(&reg->u.isp2300.host_semaphore, 0x1);
 			RD_REG_WORD(&reg->u.isp2300.host_semaphore);
-			udelay(5);
+			qla2xxx_schedule_udelay(5);
 			data = RD_REG_WORD(&reg->u.isp2300.host_semaphore);
 		}
 	}
@@ -999,7 +1006,7 @@ qim_poll_flash(scsi_qla_host_t *ha, uint32_t addr, uint8_t poll_data,
 			if ((flash_data & BIT_5) && cnt > 2)
 				cnt = 2;
 		}
-		udelay(10);
+		qla2xxx_schedule_udelay(10);
 		barrier();
 	}
 	return (status);
@@ -1038,7 +1045,7 @@ qim_program_flash_address(scsi_qla_host_t *ha, uint32_t addr, uint8_t data,
 		}
 	}
 
-	udelay(150);
+	qla2xxx_schedule_udelay(150);
 
 	/* Wait for write to complete. */
 	return (qim_poll_flash(ha, addr, data, man_id, flash_id));
@@ -1072,7 +1079,7 @@ qim_erase_flash(scsi_qla_host_t *ha, uint8_t man_id, uint8_t flash_id)
 		qim_write_flash_byte(ha, 0x5555, 0x10);
 	}
 
-	udelay(150);
+	qla2xxx_schedule_udelay(150);
 
 	/* Wait for erase to complete. */
 	return (qim_poll_flash(ha, 0x00, 0x80, man_id, flash_id));
@@ -1103,7 +1110,7 @@ qim_erase_flash_sector(scsi_qla_host_t *ha, uint32_t addr,
 	else
 		qim_write_flash_byte(ha, addr & sec_mask, 0x30);
 
-	udelay(150);
+	qla2xxx_schedule_udelay(150);
 
 	/* Wait for erase to complete. */
 	return (qim_poll_flash(ha, addr, 0x80, man_id, flash_id));
@@ -1489,7 +1496,7 @@ qim_read_flash_image(scsi_qla_host_t *ha, uint8_t *kern_tmp, uint32_t saddr,
 		}
 		data = qim_read_flash_byte(ha, saddr);
 		if (saddr % 100)
-			udelay(10);
+			qla2xxx_schedule_udelay(10);
 		*kern_tmp = data;
 	}
 	qim_flash_disable(ha);
@@ -1518,7 +1525,7 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	int ret;
 	uint32_t liter;
 	uint32_t sec_mask, rest_addr, conf_addr;
-	uint32_t fdata, findex;
+	uint32_t fdata, findex, cnt;
 	uint8_t	man_id, flash_id;
 	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
 
@@ -1531,14 +1538,19 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	conf_addr = flash_conf_to_access_addr(0x03d8);
 	switch (man_id) {
 	case 0xbf: // STT flash
-		rest_addr = 0x1fff;
-		sec_mask = 0x3e000;
+		if (flash_id == 0x8e) {
+			rest_addr = 0x3fff;
+			sec_mask = 0x7c000;
+		} else {
+			rest_addr = 0x1fff;
+			sec_mask = 0x7e000;
+		}
 		if (flash_id == 0x80)
 			conf_addr = flash_conf_to_access_addr(0x0352);
 		break;
 	case 0x13: // ST M25P80
 		rest_addr = 0x3fff;
-		sec_mask = 0x3c000;
+		sec_mask = 0x7c000;
 		break;
 	case 0x1f: // Atmel 26DF081A
 		rest_addr = 0x3fff;
@@ -1548,7 +1560,7 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	default:
 		// Default to 64 kb sector size
 		rest_addr = 0x3fff;
-		sec_mask = 0x3c000;
+		sec_mask = 0x7c000;
 		break;
 	}
 
@@ -1605,6 +1617,15 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 			}
 		}
 	} while (0);
+
+        /* Enable flash write-protection and wait for completion */
+        qim24xx_write_flash_dword(ha, flash_conf_to_access_addr(0x101), 0x9c);
+        for (cnt = 300; cnt &&
+	    qim24xx_read_flash_dword(ha,
+		flash_conf_to_access_addr(0x005)) & BIT_0;
+	    cnt--) {
+		qla2xxx_schedule_udelay(10);
+	}
 
 	/* Disable flash write. */
 	WRT_REG_DWORD(&reg->ctrl_status,
@@ -1732,10 +1753,12 @@ qim24xx_get_flash_version(struct qla_host_ioctl *ha, uint8_t *ptmp_mem)
 int
 qim24xx_refresh_flash_version(struct qla_host_ioctl *ha, uint8_t *ptmp_mem)
 {
-	unsigned long	flags;
 	int		ret = 0;
 	int		status;
 	struct scsi_qla_host	*dr_ha = ha->dr_data;
+	struct qla_host_ioctl   *hba2  = NULL;
+	struct list_head        *ioctl1;
+	struct scsi_qla_host  *dr_ha1 = NULL;
 
 	/* suspend targets */
 	qim_suspend_all_target(dr_ha);
@@ -1756,13 +1779,42 @@ qim24xx_refresh_flash_version(struct qla_host_ioctl *ha, uint8_t *ptmp_mem)
 
 	qim_disable_intrs(dr_ha);
 
-	spin_lock_irqsave(&dr_ha->hardware_lock, flags);
 	if (qim24xx_get_flash_version(ha, ptmp_mem)) {
 		ret = QLA_FUNCTION_FAILED;
 		DEBUG9_10(printk( "%s: ERROR reading flash versions.\n",
 		    __func__);)
 	}
-	spin_unlock_irqrestore(&dr_ha->hardware_lock,flags);
+
+	/* Reset the second function */
+	read_lock(&qim_haioctl_list_lock);
+	list_for_each(ioctl1, &qim_haioctl_list) {
+		hba2 = list_entry(ioctl1, struct qla_host_ioctl, list);
+		dr_ha1 = hba2->dr_data;
+		if (pci_domain_nr(dr_ha1->pdev->bus) ==
+		    pci_domain_nr(dr_ha->pdev->bus) &&
+		    dr_ha1->pdev->bus->number ==
+		    dr_ha->pdev->bus->number &&
+		    PCI_SLOT(dr_ha1->pdev->devfn) ==
+		    PCI_SLOT(dr_ha->pdev->devfn) &&
+		    PCI_FUNC(dr_ha1->pdev->devfn) !=
+		    PCI_FUNC(dr_ha->pdev->devfn)) {
+		    	if (ql2xfwloadbin == 1) {
+				DEBUG9(printk("%s(%ld) resetting second "
+				    "function\n", __func__, dr_ha1->host_no));
+				set_bit(ISP_ABORT_NEEDED, &dr_ha1->dpc_flags);
+				up(dr_ha1->dpc_wait);
+				qim_wait_for_hba_online(dr_ha1);
+			}
+			break;
+		}
+
+	}
+	read_unlock(&qim_haioctl_list_lock);
+
+	memcpy(hba2->bios_revision, ha->bios_revision, sizeof(ha->bios_revision));
+	memcpy(hba2->fcode_revision, ha->fcode_revision, sizeof(ha->fcode_revision));
+	memcpy(hba2->efi_revision, ha->efi_revision, sizeof(ha->efi_revision));
+	memcpy(hba2->fw_revision, ha->fw_revision, sizeof(ha->fw_revision));
 
 	qim_enable_intrs(dr_ha);
 	clear_bit(MBX_UPDATE_FLASH_ACTIVE, &dr_ha->mbx_cmd_flags);
@@ -1813,6 +1865,15 @@ qim24xx_update_or_read_flash(scsi_qla_host_t *ha, uint8_t *image,
 		    length >> 2));
 		status = qim24xx_write_flash_data(ha, (uint32_t *)image,
 		    saddr >> 2, length >> 2);
+
+		if (ql2xfwloadbin == 1) {
+			/* Reset the first function */
+			DEBUG9(printk("%s(%ld) resetting first function\n", __func__,
+			    ha->host_no));
+			set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
+			up(ha->dpc_wait);
+			qim_wait_for_hba_online(ha);
+		}
 		break;
 	default:
 		printk(KERN_INFO "%s unknown operation\n", __func__);
@@ -1820,14 +1881,6 @@ qim24xx_update_or_read_flash(scsi_qla_host_t *ha, uint8_t *image,
 	}
 
 	qim_enable_intrs(ha);
-
-	if (direction == QLA2X00_WRITE) {
-		/* Schedule DPC to restart the RISC */
-		set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
-		up(ha->dpc_wait);
-		qim_wait_for_hba_online(ha);
-	}
-
 	clear_bit(MBX_UPDATE_FLASH_ACTIVE, &ha->mbx_cmd_flags);
 
 	qim_unsuspend_all_target(ha);
@@ -1840,7 +1893,6 @@ qim_update_or_read_flash(scsi_qla_host_t *ha, uint8_t *image,
     uint32_t saddr, uint32_t length, uint8_t direction)
 {
 	uint16_t    status;	
-	unsigned long flags;
 	uint32_t	cnt;
 	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
@@ -1867,7 +1919,6 @@ qim_update_or_read_flash(scsi_qla_host_t *ha, uint8_t *image,
 	qim_disable_intrs(ha);
 
 	/* Pause RISC. */
-	spin_lock_irqsave(&ha->hardware_lock, flags);
 	WRT_REG_WORD(&reg->hccr, HCCR_PAUSE_RISC);
 	RD_REG_WORD(&reg->hccr);
 	if (IS_QLA2100(ha) || IS_QLA2200(ha) || IS_QLA2300(ha)) {
@@ -1875,12 +1926,11 @@ qim_update_or_read_flash(scsi_qla_host_t *ha, uint8_t *image,
 			if ((RD_REG_WORD(&reg->hccr) &
 			    HCCR_RISC_PAUSE) != 0)
 				break;
-			udelay(100);
+			qla2xxx_schedule_udelay(100);
 		}
 	} else {
-		udelay(10);
+		qla2xxx_schedule_udelay(10);
 	}
-	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	switch (direction) {
 	case QLA2X00_READ:
@@ -2084,7 +2134,7 @@ qim_get_flash_version(struct qla_host_ioctl *ha, uint8_t *ptmp_mem)
 			if (qim_get_fcode_version(ha, pcids) == QLA_SUCCESS)
 				set_bit(ROM_CODE_TYPE_FCODE, &ha->code_types);
 			DEBUG9(printk("%s(): read FCODE %d.%d.%d.\n", __func__,
-			    ha->bios_revision[1], ha->bios_revision[0]);)
+			    ha->fcode_revision[1], ha->fcode_revision[1], ha->fcode_revision[0]);)
 			break;
 		case ROM_CODE_TYPE_EFI:
 			/* Extensible Firmware Interface (EFI). */

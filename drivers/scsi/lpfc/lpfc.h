@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc.h 3122 2008-01-07 18:49:20Z sf_support $
+ * $Id: lpfc.h 3230 2008-11-18 21:15:25Z sf_support $
  */
 
 #ifndef _H_LPFC
@@ -37,6 +37,8 @@ struct lpfc_sli2_slim;
 
 #define LPFC_HB_MBOX_INTERVAL   5      /* Heart beat interval in seconds. */
 #define LPFC_HB_MBOX_TIMEOUT    30     /* Heart beat timeout  in seconds. */
+#define MENLO_DID  0x0000FC0E
+#define MENLO_TRANSPORT_TYPE  0xfe
 
 /* Define macros for 64 bit support */
 #define putPaddrLow(addr)    ((uint32_t) (0xffffffff & (u64)(addr)))
@@ -352,6 +354,9 @@ struct lpfc_hba {
 	uint32_t cfg_discovery_min_wait;
 #define CFG_DISC_INFINITE_WAIT (600)
 	uint32_t cfg_discovery_wait_limit;
+	uint32_t cfg_enable_hba_reset;
+	uint32_t cfg_enable_hba_heartbeat;
+	uint32_t cfg_hostmem_hgp;
 	uint64_t cfg_soft_wwpn;
 
 	lpfc_vpd_t vpd;		/* vital product data */
@@ -453,7 +458,16 @@ struct lpfc_hba {
 	uint8_t temp_sensor_support;
 
 	enum hba_temp_state over_temp_state;
+	int     wait_4_mlo_maint_flg;
+	wait_queue_head_t wait_4_mlo_m_q;
 	uint8_t restart_pending;
+
+/* Number of seconds to delay aborted els iocb free */
+#define ELS_IOCB_DELAY_TIME 20
+	struct list_head delayed_iocbs;
+	struct timer_list delayed_iocb_tmo;
+	unsigned long next_delayed_timer;
+	unsigned long delayed_iocb_count;
 };
 
 /* event mask definitions */
@@ -522,4 +536,9 @@ static inline u64 lpfc_wwn_to_u64(u8 *wwn)
 	    (u64)wwn[6] <<  8 | (u64)wwn[7];
 }
 
+#define MENLO_CMD_FW_DOWNLOAD 0x00000002
+#define MENLO_PU 3
+#define MENLO_CMD_HDR_SIZE 12
+#define SETVAR_MLOMNT 0x103107
+#define SETVAR_MLORST 0x103007
 #endif				/* _H_LPFC */

@@ -919,7 +919,7 @@ void ata_scsi_slave_destroy(struct scsi_device *sdev)
 	if (dev && dev->sdev) {
 		/* SCSI device already in CANCEL state, no need to offline it */
 		dev->sdev = NULL;
-		dev->flags |= ATA_DFLAG_DETACH;
+		dev->flags |= ATA_DFLAG_DETACH | ATA_DFLAG_USER_SCAN;
 		ata_port_schedule_eh(ap);
 	}
 	spin_unlock_irqrestore(ap->lock, flags);
@@ -2513,8 +2513,18 @@ ata_scsi_find_dev(struct ata_port *ap, const struct scsi_device *scsidev)
 {
 	struct ata_device *dev = __ata_scsi_find_dev(ap, scsidev);
 
-	if (unlikely(!dev || !ata_scsi_dev_enabled(dev)))
+	if (unlikely(!dev))
 		return NULL;
+	
+	if (unlikely(!ata_scsi_dev_enabled(dev)))
+		/* If disabled, check if user-initiated */
+		if (dev->flags & ATA_DFLAG_USER_SCAN){
+			/* Reset flag, re-enable device */
+			dev->flags &= ~ATA_DFLAG_USER_SCAN;
+			dev->class--;
+			return dev;
+		} else
+			return NULL;
 
 	return dev;
 }
@@ -3023,6 +3033,7 @@ static void ata_scsi_remove_dev(struct ata_device *dev)
 void ata_scsi_hotplug(void *data)
 {
 	struct ata_port *ap = data;
+	struct Scsi_Host *shost = ap->scsi_host;
 	int i;
 
 	if (ap->pflags & ATA_PFLAG_UNLOADING) {
@@ -3046,6 +3057,9 @@ void ata_scsi_hotplug(void *data)
 
 		ata_scsi_remove_dev(dev);
 	}
+
+	/* IO may have been cancelled during hotplug removal */
+	clear_bit(SHOST_CANCEL, &shost->shost_state);
 
 	/* scan for new ones */
 	ata_scsi_scan_host(ap);

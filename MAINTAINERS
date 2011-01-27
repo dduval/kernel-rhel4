@@ -1563,8 +1563,8 @@ L:	netdev@oss.sgi.com
 S:	Maintained
 
 NETXEN (1/10) GbE SUPPORT
-P:	Amit S. Kale
-M:	amitkale@netxen.com
+P:	Dhananjay Phadke
+M:	dhananjay@netxen.com
 L:	netdev@vger.kernel.org
 W:	http://www.netxen.com
 S:	Supported

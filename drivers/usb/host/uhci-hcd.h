@@ -324,7 +324,7 @@ enum uhci_state {
  * a subset of what the full implementation needs.
  */
 struct uhci_hcd {
-	struct usb_hcd hcd;
+	struct usb_hcd hcd;		/* @offset 0 for kfree() */
 
 #ifdef CONFIG_PROC_FS
 	/* procfs */

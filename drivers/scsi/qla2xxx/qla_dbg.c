@@ -243,7 +243,7 @@ static inline void
 qla2xxx_read_window(struct device_reg_2xxx __iomem *reg, uint32_t count,
     uint16_t *buf)
 {
-	uint16_t __iomem *dmp_reg = &reg->u.isp2300.fb_cmd;
+	uint16_t __iomem *dmp_reg = (uint16_t __iomem *)&reg->u.isp2300.fb_cmd;
 
 	while (count--)
 		*buf++ = htons(RD_REG_WORD(dmp_reg++));
@@ -311,15 +311,15 @@ qla2300_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	}
 
 	if (rval == QLA_SUCCESS) {
-		dmp_reg = &reg->flash_address;
+		dmp_reg = (uint16_t __iomem *)&reg->flash_address;
 		for (cnt = 0; cnt < sizeof(fw->pbiu_reg) / 2; cnt++)
 			fw->pbiu_reg[cnt] = htons(RD_REG_WORD(dmp_reg++));
 
-		dmp_reg = &reg->u.isp2300.req_q_in;
+		dmp_reg = (uint16_t __iomem *)&reg->u.isp2300.req_q_in;
 		for (cnt = 0; cnt < sizeof(fw->risc_host_reg) / 2; cnt++)
 			fw->risc_host_reg[cnt] = htons(RD_REG_WORD(dmp_reg++));
 
-		dmp_reg = &reg->u.isp2300.mailbox0;
+		dmp_reg = (uint16_t __iomem *)&reg->u.isp2300.mailbox0;
 		for (cnt = 0; cnt < sizeof(fw->mailbox_reg) / 2; cnt++)
 			fw->mailbox_reg[cnt] = htons(RD_REG_WORD(dmp_reg++));
 
@@ -637,14 +637,15 @@ qla2100_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 			rval = QLA_FUNCTION_TIMEOUT;
 	}
 	if (rval == QLA_SUCCESS) {
-		dmp_reg = &reg->flash_address;
+		dmp_reg = (uint16_t __iomem *)&reg->flash_address;
 		for (cnt = 0; cnt < sizeof(fw->pbiu_reg) / 2; cnt++)
 			fw->pbiu_reg[cnt] = htons(RD_REG_WORD(dmp_reg++));
 
-		dmp_reg = &reg->u.isp2100.mailbox0;
+		dmp_reg = (uint16_t __iomem *)&reg->u.isp2100.mailbox0;
 		for (cnt = 0; cnt < ha->mbx_count; cnt++) {
 			if (cnt == 8)
-				dmp_reg = &reg->u_end.isp2200.mailbox8;
+				dmp_reg = (uint16_t __iomem *)
+				    &reg->u_end.isp2200.mailbox8;
 
 			fw->mailbox_reg[cnt] = htons(RD_REG_WORD(dmp_reg++));
 		}
@@ -835,7 +836,7 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 		goto qla24xx_fw_dump_failed_0;
 
 	/* Host interface registers. */
-	dmp_reg = &reg->flash_addr;
+	dmp_reg = (uint32_t __iomem *)&reg->flash_addr;
 	for (cnt = 0; cnt < sizeof(fw->host_reg) / 4; cnt++)
 		fw->host_reg[cnt] = htonl(RD_REG_DWORD(dmp_reg++));
 
@@ -868,7 +869,7 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	fw->shadow_reg[6] = htonl(RD_REG_DWORD(&reg->iobase_sdata));
 
 	/* Mailbox registers. */
-	mbx_reg = &reg->mailbox0;
+	mbx_reg = (uint16_t __iomem *)&reg->mailbox0;
 	for (cnt = 0; cnt < sizeof(fw->mailbox_reg) / 2; cnt++)
 		fw->mailbox_reg[cnt] = htons(RD_REG_WORD(mbx_reg++));
 
@@ -1100,7 +1101,7 @@ qla25xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	RD_REG_DWORD(&reg->iobase_window);
 
 	/* Host interface registers. */
-	dmp_reg = &reg->flash_addr;
+	dmp_reg = (uint32_t __iomem *)&reg->flash_addr;
 	for (cnt = 0; cnt < sizeof(fw->host_reg) / 4; cnt++)
 		fw->host_reg[cnt] = htonl(RD_REG_DWORD(dmp_reg++));
 
@@ -1149,7 +1150,7 @@ qla25xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	fw->risc_io_reg = htonl(RD_REG_DWORD(&reg->iobase_window));
 
 	/* Mailbox registers. */
-	mbx_reg = &reg->mailbox0;
+	mbx_reg = (uint16_t __iomem *)&reg->mailbox0;
 	for (cnt = 0; cnt < sizeof(fw->mailbox_reg) / 2; cnt++)
 		fw->mailbox_reg[cnt] = htons(RD_REG_WORD(mbx_reg++));
 
@@ -1379,8 +1380,8 @@ qla2x00_dump_regs(scsi_qla_host_t *ha)
 	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
 	uint16_t __iomem *mbx_reg;
 
-	mbx_reg = IS_FWI2_CAPABLE(ha) ? &reg24->mailbox0:
-	    MAILBOX_REG(ha, reg, 0);
+	mbx_reg = IS_FWI2_CAPABLE(ha) ? (uint16_t __iomem *)&reg24->mailbox0:
+	    (uint16_t __iomem *)MAILBOX_REG(ha, reg, 0);
 
 	printk("Mailbox registers:\n");
 	for (i = 0; i < 6; i++)

@@ -94,6 +94,16 @@ static int poll_one_napi(struct netpoll_info *npinfo,
 	if (!test_bit(__LINK_STATE_RX_SCHED, &dev->state))
 		return budget;
 
+	/*
+	 * Some drivers are really good citizens and double
+	 * check that they're not taking more than their fair
+	 * share of rx work.  They do this by making sure the passed
+	 * in budget number doesn't exceed their device quota
+	 * this ensures that they can receive in this path
+	 */
+	if (dev->quota <= 0)
+		dev->quota += dev->weight;
+
 	npinfo->rx_flags |= NETPOLL_RX_DROP;
 	atomic_inc(&trapped);
 
@@ -119,9 +129,9 @@ static void poll_napi(struct net_device *dev)
 	npinfo = ndw->npinfo;
 
 	if (npinfo->poll_owner != smp_processor_id() &&
-	    spin_trylock(&npinfo->poll_lock)) {
+	    spin_trylock_bh(&npinfo->poll_lock)) {
 		budget = poll_one_napi(npinfo, dev, budget);
-		spin_unlock(&npinfo->poll_lock);
+		spin_unlock_bh(&npinfo->poll_lock);
 	}
 }
 

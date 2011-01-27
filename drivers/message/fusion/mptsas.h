@@ -5,7 +5,7 @@
  *          LSIFC9xx/LSI409xx Fibre Channel
  *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Corporation
+ *  Copyright (c) 1999-2008 LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
@@ -49,31 +49,41 @@
 #define MPTSAS_H_INCLUDED
 /*{-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 
-struct mptscsih_target_reset {
+struct mptsas_target_reset_event {
 	struct list_head 	list;
 	EVENT_DATA_SAS_DEVICE_STATUS_CHANGE sas_event_data;
 	u8	target_reset_issued;
+	unsigned long	 time_count;
 };
 
 enum mptsas_hotplug_action {
 	MPTSAS_ADD_DEVICE,
 	MPTSAS_DEL_DEVICE,
+	MPTSAS_ADD_RAID,
+	MPTSAS_DEL_RAID,
 	MPTSAS_ADD_INACTIVE_VOLUME,
-	MPTSAS_PHYSDISK_ADD,
+	MPTSAS_ADD_PHYSDISK,
+	MPTSAS_ADD_PHYSDISK_REPROBE,
+	MPTSAS_DEL_PHYSDISK,
+	MPTSAS_DEL_PHYSDISK_REPROBE,
+	MPTSAS_IGNORE_EVENT,
 };
 
 struct mptsas_hotplug_event {
-	struct work_struct	work;
+	struct work_struct	 hotplug_work;
 	MPT_ADAPTER		*ioc;
 	enum mptsas_hotplug_action event_type;
 	u64			sas_address;
-	u32			channel;
-	u32			id;
+	u8			channel;
+	u8			id;
 	u32			device_info;
 	u16			handle;
-	u16			parent_handle;
 	u8			phy_id;
+	u8			phys_disk_num;		/* hrc - unique index*/
+	u8			retries;
 	u8			refresh_raid_config_pages;
+	struct scsi_device	*sdev;
+	struct list_head 	list;
 };
 
 /*
@@ -161,7 +171,7 @@ struct mptsas_enclosure {
 };
 
 struct mptsas_broadcast_primative_event {
-	struct work_struct	work;
+	struct work_struct	aen_work;
 	MPT_ADAPTER		*ioc;
 };
 

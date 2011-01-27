@@ -39,5 +39,9 @@ static inline void vlan_group_set_device(struct vlan_group *vg, int vlan_id,
 	vg->vlan_devices[vlan_id] = NULL;
 }
 
+#define PCI_VDEVICE(vendor, device)		\
+	PCI_VENDOR_ID_##vendor, (device),	\
+	PCI_ANY_ID, PCI_ANY_ID, 0, 0
+
 #endif 
 

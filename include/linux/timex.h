@@ -392,6 +392,29 @@ time_interpolator_reset(void)
 
 #endif /* !CONFIG_TIME_INTERPOLATION */
 
+/* Code based on patch from http://lkml.org/lkml/2009/1/2/415.
+   RHEL4 code base is significantly different from upstream so we have to
+   resort to this ... */
+
+extern unsigned long leap_second;
+
+static inline void leap_second_message(void)
+{
+	if (unlikely(leap_second != TIME_OK)) {
+		switch (leap_second) {
+		case TIME_INS:
+			printk(KERN_NOTICE "Clock: inserting leap second "
+					"23:59:60 UTC\n");
+			break;
+		case TIME_DEL:
+			printk(KERN_NOTICE "Clock: deleting leap second "
+					"23:59:59 UTC\n");
+			break;
+		}
+		leap_second = TIME_OK;
+	}
+}
+
 #endif /* KERNEL */
 
 #endif /* LINUX_TIMEX_H */

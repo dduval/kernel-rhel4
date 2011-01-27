@@ -88,6 +88,7 @@ struct inode_operations_ext nfs4_file_inode_operations = {
 	.i_op_orig.getattr	= nfs_getattr,
 	.i_op_orig.setattr	= nfs_setattr,
 	.getattr64		= nfs_getattr64,
+	.lookup_undo		= nfs4_lookup_undo,
 };
 #endif	/* CONFIG_NFS_v4 */
 

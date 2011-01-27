@@ -433,7 +433,7 @@ static int fib6_add_rt2node(struct fib6_node *fn, struct rt6_info *rt,
 
 	if (fn->fn_flags&RTN_TL_ROOT &&
 	    fn->leaf == &ip6_null_entry &&
-	    !(rt->rt6i_flags & (RTF_DEFAULT | RTF_ADDRCONF | RTF_ALLONLINK)) ){
+	    !(rt->rt6i_flags & (RTF_DEFAULT | RTF_ADDRCONF)) ){
 		fn->leaf = rt;
 		rt->u.next = NULL;
 		goto out;
@@ -492,14 +492,14 @@ out:
 
 static __inline__ void fib6_start_gc(struct rt6_info *rt)
 {
-	if (ip6_fib_timer.expires == 0 &&
+	if (!timer_pending(&ip6_fib_timer) &&
 	    (rt->rt6i_flags & (RTF_EXPIRES|RTF_CACHE)))
 		mod_timer(&ip6_fib_timer, jiffies + ip6_rt_gc_interval);
 }
 
 void fib6_force_start_gc(void)
 {
-	if (ip6_fib_timer.expires == 0)
+	if (!timer_pending(&ip6_fib_timer))
 		mod_timer(&ip6_fib_timer, jiffies + ip6_rt_gc_interval);
 }
 

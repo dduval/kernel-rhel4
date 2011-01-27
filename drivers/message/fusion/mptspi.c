@@ -3,7 +3,7 @@
  *      For use with LSI PCI chip/adapter(s)
  *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Corporation
+ *  Copyright (c) 1999-2008 LSI Corporation
  *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
@@ -114,6 +114,7 @@ static int mptspi_slave_configure(struct scsi_device *sdev);
 static int	mptspiDoneCtx = -1;
 static int	mptspiTaskCtx = -1;
 static int	mptspiInternalCtx = -1; /* Used only for internal commands */
+static int	mptspiDVCtx = -1; /* Used only for DV commands */
 
 static struct device_attribute mptspi_queue_depth_attr = {
 	.attr = {
@@ -251,6 +252,7 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ioc->DoneCtx = mptspiDoneCtx;
 	ioc->TaskCtx = mptspiTaskCtx;
 	ioc->InternalCtx = mptspiInternalCtx;
+	ioc->DVCtx = mptspiDVCtx;
 
 	/*  Added sanity check on readiness of the MPT adapter.
 	 */
@@ -393,6 +395,8 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	init_timer(&hd->InternalCmdTimer);
 	hd->InternalCmdTimer.data = (unsigned long) hd;
 	hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
+	init_waitqueue_head(&hd->InternalCmd_waitq);
+	hd->InternalCmd_wait_done = 0;
 
 	init_timer(&hd->DVCmdTimer);
 	hd->DVCmdTimer.data = (unsigned long) hd;
@@ -442,8 +446,8 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->spi_data.dvStatus[ii] =
 		  (MPT_SCSICFG_NEGOTIATE | MPT_SCSICFG_DV_NOT_DONE);
 
-	init_waitqueue_head(&hd->scandv_waitq);
-	hd->scandv_wait_done = 0;
+	init_waitqueue_head(&hd->DVCmd_waitq);
+	hd->DVCmd_wait_done = 0;
 	hd->last_queue_full = 0;
 
 	init_waitqueue_head(&hd->TM_waitq);
@@ -505,7 +509,8 @@ mptspi_init(void)
 
 	mptspiDoneCtx = mpt_register(mptscsih_io_done, MPTSPI_DRIVER);
 	mptspiTaskCtx = mpt_register(mptscsih_taskmgmt_complete, MPTSPI_DRIVER);
-	mptspiInternalCtx = mpt_register(mptscsih_scandv_complete, MPTSPI_DRIVER);
+	mptspiDVCtx = mpt_register(mptscsih_DVCmd_complete, MPTSPI_DRIVER);
+	mptspiInternalCtx = mpt_register(mptscsih_InternalCmd_complete, MPTSPI_DRIVER);
 
 	if (mpt_event_register(mptspiDoneCtx, mptscsih_event_process) == 0) {
 		devtprintk((KERN_INFO MYNAM
@@ -540,6 +545,7 @@ mptspi_exit(void)
 	  ": Deregistered for IOC event notifications\n"));
 
 	mpt_deregister(mptspiInternalCtx);
+	mpt_deregister(mptspiDVCtx);
 	mpt_deregister(mptspiTaskCtx);
 	mpt_deregister(mptspiDoneCtx);
 }

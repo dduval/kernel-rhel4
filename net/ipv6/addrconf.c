@@ -357,6 +357,7 @@ void in6_dev_finish_destroy(struct inet6_dev *idev)
 static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 {
 	struct inet6_dev *ndev;
+	struct in6_addr maddr;
 
 	ASSERT_RTNL();
 
@@ -429,9 +430,6 @@ static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 		if (netif_carrier_ok(dev))
 			ndev->if_flags |= IF_READY;
 
-		write_lock_bh(&addrconf_lock);
-		dev->ip6_ptr = ndev;
-		write_unlock_bh(&addrconf_lock);
 
 		ipv6_mc_init_dev(ndev);
 		ndev->tstamp = jiffies;
@@ -440,6 +438,13 @@ static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 			NET_IPV6_NEIGH, "ipv6", &ndisc_ifinfo_sysctl_change);
 		addrconf_sysctl_register(ndev, &ndev->cnf);
 #endif
+		write_lock_bh(&addrconf_lock);
+		dev->ip6_ptr = ndev;
+		write_unlock_bh(&addrconf_lock);
+
+		/* Join all-node multicast group */
+		ipv6_addr_all_nodes(&maddr);
+		ipv6_dev_mc_inc(dev, &maddr);
 	}
 	return ndev;
 }
@@ -821,10 +826,7 @@ int ipv6_dev_get_saddr(struct net_device *dev,
 	int err;
 	int hiscore = -1, score;
 
-	if (!onlink)
-		scope = ipv6_addr_scope(daddr);
-	else
-		scope = IFA_LINK;
+	scope = ipv6_addr_scope(daddr);
 
 	/*
 	 *	known dev
@@ -929,17 +931,7 @@ out:
 int ipv6_get_saddr(struct dst_entry *dst,
 		   struct in6_addr *daddr, struct in6_addr *saddr)
 {
-	struct rt6_info *rt;
-	struct net_device *dev = NULL;
-	int onlink;
-
-	rt = (struct rt6_info *) dst;
-	if (rt)
-		dev = rt->rt6i_dev;
-
-	onlink = (rt && (rt->rt6i_flags & RTF_ALLONLINK));
-
-	return ipv6_dev_get_saddr(dev, daddr, saddr, onlink);
+	return ipv6_dev_get_saddr(dst ? ((struct rt6_info *)dst)->rt6i_idev->dev : NULL, daddr, saddr, 0);
 }
 
 

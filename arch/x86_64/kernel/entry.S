@@ -478,6 +478,7 @@ iret_label:
 	/* running with kernel gs */
 bad_iret:
 	movq $-9999,%rdi	/* better code? */
+	sti
 	jmp do_exit			
 	.previous	
 	

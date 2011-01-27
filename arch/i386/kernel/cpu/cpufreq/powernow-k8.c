@@ -1341,11 +1341,16 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
         if (tscsync) {
                 u32 reg;
                 sync_tables(pol->cpu);
-                reg = read_pci_config(0, NB_PCI_ADDR + cpu_core_id[pol->cpu],
-				      NB_PM_DEV, NB_C1_REG);
-                /* turn off C1 clock ramping */
-                write_pci_config(0, NB_PCI_ADDR + cpu_core_id[pol->cpu],
-				 NB_PM_DEV, NB_C1_REG, reg & NB_C1_MASK);
+		/* turn off C1 clock ramping but only if we dont specifically */
+		/* overrride with processor.max_cstate=9 */
+		if (max_cstate <= ACPI_PROCESSOR_MAX_POWER) {
+			printk(KERN_INFO PFX "Disabling C1 clock ramping for \
+				this cpu core... tscsync flag is set.\n");
+			reg = read_pci_config(0, NB_PCI_ADDR + cpu_core_id[pol->cpu],
+					NB_PM_DEV, NB_C1_REG);
+			write_pci_config(0, NB_PCI_ADDR + cpu_core_id[pol->cpu],
+					NB_PM_DEV, NB_C1_REG, reg & NB_C1_MASK);
+		}
         }
 #endif
 

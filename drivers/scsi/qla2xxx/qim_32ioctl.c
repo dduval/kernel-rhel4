@@ -25,8 +25,7 @@
 
 #include "exioct.h"
 #include "qlfoln.h"
-#include "qla_dbg.h"
-
+#include "qla_def.h"
 
 /* fs/ioctl.c */
 extern asmlinkage long sys_ioctl(unsigned int fd, unsigned int cmd, void *);

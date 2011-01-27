@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mem.c 2757 2005-12-09 18:21:44Z sf_support $
+ * $Id: lpfc_mem.c 3230 2008-11-18 21:15:25Z sf_support $
  */
 
 #include <linux/mempool.h>
@@ -135,6 +135,12 @@ lpfc_mem_free(struct lpfc_hba * phba)
 	LPFC_MBOXQ_t *mbox, *next_mbox;
 	struct lpfc_dmabuf   *mp;
 	int i;
+
+	/*
+	 * If there are iocb resources which are dalayed, free them now.
+ 	 */
+	del_timer_sync(&phba->delayed_iocb_tmo);
+	lpfc_free_all_delayed_iocbs(phba);
 
 	list_for_each_entry_safe(mbox, next_mbox, &psli->mboxq, list) {
 		mp = (struct lpfc_dmabuf *) (mbox->context1);

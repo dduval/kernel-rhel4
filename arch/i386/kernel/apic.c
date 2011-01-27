@@ -500,8 +500,7 @@ void __init setup_local_APIC (void)
 			printk("No ESR for 82489DX.\n");
 	}
 
-	if (nmi_watchdog == NMI_LOCAL_APIC)
-		setup_apic_nmi_watchdog();
+	setup_apic_nmi_watchdog();
 	apic_pm_activate();
 }
 

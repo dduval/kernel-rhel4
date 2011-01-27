@@ -428,11 +428,21 @@ static int disk_ctr(struct dirty_log *log, struct dm_target *ti,
 	bitset_size = lc->bitset_uint32_count * sizeof(uint32_t);
 	size = dm_round_up((LOG_OFFSET << SECTOR_SHIFT) + bitset_size,
 			   ti->limits.hardsect_size);
+
+	if (size > dev->bdev->bd_inode->i_size) {
+		DMWARN("log device %s too small: need %llu bytes",
+		       dev->name, (unsigned long long)size);
+		r = -EINVAL;
+		goto bad;
+	}
+
 	lc->header_location.count = size >> SECTOR_SHIFT;
 
 	lc->disk_header = vmalloc(size);
-	if (!lc->disk_header)
+	if (!lc->disk_header) {
+		r = -ENOMEM;
 		goto bad;
+	}
 
 	/*
 	 * Deallocate the clean_bits buffer that was allocated in core_ctr()
@@ -456,7 +466,7 @@ static int disk_ctr(struct dirty_log *log, struct dm_target *ti,
  bad:
 	dm_put_device(ti, lc->log_dev);
 	core_dtr(log);
-	return -ENOMEM;
+	return r;
 }
 
 static void disk_dtr(struct dirty_log *log)

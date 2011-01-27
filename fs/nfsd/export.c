@@ -146,7 +146,7 @@ int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
 	if (key.h.expiry_time == 0)
 		goto out;
 
-	key.ek_client = dom;	
+	key.ek_client = dom;
 	key.ek_fsidtype = fsidtype;
 	memcpy(key.ek_fsid, buf, len);
 
@@ -171,13 +171,12 @@ int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
 
 		dprintk("Found the path %s\n", buf);
 		exp = exp_get_by_name(dom, nd.mnt, nd.dentry, NULL);
-
 		err = -ENOENT;
-		if (!exp)
+		if (!exp || IS_ERR(exp))
 			goto out_nd;
+
 		key.ek_export = exp;
 		dprintk("And found export\n");
-		
 		ek = svc_expkey_lookup(&key, 1);
 		if (ek)
 			expkey_put(&ek->h, &svc_expkey_cache);
@@ -212,7 +211,7 @@ static int expkey_show(struct seq_file *m,
 		seq_printf(m, "%08x", ek->ek_fsid[1]);
 	if (ek->ek_fsidtype == 2)
 		seq_printf(m, "%08x", ek->ek_fsid[2]);
-	if (test_bit(CACHE_VALID, &h->flags) && 
+	if (test_bit(CACHE_VALID, &h->flags) &&
 	    !test_bit(CACHE_NEGATIVE, &h->flags)) {
 		seq_printf(m, " ");
 		seq_path(m, ek->ek_export->ex_mnt, ek->ek_export->ex_dentry, "\\ \t\n");
@@ -220,7 +219,7 @@ static int expkey_show(struct seq_file *m,
 	seq_printf(m, "\n");
 	return 0;
 }
-	
+
 struct cache_detail svc_expkey_cache = {
 	.hash_size	= EXPKEY_HASHMAX,
 	.hash_table	= expkey_table,
@@ -256,7 +255,114 @@ static inline void svc_expkey_update(struct svc_expkey *new, struct svc_expkey *
 	new->ek_export = item->ek_export;
 }
 
+#ifdef notdef
 static DefineSimpleCacheLookup(svc_expkey,0) /* no inplace updates */
+#else
+/*
+ * just like a template in C++, this macro does cache lookup
+ * for us.
+ * The function is passed some sort of HANDLE from which a cache_detail
+ * structure can be determined (via SETUP, DETAIL), a template
+ * cache entry (type RTN*), and a "set" flag.  Using the HASHFN and the
+ * TEST, the function will try to find a matching cache entry in the cache.
+ * If "set" == 0 :
+ *    If an entry is found, it is returned
+ *    If no entry is found, a new non-VALID entry is created.
+ * If "set" == 1 and INPLACE == 0 :
+ *    If no entry is found a new one is inserted with data from "template"
+ *    If a non-CACHE_VALID entry is found, it is updated from template using
+ *	 UPDATE
+ *    If a CACHE_VALID entry is found, a new entry is swapped in with data
+ *       from "template"
+ * If set == 1, and INPLACE == 1 :
+ *    As above, except that if a CACHE_VALID entry is found, we UPDATE in place
+ *       instead of swapping in a new entry.
+ *
+ * If the passed handle has the CACHE_NEGATIVE flag set, then UPDATE is not
+ * run but instead CACHE_NEGATIVE is set in any new item.
+ *
+ *  In any case, the new entry is returned with a reference count.
+ */
+
+struct svc_expkey *svc_expkey_lookup(struct svc_expkey *item, int set)
+{
+	struct svc_expkey *tmp, *new = NULL;
+	struct cache_head **hp, **head;
+
+	head = &svc_expkey_cache.hash_table[svc_expkey_hash(item)];
+ retry:
+	if (set || new)
+		write_lock(&svc_expkey_cache.hash_lock);
+	else
+		read_lock(&svc_expkey_cache.hash_lock);
+	for (hp = head; *hp != NULL; hp = &tmp->h.next) {
+		tmp = container_of(*hp, struct svc_expkey, h);
+		if (svc_expkey_match(item, tmp)) { /* found a match */
+			if (set && test_bit(CACHE_VALID, &tmp->h.flags) && !new)
+				break;
+			if (new)
+				svc_expkey_init(new, item);
+			if (set) {
+				if (test_bit(CACHE_VALID, &tmp->h.flags)) { /* need to swap in new */
+					struct svc_expkey *t2;
+
+					new->h.next = tmp->h.next;
+					*hp = &new->h;
+					tmp->h.next = NULL;
+					t2 = tmp; tmp = new; new = t2;
+				}
+				if (test_bit(CACHE_NEGATIVE,  &item->h.flags))
+					set_bit(CACHE_NEGATIVE, &tmp->h.flags);
+				else {
+					svc_expkey_update(tmp, item);
+					clear_bit(CACHE_NEGATIVE, &tmp->h.flags);
+				}
+			}
+			cache_get(&tmp->h);
+			if (set || new)
+				write_unlock(&svc_expkey_cache.hash_lock);
+			else
+				read_unlock(&svc_expkey_cache.hash_lock);
+			if (set)
+				cache_fresh(&svc_expkey_cache, &tmp->h, item->h.expiry_time);
+			if (set && new)
+				cache_nofresh(&svc_expkey_cache, &new->h);
+			if (new)
+				expkey_put(&new->h, &svc_expkey_cache);
+			return tmp;
+		}
+	}
+	/* Didn't find anything */
+	if (new) {
+		svc_expkey_init(new, item);
+		new->h.next = *head;
+		*head = &new->h;
+		svc_expkey_cache.entries++;
+		cache_get(&new->h);
+		if (set) {
+			tmp = new;
+			if (test_bit(CACHE_NEGATIVE, &item->h.flags))
+				set_bit(CACHE_NEGATIVE, &tmp->h.flags);
+			else
+				svc_expkey_update(tmp, item);
+		}
+	}
+	if (set || new)
+		write_unlock(&svc_expkey_cache.hash_lock);
+	else
+		read_unlock(&svc_expkey_cache.hash_lock);
+	if (new && set)
+		cache_fresh(&svc_expkey_cache, &new->h, item->h.expiry_time);
+	if (new)
+		return new;
+	new = kmalloc(sizeof(*new), GFP_KERNEL);
+	if (new) {
+		cache_init(&new->h);
+		goto retry;
+	}
+	return NULL;
+}
+#endif
 
 #define	EXPORT_HASHBITS		8
 #define	EXPORT_HASHMAX		(1<< EXPORT_HASHBITS)
@@ -400,9 +506,9 @@ int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen)
 	if (err == -ENOENT)
 		set_bit(CACHE_NEGATIVE, &exp.h.flags);
 	else {
-		if (err || an_int < 0) goto out;	
+		if (err || an_int < 0) goto out;
 		exp.ex_flags= an_int;
-	
+
 		/* anon uid */
 		err = get_int(&mesg, &an_int);
 		if (err) goto out;
@@ -455,9 +561,9 @@ static int svc_export_show(struct seq_file *m,
 	seq_putc(m, '\t');
 	seq_escape(m, exp->ex_client->name, " \t\n\\");
 	seq_putc(m, '(');
-	if (test_bit(CACHE_VALID, &h->flags) && 
+	if (test_bit(CACHE_VALID, &h->flags) &&
 	    !test_bit(CACHE_NEGATIVE, &h->flags))
-		exp_flags(m, exp->ex_flags, exp->ex_fsid, 
+		exp_flags(m, exp->ex_flags, exp->ex_fsid,
 			  exp->ex_anon_uid, exp->ex_anon_gid);
 	seq_puts(m, ")\n");
 	return 0;
@@ -494,15 +600,108 @@ static inline void svc_export_update(struct svc_export *new, struct svc_export *
 	new->ex_fsid = item->ex_fsid;
 }
 
+#ifdef notdef
 static DefineSimpleCacheLookup(svc_export,1) /* allow inplace updates */
+#else
+/*
+ * just like a template in C++, this macro does cache lookup
+ * for us.
+ * The function is passed some sort of HANDLE from which a cache_detail
+ * structure can be determined (via SETUP, DETAIL), a template
+ * cache entry (type RTN*), and a "set" flag.  Using the HASHFN and the
+ * TEST, the function will try to find a matching cache entry in the cache.
+ * If "set" == 0 :
+ *    If an entry is found, it is returned
+ *    If no entry is found, a new non-VALID entry is created.
+ * If "set" == 1 and INPLACE == 0 :
+ *    If no entry is found a new one is inserted with data from "template"
+ *    If a non-CACHE_VALID entry is found, it is updated from template using UPDATE
+ *    If a CACHE_VALID entry is found, a new entry is swapped in with data
+ *       from "template"
+ * If set == 1, and INPLACE == 1 :
+ *    As above, except that if a CACHE_VALID entry is found, we UPDATE in place
+ *       instead of swapping in a new entry.
+ *
+ * If the passed handle has the CACHE_NEGATIVE flag set, then UPDATE is not
+ * run but instead CACHE_NEGATIVE is set in any new item.
+ *
+ *  In any case, the new entry is returned with a reference count.
+ */
 
+struct svc_export *svc_export_lookup(struct svc_export *item, int set)
+{
+	struct svc_export *tmp, *new = NULL;
+	struct cache_head **hp, **head;
+
+	head = &svc_export_cache.hash_table[svc_export_hash(item)];
+ retry:
+	if (set || new)
+		write_lock(&svc_export_cache.hash_lock);
+	else
+		read_lock(&svc_export_cache.hash_lock);
+	for (hp = head; *hp != NULL; hp = &tmp->h.next) {
+		tmp = container_of(*hp, struct svc_export, h);
+		if (svc_export_match(item, tmp)) { /* found a match */
+			if (new)
+				svc_export_init(new, item);
+			if (set) {
+				if (test_bit(CACHE_NEGATIVE,  &item->h.flags))
+					set_bit(CACHE_NEGATIVE, &tmp->h.flags);
+				else {
+					svc_export_update(tmp, item);
+					clear_bit(CACHE_NEGATIVE, &tmp->h.flags);
+				}
+			}
+			cache_get(&tmp->h);
+			if (set || new)
+				write_unlock(&svc_export_cache.hash_lock);
+			else
+				read_unlock(&svc_export_cache.hash_lock);
+			if (set)
+				cache_fresh(&svc_export_cache, &tmp->h, item->h.expiry_time);
+			if (new)
+				svc_export_put(&new->h, &svc_export_cache);
+			return tmp;
+		}
+	}
+	/* Didn't find anything */
+	if (new) {
+		svc_export_init(new, item);
+		new->h.next = *head;
+		*head = &new->h;
+		svc_export_cache.entries++;
+		cache_get(&new->h);
+		if (set) {
+			tmp = new;
+			if (test_bit(CACHE_NEGATIVE, &item->h.flags))
+				set_bit(CACHE_NEGATIVE, &tmp->h.flags);
+			else
+				svc_export_update(tmp, item);
+		}
+	}
+	if (set || new)
+		write_unlock(&svc_export_cache.hash_lock);
+	else
+		read_unlock(&svc_export_cache.hash_lock);
+	if (new && set)
+		cache_fresh(&svc_export_cache, &new->h, item->h.expiry_time);
+	if (new)
+		return new;
+	new = kmalloc(sizeof(*new), GFP_KERNEL);
+	if (new) {
+		cache_init(&new->h);
+		goto retry;
+	}
+	return NULL;
+}
+#endif
 
 struct svc_expkey *
 exp_find_key(svc_client *clp, int fsid_type, u32 *fsidv, struct cache_req *reqp)
 {
 	struct svc_expkey key, *ek;
 	int err;
-	
+
 	if (!clp)
 		return NULL;
 
@@ -520,7 +719,7 @@ exp_find_key(svc_client *clp, int fsid_type, u32 *fsidv, struct cache_req *reqp)
 	return ek;
 }
 
-int exp_set_key(svc_client *clp, int fsid_type, u32 *fsidv, 
+int exp_set_key(svc_client *clp, int fsid_type, u32 *fsidv,
 		struct svc_export *exp)
 {
 	struct svc_expkey key, *ek;
@@ -547,7 +746,7 @@ static inline struct svc_expkey *
 exp_get_key(svc_client *clp, dev_t dev, ino_t ino)
 {
 	u32 fsidv[3];
-	
+
 	if (old_valid_dev(dev)) {
 		mk_fsid_v0(fsidv, dev, ino);
 		return exp_find_key(clp, 0, fsidv, NULL);
@@ -574,7 +773,7 @@ exp_get_by_name(svc_client *clp, struct vfsmount *mnt, struct dentry *dentry,
 		struct cache_req *reqp)
 {
 	struct svc_export *exp, key;
-	
+
 	if (!clp)
 		return NULL;
 
@@ -583,7 +782,7 @@ exp_get_by_name(svc_client *clp, struct vfsmount *mnt, struct dentry *dentry,
 	key.ex_dentry = dentry;
 
 	exp = svc_export_lookup(&key, 0);
-	if (exp != NULL) 
+	if (exp != NULL)
 		switch (cache_check(&svc_export_cache, &exp->h, reqp)) {
 		case 0: break;
 		case -EAGAIN:
@@ -671,7 +870,7 @@ static void exp_fsid_unhash(struct svc_export *exp)
 static int exp_fsid_hash(svc_client *clp, struct svc_export *exp)
 {
 	u32 fsid[2];
- 
+
 	if ((exp->ex_flags & NFSEXP_FSID) == 0)
 		return 0;
 
@@ -705,7 +904,7 @@ static void exp_unhash(struct svc_export *exp)
 	}
 	svc_expkey_cache.nextcheck = get_seconds();
 }
-	
+
 /*
  * Export a file system.
  */
@@ -737,14 +936,15 @@ exp_export(struct nfsctl_export *nxp)
 	if (!(clp = auth_domain_find(nxp->ex_client)))
 		goto out_unlock;
 
-
 	/* Look up the dentry */
 	err = path_lookup(nxp->ex_path, 0, &nd);
 	if (err)
-		goto out_unlock;
-	err = -EINVAL;
+		goto out_auth_put;
 
+	err = -EINVAL;
 	exp = exp_get_by_name(clp, nd.mnt, nd.dentry, NULL);
+	if (IS_ERR(exp))
+		goto finish;
 
 	/* must make sure there won't be an ex_fsid clash */
 	if ((nxp->ex_flags & NFSEXP_FSID) &&
@@ -768,7 +968,8 @@ exp_export(struct nfsctl_export *nxp)
 	}
 
 	err = check_export(nd.dentry->d_inode, nxp->ex_flags);
-	if (err) goto finish;
+	if (err)
+		goto finish;
 
 	err = -ENOMEM;
 
@@ -800,13 +1001,14 @@ exp_export(struct nfsctl_export *nxp)
 	}
 
 finish:
-	if (exp)
+	if (exp && !IS_ERR(exp))
 		exp_put(exp);
 	if (fsid_key && !IS_ERR(fsid_key))
 		expkey_put(&fsid_key->h, &svc_expkey_cache);
+	path_release(&nd);
+out_auth_put:
 	if (clp)
 		auth_domain_put(clp);
-	path_release(&nd);
 out_unlock:
 	exp_writeunlock();
 out:
@@ -859,7 +1061,7 @@ exp_unexport(struct nfsctl_export *nxp)
 	err = -EINVAL;
 	exp = exp_get_by_name(dom, nd.mnt, nd.dentry, NULL);
 	path_release(&nd);
-	if (!exp)
+	if (!exp || IS_ERR(exp))
 		goto out_domain;
 
 	exp_do_unexport(exp);
@@ -900,7 +1102,7 @@ exp_rootfh(svc_client *clp, char *path, struct knfsd_fh *f, int maxsize)
 		 path, nd.dentry, clp->name,
 		 inode->i_sb->s_id, inode->i_ino);
 	exp = exp_parent(clp, nd.mnt, nd.dentry, NULL);
-	if (!exp) {
+	if (!exp || IS_ERR(exp)) {
 		dprintk("nfsd: exp_rootfh export not found.\n");
 		goto out;
 	}
@@ -942,7 +1144,7 @@ exp_pseudoroot(struct auth_domain *clp, struct svc_fh *fhp,
 	if (!fsid_key || IS_ERR(fsid_key))
 		return nfserr_perm;
 
-	rv = fh_compose(fhp, fsid_key->ek_export, 
+	rv = fh_compose(fhp, fsid_key->ek_export,
 			  fsid_key->ek_export->ex_dentry, NULL);
 	expkey_put(&fsid_key->h, &svc_expkey_cache);
 	return rv;
@@ -955,7 +1157,7 @@ static void *e_start(struct seq_file *m, loff_t *pos)
 	loff_t n = *pos;
 	unsigned hash, export;
 	struct cache_head *ch;
-	
+
 	exp_readlock();
 	read_lock(&svc_export_cache.hash_lock);
 	if (!n--)
@@ -963,7 +1165,7 @@ static void *e_start(struct seq_file *m, loff_t *pos)
 	hash = n >> 32;
 	export = n & ((1LL<<32) - 1);
 
-	
+
 	for (ch=export_table[hash]; ch; ch=ch->next)
 		if (!export--)
 			return ch;
@@ -1133,8 +1335,8 @@ exp_delclient(struct nfsctl_client *ncp)
 	exp_writelock();
 
 	dom = auth_domain_find(ncp->cl_ident);
-	/* just make sure that no addresses work 
-	 * and that it will expire soon 
+	/* just make sure that no addresses work
+	 * and that it will expire soon
 	 */
 	if (dom) {
 		err = auth_unix_forget_old(dom);

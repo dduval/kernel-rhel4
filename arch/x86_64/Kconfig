@@ -73,8 +73,8 @@ config HPET_TIMER
 	  If unsure, say Y.
 
 config X86_PM_TIMER
-       bool "PM timer"
-       default y
+       bool
+       default y && !X86_64_XEN
        help
          Support the ACPI PM timer for time keeping. This is slow,
          but is useful on some chipsets without HPET on systems with more

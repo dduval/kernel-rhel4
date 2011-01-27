@@ -105,6 +105,9 @@ char *task_mem(struct mm_struct *, char *);
 
 extern struct proc_dir_entry *create_proc_entry(const char *name, mode_t mode,
 						struct proc_dir_entry *parent);
+struct proc_dir_entry *proc_create(const char *name, mode_t mode,
+				struct proc_dir_entry *parent,
+				const struct file_operations *proc_fops);
 extern void remove_proc_entry(const char *name, struct proc_dir_entry *parent);
 
 extern struct vfsmount *proc_mnt;
@@ -236,7 +239,12 @@ static inline void proc_pid_flush(struct dentry *proc_dentry) { }
 
 static inline struct proc_dir_entry *create_proc_entry(const char *name,
 	mode_t mode, struct proc_dir_entry *parent) { return NULL; }
-
+static inline struct proc_dir_entry *proc_create(const char *name,
+	mode_t mode, struct proc_dir_entry *parent,
+	const struct file_operations *proc_fops)
+{
+	return NULL;
+}
 #define remove_proc_entry(name, parent) do {} while (0)
 
 static inline struct proc_dir_entry *proc_symlink(const char *name,
@@ -281,6 +289,18 @@ struct proc_inode {
 	} op;
 	struct proc_dir_entry *pde;
 	struct inode vfs_inode;
+
+	/*
+	 * Number of module references we've taken in the lookup codepath. It's
+	 * possible to do an open on a procfile and not get a reference if the
+	 * open races with pde->owner being set. Fixing this to be race free
+	 * will mean changing a lot of procfile create calls, so we settle here
+	 * for just making sure that we don't do more module_put's than gets
+	 * in the open/close codepath. The count uses negative values, with -1
+	 * indicating that 0 module refs have been taken. This allows us to use
+	 * an atomic counter and avoid locking for this.
+	 */
+	atomic_t mod_refs;
 };
 
 static inline struct proc_inode *PROC_I(const struct inode *inode)

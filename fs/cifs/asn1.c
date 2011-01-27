@@ -207,6 +207,10 @@ asn1_header_decode(struct asn1_ctx *ctx,
 	if (!asn1_length_decode(ctx, &def, &len))
 		return 0;
 
+	/* primitive shall be definite, indefinite shall be constructed */
+	if (*con == ASN1_PRI && !def)
+		return 0;
+
 	if (def)
 		*eoc = ctx->pointer + len;
 	else
@@ -393,6 +397,11 @@ asn1_oid_decode(struct asn1_ctx *ctx,
 	unsigned long *optr;
 
 	size = eoc - ctx->pointer + 1;
+
+	/* first subid actually encodes first two subids */
+	if (size < 2 || size > UINT_MAX/sizeof(unsigned int))
+		return 0;
+
 	*oid = kmalloc(size * sizeof(unsigned long), GFP_ATOMIC);
 	if (*oid == NULL)
 		return 0;
@@ -483,7 +492,8 @@ decode_negTokenInit(unsigned char *security_blob, int length,
 		/*      remember to free obj->oid */
 		rc = asn1_header_decode(&ctx, &end, &cls, &con, &tag);
 		if (rc) {
-			if ((tag == ASN1_OJI) && (cls == ASN1_PRI)) {
+			if ((tag == ASN1_OJI) && (con == ASN1_PRI) &&
+			    (cls == ASN1_UNI)) {
 				rc = asn1_oid_decode(&ctx, end, &oid, &oidlen);
 				if (rc) {
 					rc = compare_oid(oid, oidlen,

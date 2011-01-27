@@ -97,8 +97,7 @@ static void mark_open_files_invalid(struct cifsTconInfo *pTcon)
 	write_lock(&GlobalSMBSeslock);
 	list_for_each_safe(tmp, tmp1, &pTcon->openFileList) {
 		open_file = list_entry(tmp, struct cifsFileInfo, tlist);
-		if (open_file)
-			open_file->invalidHandle = TRUE;
+		open_file->invalidHandle = TRUE;
 	}
 	write_unlock(&GlobalSMBSeslock);
 	/* BB Add call to invalidate_inodes(sb) for all superblocks mounted
@@ -165,25 +164,27 @@ small_smb_init(int smb_command, int wct, struct cifsTconInfo *tcon,
 		/* need to prevent multiple threads trying to
 		simultaneously reconnect the same SMB session */
 			down(&tcon->ses->sesSem);
-			if (tcon->ses->status == CifsNeedReconnect)
+			if (tcon->ses->need_reconnect)
 				rc = cifs_setup_session(0, tcon->ses,
 							nls_codepage);
-			if (!rc && (tcon->tidStatus == CifsNeedReconnect)) {
+			if (!rc && (tcon->need_reconnect)) {
 				mark_open_files_invalid(tcon);
 				rc = CIFSTCon(0, tcon->ses, tcon->treeName,
 					      tcon, nls_codepage);
 				up(&tcon->ses->sesSem);
-				/* tell server which Unix caps we support */
-				if (tcon->ses->capabilities & CAP_UNIX)
-					reset_cifs_unix_caps(0 /* no xid */,
-						tcon,
-						NULL /* we do not know sb */,
-						NULL /* no vol info */);
 				/* BB FIXME add code to check if wsize needs
 				   update due to negotiated smb buffer size
 				   shrinking */
-				if (rc == 0)
+				if (rc == 0) {
 					atomic_inc(&tconInfoReconnectCount);
+					/* tell server Unix caps we support */
+					if (tcon->ses->capabilities & CAP_UNIX)
+						reset_cifs_unix_caps(
+						0 /* no xid */,
+						tcon,
+						NULL /* we do not know sb */,
+						NULL /* no vol info */);
+				}
 
 				cFYI(1, ("reconnect tcon rc = %d", rc));
 				/* Removed call to reopen open files here.
@@ -318,25 +319,27 @@ smb_init(int smb_command, int wct, struct cifsTconInfo *tcon,
 		/* need to prevent multiple threads trying to
 		simultaneously reconnect the same SMB session */
 			down(&tcon->ses->sesSem);
-			if (tcon->ses->status == CifsNeedReconnect)
+			if (tcon->ses->need_reconnect)
 				rc = cifs_setup_session(0, tcon->ses,
 							nls_codepage);
-			if (!rc && (tcon->tidStatus == CifsNeedReconnect)) {
+			if (!rc && (tcon->need_reconnect)) {
 				mark_open_files_invalid(tcon);
 				rc = CIFSTCon(0, tcon->ses, tcon->treeName,
 					      tcon, nls_codepage);
 				up(&tcon->ses->sesSem);
-				/* tell server which Unix caps we support */
-				if (tcon->ses->capabilities & CAP_UNIX)
-					reset_cifs_unix_caps(0 /* no xid */,
-						tcon,
-						NULL /* do not know sb */,
-						NULL /* no vol info */);
 				/* BB FIXME add code to check if wsize needs
 				update due to negotiated smb buffer size
 				shrinking */
-				if (rc == 0)
+				if (rc == 0) {
 					atomic_inc(&tconInfoReconnectCount);
+					/* tell server Unix caps we support */
+					if (tcon->ses->capabilities & CAP_UNIX)
+						reset_cifs_unix_caps(
+						0 /* no xid */,
+						tcon,
+						NULL /* do not know sb */,
+						NULL /* no vol info */);
+				}
 
 				cFYI(1, ("reconnect tcon rc = %d", rc));
 				/* Removed call to reopen open files here.
@@ -643,7 +646,9 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 			rc = -EIO;
 		else if (count == 16) {
 			server->secType = RawNTLMSSP;
-			if (server->socketUseCount.counter > 1) {
+			read_lock(&cifs_tcp_ses_lock);
+			if (server->srv_count > 1) {
+				read_unlock(&cifs_tcp_ses_lock);
 				if (memcmp(server->server_GUID,
 					   pSMBr->u.extended_response.
 					   GUID, 16) != 0) {
@@ -652,9 +657,11 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 						pSMBr->u.extended_response.GUID,
 						16);
 				}
-			} else
+			} else {
+				read_unlock(&cifs_tcp_ses_lock);
 				memcpy(server->server_GUID,
 				       pSMBr->u.extended_response.GUID, 16);
+			}
 		} else {
 			rc = decode_negTokenInit(pSMBr->u.extended_response.
 						 SecurityBlob,
@@ -677,10 +684,12 @@ signing_check:
 		/* MUST_SIGN already includes the MAY_SIGN FLAG
 		   so if this is zero it means that signing is disabled */
 		cFYI(1, ("Signing disabled"));
-		if (server->secMode & SECMODE_SIGN_REQUIRED)
+		if (server->secMode & SECMODE_SIGN_REQUIRED) {
 			cERROR(1, ("Server requires "
 				   "packet signing to be enabled in "
 				   "/proc/fs/cifs/SecurityFlags."));
+			rc = -EOPNOTSUPP;
+		}
 		server->secMode &=
 			~(SECMODE_SIGN_ENABLED | SECMODE_SIGN_REQUIRED);
 	} else if ((secFlags & CIFSSEC_MUST_SIGN) == CIFSSEC_MUST_SIGN) {
@@ -714,50 +723,31 @@ CIFSSMBTDis(const int xid, struct cifsTconInfo *tcon)
 	int rc = 0;
 
 	cFYI(1, ("In tree disconnect"));
+
+	/* BB: do we need to check this? These should never be NULL. */
+	if ((tcon->ses == NULL) || (tcon->ses->server == NULL))
+		return -EIO;
+
 	/*
-	 *  If last user of the connection and
-	 *  connection alive - disconnect it
-	 *  If this is the last connection on the server session disconnect it
-	 *  (and inside session disconnect we should check if tcp socket needs
-	 *  to be freed and kernel thread woken up).
+	 * No need to return error on this operation if tid invalidated and
+	 * closed on server already e.g. due to tcp session crashing. Also,
+	 * the tcon is no longer on the list, so no need to take lock before
+	 * checking this.
 	 */
-	if (tcon)
-		down(&tcon->tconSem);
-	else
-		return -EIO;
-
-	atomic_dec(&tcon->useCount);
-	if (atomic_read(&tcon->useCount) > 0) {
-		up(&tcon->tconSem);
-		return -EBUSY;
-	}
-
-	/* No need to return error on this operation if tid invalidated and
-	closed on server already e.g. due to tcp session crashing */
-	if (tcon->tidStatus == CifsNeedReconnect) {
-		up(&tcon->tconSem);
+	if (tcon->need_reconnect)
 		return 0;
-	}
 
-	if ((tcon->ses == NULL) || (tcon->ses->server == NULL)) {
-		up(&tcon->tconSem);
-		return -EIO;
-	}
 	rc = small_smb_init(SMB_COM_TREE_DISCONNECT, 0, tcon,
 			    (void **)&smb_buffer);
-	if (rc) {
-		up(&tcon->tconSem);
+	if (rc)
 		return rc;
-	}
 
 	rc = SendReceiveNoRsp(xid, tcon->ses, smb_buffer, 0);
 	if (rc)
 		cFYI(1, ("Tree disconnect failed %d", rc));
 
-	up(&tcon->tconSem);
-
 	/* No need to return error on this operation if tid invalidated and
-	closed on server already e.g. due to tcp session crashing */
+	   closed on server already e.g. due to tcp session crashing */
 	if (rc == -EAGAIN)
 		rc = 0;
 
@@ -771,43 +761,36 @@ CIFSSMBLogoff(const int xid, struct cifsSesInfo *ses)
 	int rc = 0;
 
 	cFYI(1, ("In SMBLogoff for session disconnect"));
-	if (ses)
-		down(&ses->sesSem);
-	else
+
+	/*
+	 * BB: do we need to check validity of ses and server? They should
+	 * always be valid since we have an active reference. If not, that
+	 * should probably be a BUG()
+	 */
+	if (!ses || !ses->server)
 		return -EIO;
 
-	atomic_dec(&ses->inUse);
-	if (atomic_read(&ses->inUse) > 0) {
-		up(&ses->sesSem);
-		return -EBUSY;
-	}
+	down(&ses->sesSem);
+	if (ses->need_reconnect)
+		goto session_already_dead; /* no need to send SMBlogoff if uid
+					      already closed due to reconnect */
 	rc = small_smb_init(SMB_COM_LOGOFF_ANDX, 2, NULL, (void **)&pSMB);
 	if (rc) {
 		up(&ses->sesSem);
 		return rc;
 	}
 
-	if (ses->server) {
-		pSMB->hdr.Mid = GetNextMid(ses->server);
+	pSMB->hdr.Mid = GetNextMid(ses->server);
 
-		if (ses->server->secMode &
+	if (ses->server->secMode &
 		   (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
 			pSMB->hdr.Flags2 |= SMBFLG2_SECURITY_SIGNATURE;
-	}
 
 	pSMB->hdr.Uid = ses->Suid;
 
 	pSMB->AndXCommand = 0xFF;
 	rc = SendReceiveNoRsp(xid, ses, (struct smb_hdr *) pSMB, 0);
-	if (ses->server) {
-		atomic_dec(&ses->server->socketUseCount);
-		if (atomic_read(&ses->server->socketUseCount) == 0) {
-			spin_lock(&GlobalMid_Lock);
-			ses->server->tcpStatus = CifsExiting;
-			spin_unlock(&GlobalMid_Lock);
-			rc = -ESHUTDOWN;
-		}
-	}
+session_already_dead:
 	up(&ses->sesSem);
 
 	/* if session dead then we do not need to do ulogoff,
@@ -1179,6 +1162,20 @@ static __u16 convert_disposition(int disposition)
 	return ofun;
 }
 
+static int
+access_flags_to_smbopen_mode(const int access_flags)
+{
+	int masked_flags = access_flags & (GENERIC_READ | GENERIC_WRITE);
+
+	if (masked_flags == GENERIC_READ)
+		return SMBOPEN_READ;
+	else if (masked_flags == GENERIC_WRITE)
+		return SMBOPEN_WRITE;
+
+	/* just go for read/write */
+	return SMBOPEN_READWRITE;
+}
+
 int
 SMBLegacyOpen(const int xid, struct cifsTconInfo *tcon,
 	    const char *fileName, const int openDisposition,
@@ -1220,13 +1217,7 @@ OldOpenRetry:
 		pSMB->OpenFlags = cpu_to_le16(REQ_BATCHOPLOCK);
 
 	pSMB->OpenFlags |= cpu_to_le16(REQ_MORE_INFO);
-	/* BB fixme add conversion for access_flags to bits 0 - 2 of mode */
-	/* 0 = read
-	   1 = write
-	   2 = rw
-	   3 = execute
-	 */
-	pSMB->Mode = cpu_to_le16(2);
+	pSMB->Mode = cpu_to_le16(access_flags_to_smbopen_mode(access_flags));
 	pSMB->Mode |= cpu_to_le16(0x40); /* deny none */
 	/* set file as system file if special file such
 	   as fifo and server expecting SFU style and
@@ -1237,11 +1228,8 @@ OldOpenRetry:
 	else
                 pSMB->FileAttributes = cpu_to_le16(0/*ATTR_NORMAL*/); /* BB FIXME */
 
-	/* if ((omode & S_IWUGO) == 0)
-		pSMB->FileAttributes |= cpu_to_le32(ATTR_READONLY);*/
-	/*  Above line causes problems due to vfs splitting create into two
-	    pieces - need to set mode after file created not while it is
-	    being created */
+	if (create_options & CREATE_OPTION_READONLY)
+		pSMB->FileAttributes |= cpu_to_le16(ATTR_READONLY);
 
 	/* BB FIXME BB */
 /*	pSMB->CreateOptions = cpu_to_le32(create_options &
@@ -1285,6 +1273,7 @@ OldOpenRetry:
 				cpu_to_le64(le32_to_cpu(pSMBr->EndOfFile));
 			pfile_info->EndOfFile = pfile_info->AllocationSize;
 			pfile_info->NumberOfLinks = cpu_to_le32(1);
+			pfile_info->DeletePending = 0;
 		}
 	}
 
@@ -1344,17 +1333,16 @@ openRetry:
 		pSMB->FileAttributes = cpu_to_le32(ATTR_SYSTEM);
 	else
 		pSMB->FileAttributes = cpu_to_le32(ATTR_NORMAL);
+
 	/* XP does not handle ATTR_POSIX_SEMANTICS */
 	/* but it helps speed up case sensitive checks for other
 	servers such as Samba */
 	if (tcon->ses->capabilities & CAP_UNIX)
 		pSMB->FileAttributes |= cpu_to_le32(ATTR_POSIX_SEMANTICS);
 
-	/* if ((omode & S_IWUGO) == 0)
-		pSMB->FileAttributes |= cpu_to_le32(ATTR_READONLY);*/
-	/*  Above line causes problems due to vfs splitting create into two
-		pieces - need to set mode after file created not while it is
-		being created */
+	if (create_options & CREATE_OPTION_READONLY)
+		pSMB->FileAttributes |= cpu_to_le32(ATTR_READONLY);
+
 	pSMB->ShareAccess = cpu_to_le32(FILE_SHARE_ALL);
 	pSMB->CreateDisposition = cpu_to_le32(openDisposition);
 	pSMB->CreateOptions = cpu_to_le32(create_options & CREATE_OPTIONS_MASK);
@@ -1387,6 +1375,7 @@ openRetry:
 		    pfile_info->AllocationSize = pSMBr->AllocationSize;
 		    pfile_info->EndOfFile = pSMBr->EndOfFile;
 		    pfile_info->NumberOfLinks = cpu_to_le32(1);
+		    pfile_info->DeletePending = 0;
 		}
 	}
 
@@ -1511,7 +1500,7 @@ CIFSSMBWrite(const int xid, struct cifsTconInfo *tcon,
 	__u32 bytes_sent;
 	__u16 byte_count;
 
-	/* cFYI(1,("write at %lld %d bytes",offset,count));*/
+	/* cFYI(1, ("write at %lld %d bytes", offset, count));*/
 	if (tcon->ses == NULL)
 		return -ECONNABORTED;
 
@@ -1703,7 +1692,7 @@ CIFSSMBLock(const int xid, struct cifsTconInfo *tcon,
 {
 	int rc = 0;
 	LOCK_REQ *pSMB = NULL;
-	LOCK_RSP *pSMBr = NULL;
+/*	LOCK_RSP *pSMBr = NULL; */ /* No response data other than rc to parse */
 	int bytes_returned;
 	int timeout = 0;
 	__u16 count;
@@ -1713,8 +1702,6 @@ CIFSSMBLock(const int xid, struct cifsTconInfo *tcon,
 
 	if (rc)
 		return rc;
-
-	pSMBr = (LOCK_RSP *)pSMB; /* BB removeme BB */
 
 	if (lockType == LOCKING_ANDX_OPLOCK_RELEASE) {
 		timeout = CIFS_ASYNC_OP; /* no response expected */
@@ -1749,7 +1736,7 @@ CIFSSMBLock(const int xid, struct cifsTconInfo *tcon,
 
 	if (waitFlag) {
 		rc = SendReceiveBlockingLock(xid, tcon, (struct smb_hdr *) pSMB,
-			(struct smb_hdr *) pSMBr, &bytes_returned);
+			(struct smb_hdr *) pSMB, &bytes_returned);
 		cifs_small_buf_release(pSMB);
 	} else {
 		rc = SendReceiveNoRsp(xid, tcon->ses, (struct smb_hdr *)pSMB,
@@ -1785,7 +1772,7 @@ CIFSSMBPosixLock(const int xid, struct cifsTconInfo *tcon,
 	cFYI(1, ("Posix Lock"));
 
 	if (pLockData == NULL)
-		return EINVAL;
+		return -EINVAL;
 
 	rc = small_smb_init(SMB_COM_TRANSACTION2, 15, tcon, (void **) &pSMB);
 
@@ -1998,7 +1985,7 @@ renameRetry:
 }
 
 int CIFSSMBRenameOpenFile(const int xid, struct cifsTconInfo *pTcon,
-		int netfid, char *target_name,
+		int netfid, const char *target_name,
 		const struct nls_table *nls_codepage, int remap)
 {
 	struct smb_com_transaction2_sfi_req *pSMB  = NULL;
@@ -2052,7 +2039,7 @@ int CIFSSMBRenameOpenFile(const int xid, struct cifsTconInfo *pTcon,
 					remap);
 	}
 	rename_info->target_name_len = cpu_to_le32(2 * len_of_str);
-	count = 12 /* sizeof(struct set_file_rename) */ + (2 * len_of_str) + 2;
+	count = 12 /* sizeof(struct set_file_rename) */ + (2 * len_of_str);
 	byte_count += count;
 	pSMB->DataCount = cpu_to_le16(count);
 	pSMB->TotalDataCount = pSMB->DataCount;
@@ -2492,6 +2479,7 @@ querySymLinkRetry:
 	return rc;
 }
 
+#ifdef CONFIG_CIFS_EXPERIMENTAL
 /* Initialize NT TRANSACT SMB into small smb request buffer.
    This assumes that all NT TRANSACTS that we init here have
    total parm and data under about 400 bytes (to fit in small cifs
@@ -2575,6 +2563,7 @@ validate_ntransact(char *buf, char **ppparm, char **ppdata,
 	}
 	return 0;
 }
+#endif /* CIFS_EXPERIMENTAL */
 
 int
 CIFSSMBQueryReparseLinkInfo(const int xid, struct cifsTconInfo *tcon,
@@ -3078,6 +3067,7 @@ static const struct cifs_sid sid_everyone =
 static const struct cifs_sid sid_user =
 		{1, 2 , {0, 0, 0, 0, 0, 5}, {32, 545, 0, 0}};
 
+#ifdef CONFIG_CIFS_EXPERIMENTAL
 /* Convert CIFS ACL to POSIX form */
 static int parse_sec_desc(struct cifs_sid *psec_desc, int acl_len)
 {
@@ -3156,6 +3146,7 @@ qsec_out:
 /*	cifs_small_buf_release(pSMB); */ /* Freed earlier now in SendReceive2 */
 	return rc;
 }
+#endif /* CONFIG_CIFS_EXPERIMENTAL */
 
 /* Legacy Query Path Information call for lookup to old servers such
    as Win9x/WinME */
@@ -3395,6 +3386,9 @@ UnixQPathInfoRetry:
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
 
 		if (rc || (pSMBr->ByteCount < sizeof(FILE_UNIX_BASIC_INFO))) {
+			cERROR(1, ("Malformed FILE_UNIX_BASIC_INFO response.\n"
+				   "Unix Extensions can be disabled on mount "
+				   "by specifying the nosfu mount option."));
 			rc = -EIO;	/* bad smb */
 		} else {
 			__u16 data_offset = le16_to_cpu(pSMBr->t2.DataOffset);
@@ -3596,6 +3590,8 @@ findFirstRetry:
 		/* BB remember to free buffer if error BB */
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
 		if (rc == 0) {
+			unsigned int lnoff;
+
 			if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE)
 				psrch_inf->unicode = TRUE;
 			else
@@ -3618,6 +3614,17 @@ findFirstRetry:
 					le16_to_cpu(parms->SearchCount);
 			psrch_inf->index_of_last_entry = 2 /* skip . and .. */ +
 				psrch_inf->entries_in_buffer;
+			lnoff = le16_to_cpu(parms->LastNameOffset);
+			if (tcon->ses->server->maxBuf - MAX_CIFS_HDR_SIZE <
+			      lnoff) {
+				cERROR(1, ("ignoring corrupt resume name"));
+				psrch_inf->last_entry = NULL;
+				return rc;
+			}
+
+			psrch_inf->last_entry = psrch_inf->srch_entries_start +
+							lnoff;
+
 			*pnetfid = parms->SearchHandle;
 		} else {
 			cifs_buf_release(pSMB);
@@ -3699,6 +3706,7 @@ int CIFSFindNext(const int xid, struct cifsTconInfo *tcon,
 	if (rc) {
 		if (rc == -EBADF) {
 			psrch_inf->endOfSearch = TRUE;
+			cifs_buf_release(pSMB);
 			rc = 0; /* search probably was closed at end of search*/
 		} else
 			cFYI(1, ("FindNext returned = %d", rc));
@@ -3706,6 +3714,8 @@ int CIFSFindNext(const int xid, struct cifsTconInfo *tcon,
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
 
 		if (rc == 0) {
+			unsigned int lnoff;
+
 			/* BB fixme add lock for file (srch_info) struct here */
 			if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE)
 				psrch_inf->unicode = TRUE;
@@ -3732,6 +3742,16 @@ int CIFSFindNext(const int xid, struct cifsTconInfo *tcon,
 						le16_to_cpu(parms->SearchCount);
 			psrch_inf->index_of_last_entry +=
 				psrch_inf->entries_in_buffer;
+			lnoff = le16_to_cpu(parms->LastNameOffset);
+			if (tcon->ses->server->maxBuf - MAX_CIFS_HDR_SIZE <
+			      lnoff) {
+				cERROR(1, ("ignoring corrupt resume name"));
+				psrch_inf->last_entry = NULL;
+				return rc;
+			} else
+				psrch_inf->last_entry =
+					psrch_inf->srch_entries_start + lnoff;
+
 /*  cFYI(1,("fnxt2 entries in buf %d index_of_last %d",
 	    psrch_inf->entries_in_buffer, psrch_inf->index_of_last_entry)); */
 
@@ -4790,8 +4810,8 @@ CIFSSMBSetFileSize(const int xid, struct cifsTconInfo *tcon, __u64 size,
    time and resort to the original setpathinfo level which takes the ancient
    DOS time format with 2 second granularity */
 int
-CIFSSMBSetFileTimes(const int xid, struct cifsTconInfo *tcon,
-		    const FILE_BASIC_INFO *data, __u16 fid)
+CIFSSMBSetFileInfo(const int xid, struct cifsTconInfo *tcon,
+		    const FILE_BASIC_INFO *data, __u16 fid, __u32 pid_of_opener)
 {
 	struct smb_com_transaction2_sfi_req *pSMB  = NULL;
 	char *data_offset;
@@ -4804,11 +4824,8 @@ CIFSSMBSetFileTimes(const int xid, struct cifsTconInfo *tcon,
 	if (rc)
 		return rc;
 
-	/* At this point there is no need to override the current pid
-	with the pid of the opener, but that could change if we someday
-	use an existing handle (rather than opening one on the fly) */
-	/* pSMB->hdr.Pid = cpu_to_le16((__u16)pid_of_opener);
-	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid_of_opener >> 16));*/
+	pSMB->hdr.Pid = cpu_to_le16((__u16)pid_of_opener);
+	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid_of_opener >> 16));
 
 	params = 6;
 	pSMB->MaxSetupCount = 0;
@@ -4854,11 +4871,66 @@ CIFSSMBSetFileTimes(const int xid, struct cifsTconInfo *tcon,
 	return rc;
 }
 
+int
+CIFSSMBSetFileDisposition(const int xid, struct cifsTconInfo *tcon,
+			  int delete_file, __u16 fid, __u32 pid_of_opener)
+{
+	struct smb_com_transaction2_sfi_req *pSMB  = NULL;
+	char *data_offset;
+	int rc = 0;
+	__u16 params, param_offset, offset, byte_count, count;
+
+	cFYI(1, ("Set File Disposition (via SetFileInfo)"));
+	rc = small_smb_init(SMB_COM_TRANSACTION2, 15, tcon, (void **) &pSMB);
+
+	if (rc)
+		return rc;
+
+	pSMB->hdr.Pid = cpu_to_le16((__u16)pid_of_opener);
+	pSMB->hdr.PidHigh = cpu_to_le16((__u16)(pid_of_opener >> 16));
+
+	params = 6;
+	pSMB->MaxSetupCount = 0;
+	pSMB->Reserved = 0;
+	pSMB->Flags = 0;
+	pSMB->Timeout = 0;
+	pSMB->Reserved2 = 0;
+	param_offset = offsetof(struct smb_com_transaction2_sfi_req, Fid) - 4;
+	offset = param_offset + params;
+
+	data_offset = (char *) (&pSMB->hdr.Protocol) + offset;
+
+	count = 1;
+	pSMB->MaxParameterCount = cpu_to_le16(2);
+	/* BB find max SMB PDU from sess */
+	pSMB->MaxDataCount = cpu_to_le16(1000);
+	pSMB->SetupCount = 1;
+	pSMB->Reserved3 = 0;
+	pSMB->SubCommand = cpu_to_le16(TRANS2_SET_FILE_INFORMATION);
+	byte_count = 3 /* pad */  + params + count;
+	pSMB->DataCount = cpu_to_le16(count);
+	pSMB->ParameterCount = cpu_to_le16(params);
+	pSMB->TotalDataCount = pSMB->DataCount;
+	pSMB->TotalParameterCount = pSMB->ParameterCount;
+	pSMB->ParameterOffset = cpu_to_le16(param_offset);
+	pSMB->DataOffset = cpu_to_le16(offset);
+	pSMB->Fid = fid;
+	pSMB->InformationLevel = cpu_to_le16(SMB_SET_FILE_DISPOSITION_INFO);
+	pSMB->Reserved4 = 0;
+	pSMB->hdr.smb_buf_length += byte_count;
+	pSMB->ByteCount = cpu_to_le16(byte_count);
+	*data_offset = delete_file ? 1 : 0;
+	rc = SendReceiveNoRsp(xid, tcon->ses, (struct smb_hdr *) pSMB, 0);
+	if (rc)
+		cFYI(1, ("Send error in SetFileDisposition = %d", rc));
+
+	return rc;
+}
 
 int
-CIFSSMBSetTimes(const int xid, struct cifsTconInfo *tcon, const char *fileName,
-		const FILE_BASIC_INFO *data,
-		const struct nls_table *nls_codepage, int remap)
+CIFSSMBSetPathInfo(const int xid, struct cifsTconInfo *tcon,
+		   const char *fileName, const FILE_BASIC_INFO *data,
+		   const struct nls_table *nls_codepage, int remap)
 {
 	TRANSACTION2_SPI_REQ *pSMB = NULL;
 	TRANSACTION2_SPI_RSP *pSMBr = NULL;
@@ -4988,10 +5060,9 @@ SetAttrLgcyRetry:
 #endif /* temporarily unneeded SetAttr legacy function */
 
 int
-CIFSSMBUnixSetPerms(const int xid, struct cifsTconInfo *tcon,
-		    char *fileName, __u64 mode, __u64 uid, __u64 gid,
-		    dev_t device, const struct nls_table *nls_codepage,
-		    int remap)
+CIFSSMBUnixSetInfo(const int xid, struct cifsTconInfo *tcon, char *fileName,
+		   const struct cifs_unix_set_info_args *args,
+		   const struct nls_table *nls_codepage, int remap)
 {
 	TRANSACTION2_SPI_REQ *pSMB = NULL;
 	TRANSACTION2_SPI_RSP *pSMBr = NULL;
@@ -5000,6 +5071,7 @@ CIFSSMBUnixSetPerms(const int xid, struct cifsTconInfo *tcon,
 	int bytes_returned = 0;
 	FILE_UNIX_BASIC_INFO *data_offset;
 	__u16 params, param_offset, offset, count, byte_count;
+	__u64 mode = args->mode;
 
 	cFYI(1, ("In SetUID/GID/Mode"));
 setPermsRetry:
@@ -5054,16 +5126,16 @@ setPermsRetry:
 	set file size and do not want to truncate file size to zero
 	accidently as happened on one Samba server beta by putting
 	zero instead of -1 here */
-	data_offset->EndOfFile = NO_CHANGE_64;
-	data_offset->NumOfBytes = NO_CHANGE_64;
-	data_offset->LastStatusChange = NO_CHANGE_64;
-	data_offset->LastAccessTime = NO_CHANGE_64;
-	data_offset->LastModificationTime = NO_CHANGE_64;
-	data_offset->Uid = cpu_to_le64(uid);
-	data_offset->Gid = cpu_to_le64(gid);
+	data_offset->EndOfFile = cpu_to_le64(NO_CHANGE_64);
+	data_offset->NumOfBytes = cpu_to_le64(NO_CHANGE_64);
+	data_offset->LastStatusChange = cpu_to_le64(args->ctime);
+	data_offset->LastAccessTime = cpu_to_le64(args->atime);
+	data_offset->LastModificationTime = cpu_to_le64(args->mtime);
+	data_offset->Uid = cpu_to_le64(args->uid);
+	data_offset->Gid = cpu_to_le64(args->gid);
 	/* better to leave device as zero when it is  */
-	data_offset->DevMajor = cpu_to_le64(MAJOR(device));
-	data_offset->DevMinor = cpu_to_le64(MINOR(device));
+	data_offset->DevMajor = cpu_to_le64(MAJOR(args->device));
+	data_offset->DevMinor = cpu_to_le64(MINOR(args->device));
 	data_offset->Permissions = cpu_to_le64(mode);
 
 	if (S_ISREG(mode))
@@ -5511,7 +5583,7 @@ SetEARetry:
 	else
 		name_len = strnlen(ea_name, 255);
 
-	count = sizeof(*parm_data) + ea_value_len + name_len + 1;
+	count = sizeof(*parm_data) + ea_value_len + name_len;
 	pSMB->MaxParameterCount = cpu_to_le16(2);
 	pSMB->MaxDataCount = cpu_to_le16(1000);	/* BB find max SMB size from sess */
 	pSMB->MaxSetupCount = 0;

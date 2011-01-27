@@ -491,7 +491,7 @@ MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, nv_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
 
-static int adma_enabled = 1;
+static int adma_enabled;
 
 static inline void __iomem *__nv_adma_ctl_block(void __iomem *mmio,
 					        unsigned int port_no)

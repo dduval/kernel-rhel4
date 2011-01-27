@@ -75,13 +75,8 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 	DECLARE_WAITQUEUE(wait, current);
 
 
-	ENTER("qla4xxx_mailbox_command");
-
 	down(&ha->mbox_sem);
-
-
 	set_bit(AF_MBOX_COMMAND, &ha->flags);
-
 
 	/* Make sure that pointers are valid */
 	if (!mbx_cmd || !mbx_sts) {
@@ -184,10 +179,18 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 			 */
 			ha->mbox_status_count = outCount;
 			qla4xxx_interrupt_service_routine(ha, intr_status);
+			
+			if (!list_empty(&ha->done_srb_q))
+				qla4xxx_done(ha);
 		}
 		spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
-		mdelay(10);
+				/*
+		 * Delay for 10 microseconds
+		 * NOTE: Interrupt_handler may be called here,
+		 *       if interrupts are enabled
+		 */
+                 mdelay(10);
 	} /* wait loop */
 
 	remove_wait_queue(&ha->mailbox_wait_queue,&wait);
@@ -275,7 +278,6 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 	mbox_exit:
 	clear_bit(AF_MBOX_COMMAND, &ha->flags);
 	clear_bit(AF_MBOX_COMMAND_DONE, &ha->flags);
-	LEAVE("qla4xxx_mailbox_command");
 	up(&ha->mbox_sem);
 
 	return(status);
@@ -375,19 +377,17 @@ uint8_t qla4xxx_mbx_test(scsi_qla_host_t *ha)
  *	Kernel context.
  */
 uint8_t
-qla4xxx_issue_iocb(scsi_qla_host_t *ha, void*  buffer,
-		   dma_addr_t phys_addr, size_t size)
+qla4xxx_issue_iocb(scsi_qla_host_t *ha, uint32_t cmpl_sts_offset,
+		   dma_addr_t phys_addr)
 {
 	uint32_t   mbox_cmd[MBOX_REG_COUNT];
 	uint32_t   mbox_sts[MBOX_REG_COUNT];
 	uint8_t	   status;
 
-	ENTER("qla4xxx_issue_iocb: started");
-
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_sts));
 	mbox_cmd[0] = MBOX_CMD_EXECUTE_IOCB_A64;
-	mbox_cmd[1] = 0;
+	mbox_cmd[1] = cmpl_sts_offset;
 	mbox_cmd[2] = LSDW(phys_addr);
 	mbox_cmd[3] = MSDW(phys_addr);
 	status = qla4xxx_mailbox_command(ha, 4, 1, &mbox_cmd[0], &mbox_sts[0]);
@@ -396,9 +396,6 @@ qla4xxx_issue_iocb(scsi_qla_host_t *ha, void*  buffer,
 		/*EMPTY*/
 		QL4PRINT(QLP2, printk("qla4xxx_issue_iocb(%d): failed statis 0x%x",
 		    ha->host_no, status));
-	} else {
-		/*EMPTY*/
-		LEAVE("qla4xxx_issue_iocb: exiting normally");
 	}
 
 	return status;
@@ -416,7 +413,7 @@ qla4xxx_conn_close_sess_logout(scsi_qla_host_t *ha, uint16_t fw_ddb_index,
 	mbox_cmd[0] = MBOX_CMD_CONN_CLOSE_SESS_LOGOUT;
 	mbox_cmd[1] = fw_ddb_index;
 	mbox_cmd[2] = connection_id;
-	mbox_cmd[3] = LOGOUT_OPTION_RELOGIN;
+	mbox_cmd[3] = option;
 
 	if (qla4xxx_mailbox_command(ha, 4, 2, &mbox_cmd[0], &mbox_sts[0])
 	    != QLA_SUCCESS) {
@@ -426,7 +423,7 @@ qla4xxx_conn_close_sess_logout(scsi_qla_host_t *ha, uint16_t fw_ddb_index,
 				ha->host_no, __func__, option,
 				mbox_sts[0], mbox_sts[1]));
 
-		if (mbox_sts[0] == 0x4005) {
+		if (mbox_sts[0] == MBOX_STS_COMMAND_ERROR) {
 			QL4PRINT(QLP2, printk(", reason %04X\n", mbox_sts[1]));
 		}
 		else {
@@ -465,8 +462,6 @@ uint8_t
 qla4xxx_set_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
 		 dma_addr_t init_fw_cb_dma)
 {
-	ENTER(__func__);
-
 	memset(mbox_cmd, 0, sizeof(mbox_cmd[0]) * MBOX_REG_COUNT);
 	memset(mbox_sts, 0, sizeof(mbox_sts[0]) * MBOX_REG_COUNT);
 	mbox_cmd[0] = MBOX_CMD_INITIALIZE_FIRMWARE;
@@ -490,10 +485,8 @@ qla4xxx_set_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
                                        i, mbox_cmd[i], i, mbox_sts[i]));
 			}
 		}
-		LEAVE(__func__);
 		return (QLA_ERROR);
 	}
-	LEAVE(__func__);
 	return (QLA_SUCCESS);
 }
 
@@ -501,8 +494,6 @@ uint8_t
 qla4xxx_get_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
 		 dma_addr_t init_fw_cb_dma)
 {
-	ENTER(__func__);
-
 	memset(mbox_cmd, 0, sizeof(mbox_cmd[0]) * MBOX_REG_COUNT);
 	memset(mbox_sts, 0, sizeof(mbox_sts[0]) * MBOX_REG_COUNT);
 	mbox_cmd[0] = MBOX_CMD_GET_INIT_FW_CTRL_BLOCK;
@@ -519,7 +510,6 @@ qla4xxx_get_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
 		    mbox_sts[0] == MBOX_STS_COMMAND_PARAMETER_ERROR)
 		{
 			/* Other valid info returned in mailbox status registers */
-			LEAVE(__func__);
 			return (QLA_SUCCESS);
 		}
 
@@ -534,10 +524,8 @@ qla4xxx_get_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
                                        i, mbox_cmd[i], i, mbox_sts[i]));
 			}
 		}
-		LEAVE(__func__);
 		return (QLA_ERROR);
 	}
-	LEAVE(__func__);
 	return (QLA_SUCCESS);
 }
 
@@ -565,14 +553,11 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 	uint32_t     	  mbox_sts[MBOX_REG_COUNT];
 	uint8_t 	  ip_addr_str[IP_ADDR_STR_SIZE];
 
-	ENTER(__func__);
-
 	init_fw_cb = pci_alloc_consistent(ha->pdev, ha->ifcb_size,
 	  &init_fw_cb_dma);
 	if (init_fw_cb == NULL) {
 		printk("scsi%d: %s: Unable to alloc init_cb\n", ha->host_no,
 		    __func__);
-		LEAVE(__func__);
 		return 10;
 	}
 
@@ -587,7 +572,6 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 				ha->host_no, __func__));
 		pci_free_consistent(ha->pdev, ha->ifcb_size,
 		    init_fw_cb, init_fw_cb_dma);
-		LEAVE(__func__);
 		return QLA_ERROR;
 	}
 
@@ -666,7 +650,6 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 	pci_free_consistent(ha->pdev, ha->ifcb_size, init_fw_cb,
 	    init_fw_cb_dma);
 
-	LEAVE(__func__);
 	return QLA_SUCCESS;
 }
 
@@ -690,8 +673,6 @@ qla4xxx_get_firmware_state(scsi_qla_host_t *ha)
 	uint32_t mbox_cmd[MBOX_REG_COUNT];
 	uint32_t mbox_sts[MBOX_REG_COUNT];
 
-	ENTER("qla4xxx_get_firmware_state");
-
 	/* Get firmware version */
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_sts));
@@ -710,7 +691,6 @@ qla4xxx_get_firmware_state(scsi_qla_host_t *ha)
 	ha->addl_fw_state  = mbox_sts[3];
 	DEBUG2(printk("scsi%d: %s firmware_state=0x%x\n",
 		      ha->host_no, __func__, ha->firmware_state);)
-	LEAVE("qla4xxx_get_firmware_state");
 	return(QLA_SUCCESS);
 }
 
@@ -734,8 +714,6 @@ qla4xxx_get_firmware_status(scsi_qla_host_t *ha)
 	uint32_t mbox_cmd[MBOX_REG_COUNT];
 	uint32_t mbox_sts[MBOX_REG_COUNT];
 
-	ENTER(__func__);
-
 	/* Get firmware version */
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_sts));
@@ -758,7 +736,6 @@ qla4xxx_get_firmware_status(scsi_qla_host_t *ha)
 			   "than %d firmare IOCBs available (%d).\n",
 			   IOCB_HIWAT_CUSHION, ha->iocb_hiwat);
 
-	LEAVE(__func__);
 	return(QLA_SUCCESS);
 }
 
@@ -803,8 +780,6 @@ qla4xxx_get_fwddb_entry(scsi_qla_host_t *ha,
 	uint32_t	mbox_cmd[MBOX_REG_COUNT];
 	uint32_t	mbox_sts[MBOX_REG_COUNT];
 	uint8_t 	ip_addr_str[IP_ADDR_STR_SIZE];
-
-	ENTER(__func__);
 
 	/* Make sure the device index is valid */
 	if (fw_ddb_index >= MAX_DDB_ENTRIES) {
@@ -877,7 +852,6 @@ qla4xxx_get_fwddb_entry(scsi_qla_host_t *ha,
 	status = QLA_SUCCESS;
 
 exit_get_fwddb:
-	LEAVE(__func__);
 	return(status);
 }
 
@@ -918,8 +892,6 @@ qla4xxx_set_ddb_entry(scsi_qla_host_t *ha,
 	uint32_t mbox_cmd[MBOX_REG_COUNT];
 	uint32_t mbox_sts[MBOX_REG_COUNT];
 
-	ENTER("qla4xxx_set_fwddb_entry");
-
 	QL4PRINT(QLP7, printk("scsi%d: %s: index [%d]\n",
 			      ha->host_no, __func__, fw_ddb_index));
 
@@ -939,7 +911,6 @@ qla4xxx_set_ddb_entry(scsi_qla_host_t *ha,
 				      ha->host_no, __func__, mbox_sts[0]));
 	}
 
-	LEAVE("qla4xxx_set_fwddb_entry");
 	return(status);
 }
 
@@ -966,7 +937,6 @@ qla4xxx_get_crash_record(scsi_qla_host_t *ha)
 	dma_addr_t      crash_record_dma = 0;
 	uint32_t        crash_record_size = 0;
 
-	ENTER("qla4xxx_get_crash_record");
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_cmd));
 
@@ -1079,7 +1049,6 @@ qla4xxx_get_crash_record(scsi_qla_host_t *ha)
 				    crash_record_size,
 				    crash_record,
 				    crash_record_dma);
-	LEAVE("qla4xxx_get_crash_record");
 }
 
 /**************************************************************************
@@ -1108,7 +1077,6 @@ qla4xxx_get_conn_event_log(scsi_qla_host_t *ha)
 	uint32_t	max_event_log_entries;
 	uint8_t		i;
 
-	ENTER(__func__);
 	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
 	memset(&mbox_sts, 0, sizeof(mbox_cmd));
 
@@ -1201,7 +1169,6 @@ qla4xxx_get_conn_event_log(scsi_qla_host_t *ha)
 				    event_log_size,
 				    event_log,
 				    event_log_dma);
-	LEAVE(__func__);
 }
 
 /**************************************************************************
@@ -1235,10 +1202,6 @@ qla4xxx_reset_lun(scsi_qla_host_t *ha,
 	uint8_t lun = lun_entry->lun;
 	uint8_t status = QLA_SUCCESS;
 
-	ENTER("qla4xxx_reset_lun");
-
-	//spin_unlock_irq(ha->host->host_lock);
-
 	QL4PRINT(QLP2, printk("scsi%d:%d:%d:%d: lun reset issued\n",
 			      ha->host_no, ddb_entry->bus, target, lun));
 
@@ -1266,10 +1229,6 @@ qla4xxx_reset_lun(scsi_qla_host_t *ha,
 
 		status = QLA_ERROR;
 	}
-
-	//spin_lock_irq(ha->host->host_lock);
-
-	LEAVE("qla4xxx_reset_lun");
 
 	return (status);
 }

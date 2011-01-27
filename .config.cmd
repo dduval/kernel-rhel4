@@ -13,14 +13,15 @@ deps_config := \
 	fs/ncpfs/Kconfig \
 	fs/Kconfig \
 	drivers/firmware/Kconfig \
+	drivers/virtio/Kconfig \
 	drivers/edac/Kconfig \
 	drivers/infiniband/util/Kconfig \
 	drivers/infiniband/ulp/qlgc_vnic/Kconfig \
 	drivers/infiniband/ulp/sdp/Kconfig \
 	drivers/infiniband/ulp/srp/Kconfig \
 	drivers/infiniband/ulp/ipoib/Kconfig \
-	drivers/infiniband/hw/mlx4/Kconfig \
 	drivers/infiniband/hw/nes/Kconfig \
+	drivers/infiniband/hw/mlx4/Kconfig \
 	drivers/infiniband/hw/cxgb3/Kconfig \
 	drivers/infiniband/hw/amso1100/Kconfig \
 	drivers/infiniband/hw/ehca/Kconfig \

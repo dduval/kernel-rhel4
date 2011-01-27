@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mbox.c 3099 2007-11-29 15:38:19Z sf_support $
+ * $Id: lpfc_mbox.c 3208 2008-10-02 16:40:13Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -45,10 +45,8 @@ void
 lpfc_dump_mem(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint16_t offset)
 {
 	MAILBOX_t *mb;
-	void *ctx;
 
 	mb = &pmb->mb;
-	ctx = pmb->context2;
 
 	/* Setup to dump VPD region */
 	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
@@ -60,7 +58,6 @@ lpfc_dump_mem(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint16_t offset)
 	mb->un.varDmp.word_cnt = (DMP_RSP_SIZE / sizeof (uint32_t));
 	mb->un.varDmp.co = 0;
 	mb->un.varDmp.resp_offset = 0;
-	pmb->context2 = ctx;
 	mb->mbxOwner = OWN_HOST;
 	return;
 }
@@ -612,14 +609,13 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	phba->slim2p->pcb.feature = FEATURE_INITIAL_SLI2;
 
 	/* Setup Mailbox pointers */
-	phba->slim2p->pcb.mailBoxSize = sizeof(MAILBOX_t);
+	phba->slim2p->pcb.mailBoxSize = sizeof(MAILBOX_t) +
+		MAILBOX_EXT_WSIZE * sizeof(uint32_t);
+
 	offset = (uint8_t *)&phba->slim2p->mbx - (uint8_t *)phba->slim2p;
 	pdma_addr = phba->slim2p_mapping + offset;
 	phba->slim2p->pcb.mbAddrHigh = putPaddrHigh(pdma_addr);
 	phba->slim2p->pcb.mbAddrLow = putPaddrLow(pdma_addr);
-
-	/* Always Host Group Pointer is in SLIM */
-	mb->un.varCfgPort.hps = 1;
 
 	/*
 	 * Setup Host Group ring pointer.
@@ -643,20 +639,30 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	pci_read_config_dword(phba->pcidev, PCI_BASE_ADDRESS_0, &bar_low);
 	pci_read_config_dword(phba->pcidev, PCI_BASE_ADDRESS_1, &bar_high);
 
+	if (phba->cfg_hostmem_hgp) {
+		offset = (uint8_t *)&phba->slim2p->mbx.us.s2.host -
+			(uint8_t *)phba->slim2p;
+		pdma_addr = phba->slim2p_mapping + offset;
+		phba->slim2p->pcb.hgpAddrHigh = putPaddrHigh(pdma_addr);
+		phba->slim2p->pcb.hgpAddrLow = putPaddrLow(pdma_addr);
+	} else {
+		mb->un.varCfgPort.hps = 1;
+		/* mask off BAR0's flag bits 0 - 3 */
+		phba->slim2p->pcb.hgpAddrLow =
+			(bar_low & PCI_BASE_ADDRESS_MEM_MASK) +
+				(SLIMOFF*sizeof(uint32_t));
+		if (bar_low & PCI_BASE_ADDRESS_MEM_TYPE_64)
+			phba->slim2p->pcb.hgpAddrHigh = bar_high;
+		else
+			phba->slim2p->pcb.hgpAddrHigh = 0;
 
-	/* mask off BAR0's flag bits 0 - 3 */
-	phba->slim2p->pcb.hgpAddrLow = (bar_low & PCI_BASE_ADDRESS_MEM_MASK) +
-					(SLIMOFF*sizeof(uint32_t));
-	if (bar_low & PCI_BASE_ADDRESS_MEM_TYPE_64)
-		phba->slim2p->pcb.hgpAddrHigh = bar_high;
-	else
-		phba->slim2p->pcb.hgpAddrHigh = 0;
-	/* write HGP data to SLIM at the required longword offset */
-	memset(&hgp, 0, sizeof(HGP));
-	to_slim = (uint8_t *)phba->MBslimaddr + (SLIMOFF*sizeof (uint32_t));
-	for (i=0; i < phba->sli.sliinit.num_rings; i++) {
-		lpfc_memcpy_to_slim(to_slim, &hgp, sizeof (HGP));
-		to_slim += sizeof (HGP);
+		/* write HGP data to SLIM at the required longword offset */
+		memset(&hgp, 0, sizeof(HGP));
+		to_slim = (uint8_t *)phba->MBslimaddr + (SLIMOFF*sizeof (uint32_t));
+		for (i=0; i < phba->sli.sliinit.num_rings; i++) {
+			lpfc_memcpy_to_slim(to_slim, &hgp, sizeof (HGP));
+			to_slim += sizeof (HGP);
+		}
 	}
 
 	/* Setup Port Group ring pointer */

@@ -521,6 +521,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
 	struct bio *read_bio;
 	int i, disks;
 	mdk_rdev_t *rdev;
+	const int do_sync = bio_sync(bio);
 
 	if (unlikely(bio_barrier(bio))) {
 		bio_endio(bio, bio->bi_size, -EOPNOTSUPP);
@@ -582,7 +583,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
 		read_bio->bi_sector = r1_bio->sector + mirror->rdev->data_offset;
 		read_bio->bi_bdev = mirror->rdev->bdev;
 		read_bio->bi_end_io = raid1_end_read_request;
-		read_bio->bi_rw = READ;
+		read_bio->bi_rw = READ | do_sync;
 		read_bio->bi_private = r1_bio;
 
 		generic_make_request(read_bio);
@@ -625,7 +626,7 @@ static int make_request(request_queue_t *q, struct bio * bio)
 		mbio->bi_sector	= r1_bio->sector + conf->mirrors[i].rdev->data_offset;
 		mbio->bi_bdev = conf->mirrors[i].rdev->bdev;
 		mbio->bi_end_io	= raid1_end_write_request;
-		mbio->bi_rw = WRITE;
+		mbio->bi_rw = WRITE | do_sync;
 		mbio->bi_private = r1_bio;
 
 		atomic_inc(&r1_bio->remaining);
@@ -636,6 +637,9 @@ static int make_request(request_queue_t *q, struct bio * bio)
 		md_write_end(mddev);
 		raid_end_bio_io(r1_bio);
 	}
+
+	if (do_sync)
+		md_wakeup_thread(mddev->thread);
 
 	return 0;
 }
@@ -960,6 +964,7 @@ static void raid1d(mddev_t *mddev)
 				       (unsigned long long)r1_bio->sector);
 				raid_end_bio_io(r1_bio);
 			} else {
+				const int do_sync = bio_sync(r1_bio->master_bio);
 				r1_bio->bios[r1_bio->read_disk] = NULL;
 				r1_bio->read_disk = disk;
 				bio_put(bio);
@@ -974,7 +979,7 @@ static void raid1d(mddev_t *mddev)
 				bio->bi_sector = r1_bio->sector + rdev->data_offset;
 				bio->bi_bdev = rdev->bdev;
 				bio->bi_end_io = raid1_end_read_request;
-				bio->bi_rw = READ;
+				bio->bi_rw = READ | do_sync;
 				bio->bi_private = r1_bio;
 				unplug = 1;
 				generic_make_request(bio);

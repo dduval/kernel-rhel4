@@ -791,9 +791,11 @@ typedef struct _EXT_CHIP {
 	UINT16    ChipType;			/* 2 */
 	UINT16    InterruptLevel;		/* 2 */
 	UINT16    OutMbx[8];			/* 16 */
-	UINT16    PciDevFunc;	                /* 2 */
-	UINT16    DomainNr;	                /* 2 */
-	UINT16    Reserved[14];			/* 28 */
+	UINT16    PciDevFunc;			/* 2 */
+	UINT16    DomainNr;			/* 2 */
+	UINT32    PcieLinkCap;			/* 4 */
+	UINT16    PcieLinkStat;			/* 2 */
+	UINT16    Reserved[11];			/* 22 */
 } EXT_CHIP, *PEXT_CHIP;				/* 80 */
 
 

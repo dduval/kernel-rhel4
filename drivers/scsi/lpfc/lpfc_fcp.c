@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_fcp.c 3122 2008-01-07 18:49:20Z sf_support $
+ * $Id: lpfc_fcp.c 3230 2008-11-18 21:15:25Z sf_support $
  */
 
 #include <linux/version.h>
@@ -334,7 +334,6 @@ lpfc_fabric_name_show(struct class_device *cdev, char *buf)
 	struct Scsi_Host *host = class_to_shost(cdev);
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
 	uint64_t node_name = 0;
-	memcpy (&node_name, &phba->fc_nodename, sizeof (struct lpfc_name));
 
 	if ((phba->fc_flag & FC_FABRIC) ||
 	    ((phba->fc_topology == TOPOLOGY_LOOP) &&
@@ -344,7 +343,7 @@ lpfc_fabric_name_show(struct class_device *cdev, char *buf)
 			       sizeof (struct lpfc_name));
 	}
 
-	return snprintf(buf, PAGE_SIZE, "0x%08llx\n",
+	return snprintf(buf, PAGE_SIZE, "0x%016llx\n",
 				(unsigned long long) be64_to_cpu(node_name));
 }
 
@@ -497,6 +496,9 @@ lpfc_board_online_store(struct class_device *cdev, const char *buf,
 
 	if (!phba) return -EPERM;
 	psli = &phba->sli;
+
+	if (!phba->cfg_enable_hba_reset)
+		return -EACCES;
 
  	if (sscanf(buf, "%d", &val) != 1)
 		return -EINVAL;
@@ -1193,6 +1195,9 @@ lpfc_soft_wwpn_store(struct class_device *cdev, const char *buf, size_t count)
 	if (buf[cnt-1] == '\n')
 		cnt--;
 
+	if (!phba->cfg_enable_hba_reset)
+		return -EACCES;
+
 	if (phba->over_temp_state == HBA_OVER_TEMP)
 		return -EPERM;
 
@@ -1262,6 +1267,16 @@ LPFC_ATTR_RW(log_verbose, 0x0, 0x0, 0xffff, "Verbose logging bit-mask");
 */
 LPFC_ATTR_R(lun_queue_depth, 30, 1, 128,
 	    "Max number of FCP commands we can queue to a specific LUN");
+
+/*
+# hostmem_hgp:  This parameter is used to force driver to keep host group
+# pointers in host memory. When the parameter is set to zero, the driver
+# keeps the host group pointers in HBA memory otherwise the host group
+# pointers are kept in the host memory. Value range is [0,1]. Default value
+# is 0.
+*/
+LPFC_ATTR_R(hostmem_hgp, 0, 0, 1,
+	    "Use host memory for host group pointers.");
 
 /*
 # hba_queue_depth:  This parameter is used to limit the number of outstanding
@@ -1572,6 +1587,23 @@ lpfc_param_store(pci_max_read)
 
 static CLASS_DEVICE_ATTR(lpfc_pci_max_read, S_IRUGO | S_IWUSR,
                          lpfc_pci_max_read_show, lpfc_pci_max_read_store);
+
+/*
+# lpfc_enable_hba_reset: Allow or prevent HBA resets to the hardware.
+#       0  = HBA resets disabled
+#       1  = HBA resets enabled (default)
+# Value range is [0,1]. Default value is 1.
+*/
+LPFC_ATTR_R(enable_hba_reset, 1, 0, 1, "Enable HBA resets from the driver.");
+
+/*
+# lpfc_enable_hba_heartbeat: Enable HBA heartbeat timer..
+#       0  = HBA Heartbeat disabled
+#       1  = HBA Heartbeat enabled (default)
+# Value range is [0,1]. Default value is 1.
+*/
+LPFC_ATTR_R(enable_hba_heartbeat, 1, 0, 1, "Enable HBA Heartbeat.");
+
 
 static ssize_t
 sysfs_ctlreg_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
@@ -2283,6 +2315,9 @@ static struct class_device_attribute *lpfc_host_attrs[] = {
 	&class_device_attr_lpfc_discovery_wait_limit,
 	&class_device_attr_lpfc_soft_wwpn,
 	&class_device_attr_lpfc_soft_wwpn_enable,
+	&class_device_attr_lpfc_enable_hba_reset,
+	&class_device_attr_lpfc_enable_hba_heartbeat,
+	&class_device_attr_lpfc_hostmem_hgp,
 	NULL,
 };
 
@@ -2579,6 +2614,7 @@ lpfc_get_cfgparam(struct lpfc_hba *phba)
 	lpfc_multi_ring_rctl_init(phba, lpfc_multi_ring_rctl);
 	lpfc_multi_ring_type_init(phba, lpfc_multi_ring_type);
 	lpfc_lun_queue_depth_init(phba, lpfc_lun_queue_depth);
+	lpfc_hostmem_hgp_init(phba, lpfc_hostmem_hgp);
 	lpfc_fcp_class_init(phba, lpfc_fcp_class);
 	lpfc_use_adisc_init(phba, lpfc_use_adisc);
 	lpfc_ack0_init(phba, lpfc_ack0);
@@ -2598,6 +2634,8 @@ lpfc_get_cfgparam(struct lpfc_hba *phba)
 	phba->cfg_soft_wwpn = 0L;
 
 	lpfc_hba_queue_depth_init(phba, lpfc_hba_queue_depth);
+	lpfc_enable_hba_reset_init(phba, lpfc_enable_hba_reset);
+	lpfc_enable_hba_heartbeat_init(phba, lpfc_enable_hba_heartbeat);
 	return;
 }
 
@@ -2668,6 +2706,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	INIT_LIST_HEAD(&phba->ctrspbuflist);
 	INIT_LIST_HEAD(&phba->rnidrspbuflist);
 	INIT_LIST_HEAD(&phba->freebufList);
+	INIT_LIST_HEAD(&phba->delayed_iocbs);
 
 	/* Initialize timers used by driver */
 	init_timer(&phba->fc_estabtmo);
@@ -2686,6 +2725,10 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	init_timer(&phba->hb_tmofunc);
 	phba->hb_tmofunc.function = lpfc_hb_timeout;
 	phba->hb_tmofunc.data = (unsigned long)phba;
+
+	init_timer(&phba->delayed_iocb_tmo);
+	phba->delayed_iocb_tmo.function = lpfc_free_delayed_iocbs_tmo;
+	phba->delayed_iocb_tmo.data = (unsigned long)phba;
 
 	init_timer(&phba->fc_fdmitmo);
 	phba->fc_fdmitmo.function = lpfc_fdmi_tmo;
@@ -2742,6 +2785,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	init_waitqueue_head(&phba->ctevtwq);
 	init_waitqueue_head(&phba->dumpevtwq);
 	init_waitqueue_head(&phba->tempevtwq);
+	init_waitqueue_head(&phba->wait_4_mlo_m_q);
 
 	pci_set_master(pdev);
 	retval = pci_set_mwi(pdev);
@@ -3036,6 +3080,8 @@ static struct pci_device_id lpfc_id_table[] = {
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_BSMB,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_HORNET,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR_SCSP,
 		PCI_ANY_ID, PCI_ANY_ID, },

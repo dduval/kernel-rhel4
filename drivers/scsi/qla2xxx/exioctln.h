@@ -179,6 +179,8 @@
 #define	EXT_DEF_MAX_HBA_OS		31	/* 0x1F */
 #define	EXT_DEF_MAX_HBAS		32	/* 0 - 0x1F */
 
+#define	EXT_DEF_MAX_DRVR_HBAS		2048	/* max hbas in driver */
+
 #define	EXT_DEF_MAX_BUS_OS		1
 
 #define	EXT_DEF_MAX_TARGET_OS		255	/* 0xFE */
