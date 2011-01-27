@@ -696,13 +696,10 @@ static int nfs_show_stats(struct seq_file *m, struct vfsmount *mnt)
 /*
  * Invalidate the local caches
  */
-void
-nfs_zap_caches(struct inode *inode)
+void nfs_zap_caches_locked(struct inode *inode)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
 	int mode = inode->i_mode;
-
-	spin_lock(&inode->i_lock);
 
 	nfs_inc_stats(inode, NFSIOS_ATTRINVALIDATE);
 
@@ -714,7 +711,12 @@ nfs_zap_caches(struct inode *inode)
 		nfsi->cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
 	else
 		nfsi->cache_validity |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL|NFS_INO_REVAL_PAGECACHE;
+}
 
+void nfs_zap_caches(struct inode *inode)
+{
+	spin_lock(&inode->i_lock);
+	nfs_zap_caches_locked(inode);
 	spin_unlock(&inode->i_lock);
 }
 
@@ -740,7 +742,7 @@ nfs_invalidate_inode(struct inode *inode)
 
 	make_bad_inode(inode);
 	inode->i_mode = save_mode;
-	nfs_zap_caches(inode);
+	nfs_zap_caches_locked(inode);
 }
 
 struct nfs_find_desc {

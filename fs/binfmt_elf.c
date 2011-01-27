@@ -666,6 +666,15 @@ static int load_elf_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 			retval = PTR_ERR(interpreter);
 			if (IS_ERR(interpreter))
 				goto out_free_interp;
+
+			/*
+			 * If the binary is not readable then enforce
+			 * mm->dumpable = 0 regardless of the interpreter's
+			 * permissions.
+			 */
+			if (permission(interpreter->f_dentry->d_inode, MAY_READ, NULL) < 0)
+				bprm->interp_flags |= BINPRM_FLAGS_ENFORCE_NONDUMP;
+
 			retval = kernel_read(interpreter, 0, bprm->buf, BINPRM_BUF_SIZE);
 			if (retval != BINPRM_BUF_SIZE) {
 				if (retval >= 0)

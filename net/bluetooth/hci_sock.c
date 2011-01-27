@@ -471,6 +471,15 @@ int hci_sock_setsockopt(struct socket *sock, int level, int optname, char __user
 		break;
 
 	case HCI_FILTER:
+		{
+			struct hci_filter *f = &hci_pi(sk)->filter;
+
+			uf.type_mask = f->type_mask;
+			uf.opcode    = f->opcode;
+			uf.event_mask[0] = *((u32 *) f->event_mask + 0);
+			uf.event_mask[1] = *((u32 *) f->event_mask + 1);
+		}
+
 		len = min_t(unsigned int, len, sizeof(uf));
 		if (copy_from_user(&uf, optval, len)) {
 			err = -EFAULT;

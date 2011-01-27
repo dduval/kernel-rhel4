@@ -150,6 +150,8 @@ void nlmclnt_mark_reclaim(struct nlm_host *host)
 	list_for_each(tmp, &file_lock_list) {
 		fl = list_entry(tmp, struct file_lock, fl_link);
 
+		if (!(fl->fl_flags & FL_POSIX))
+			continue;
 		inode = fl->fl_file->f_dentry->d_inode;
 		if (inode->i_sb->s_magic != NFS_SUPER_MAGIC)
 			continue;
@@ -219,6 +221,8 @@ restart:
 	list_for_each(tmp, &file_lock_list) {
 		fl = list_entry(tmp, struct file_lock, fl_link);
 
+		if (!(fl->fl_flags & FL_POSIX))
+			continue;
 		inode = fl->fl_file->f_dentry->d_inode;
 		if (inode->i_sb->s_magic != NFS_SUPER_MAGIC)
 			continue;

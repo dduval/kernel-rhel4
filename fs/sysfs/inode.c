@@ -26,7 +26,7 @@ static struct backing_dev_info sysfs_backing_dev_info = {
 	.memory_backed	= 1,	/* Does not contribute to dirty memory */
 };
 
-struct inode * sysfs_new_inode(mode_t mode)
+struct inode * sysfs_new_inode(mode_t mode, struct sysfs_dirent *sd)
 {
 	struct inode * inode = new_inode(sysfs_sb);
 	if (inode) {
@@ -38,6 +38,7 @@ struct inode * sysfs_new_inode(mode_t mode)
 		inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
 		inode->i_mapping->a_ops = &sysfs_aops;
 		inode->i_mapping->backing_dev_info = &sysfs_backing_dev_info;
+		inode->i_ino = sd->s_ino;
 	}
 	return inode;
 }
@@ -48,7 +49,8 @@ int sysfs_create(struct dentry * dentry, int mode, int (*init)(struct inode *))
 	struct inode * inode = NULL;
 	if (dentry) {
 		if (!dentry->d_inode) {
-			if ((inode = sysfs_new_inode(mode))) {
+			struct sysfs_dirent * sd = dentry->d_fsdata;
+			if ((inode = sysfs_new_inode(mode, sd))) {
 				if (dentry->d_parent && dentry->d_parent->d_inode) {
 					struct inode *p_inode = dentry->d_parent->d_inode;
 					p_inode->i_mtime = p_inode->i_ctime = CURRENT_TIME;
@@ -125,17 +127,33 @@ const unsigned char * sysfs_get_name(struct sysfs_dirent *sd)
  */
 void sysfs_drop_dentry(struct sysfs_dirent * sd, struct dentry * parent)
 {
-	struct dentry * dentry = sd->s_dentry;
+	struct dentry *dentry = NULL;
+
+	/* We're not holding a reference to ->s_dentry dentry but the
+	 * field will stay valid as long as sysfs_lock is held.
+	 */
+	spin_lock(&sysfs_lock);
+	spin_lock(&dcache_lock);
+
+	/* dget dentry if it's still alive */
+	if (sd->s_dentry && sd->s_dentry->d_inode)
+		dentry = dget_locked(sd->s_dentry);
+
+	spin_unlock(&dcache_lock);
+	spin_unlock(&sysfs_lock);
 
 	if (dentry) {
 		spin_lock(&dcache_lock);
-		if (!(d_unhashed(dentry) && dentry->d_inode)) {
+		if (!d_unhashed(dentry) && dentry->d_inode) {
 			dget_locked(dentry);
 			__d_drop(dentry);
 			spin_unlock(&dcache_lock);
 			simple_unlink(parent->d_inode, dentry);
-		} else
+		} else {
 			spin_unlock(&dcache_lock);
+		}
+
+		dput(dentry);
 	}
 }
 

@@ -230,7 +230,6 @@ __sync_single_inode(struct inode *inode, struct writeback_control *wbc)
 			 * The inode is clean, unused
 			 */
 			list_move(&inode->i_list, &inode_unused);
-			inodes_stat.nr_unused++;
 		}
 	}
 	wake_up_inode(inode);
@@ -238,12 +237,18 @@ __sync_single_inode(struct inode *inode, struct writeback_control *wbc)
 }
 
 /*
- * Write out an inode's dirty pages.  Called under inode_lock.
+ * Write out an inode's dirty pages.  Called under inode_lock.  Either the
+ * caller has ref on the inode (either via __iget or via syscall against an fd)
+ * or the inode has I_WILL_FREE set (via generic_forget_inode)
  */
 static int
-__writeback_single_inode(struct inode *inode,
-			struct writeback_control *wbc)
+__writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 {
+	if (!atomic_read(&inode->i_count))
+		WARN_ON(!(inode->i_state & I_WILL_FREE));
+	else
+		WARN_ON(inode->i_state & I_WILL_FREE);
+
 	if ((wbc->sync_mode != WB_SYNC_ALL) && (inode->i_state & I_LOCK)) {
 		list_move(&inode->i_list, &inode->i_sb->s_dirty);
 		return 0;
@@ -253,10 +258,8 @@ __writeback_single_inode(struct inode *inode,
 	 * It's a data-integrity sync.  We must wait.
 	 */
 	while (inode->i_state & I_LOCK) {
-		__iget(inode);
 		spin_unlock(&inode_lock);
 		__wait_on_inode(inode);
-		iput(inode);
 		spin_lock(&inode_lock);
 	}
 	return __sync_single_inode(inode, wbc);
@@ -542,16 +545,18 @@ void sync_inodes(int wait)
 }
 
 /**
- *	write_inode_now_err	-	write an inode to disk
- *	@inode: inode to write to disk
- *	@sync: whether the write should be synchronous or not
+ * write_inode_now_err	-	write an inode to disk
+ * @inode: inode to write to disk
+ * @sync: whether the write should be synchronous or not
  *
- *	This function commits an inode to disk immediately if it is
- *	dirty. This is primarily needed by knfsd.
+ * This function commits an inode to disk immediately if it is dirty. This is
+ * primarily needed by knfsd.
  *
- *      Returns 0 on success else -ERR.
+ * The caller must either have a ref on the inode or must have set I_WILL_FREE.
+ *
+ * Returns 0 on success else -ERR.
  */
- 
+
 int write_inode_now_err(struct inode *inode, int sync)
 {
 	int ret;

@@ -232,7 +232,7 @@ typedef union sigval32 {
 
 #define SIGEV_PAD_SIZE32 ((SIGEV_MAX_SIZE/sizeof(int)) - 3)
 
-typedef struct siginfo32 {
+typedef struct compat_siginfo {
 	int si_signo;
 	int si_errno;
 	int si_code;
@@ -282,7 +282,7 @@ typedef struct siginfo32 {
 			int _fd;
 		} _sigpoll;
 	} _sifields;
-} siginfo_t32;
+} compat_siginfo_t;
 
 typedef struct sigevent32 {
 	sigval_t32 sigev_value;

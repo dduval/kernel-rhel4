@@ -173,10 +173,10 @@ static int cciss_sanity_check(int ctlr, int lun)
 
 	if (return_code == IO_OK) {
 		if (hba[ctlr]->cciss_read == CCISS_READ_10) {
-			total_size = be32_to_cpu(*(__u32 *) size_buff->total_size)+1;
+			total_size = be32_to_cpu(*(__u32 *) size_buff->total_size);
 			block_size = be32_to_cpu(*(__u32 *) size_buff->block_size);
 		} else {
-			total_size = be64_to_cpu(*(__u64 *) size_buff_16->total_size)+1;
+			total_size = be64_to_cpu(*(__u64 *) size_buff_16->total_size);
 			block_size = be32_to_cpu(*(__u32 *) size_buff_16->block_size);
 		}
 		total_size++; 	/* command returns highest */

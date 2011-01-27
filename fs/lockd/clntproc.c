@@ -287,7 +287,7 @@ nlmclnt_alloc_call(void)
 {
 	struct nlm_rqst	*call;
 
-	while (!signalled()) {
+	for (;;) {
 		call = (struct nlm_rqst *) kmalloc(sizeof(struct nlm_rqst), GFP_KERNEL);
 		if (call) {
 			memset(call, 0, sizeof(*call));
@@ -295,6 +295,8 @@ nlmclnt_alloc_call(void)
 			locks_init_lock(&call->a_res.lock.fl);
 			return call;
 		}
+		if (signalled())
+			break;
 		printk("nlmclnt_alloc_call: failed, waiting for memory\n");
 		current->state = TASK_INTERRUPTIBLE;
 		schedule_timeout(5*HZ);
@@ -639,12 +641,13 @@ nlmclnt_unlock(struct nlm_rqst *req, struct file_lock *fl)
 	 * reclaimed while we're stuck in the unlock call. */
 	fl->fl_u.nfs_fl.flags &= ~NFS_LCK_GRANTED;
 
+	posix_lock_file_wait(fl->fl_file, fl);
+
 	if (req->a_flags & RPC_TASK_ASYNC) {
 		status = nlmclnt_async_call(req, NLMPROC_UNLOCK,
 					nlmclnt_unlock_callback);
 		/* Hrmf... Do the unlock early since locks_remove_posix()
 		 * really expects us to free the lock synchronously */
-		posix_lock_file(fl->fl_file, fl);
 		if (status < 0) {
 			nlmclnt_release_lockargs(req);
 			kfree(req);
@@ -657,7 +660,6 @@ nlmclnt_unlock(struct nlm_rqst *req, struct file_lock *fl)
 	if (status < 0)
 		return status;
 
-	posix_lock_file(fl->fl_file, fl);
 	if (resp->status == NLM_LCK_GRANTED)
 		return 0;
 

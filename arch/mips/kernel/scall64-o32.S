@@ -455,7 +455,7 @@ out:	jr	ra
 	sys	sys32_rt_sigaction 4
 	sys	sys32_rt_sigprocmask 4			/* 4195 */
 	sys	sys32_rt_sigpending 2
-	sys	sys32_rt_sigtimedwait 4
+	sys	compat_sys_rt_sigtimedwait 4
 	sys	sys32_rt_sigqueueinfo 3
 	sys	sys32_rt_sigsuspend 0
 	sys	sys32_pread	6			/* 4200 */
