@@ -1081,12 +1081,12 @@ static struct dentry *nfs_atomic_lookup(struct inode *dir, struct dentry *dentry
 				inode = NULL;
 				break;
 			/* This turned out not to be a regular file */
-			case -EISDIR:
 			case -ENOTDIR:
 				goto no_open;
 			case -ELOOP:
 				if (!(nd->intent.open.flags & O_NOFOLLOW))
 					goto no_open;
+			/* case -EISDIR: */
 			/* case -EINVAL: */
 			default:
 				goto out;
@@ -1177,8 +1177,21 @@ static struct dentry *nfs_readdir_lookup(nfs_readdir_descriptor_t *desc)
 	}
 	name.hash = full_name_hash(name.name, name.len);
 	dentry = d_lookup(parent, &name);
-	if (dentry != NULL)
-		return dentry;
+	if (dentry != NULL) {
+		/* Is this a positive dentry that matches the readdir info? */
+		if (dentry->d_inode != NULL &&
+				(NFS_FILEID(dentry->d_inode) == entry->ino ||
+				d_mountpoint(dentry))) {
+			if (!desc->plus || entry->fh->size == 0)
+				return dentry;
+			if (nfs_compare_fh(NFS_FH(dentry->d_inode),
+						entry->fh) == 0)
+				goto out_renew;
+		}
+		/* No, so d_drop to allow one to be created */
+		d_drop(dentry);
+		dput(dentry);
+	}
 	if (!desc->plus || !(entry->fattr->valid & NFS_ATTR_FATTR))
 		return NULL;
 	if (name.len > NFS_SERVER(dir)->namelen)
@@ -1200,6 +1213,7 @@ static struct dentry *nfs_readdir_lookup(nfs_readdir_descriptor_t *desc)
 			return NULL;
 		dentry = alias;
 	}
+out_renew:
 	nfs_renew_times(dentry);
 	nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 	return dentry;

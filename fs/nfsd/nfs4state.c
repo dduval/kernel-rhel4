@@ -1513,12 +1513,55 @@ STALE_STATEID(stateid_t *stateid)
 	return 1;
 }
 
+static inline int
+access_permit_read(unsigned long access_bmap)
+{
+	return test_bit(NFS4_SHARE_ACCESS_READ, &access_bmap) ||
+		test_bit(NFS4_SHARE_ACCESS_BOTH, &access_bmap);
+}
+
+static inline int
+access_permit_write(unsigned long access_bmap)
+{
+	return test_bit(NFS4_SHARE_ACCESS_WRITE, &access_bmap) ||
+		test_bit(NFS4_SHARE_ACCESS_BOTH, &access_bmap);
+}
+
+static
+int check_openmode(struct nfs4_stateid *stp, int flags)
+{
+        int status = nfserr_openmode;
+
+	if ((flags & WR_STATE) && (!access_permit_write(stp->st_access_bmap)))
+                goto out;
+	if ((flags & RD_STATE) && (!access_permit_read(stp->st_access_bmap)))
+                goto out;
+	status = nfs_ok;
+out:
+	return status;
+}
+
+static inline int
+check_special_stateids(svc_fh *current_fh, stateid_t *stateid, int flags)
+{
+	/* Trying to call delegreturn with a special stateid? Yuch: */
+	if (!(flags & (RD_STATE | WR_STATE)))
+		return nfserr_bad_stateid;
+	else if (ONE_STATEID(stateid) && (flags & RD_STATE))
+		return nfs_ok;
+	else if (flags & WR_STATE)
+		return nfs4_share_conflict(current_fh,
+				NFS4_SHARE_DENY_WRITE);
+	else /* (flags & RD_STATE) && ZERO_STATEID(stateid) */
+		return nfs4_share_conflict(current_fh,
+				NFS4_SHARE_DENY_READ);
+}
 
 /*
 * Checks for stateid operations
 */
 int
-nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int flags, struct nfs4_stateid **stpp)
+nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int flags)
 {
 	struct nfs4_stateid *stp;
 	int status;
@@ -1527,7 +1570,8 @@ nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int fl
 		stateid->si_boot, stateid->si_stateownerid, 
 		stateid->si_fileid, stateid->si_generation); 
 
-	*stpp = NULL;
+	if (ZERO_STATEID(stateid) || ONE_STATEID(stateid))
+		return check_special_stateids(current_fh, stateid, flags);
 
 	/* STALE STATEID */
 	status = nfserr_stale_stateid;
@@ -1560,9 +1604,12 @@ nfs4_preprocess_stateid_op(struct svc_fh *current_fh, stateid_t *stateid, int fl
 		dprintk("preprocess_stateid_op: old stateid!\n");
 		goto out;
 	}
-	*stpp = stp;
-	status = nfs_ok;
 	renew_client(stp->st_stateowner->so_client);
+
+        if((status = check_openmode(stp, flags)))
+		goto out;
+
+	status = nfs_ok;
 out:
 	return status;
 }
@@ -1889,7 +1936,7 @@ find_stateid(stateid_t *stid, int flags)
 	unsigned int hashval;
 
 	dprintk("NFSD: find_stateid flags 0x%x\n",flags);
-	if ((flags & LOCK_STATE) || (flags & RDWR_STATE)) {
+	if ((flags & LOCK_STATE) || (flags & RD_STATE) || (flags & WR_STATE)) {
 		hashval = stateid_hashval(st_id, f_id);
 		list_for_each_entry(local, &lockstateid_hashtbl[hashval], st_hash) {
 			if ((local->st_stateid.si_stateownerid == st_id) &&
@@ -1897,7 +1944,7 @@ find_stateid(stateid_t *stid, int flags)
 				return local;
 		}
 	} 
-	if ((flags & OPEN_STATE) || (flags & RDWR_STATE)) {
+	if ((flags & OPEN_STATE) || (flags & RD_STATE) || (flags & WR_STATE)) {
 		hashval = stateid_hashval(st_id, f_id);
 		list_for_each_entry(local, &stateid_hashtbl[hashval], st_hash) {
 			if ((local->st_stateid.si_stateownerid == st_id) &&

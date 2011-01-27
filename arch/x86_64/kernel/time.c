@@ -403,10 +403,7 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		delay = inb_p(0x40);
 		delay |= inb(0x40) << 8;
 		spin_unlock(&i8253_lock);
-		/* We are in physical not logical ticks */
 		delay = LATCH - 1 - delay;
-		/* True ticks of delay elapsed */
-		delay *= tick_divider;
 	}
 
 	rdtscll_sync(&tsc);
@@ -415,8 +412,6 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		if (offset - vxtime.last > (unsigned int)hpet_tick_real) {
 			lost = (offset - vxtime.last) /
 			       ((unsigned int)hpet_tick_real) - 1;
-			/* Lost is now in real ticks but we want logical */
-			lost *= tick_divider;
 		}
 
 		monotonic_base += 
@@ -448,10 +443,11 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 			vxtime.last_tsc = tsc -
 				(((long) offset << 32) / vxtime.tsc_quot) - 1;
 	}
-	/* SCALE: We expect tick_divider - 1 lost, ie 0 for normal behaviour */
-	if (lost > (int)tick_divider - 1)  {
+	if (lost > 0) {
+		/* Lost is now in real ticks but we want logical */
+		lost *= tick_divider;
 		handle_lost_ticks(lost, regs);
-		jiffies += lost - (tick_divider - 1);
+		jiffies += lost;
 	}
 
 /*

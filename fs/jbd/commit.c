@@ -79,6 +79,19 @@ nope:
 }
 
 /*
+ * Decrement reference counter for data buffer. If it has been marked
+ * 'BH_Freed', release it and the page to which it belongs if possible.
+ */
+static void release_data_buffer(struct buffer_head *bh)
+{
+	if (buffer_freed(bh)) {
+		clear_buffer_freed(bh);
+		release_buffer_page(bh);
+	} else
+		put_bh(bh);
+}
+
+/*
  * Try to acquire jbd_lock_bh_state() against the buffer, when j_list_lock is
  * held.  For ranking reasons we must trylock.  If we lose, schedule away and
  * return 0.  j_list_lock is dropped in this case.
@@ -287,7 +300,7 @@ write_out_data:
 				__journal_unfile_buffer(jh);
 				jbd_unlock_bh_state(bh);
 				journal_remove_journal_head(bh);
-				put_bh(bh);
+				release_data_buffer(bh);
 				if (need_resched()) {
 					spin_unlock(&journal->j_list_lock);
 					goto write_out_data;
@@ -332,7 +345,7 @@ write_out_data:
 		} else {
 			jbd_unlock_bh_state(bh);
 		}
-		put_bh(bh);
+		release_data_buffer(bh);
 		if (need_resched()) {
 			spin_unlock(&journal->j_list_lock);
 			cond_resched();

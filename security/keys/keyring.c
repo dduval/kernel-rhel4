@@ -522,8 +522,15 @@ struct key *find_keyring_by_name(const char *name, key_serial_t bound)
 			if (keyring->serial <= bound)
 				continue;
 
+			spin_lock(&key_serial_lock);
 			/* we've got a match */
-			atomic_inc(&keyring->usage);
+			if (atomic_read(&keyring->usage))
+				atomic_inc(&keyring->usage);
+			else {
+				spin_unlock(&key_serial_lock);
+				continue;
+			}
+			spin_unlock(&key_serial_lock);
 			read_unlock(&keyring_name_lock);
 			goto error;
 		}
