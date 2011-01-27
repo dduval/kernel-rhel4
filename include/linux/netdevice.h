@@ -238,7 +238,8 @@ enum netdev_state_t
 	__LINK_STATE_SCHED,
 	__LINK_STATE_NOCARRIER,
 	__LINK_STATE_RX_SCHED,
-	__LINK_STATE_LINKWATCH_PENDING
+	__LINK_STATE_LINKWATCH_PENDING,
+	__LINK_STATE_NETPOLL
 };
 
 
@@ -886,6 +887,12 @@ static inline void netif_rx_complete(struct net_device *dev)
 {
 	unsigned long flags;
 
+	/*
+	 * Don't touch the poll_list if you're in netpoll
+	 * let net_rx_action handle that.
+	 */
+	if (test_bit(__LINK_STATE_NETPOLL, &dev->state))
+		return;
 	local_irq_save(flags);
 	BUG_ON(!test_bit(__LINK_STATE_RX_SCHED, &dev->state));
 	list_del(&dev->poll_list);
@@ -913,6 +920,12 @@ static inline void netif_poll_enable(struct net_device *dev)
  */
 static inline void __netif_rx_complete(struct net_device *dev)
 {
+	/*
+	 * Don't touch the poll_list if you're in netpoll
+	 * let net_rx_action handle that.
+	 */
+	if (test_bit(__LINK_STATE_NETPOLL, &dev->state))
+		return;
 	BUG_ON(!test_bit(__LINK_STATE_RX_SCHED, &dev->state));
 	list_del(&dev->poll_list);
 	smp_mb__before_clear_bit();

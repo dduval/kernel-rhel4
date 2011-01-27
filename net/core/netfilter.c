@@ -152,7 +152,7 @@ void nf_unregister_sockopt(struct nf_sockopt_ops *reg)
 	down(&nf_sockopt_mutex);
 	list_for_each(i, &nf_sockopts) {
 		wrapper = (struct nf_sockopt_ops_wrapper *)i;
-		if (wrapper->ops->pf == reg->pf) {
+		if (wrapper->ops == reg) {
 			list_del(&wrapper->list);
 			kfree(wrapper);
 			goto out;

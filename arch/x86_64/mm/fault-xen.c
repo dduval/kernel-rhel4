@@ -249,6 +249,44 @@ int exception_trace = 1;
 #define MEM_LOG(_f, _a...) ((void)0)
 #endif
 
+static int spurious_fault(struct pt_regs *regs,
+			  unsigned long address,
+			  unsigned long error_code)
+{
+	pgd_t *pgd;
+	pmd_t *pmd;
+	pte_t *pte;
+
+#ifdef CONFIG_XEN
+	/* Faults in hypervisor area are never spurious. */
+	if ((address >= HYPERVISOR_VIRT_START) &&
+	    (address < HYPERVISOR_VIRT_END))
+		return 0;
+#endif
+
+	/* Reserved-bit violation or user access to kernel space? */
+	if (error_code & (PF_RSVD|PF_USER))
+		return 0;
+
+	pgd = init_mm.pgd + pgd_index(address);
+	if (!pgd_present(*pgd))
+		return 0;
+
+	pmd = pmd_offset(pgd, address);
+	if (!pmd_present(*pmd))
+		return 0;
+
+	pte = pte_offset_kernel(pmd, address);
+	if (!pte_present(*pte))
+		return 0;
+	if ((error_code & PF_WRITE) && !pte_write(*pte))
+		return 0;
+	if ((error_code & PF_INSTR) && (pte_val(*pte) & _PAGE_NX))
+		return 0;
+
+	return 1;
+}
+
 /*
  * This routine handles page faults.  It determines the address,
  * and the problem, and then passes it off to one of the appropriate
@@ -317,14 +355,17 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 	 * (error_code & 4) == 0, and that the fault was not a
 	 * protection error (error_code & 1) == 0.
 	 *
-	 * Must check for the entire kernel range here: with writable
-	 * page tables the hypervisor may temporarily clear PMD
-	 * entries.
+	 * Don't check for the module range here: its PML4
+	 * is always initialized because it's shared with the main
+	 * kernel text. Only vmalloc may need PML4 syncups.
 	 */
 	if (unlikely(address >= TASK_SIZE)) {
 		if (!(error_code & 5) &&
-		    address >= PAGE_OFFSET)
+		      ((address >= VMALLOC_START && address < VMALLOC_END)))
 			goto vmalloc_fault;
+		/* Can take a spurious fault if mapping changes R/O -> R/W. */
+		if (spurious_fault(regs, address, error_code))
+			return;
 		/*
 		 * Don't take the mm semaphore here. If we fixup a prefetch
 		 * fault we could otherwise deadlock.

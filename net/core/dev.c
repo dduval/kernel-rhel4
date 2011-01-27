@@ -1804,6 +1804,7 @@ static void net_rx_action(struct softirq_action *h)
 
 	while (!list_empty(&queue->poll_list)) {
 		struct net_device *dev;
+		int poll_result = 0;
 
 		if (budget <= 0 || jiffies - start_time > 1)
 			goto softnet_break;
@@ -1815,15 +1816,25 @@ static void net_rx_action(struct softirq_action *h)
 
 		have = netpoll_poll_lock(dev);
 
-		if (dev->quota <= 0 || dev->poll(dev, &budget)) {
+		/* This __LINK_STATE_RX_SCHED test is for avoiding a race
+		 * with netpoll's poll_napi().  Only the entity which
+		 * obtains the lock and sees __LINK_STATE_RX_SCHED set will
+		 * actually make the ->poll() call.  Therefore we avoid
+		 * accidently calling ->poll() when NAPI is not scheduled.
+		 */
+		if (test_bit(__LINK_STATE_RX_SCHED, &dev->state))
+			poll_result = dev->poll(dev,&budget);
+
+		if (dev->quota <= 0)
+			dev->quota += dev->weight;
+		else
+			dev->quota = dev->weight;
+
+		if (poll_result) {
 			netpoll_poll_unlock(have);
 			local_irq_disable();
 			list_del(&dev->poll_list);
 			list_add_tail(&dev->poll_list, &queue->poll_list);
-			if (dev->quota < 0)
-				dev->quota += dev->weight;
-			else
-				dev->quota = dev->weight;
 		} else {
 			netpoll_poll_unlock(have);
 			dev_put(dev);

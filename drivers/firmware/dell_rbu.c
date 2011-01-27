@@ -556,7 +556,7 @@ static ssize_t read_packet_data_size(struct kobject *kobj,
 {
 	unsigned int size = 0;
 	if (pos == 0)
-		size = sprintf(buffer, "%lu\n", rbu_data.packetsize);
+		size = scnprintf(buffer, count, "%lu\n", rbu_data.packetsize);
 	return size;
 } 
 
@@ -597,7 +597,7 @@ static ssize_t read_rbu_data_size(struct kobject *kobj,
 {
 	unsigned int size = 0;
 	if (pos == 0)
-		size = sprintf(buffer, "%lu\n", rbu_data.bios_image_size);
+		size = scnprintf(buffer, count, "%lu\n", rbu_data.bios_image_size);
 	return size;
 } 
 

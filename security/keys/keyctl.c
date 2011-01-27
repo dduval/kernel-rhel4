@@ -241,12 +241,18 @@ long keyctl_join_session_keyring(const char __user *_name)
 	name = NULL;
 	if (_name) {
 		name = strndup_user(_name, PAGE_SIZE);
-		if (IS_ERR(name))
-			return PTR_ERR(name);
+		if (IS_ERR(name)) {
+			ret = PTR_ERR(name);
+			goto error;
+		}
 	}
 
 	/* join the session */
-	return join_session_keyring(name);
+	ret = join_session_keyring(name);
+	kfree(name);
+
+ error:
+	return ret;
 
 } /* end keyctl_join_session_keyring() */
 
