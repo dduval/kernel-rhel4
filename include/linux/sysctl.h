@@ -24,6 +24,7 @@
 #include <linux/compiler.h>
 
 struct file;
+struct completion;
 
 #define CTL_MAXNAME 10		/* how many path components do we allow in a
 				   call to sysctl?   In other words, what is
@@ -925,6 +926,10 @@ struct ctl_table_header
 {
 	ctl_table *ctl_table;
 	struct list_head ctl_entry;
+#ifndef __GENKSYMS__
+	int used;
+	struct completion *unregistering;
+#endif
 };
 
 struct ctl_table_header * register_sysctl_table(ctl_table * table, 

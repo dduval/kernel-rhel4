@@ -212,6 +212,10 @@ static struct mempolicy *mpol_new(int mode, unsigned long *nodes)
 	switch (mode) {
 	case MPOL_INTERLEAVE:
 		bitmap_copy(policy->v.nodes, nodes, MAX_NUMNODES);
+		if (bitmap_weight(nodes, MAX_NUMNODES) == 0) {
+			kmem_cache_free(policy_cache, policy);
+			return ERR_PTR(-EINVAL);
+		}
 		break;
 	case MPOL_PREFERRED:
 		policy->v.preferred_node = find_first_bit(nodes, MAX_NUMNODES);

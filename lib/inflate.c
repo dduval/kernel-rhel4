@@ -370,6 +370,7 @@ DEBG("huft5 ");
     if ((j = *p++) != 0)
       v[x[j]++] = i;
   } while (++i < n);
+  n = x[g];			/* set n to length of v */
 
 DEBG("h6 ");
 
@@ -406,12 +407,13 @@ DEBG1("1 ");
 DEBG1("2 ");
           f -= a + 1;           /* deduct codes from patterns left */
           xp = c + k;
-          while (++j < z)       /* try smaller tables up to z bits */
-          {
-            if ((f <<= 1) <= *++xp)
-              break;            /* enough codes to use up j bits */
-            f -= *xp;           /* else deduct codes from patterns */
-          }
+	  if (j < z)
+            while (++j < z)       /* try smaller tables up to z bits */
+            {
+              if ((f <<= 1) <= *++xp)
+                break;            /* enough codes to use up j bits */
+              f -= *xp;           /* else deduct codes from patterns */
+            }
         }
 DEBG1("3 ");
         z = 1 << j;             /* table entries for j-bit table */

@@ -207,7 +207,9 @@ static void hfsplus_write_super(struct super_block *sb)
 static void hfsplus_put_super(struct super_block *sb)
 {
 	dprint(DBG_SUPER, "hfsplus_put_super\n");
-	if (!(sb->s_flags & MS_RDONLY)) {
+	if (!sb->s_fs_info)
+		return;
+	if (!(sb->s_flags & MS_RDONLY) && HFSPLUS_SB(sb).s_vhdr) {
 		struct hfsplus_vh *vhdr = HFSPLUS_SB(sb).s_vhdr;
 
 		vhdr->modify_date = hfsp_now2mt();
@@ -223,6 +225,8 @@ static void hfsplus_put_super(struct super_block *sb)
 	iput(HFSPLUS_SB(sb).alloc_file);
 	iput(HFSPLUS_SB(sb).hidden_dir);
 	brelse(HFSPLUS_SB(sb).s_vhbh);
+	kfree(sb->s_fs_info);
+	sb->s_fs_info = NULL;
 }
 
 static int hfsplus_statfs(struct super_block *sb, struct kstatfs *buf)
@@ -284,10 +288,9 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 	int err = -EINVAL;
 
 	sbi = kmalloc(sizeof(struct hfsplus_sb_info), GFP_KERNEL);
-	if (!sbi) {
-		err = -ENOMEM;
-		goto out2;
-	}
+	if (!sbi)
+		return -ENOMEM;
+
 	memset(sbi, 0, sizeof(HFSPLUS_SB(sb)));
 	sb->s_fs_info = sbi;
 	INIT_HLIST_HEAD(&sbi->rsrc_inodes);
@@ -295,16 +298,14 @@ static int hfsplus_fill_super(struct super_block *sb, void *data, int silent)
 	if (!parse_options(data, sbi)) {
 		if (!silent)
 			printk("HFS+-fs: unable to parse mount options\n");
-		err = -EINVAL;
-		goto out2;
+		goto cleanup;
 	}
 
 	/* Grab the volume header */
 	if (hfsplus_read_wrapper(sb)) {
 		if (!silent)
 			printk("HFS+-fs: unable to find HFS+ superblock\n");
-		err = -EINVAL;
-		goto out2;
+		goto cleanup;
 	}
 	vhdr = HFSPLUS_SB(sb).s_vhdr;
 
@@ -416,7 +417,6 @@ out:
 
 cleanup:
 	hfsplus_put_super(sb);
-out2:
 	return err;
 }
 

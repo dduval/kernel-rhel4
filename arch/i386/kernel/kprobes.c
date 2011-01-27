@@ -228,8 +228,11 @@ static int kprobe_handler(struct pt_regs *regs)
 	p = get_kprobe(addr);
 	if (!p) {
 		unlock_kprobes();
-		if (regs->eflags & VM_MASK) {
-			/* We are in virtual-8086 mode. Return 0 */
+		if (user_mode(regs)) {
+			/*
+			 * We are in virtual-8086 mode or coming from
+			 * a user-mode exception.  Return 0 
+			 */
 			goto no_kprobe;
 		}
 
