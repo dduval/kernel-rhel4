@@ -77,9 +77,9 @@ void __ptrace_unlink(task_t *child)
 	child->ptrace = 0;
 	if (!list_empty(&child->ptrace_list)) {
 		list_del_init(&child->ptrace_list);
-		REMOVE_LINKS(child);
+		remove_parent(child);
 		child->parent = child->real_parent;
-		SET_LINKS(child);
+		add_parent(child, child->parent);
 	}
 
 	if (child->state == TASK_TRACED)

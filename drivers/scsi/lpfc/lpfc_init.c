@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_init.c 3191 2008-09-03 13:47:36Z sf_support $
+ * $Id: lpfc_init.c 3251 2009-02-09 22:14:15Z sf_support $
  */
 
 #include <linux/version.h>
@@ -1186,7 +1186,8 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 		m = (typeof(m)){"LPe11000", max_speed, "PCIe"};
 		break;
 	case PCI_DEVICE_ID_ZEPHYR_DCSP:
-		m = (typeof(m)){"LPe11002-SP", max_speed, "PCIe"};
+		m = (typeof(m)){"LP2105", max_speed, "PCIe"};
+		GE = 1;
 		break;
 	case PCI_DEVICE_ID_ZMID:
 		m = (typeof(m)){"LPe1150", max_speed, "PCIe"};

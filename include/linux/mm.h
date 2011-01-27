@@ -26,6 +26,7 @@ extern void * high_memory;
 extern unsigned long vmalloc_earlyreserve;
 extern int page_cluster;
 extern int oom_kill_enabled;
+extern unsigned long mmap_min_addr;
 
 #ifdef CONFIG_SYSCTL
 extern int sysctl_legacy_va_layout;
@@ -498,6 +499,19 @@ static inline int page_mapcount(struct page *page)
 static inline int page_mapped(struct page *page)
 {
 	return atomic_read(&(page)->_mapcount) >= 0;
+}
+
+/*
+ * If a hint addr is less than mmap_min_addr change hint to be as
+ * low as possible but still greater than mmap_min_addr
+ */
+static inline unsigned long round_hint_to_min(unsigned long hint)
+{
+	hint &= PAGE_MASK;
+	if (((void *)hint != NULL) &&
+	    (hint < mmap_min_addr))
+		return PAGE_ALIGN(mmap_min_addr);
+	return hint;
 }
 
 /*

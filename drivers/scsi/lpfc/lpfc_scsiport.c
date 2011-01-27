@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsiport.c 3087 2007-10-31 18:01:26Z sf_support $
+ * $Id: lpfc_scsiport.c 3252 2009-07-02 15:51:03Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/spinlock.h>
@@ -300,6 +300,12 @@ lpfc_os_prep_io(struct lpfc_hba * phba, struct lpfc_scsi_buf * lpfc_cmd)
 				bmp->virt =
 				    lpfc_mbuf_alloc(phba, 0, &bmp->phys);
 				if (!bmp->virt) {
+					lpfc_printf_log(phba, KERN_ERR, LOG_FCP,
+						"%d:0731 lpfc_os_prep_io mbuff"
+						" alloc failed Data %x %x "
+						"%x %x\n", phba->brd_no,
+						lpfc_cmd->seg_cnt, i,
+						num_bde, max_bde);
 					kfree(bmp);
 					goto error_out;
 				}
@@ -420,14 +426,10 @@ lpfc_os_prep_io(struct lpfc_hba * phba, struct lpfc_scsi_buf * lpfc_cmd)
 
 error_out:
 	/*
-	 * Allocation of a chained BPL failed, unmap the sg list and return
-	 * error.  This will ultimately cause lpfc_free_scsi_buf to be called
-	 * which will handle the rest of the cleanup.  Set seg_cnt back to zero
-	 * to avoid double unmaps of the sg resources.
+	 * Allocation of a chained BPL failed, return error.  This will
+	 * ultimately cause lpfc_free_scsi_buf to be called
+	 * which will handle the cleanup. 
 	 */
-	dma_unmap_sg(&phba->pcidev->dev, sgel_begin, lpfc_cmd->seg_cnt,
-			datadir);
-	lpfc_cmd->seg_cnt = 0;
 	return 1;
 }
 

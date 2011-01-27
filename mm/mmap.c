@@ -63,6 +63,7 @@ int sysctl_overcommit_memory = OVERCOMMIT_GUESS;  /* heuristic overcommit */
 int sysctl_overcommit_ratio = 50;	/* default is 50% */
 int sysctl_max_map_count = DEFAULT_MAX_MAP_COUNT;
 atomic_t vm_committed_space = ATOMIC_INIT(0);
+unsigned long mmap_min_addr = 0;           /* defaults to 0 = no protection */
 
 #ifdef HAVE_ARCH_PICK_MMAP_LAYOUT
 extern int sysctl_legacy_va_layout;
@@ -812,6 +813,9 @@ unsigned long do_mmap_pgoff(struct file * file, unsigned long addr,
 	if (!len)
 		return addr;
 
+	if (!(flags & MAP_FIXED))
+		addr = round_hint_to_min(addr);
+
 	error = arch_mmap_check(addr, len, flags);
 	if (error)
 		return error;
@@ -1257,6 +1261,13 @@ get_unmapped_area_prot(struct file *file, unsigned long addr, unsigned long len,
 			return -ENOMEM;
 		if (addr & ~PAGE_MASK)
 			return -EINVAL;
+
+		/* Ensure a non-privileged process is not trying to map
+		 * lower pages.
+		 */
+		if (addr < mmap_min_addr && !capable(CAP_SYS_RAWIO))
+			return -EACCES;
+
 		if (file && is_file_hugepages(file))  {
 			/*
 			 * Check if the given range is hugepage aligned, and
@@ -1277,13 +1288,19 @@ get_unmapped_area_prot(struct file *file, unsigned long addr, unsigned long len,
 	}
 
 	if (file && file->f_op && file->f_op->get_unmapped_area)
-		return file->f_op->get_unmapped_area(file, addr, len,
-						pgoff, flags);
-
-	if (exec && current->mm->get_unmapped_exec_area)
-		return current->mm->get_unmapped_exec_area(file, addr, len, pgoff, flags);
+		addr = file->f_op->get_unmapped_area(file, addr, len,
+						     pgoff, flags);
+	else if (exec && current->mm->get_unmapped_exec_area)
+		addr = current->mm->get_unmapped_exec_area(file, addr, len,
+							   pgoff, flags);
 	else
-		return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);
+		addr = current->mm->get_unmapped_area(file, addr, len, pgoff,
+						      flags);
+
+	if (addr < mmap_min_addr && !capable(CAP_SYS_RAWIO))
+		return -EACCES;
+
+	return addr;
 }
 
 EXPORT_SYMBOL(get_unmapped_area_prot);
@@ -1531,6 +1548,9 @@ int expand_stack(struct vm_area_struct *vma, unsigned long address)
 {
 	unsigned long grow;
 	unsigned long size;
+
+	if (address < mmap_min_addr && !capable(CAP_SYS_RAWIO))
+		return -EACCES;
 
 	/*
 	 * We must make sure the anon_vma is allocated
@@ -1918,6 +1938,12 @@ unsigned long do_brk(unsigned long addr, unsigned long len)
 
 	if ((addr + len) > TASK_SIZE || (addr + len) < addr)
 		return -EINVAL;
+
+	/* Ensure a non-privileged process is not trying to map
+	 * lower pages.
+	 */
+	if (addr < mmap_min_addr && !capable(CAP_SYS_RAWIO))
+		return -EACCES;
 
 	flags = VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;
 

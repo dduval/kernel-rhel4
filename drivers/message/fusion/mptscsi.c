@@ -5348,6 +5348,9 @@ mptscsih_domainValidation(void *arg)
 				pPDisk++;
 				numPDisk--;
 			}
+			printk(KERN_ERR "VSP Clearing DV for RAID Volume %d\n", id);
+			ioc->spi_data.dvStatus[id] &= ~(MPT_SCSICFG_DV_NOT_DONE | MPT_SCSICFG_DV_IN_PROGRESS);
+			mptscsih_post_PendingMF_command(ioc);
 		} else {
 			ddvprintk((KERN_WARNING "doDv for id=%d\n",
 				id));

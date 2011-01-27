@@ -299,6 +299,7 @@ static void
 sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
 {
 	const unsigned long start = jiffies;	/* livelock avoidance */
+	unsigned long now;
 
 	if (!wbc->for_kupdate || list_empty(&sb->s_io))
 		list_splice_init(&sb->s_dirty, &sb->s_io);
@@ -342,13 +343,27 @@ sync_sb_inodes(struct super_block *sb, struct writeback_control *wbc)
 			continue;		/* blockdev has wrong queue */
 		}
 
+		/*
+		 * The dirtied_when checks below use time_after, but that
+		 * assumes that dirtied_when will always change within a period
+		 * of jiffies that encompasses half the machine word size
+		 * (2^31 jiffies on a 32-bit arch). That's not necessarily
+		 * the case, so we work around this by ensuring that
+		 * dirtied_when lies within the range intended by these checks.
+		 * IOW, dirtied_when values that appear to be in the future are
+		 * considered to be in the past.
+		 */
+		now = jiffies;
+
 		/* Was this inode dirtied after sync_sb_inodes was called? */
-		if (time_after(inode->dirtied_when, start))
+		if (time_after(inode->dirtied_when, start) &&
+		    time_before_eq(inode->dirtied_when, now))
 			break;
 
 		/* Was this inode dirtied too recently? */
-		if (wbc->older_than_this && time_after(inode->dirtied_when,
-						*wbc->older_than_this))
+		if (wbc->older_than_this &&
+		    time_after(inode->dirtied_when, *wbc->older_than_this) &&
+		    time_before_eq(inode->dirtied_when, now))
 			break;
 
 		/* Is another pdflush already flushing this queue? */

@@ -32,8 +32,9 @@ enum {
  * Security-relevant compatibility flags that must be
  * cleared upon setuid or setgid exec:
  */
-#define PER_CLEAR_ON_SETID (READ_IMPLIES_EXEC)
-
+#define PER_CLEAR_ON_SETID (READ_IMPLIES_EXEC  | \
+			    ADDR_COMPAT_LAYOUT | \
+			    MMAP_PAGE_ZERO)
 /*
  * Personality types.
  *

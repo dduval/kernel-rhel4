@@ -672,9 +672,7 @@ qim_send_ioctl(struct scsi_device *dev, int cmd, void *arg)
 		pext->Status = EXT_STATUS_DEV_NOT_FOUND;
 		if ((ret = copy_to_user(arg, pext, sizeof(EXT_IOCTL))) != 0)
 			ret = -EFAULT;
-
-		kfree(pext);
-		return (ret);
+		goto release_lock_and_exit;
 	}
 
 	DEBUG9(printk("%s(%ld): going to test for dpc_active.\n",
@@ -705,8 +703,7 @@ qim_send_ioctl(struct scsi_device *dev, int cmd, void *arg)
 		if ((ret = copy_to_user(arg, pext, sizeof(EXT_IOCTL))) != 0)
 			ret = -EFAULT;
 
-		kfree(pext);
-		return (ret);
+		goto release_lock_and_exit;
 	}
 
 	switch (cmd) { /* switch on EXT IOCTL COMMAND CODE */
@@ -851,7 +848,7 @@ qim_send_ioctl(struct scsi_device *dev, int cmd, void *arg)
 
 	DEBUG9(printk("%s: exiting. tmp_rval(%d) ret(%d)\n",
 	    __func__, tmp_rval, ret);)
-
+release_lock_and_exit:
 	up(&ha->ioctl->access_sem);
 
 	kfree(pext);

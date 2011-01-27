@@ -184,6 +184,7 @@ enum
 	VM_NFS_WB_LOWMEM=36,    /* limit NFS writes to Lowmem */
 	VM_SWAP_TOKEN_TIMEOUT=37, /* default time for token time out */
 	VM_MAX_WRITEBACK_PAGES=38, /* maximum pages written per writeback loop */
+	VM_MMAP_MIN_ADDR=39, /* prevent mapping of low addresses by mmap() */
 };
 
 

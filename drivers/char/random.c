@@ -2463,26 +2463,23 @@ __u32 check_tcp_syn_cookie(__u32 cookie, __u32 saddr, __u32 daddr, __u16 sport,
 /*
  * Get a random word:
  */
+DEFINE_PER_CPU(__u32 [4], get_random_int_hash);
 unsigned int get_random_int(void)
 {
-	unsigned int val = 0;
+	struct keydata *keyptr;
+	__u32 *hash = get_cpu_var(get_random_int_hash);
+	int ret;
 
 	if (!exec_shield_randomize)
 		return 0;
 
-#ifdef CONFIG_X86_HAS_TSC
-	rdtscl(val);
-#endif
-	val += current->pid + jiffies + (int)val;
+	keyptr = get_keyptr();
+	hash[0] += current->pid + jiffies + get_cycles() + (int)(long)&ret;
 
-	/*
-	 * Use IP's RNG. It suits our purpose perfectly: it re-keys itself
-	 * every second, from the entropy pool (and thus creates a limited
-	 * drain on it), and uses halfMD4Transform within the second. We
-	 * also spice it with the TSC (if available), jiffies, PID and the
-	 * stack address:
-	 */
-	return secure_ip_id(val);
+	ret = halfMD4Transform(hash, keyptr->secret);
+	put_cpu_var(get_random_int_hash);
+
+	return ret;
 }
 
 unsigned long randomize_range(unsigned long start, unsigned long end, unsigned long len)

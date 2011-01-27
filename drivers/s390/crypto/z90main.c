@@ -1968,9 +1968,8 @@ z90crypt_ioctl(struct inode *inode, struct file *filp,
 		break;
 
 	case Z90QUIESCE:
-		if (current->euid != 0) {
-			PRINTK("QUIESCE fails: euid %d\n",
-			       current->euid);
+		if (!capable(CAP_SYS_ADMIN)) {
+			PRINTK("QUIESCE fails: No admin privileges!\n");
 			ret = -EACCES;
 		} else {
 			PRINTK("QUIESCE device from PID %d\n", PID());

@@ -30,7 +30,7 @@
 #
 #  For mptctl:
 #CFLAGS_mptctl.o += -DMPT_DEBUG_IOCTL
-CFLAGS_mptctl.o  += -DCPG_CIM
+CFLAGS_mptctl.o  += -DCPQ_CIM
 CFLAGS_mptctl.o  += -DMPT_SUPPORT_FWDLB_IOCTL
 #
 #  For mptsas:

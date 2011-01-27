@@ -1032,6 +1032,14 @@ static ctl_table vm_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
 },
+	{
+		.ctl_name       = VM_MMAP_MIN_ADDR,
+		.procname       = "mmap_min_addr",
+		.data           = &mmap_min_addr,
+		.maxlen         = sizeof(unsigned long),
+		.mode           = 0644,
+		.proc_handler   = &proc_doulongvec_minmax,
+	},
 	{ .ctl_name = 0 }
 };
 
