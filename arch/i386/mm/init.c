@@ -735,33 +735,6 @@ static int noinline do_test_wp_bit(void)
 	return flag;
 }
 
-static void mark_area_nonexec(unsigned long from, unsigned long to)
-{
-	from &= PAGE_MASK;
-	to &= PAGE_MASK;
-
-	for (; from < to; from += PAGE_SIZE)
-		change_page_attr(virt_to_page(from), 1, PAGE_KERNEL); 
-}
-
-/*
- * In kernel_physical_mapping_init(), any big pages that contained kernel text area were
- * set up as big executable pages.  This function should be called when the initmem
- * is freed, to correctly set up the executable & non-executable pages in this area.
- */
-static void cleanup_nx_in_kerneltext(void)
-{
-	if (!nx_enabled)
-		return;
-	/*
-	 * Leave out the system BIOS (0xe0000-0xfffff), APM might use it!
-	 */
-	mark_area_nonexec(PAGE_OFFSET+0x100000, (unsigned long)&_text);
-	mark_area_nonexec((unsigned long)&_etext + PAGE_SIZE-1,
-				(unsigned long)&__init_end + LARGE_PAGE_SIZE);
-}
-
-
 void free_initmem(void)
 {
 	unsigned long addr;
@@ -774,8 +747,6 @@ void free_initmem(void)
 		totalram_pages++;
 	}
 	printk (KERN_INFO "Freeing unused kernel memory: %dk freed\n", (__init_end - __init_begin) >> 10);
-
-	cleanup_nx_in_kerneltext();
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD

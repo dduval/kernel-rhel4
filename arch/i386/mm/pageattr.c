@@ -31,7 +31,7 @@ pte_t *lookup_address(unsigned long address)
         return pte_offset_kernel(pmd, address);
 } 
 
-static struct page *split_large_page(unsigned long address, pgprot_t prot, 
+static struct page *split_large_page(unsigned long address, pgprot_t prot,
 					pgprot_t ref_prot)
 { 
 	int i; 
@@ -94,11 +94,17 @@ static void set_pmd_pte(pte_t *kpte, unsigned long address, pte_t pte)
  */
 static inline void revert_page(struct page *kpte_page, unsigned long address)
 {
+	pgprot_t ref_prot;
+	
+	ref_prot =
+	((address & LARGE_PAGE_MASK) < (unsigned long)&_etext)
+		? PAGE_KERNEL_LARGE_EXEC : PAGE_KERNEL_LARGE;
+
 	pte_t *linear = (pte_t *) 
 		pmd_offset(pgd_offset(&init_mm, address), address);
 	set_pmd_pte(linear,  address,
 		    pfn_pte((__pa(address) & LARGE_PAGE_MASK) >> PAGE_SHIFT,
-			    PAGE_KERNEL_LARGE));
+			    ref_prot));
 }
 
 static int
@@ -118,33 +124,20 @@ __change_page_attr(struct page *page, pgprot_t prot)
 	if (!kpte)
 		return -EINVAL;
 	kpte_page = virt_to_page(kpte);
-
-	/*
-	 * If this page is part of a large page that's executable (and NX is
-	 * enabled), then split page up and set new PTE page as reserved so
-	 * we won't revert this back into a large page.  This should only
-	 * happen in large pages that also contain kernel executable code,
-	 * and shouldn't happen at all if init.c correctly sets up NX regions.
-	 */
-	if (nx_enabled && 
-	    !(pte_val(*kpte) & _PAGE_NX) &&
-	    (pte_val(*kpte) & _PAGE_PSE)) {
-		struct page *split = split_large_page(address, prot, PAGE_KERNEL_EXEC); 
-		if (!split)
-			return -ENOMEM;
-		set_pmd_pte(kpte,address,mk_pte(split, PAGE_KERNEL_EXEC));
-		SetPageReserved(split);
-		return 0;
-	}
-
 	if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL)) { 
 		if ((pte_val(*kpte) & _PAGE_PSE) == 0) { 
 			set_pte_atomic(kpte, mk_pte(page, prot)); 
 		} else {
-			struct page *split = split_large_page(address, prot, PAGE_KERNEL); 
+			pgprot_t ref_prot;
+			struct page *split;
+	
+			ref_prot =
+			((address & LARGE_PAGE_MASK) < (unsigned long)&_etext)
+				? PAGE_KERNEL_EXEC : PAGE_KERNEL;
+			split = split_large_page(address, prot, ref_prot); 
 			if (!split)
 				return -ENOMEM;
-			set_pmd_pte(kpte,address,mk_pte(split, PAGE_KERNEL));
+			set_pmd_pte(kpte,address,mk_pte(split, ref_prot));
 			kpte_page = split;
 		}	
 		get_page(kpte_page);
