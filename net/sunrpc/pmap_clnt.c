@@ -19,6 +19,7 @@
 #include <linux/sunrpc/clnt.h>
 #include <linux/sunrpc/xprt.h>
 #include <linux/sunrpc/sched.h>
+#include <linux/kref.h>
 
 #ifdef RPC_DEBUG
 # define RPCDBG_FACILITY	RPCDBG_PMAP
@@ -34,6 +35,25 @@ static void			pmap_getport_done(struct rpc_task *);
 extern struct rpc_program	pmap_program;
 static spinlock_t		pmap_lock = SPIN_LOCK_UNLOCKED;
 
+struct rpc_pmap_result {
+	__u16			pr_port;
+	struct kref		pr_refcount;
+};
+
+static void
+pmap_result_release(struct kref *ref)
+{
+	struct rpc_pmap_result *pr = container_of(ref, struct rpc_pmap_result,
+						  pr_refcount);
+	kfree(pr);
+}
+
+void
+pmap_result_put(struct rpc_pmap_result *pr)
+{
+	kref_put(&pr->pr_refcount, pmap_result_release);
+}
+
 /*
  * Obtain the port for a given RPC service on a given host. This one can
  * be called for an ongoing RPC request.
@@ -46,7 +66,6 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 	struct rpc_message msg = {
 		.rpc_proc	= &pmap_procedures[PMAP_GETPORT],
 		.rpc_argp	= map,
-		.rpc_resp	= &clnt->cl_port,
 		.rpc_cred	= NULL
 	};
 	struct rpc_clnt	*pmap_clnt;
@@ -68,6 +87,14 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 	map->pm_binding = 1;
 	spin_unlock(&pmap_lock);
 
+	clnt->cl_pmap_result = kzalloc(sizeof(*clnt->cl_pmap_result),
+					GFP_KERNEL);
+	if (clnt->cl_pmap_result == NULL)
+		goto bailout;
+
+	kref_init(&clnt->cl_pmap_result->pr_refcount);
+	msg.rpc_resp = clnt->cl_pmap_result;
+
 	pmap_clnt = pmap_create(clnt->cl_server, sap, map->pm_prot);
 	if (IS_ERR(pmap_clnt)) {
 		task->tk_status = PTR_ERR(pmap_clnt);
@@ -87,10 +114,16 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 	rpc_call_setup(child, &msg, 0);
 
 	/* ... and run the child task */
+	kref_get(&clnt->cl_pmap_result->pr_refcount);
+	pmap_clnt->cl_pmap_result = clnt->cl_pmap_result;
 	rpc_run_child(task, child, pmap_getport_done);
 	return;
 
 bailout:
+	if (clnt->cl_pmap_result) {
+		pmap_result_put(clnt->cl_pmap_result);
+		clnt->cl_pmap_result = NULL;
+	}
 	spin_lock(&pmap_lock);
 	map->pm_binding = 0;
 	rpc_wake_up(&map->pm_bindwait);
@@ -141,6 +174,12 @@ pmap_getport_done(struct rpc_task *task)
 
 	dprintk("RPC: %4d pmap_getport_done(status %d)\n",
 			task->tk_pid, task->tk_status);
+
+	if (clnt->cl_port == 0)
+		clnt->cl_port = clnt->cl_pmap_result->pr_port;
+
+	pmap_result_put(clnt->cl_pmap_result);
+	clnt->cl_pmap_result = NULL;
 
 	if (task->tk_status < 0) {
 		/* Pass error up */
@@ -253,9 +292,9 @@ xdr_encode_mapping(struct rpc_rqst *req, u32 *p, struct rpc_portmap *map)
 }
 
 static int
-xdr_decode_port(struct rpc_rqst *req, u32 *p, unsigned short *portp)
+xdr_decode_port(struct rpc_rqst *req, u32 *p, struct rpc_pmap_result *pr)
 {
-	*portp = (unsigned short) ntohl(*p++);
+	pr->pr_port = (unsigned short) ntohl(*p++);
 	return 0;
 }
 

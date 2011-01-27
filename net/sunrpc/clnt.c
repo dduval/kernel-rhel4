@@ -209,6 +209,7 @@ rpc_clone_client(struct rpc_clnt *clnt)
 	if (new->cl_auth)
 		atomic_inc(&new->cl_auth->au_count);
 	new->cl_pmap		= &new->cl_pmap_default;
+	new->cl_pmap_result	= NULL;
 	rpc_init_wait_queue(&new->cl_pmap_default.pm_bindwait, "bindwait");
 	return new;
 out_no_clnt:
@@ -268,6 +269,10 @@ rpc_destroy_client(struct rpc_clnt *clnt)
 
 	dprintk("RPC: destroying %s client for %s\n",
 			clnt->cl_protname, clnt->cl_server);
+	if (clnt->cl_pmap_result) {
+		pmap_result_put(clnt->cl_pmap_result);
+		clnt->cl_pmap_result = NULL;
+	}
 	if (clnt->cl_auth) {
 		rpcauth_destroy(clnt->cl_auth);
 		clnt->cl_auth = NULL;

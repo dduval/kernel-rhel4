@@ -71,6 +71,33 @@ static inline int _snd_ioctl32_##type(unsigned int fd, unsigned int cmd, unsigne
 	return 0;\
 }
 
+#define DEFINE_ALSA_IOCTL1(type, extrain, extraout) \
+static inline int _snd_ioctl32_##type(unsigned int fd, unsigned int cmd, unsigned long arg, struct file *file, unsigned int native_ctl)\
+{\
+	struct sndrv_##type##32 data32;\
+	struct sndrv_##type data;\
+	mm_segment_t oldseg;\
+	int err;\
+	if (copy_from_user(&data32, (void __user *)arg, sizeof(data32)))\
+		return -EFAULT;\
+	memset(&data, 0, sizeof(data));\
+	convert_from_32(type, &data, &data32);\
+	extrain;\
+	oldseg = get_fs();\
+	set_fs(KERNEL_DS);\
+	err = file->f_op->ioctl(file->f_dentry->d_inode, file, native_ctl, (unsigned long)&data);\
+	set_fs(oldseg);\
+	if (err < 0) \
+		return err;\
+	if (native_ctl & (_IOC_READ << _IOC_DIRSHIFT)) {\
+		convert_to_32(type, &data32, &data);\
+		extraout;\
+		if (copy_to_user((void __user *)arg, &data32, sizeof(data32)))\
+			return -EFAULT;\
+	}\
+	return 0;\
+}
+
 #define DEFINE_ALSA_IOCTL_BIG(type) \
 static inline int _snd_ioctl32_##type(unsigned int fd, unsigned int cmd, unsigned long arg, struct file *file, unsigned int native_ctl)\
 {\

@@ -913,24 +913,26 @@ return_err:
  */
 int fastcall link_path_walk(const char *name, struct nameidata *nd)
 {
-	struct nameidata save = *nd;
+	struct dentry *saved_dentry = nd->dentry;
+	struct vfsmount *saved_mnt = nd->mnt;
 	int result;
 
 	/* make sure the stuff we saved doesn't go away */
-	dget(save.dentry);
-	mntget(save.mnt);
+	dget(saved_dentry);
+	mntget(saved_mnt);
 
 	result = __link_path_walk(name, nd);
 	if (result == -ESTALE) {
-		*nd = save;
+		nd->dentry = saved_dentry;
+		nd->mnt = saved_mnt;
 		dget(nd->dentry);
 		mntget(nd->mnt);
 		nd->flags |= LOOKUP_REVAL;
 		result = __link_path_walk(name, nd);
 	}
 
-	dput(save.dentry);
-	mntput(save.mnt);
+	dput(saved_dentry);
+	mntput(saved_mnt);
 
 	return result;
 }

@@ -31,6 +31,7 @@ struct rpc_portmap {
 };
 
 struct rpc_inode;
+struct rpc_pmap_result;
 
 /*
  * The high-level client handle
@@ -66,6 +67,9 @@ struct rpc_clnt {
 	struct rpc_rtt		cl_rtt_default;
 	struct rpc_portmap	cl_pmap_default;
 	char			cl_inline_name[32];
+#ifndef __GENKSYMS__
+	struct rpc_pmap_result	*cl_pmap_result;
+#endif /* !__GENKSYMS__ */
 };
 #define cl_timeout		cl_xprt->timeout
 #define cl_prog			cl_pmap->pm_prog
@@ -118,6 +122,7 @@ struct rpc_clnt *rpc_clone_client(struct rpc_clnt *);
 int		rpc_shutdown_client(struct rpc_clnt *);
 int		rpc_destroy_client(struct rpc_clnt *);
 void		rpc_release_client(struct rpc_clnt *);
+void		pmap_result_put(struct rpc_pmap_result *pr);
 void		rpc_getport(struct rpc_task *, struct rpc_clnt *);
 int		rpc_register(u32, u32, int, unsigned short, int *);
 

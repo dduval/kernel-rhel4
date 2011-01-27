@@ -71,6 +71,9 @@ static void __init setup_boot_cpu_data(void)
 	boot_cpu_data.x86 = (eax >> 8) & 0xf;
 	boot_cpu_data.x86_model = (eax >> 4) & 0xf;
 	boot_cpu_data.x86_mask = eax & 0xf;
+
+	/* Also determine cpu vendor */
+	get_cpu_vendor(&boot_cpu_data);
 }
 
 extern char _end[];

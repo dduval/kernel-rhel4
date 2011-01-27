@@ -169,16 +169,16 @@ struct sndrv_pcm_status32 {
 
 DEFINE_ALSA_IOCTL(pcm_uframes_str);
 DEFINE_ALSA_IOCTL(pcm_sframes_str);
-DEFINE_ALSA_IOCTL(pcm_sw_params);
 DEFINE_ALSA_IOCTL(pcm_channel_info);
 DEFINE_ALSA_IOCTL(pcm_status);
 
-/* recalcuate the boundary within 32bit */
-static void recalculate_boundary(struct file *file)
+/* recalculate the boundary within 32bit */
+static void recalculate_boundary_assign(struct file *file)
 {
 	snd_pcm_file_t *pcm_file;
 	snd_pcm_substream_t *substream;
 	snd_pcm_runtime_t *runtime;
+	unsigned long boundary;
 
 	/* FIXME: need to check whether fop->ioctl is sane */
 	if (! (pcm_file = file->private_data))
@@ -187,10 +187,45 @@ static void recalculate_boundary(struct file *file)
 		return;
 	if (! (runtime = substream->runtime))
 		return;
-	runtime->boundary = runtime->buffer_size;
-	while (runtime->boundary * 2 <= 0x7fffffffUL - runtime->buffer_size)
-		runtime->boundary *= 2;
+	boundary = runtime->buffer_size;
+	if (boundary == 0) {
+		runtime->boundary = 0x7fffffffUL;
+		return;
+	}
+	if (boundary < 0x7fffffffUL)
+		return;
+	while (boundary * 2 <= 0x7fffffffUL - runtime->buffer_size)
+		boundary *= 2;
+	runtime->boundary = boundary;
 }
+
+/* recalculate the boundary within 32bit */
+static u32 recalculate_boundary(struct file *file,
+				unsigned long old_boundary)
+{
+	snd_pcm_file_t *pcm_file;
+	snd_pcm_substream_t *substream;
+	snd_pcm_runtime_t *runtime;
+	unsigned long boundary;
+
+	if (old_boundary < 0x7fffffffUL)
+		return (u32)old_boundary;
+	/* FIXME: need to check whether fop->ioctl is sane */
+	if (! (pcm_file = file->private_data))
+		return 0x7fffffffUL;
+	if (! (substream = pcm_file->substream))
+		return 0x7fffffffUL;
+	if (! (runtime = substream->runtime))
+		return 0x7fffffffUL;
+	boundary = runtime->buffer_size;
+	if (boundary == 0)
+		return 0x7fffffffUL;
+	while (boundary * 2 <= 0x7fffffffUL - runtime->buffer_size)
+		boundary *= 2;
+	return (u32)boundary;
+}
+
+DEFINE_ALSA_IOCTL1(pcm_sw_params, data.boundary = recalculate_boundary(file, data.boundary), data32.boundary = recalculate_boundary(file, data.boundary));
 
 static inline int _snd_ioctl32_pcm_hw_params(unsigned int fd, unsigned int cmd, unsigned long arg, struct file *file, unsigned int native_ctl)
 {
@@ -221,8 +256,10 @@ static inline int _snd_ioctl32_pcm_hw_params(unsigned int fd, unsigned int cmd, 
 	convert_to_32(pcm_hw_params, data32, data);
 	if (copy_to_user((void __user *)arg, data32, sizeof(*data32)))
 		err = -EFAULT;
-	else
-		recalculate_boundary(file);
+	else {
+		if (native_ctl == SNDRV_PCM_IOCTL_HW_PARAMS)
+			recalculate_boundary_assign(file);
+	}
       __end:
       	if (data)
       		kfree(data);
@@ -429,8 +466,10 @@ static inline int _snd_ioctl32_pcm_hw_params_old(unsigned int fd, unsigned int c
 	err = 0;
 	if (copy_to_user((void __user *)arg, data32, sizeof(*data32)))
 		err = -EFAULT;
-	else
-		recalculate_boundary(file);
+	else {
+		if (native_ctl == SNDRV_PCM_IOCTL_HW_PARAMS)
+			recalculate_boundary_assign(file);
+	}
       __end:
       	if (data)
       		kfree(data);
