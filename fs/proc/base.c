@@ -410,7 +410,7 @@ out:
 	return retval;
 }
 
-static int may_ptrace_attach(struct task_struct *task)
+int may_ptrace_attach(struct task_struct *task)
 {
 	int res;
 	task_lock(task);
@@ -492,7 +492,10 @@ static int proc_pid_wchan(struct task_struct *task, char *buffer)
 	sym_name = kallsyms_lookup(wchan, &size, &offset, &modname, namebuf);
 	if (sym_name)
 		return sprintf(buffer, "%s", sym_name);
-	return sprintf(buffer, "%lu", wchan);
+	if (!may_ptrace_attach(task))
+		return 0;
+	else
+		return sprintf(buffer, "%lu", wchan);
 }
 #endif /* CONFIG_KALLSYMS */
 

@@ -13,6 +13,7 @@
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/smp_lock.h>
+#include <linux/mutex.h>
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/random.h>
@@ -44,6 +45,7 @@ EXPORT_SYMBOL(input_class);
 
 #define INPUT_DEVICES	256
 
+DECLARE_MUTEX(input_mutex);	/* Protects input_{dev|handler}_list */
 static LIST_HEAD(input_dev_list);
 static LIST_HEAD(input_handler_list);
 
@@ -443,6 +445,8 @@ void input_register_device(struct input_dev *dev)
 		dev->rep[REP_PERIOD] = 33;
 	}
 
+	mutex_lock(&input_mutex);
+
 	INIT_LIST_HEAD(&dev->h_list);
 	list_add_tail(&dev->node, &input_dev_list);
 
@@ -451,6 +455,8 @@ void input_register_device(struct input_dev *dev)
 			if ((id = input_match_device(handler->id_table, dev)))
 				if ((handle = handler->connect(handler, dev, id)))
 					input_link_handle(handle);
+
+	mutex_unlock(&input_mutex);
 
 #ifdef CONFIG_HOTPLUG
 	input_call_hotplug("add", dev);
@@ -473,6 +479,7 @@ void input_unregister_device(struct input_dev *dev)
 
 	del_timer_sync(&dev->timer);
 
+	mutex_lock(&input_mutex);
 	list_for_each_safe(node, next, &dev->h_list) {
 		struct input_handle * handle = to_handle(node);
 		list_del_init(&handle->d_node);
@@ -481,10 +488,14 @@ void input_unregister_device(struct input_dev *dev)
 	}
 
 #ifdef CONFIG_HOTPLUG
+	mutex_unlock(&input_mutex);
 	input_call_hotplug("remove", dev);
+	mutex_lock(&input_mutex);
 #endif
 
 	list_del_init(&dev->node);
+
+	mutex_unlock(&input_mutex);
 
 #ifdef CONFIG_PROC_FS
 	input_devices_state++;
@@ -505,6 +516,8 @@ void input_register_handler(struct input_handler *handler)
 	if (handler->fops != NULL)
 		input_table[handler->minor >> 5] = handler;
 
+	mutex_lock(&input_mutex);
+
 	list_add_tail(&handler->node, &input_handler_list);
 
 	list_for_each_entry(dev, &input_dev_list, node)
@@ -513,15 +526,20 @@ void input_register_handler(struct input_handler *handler)
 				if ((handle = handler->connect(handler, dev, id)))
 					input_link_handle(handle);
 
+	mutex_unlock(&input_mutex);
+
 #ifdef CONFIG_PROC_FS
 	input_devices_state++;
 	wake_up(&input_devices_poll_wait);
 #endif
+
 }
 
 void input_unregister_handler(struct input_handler *handler)
 {
 	struct list_head * node, * next;
+
+	mutex_lock(&input_mutex);
 
 	list_for_each_safe(node, next, &handler->h_list) {
 		struct input_handle * handle = to_handle_h(node);
@@ -534,6 +552,8 @@ void input_unregister_handler(struct input_handler *handler)
 
 	if (handler->fops != NULL)
 		input_table[handler->minor >> 5] = NULL;
+
+	mutex_unlock(&input_mutex);
 
 #ifdef CONFIG_PROC_FS
 	input_devices_state++;
@@ -613,6 +633,8 @@ static int input_devices_read(char *buf, char **start, off_t pos, int count, int
 	off_t at = 0;
 	int i, len, cnt = 0;
 
+	mutex_lock(&input_mutex);
+
 	list_for_each_entry(dev, &input_dev_list, node) {
 
 		len = sprintf(buf, "I: Bus=%04x Vendor=%04x Product=%04x Version=%04x\n",
@@ -654,6 +676,8 @@ static int input_devices_read(char *buf, char **start, off_t pos, int count, int
 	if (&dev->node == &input_dev_list)
 		*eof = 1;
 
+	mutex_unlock(&input_mutex);
+
 	return (count > cnt) ? cnt : count;
 }
 
@@ -664,6 +688,8 @@ static int input_handlers_read(char *buf, char **start, off_t pos, int count, in
 	off_t at = 0;
 	int len = 0, cnt = 0;
 	int i = 0;
+
+	mutex_lock(&input_mutex);
 
 	list_for_each_entry(handler, &input_handler_list, node) {
 
@@ -688,6 +714,8 @@ static int input_handlers_read(char *buf, char **start, off_t pos, int count, in
 	}
 	if (&handler->node == &input_handler_list)
 		*eof = 1;
+
+	mutex_unlock(&input_mutex);
 
 	return (count > cnt) ? cnt : count;
 }

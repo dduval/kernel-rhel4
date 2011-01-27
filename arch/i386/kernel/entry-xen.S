@@ -530,7 +530,9 @@ error_code:
 ENTRY(hypervisor_callback)
 	pushl %eax
 	SAVE_ALL
+	testb $2,CS(%esp)
 	movl EIP(%esp),%eax
+	jnz 11f
 	cmpl $scrit,%eax
 	jb   11f
 	cmpl $ecrit,%eax

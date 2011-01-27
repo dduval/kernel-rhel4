@@ -79,6 +79,7 @@
 extern int ptrace_readdata(struct task_struct *tsk, unsigned long src, char __user *dst, int len);
 extern int ptrace_writedata(struct task_struct *tsk, char __user *src, unsigned long dst, int len);
 extern int ptrace_attach(struct task_struct *tsk);
+extern int may_ptrace_attach(struct task_struct *task);
 extern int ptrace_detach(struct task_struct *, unsigned int);
 extern void __ptrace_detach(struct task_struct *, unsigned int);
 extern void ptrace_disable(struct task_struct *);

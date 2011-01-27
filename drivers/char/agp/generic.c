@@ -945,6 +945,7 @@ void *agp_generic_alloc_page(void)
 	if (page == NULL)
 		return NULL;
 
+	clear_page(page_address(page));
 	map_page_into_agp(page);
 
 	get_page(page);

@@ -4403,8 +4403,7 @@ e1000_clean_rx_irq(struct e1000_adapter *adapter,
 		                 PCI_DMA_FROMDEVICE);
 
 		length = le16_to_cpu(rx_desc->length);
-
-		if (unlikely(!(status & E1000_RXD_STAT_EOP))) {
+		if (unlikely(!(status & E1000_RXD_STAT_EOP) || (length <= 4))) {
 			/* All receives must fit into a single buffer */
 			E1000_DBG("%s: Receive packet consumed multiple"
 				  " buffers\n", netdev->name);

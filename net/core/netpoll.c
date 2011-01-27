@@ -869,10 +869,12 @@ void netpoll_reset_locks(struct netpoll *np)
 
 	if (ndw && ndw->npinfo) {
 		if (spin_is_locked(&ndw->npinfo->poll_lock)) {
-			printk("poll_lock is locked, unable to take a dump!\n");
-			printk("rebooting in 5 seconds\n");
-			mdelay(5000);
-			machine_restart(NULL);
+			/*
+			 * Bust the poll lock and hope for the best, the other
+			 * cpus are frozen by now anyway, so we have no choice
+			 */
+			printk(KERN_CRIT "poll_lock locked! netdump may fail\n");
+			spin_lock_init(&ndw->npinfo->poll_lock);
 		}
 	}
 	spin_lock_init(&skb_list_lock);
