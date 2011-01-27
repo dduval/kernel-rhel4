@@ -25,6 +25,7 @@
 #include <linux/dcookies.h>
 #include <linux/suspend.h>
 #include <linux/tty.h>
+#include <linux/task_io_accounting_ops.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -974,7 +975,12 @@ asmlinkage long sys_times(struct tms __user * tbuf)
 		struct task_struct *t;
 		unsigned long utime, stime, cutime, cstime;
 
-		read_lock(&tasklist_lock);
+		/* We need to hold both proc_lock and sighand->siglock
+		   to aware modification of threads list by dying thread
+		   and, thus, to keep consistence of next_thread.
+		*/
+		spin_lock(&tsk->proc_lock);
+		spin_lock_irq(&tsk->sighand->siglock);
 		utime = tsk->signal->utime;
 		stime = tsk->signal->stime;
 		t = tsk;
@@ -984,20 +990,10 @@ asmlinkage long sys_times(struct tms __user * tbuf)
 			t = next_thread(t);
 		} while (t != tsk);
 
-		/*
-		 * While we have tasklist_lock read-locked, no dying thread
-		 * can be updating current->signal->[us]time.  Instead,
-		 * we got their counts included in the live thread loop.
-		 * However, another thread can come in right now and
-		 * do a wait call that updates current->signal->c[us]time.
-		 * To make sure we always see that pair updated atomically,
-		 * we take the siglock around fetching them.
-		 */
-		spin_lock_irq(&tsk->sighand->siglock);
 		cutime = tsk->signal->cutime;
 		cstime = tsk->signal->cstime;
 		spin_unlock_irq(&tsk->sighand->siglock);
-		read_unlock(&tasklist_lock);
+		spin_unlock(&tsk->proc_lock);
 
 		tmp.tms_utime = jiffies_to_clock_t(utime);
 		tmp.tms_stime = jiffies_to_clock_t(stime);
@@ -1618,6 +1614,8 @@ void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 			r->ru_nivcsw = p->signal->cnivcsw;
 			r->ru_minflt = p->signal->cmin_flt;
 			r->ru_majflt = p->signal->cmaj_flt;
+			r->ru_inblock = p->signal->inblock;
+			r->ru_oublock = p->signal->oublock;
 			spin_unlock_irqrestore(&p->sighand->siglock, flags);
 			jiffies_to_timeval(utime, &r->ru_utime);
 			jiffies_to_timeval(stime, &r->ru_stime);
@@ -1634,6 +1632,8 @@ void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 			r->ru_nivcsw = p->signal->cnivcsw;
 			r->ru_minflt = p->signal->cmin_flt;
 			r->ru_majflt = p->signal->cmaj_flt;
+			r->ru_inblock = p->signal->inblock;
+			r->ru_oublock = p->signal->oublock;
 		sum_group:
 			utime += p->signal->utime;
 			stime += p->signal->stime;
@@ -1641,6 +1641,8 @@ void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 			r->ru_nivcsw += p->signal->nivcsw;
 			r->ru_minflt += p->signal->min_flt;
 			r->ru_majflt += p->signal->maj_flt;
+			r->ru_inblock += p->signal->inblock;
+			r->ru_oublock += p->signal->oublock;
 			t = p;
 			do {
 				utime += t->utime;
@@ -1649,6 +1651,8 @@ void k_getrusage(struct task_struct *p, int who, struct rusage *r)
 				r->ru_nivcsw += t->nivcsw;
 				r->ru_minflt += t->min_flt;
 				r->ru_majflt += t->maj_flt;
+				r->ru_inblock += task_io_get_inblock(t);
+				r->ru_oublock += task_io_get_oublock(t);
 				t = next_thread(t);
 			} while (t != p);
 			spin_unlock_irqrestore(&p->sighand->siglock, flags);

@@ -41,6 +41,8 @@ static int ehci_hub_suspend (struct usb_hcd *hcd)
 		return 0;
 	if (time_before (jiffies, ehci->next_statechange))
 		return -EAGAIN;
+	del_timer_sync(&ehci->watchdog);
+	del_timer_sync(&ehci->iaa_watchdog);
 
 	port = HCS_N_PORTS (ehci->hcs_params);
 	spin_lock_irq (&ehci->lock);
@@ -71,7 +73,7 @@ static int ehci_hub_suspend (struct usb_hcd *hcd)
 	ehci->command = readl (&ehci->regs->command);
 	writel (ehci->command & ~CMD_RUN, &ehci->regs->command);
 	if (ehci->reclaim)
-		ehci->reclaim_ready = 1;
+		end_unlink_async(ehci, NULL);
 	ehci_work(ehci, NULL);
 	(void) handshake (&ehci->regs->status, STS_HALT, STS_HALT, 2000);
 

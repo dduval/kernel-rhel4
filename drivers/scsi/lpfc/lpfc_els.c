@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_els.c 2975 2006-11-14 19:15:40Z sf_support $
+ * $Id: lpfc_els.c 3094 2007-11-19 16:15:45Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -711,7 +711,7 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 	cmdiocb->context_un.rsp_iocb = rspiocb;
 
 	irsp = &rspiocb->iocb;
-	if (!(ndlp = lpfc_findnode_did(phba, NLP_SEARCH_ALL,
+	if (!(ndlp = lpfc_findnode_did(phba, NLP_SEARCH_ALL, 
 		irsp->un.elsreq64.remoteID))) {
 		goto out;
 	}
@@ -1465,6 +1465,13 @@ lpfc_els_retry_delay(unsigned long ptr)
 	evtp = &ndlp->els_retry_evt;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
+
+	/* If a LOGO is pending retry the discovery after LOGO completes */
+	if (ndlp->nlp_flag & NLP_LOGO_SND) {
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
+		mod_timer(&ndlp->nlp_delayfunc, jiffies + HZ * 1);
+		return;
+	}
 	if (!list_empty(&evtp->evt_listp)) {
 		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		return;

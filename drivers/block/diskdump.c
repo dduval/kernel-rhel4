@@ -829,11 +829,13 @@ static void start_disk_dump(struct pt_regs *regs)
 	 */
 	if (down_trylock(&disk_dump_mutex)) {
 		Err("down_trylock(disk_dump_mutex) failed.");
+		dump_err = -EIO;
 		goto done;
 	}
 
 	if (!check_crc_module()) {
 		Err("checksum error. diskdump common module may be compromised.");
+		dump_err = -EIO;
 		goto done;
 	}
 
@@ -1205,6 +1207,11 @@ static int add_dump(struct device *dev, struct block_device *bdev)
 			blkdev_put(bdev);
 			return ret;
 		}
+
+		/* If the device has limitations of transfer size, print warning. */
+		if (dump_device->max_blocks < (1 << block_order))
+			Warn("I/O size exceeds the maximum block size of SCSI device. Signature check may fail");
+
 		if (!try_module_get(dump_type->owner)) {
 			kfree(dump_device);
 			blkdev_put(bdev);

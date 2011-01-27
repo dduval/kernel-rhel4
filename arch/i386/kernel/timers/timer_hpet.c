@@ -79,7 +79,7 @@ static unsigned long get_offset_hpet(void)
 
 	eax = hpet_readl(HPET_COUNTER);
 	eax -= hpet_last;	/* hpet delta */
-	eax = min(hpet_tick, eax);
+	eax = min(hpet_tick_real, eax);
 	/*
          * Time offset = (hpet delta) * ( usecs per HPET clock )
 	 *             = (hpet delta) * ( usecs per tick / HPET clocks per tick)
@@ -106,10 +106,11 @@ static void mark_offset_hpet(void)
 	rdtsc(last_tsc_low, last_tsc_high);
 
 	if (hpet_use_timer)
-		offset = hpet_readl(HPET_T0_CMP) - hpet_tick;
+		offset = hpet_readl(HPET_T0_CMP) - hpet_tick_real;
 	else
 		offset = hpet_readl(HPET_COUNTER);
-	if (unlikely(((offset - hpet_last) >= (2*hpet_tick)) && (hpet_last != 0))) {
+	if (unlikely(((offset - hpet_last) >= (2*hpet_tick_real))
+	    && (hpet_last != 0))) {
 		int lost_ticks = ((offset - hpet_last) / hpet_tick) - 1;
 		jiffies_64 += lost_ticks;
 	}
@@ -169,8 +170,8 @@ static int __init init_hpet(char* override)
 	 * Math to calculate hpet to usec multiplier
 	 * Look for the comments at get_offset_hpet()
 	 */
-	ASM_DIV64_REG(result, remain, hpet_tick, 0, KERNEL_TICK_USEC);
-	if (remain > (hpet_tick >> 1))
+	ASM_DIV64_REG(result, remain, hpet_tick_real, 0, KERNEL_TICK_USEC);
+	if (remain > (hpet_tick_real >> 1))
 		result++; /* rounding the result */
 	hpet_usec_quotient = result;
 

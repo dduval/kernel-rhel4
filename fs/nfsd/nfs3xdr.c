@@ -174,10 +174,10 @@ encode_fattr3(struct svc_rqst *rqstp, u32 *p, struct svc_fh *fhp)
 {
 	struct vfsmount *mnt = fhp->fh_export->ex_mnt;
 	struct dentry	*dentry = fhp->fh_dentry;
-	struct kstat stat;
+	struct kstat64 stat;
 	struct timespec time;
 
-	vfs_getattr(mnt, dentry, &stat);
+	vfs_getattr64(mnt, dentry, &stat);
 
 	*p++ = htonl(nfs3_ftypes[(stat.mode & S_IFMT) >> 12]);
 	*p++ = htonl((u32) stat.mode);
@@ -196,7 +196,7 @@ encode_fattr3(struct svc_rqst *rqstp, u32 *p, struct svc_fh *fhp)
 		p = xdr_encode_hyper(p, (u64) fhp->fh_export->ex_fsid);
 	else
 		p = xdr_encode_hyper(p, (u64) huge_encode_dev(stat.dev));
-	p = xdr_encode_hyper(p, (u64) stat.ino);
+	p = xdr_encode_hyper(p, stat.ino64);
 	p = encode_time3(p, &stat.atime);
 	lease_get_mtime(dentry->d_inode, &time); 
 	p = encode_time3(p, &time);
@@ -208,32 +208,31 @@ encode_fattr3(struct svc_rqst *rqstp, u32 *p, struct svc_fh *fhp)
 static inline u32 *
 encode_saved_post_attr(struct svc_rqst *rqstp, u32 *p, struct svc_fh *fhp)
 {
-	struct inode	*inode = fhp->fh_dentry->d_inode;
-
 	/* Attributes to follow */
 	*p++ = xdr_one;
 
-	*p++ = htonl(nfs3_ftypes[(fhp->fh_post_mode & S_IFMT) >> 12]);
-	*p++ = htonl((u32) fhp->fh_post_mode);
-	*p++ = htonl((u32) fhp->fh_post_nlink);
-	*p++ = htonl((u32) nfsd_ruid(rqstp, fhp->fh_post_uid));
-	*p++ = htonl((u32) nfsd_rgid(rqstp, fhp->fh_post_gid));
-	if (S_ISLNK(fhp->fh_post_mode) && fhp->fh_post_size > NFS3_MAXPATHLEN) {
+	*p++ = htonl(nfs3_ftypes[(fhp->fh_post_attr.mode & S_IFMT) >> 12]);
+	*p++ = htonl((u32) fhp->fh_post_attr.mode);
+	*p++ = htonl((u32) fhp->fh_post_attr.nlink);
+	*p++ = htonl((u32) nfsd_ruid(rqstp, fhp->fh_post_attr.uid));
+	*p++ = htonl((u32) nfsd_rgid(rqstp, fhp->fh_post_attr.gid));
+	if (S_ISLNK(fhp->fh_post_attr.mode) &&
+	    fhp->fh_post_attr.size > NFS3_MAXPATHLEN) {
 		p = xdr_encode_hyper(p, (u64) NFS3_MAXPATHLEN);
 	} else {
-		p = xdr_encode_hyper(p, (u64) fhp->fh_post_size);
+		p = xdr_encode_hyper(p, (u64) fhp->fh_post_attr.size);
 	}
-	p = xdr_encode_hyper(p, ((u64)fhp->fh_post_blocks) << 9);
-	*p++ = fhp->fh_post_rdev[0];
-	*p++ = fhp->fh_post_rdev[1];
+	p = xdr_encode_hyper(p, ((u64)fhp->fh_post_attr.blocks) << 9);
+	*p++ = htonl((u32) MAJOR(fhp->fh_post_attr.rdev));
+	*p++ = htonl((u32) MINOR(fhp->fh_post_attr.rdev));
 	if (is_fsid(fhp, rqstp->rq_reffh))
 		p = xdr_encode_hyper(p, (u64) fhp->fh_export->ex_fsid);
 	else
-		p = xdr_encode_hyper(p, (u64)huge_encode_dev(inode->i_sb->s_dev));
-	p = xdr_encode_hyper(p, (u64) inode->i_ino);
-	p = encode_time3(p, &fhp->fh_post_atime);
-	p = encode_time3(p, &fhp->fh_post_mtime);
-	p = encode_time3(p, &fhp->fh_post_ctime);
+		p = xdr_encode_hyper(p, (u64) huge_encode_dev(fhp->fh_post_attr.dev));
+	p = xdr_encode_hyper(p, fhp->fh_post_attr.ino);
+	p = encode_time3(p, &fhp->fh_post_attr.atime);
+	p = encode_time3(p, &fhp->fh_post_attr.mtime);
+	p = encode_time3(p, &fhp->fh_post_attr.ctime);
 
 	return p;
 }
@@ -286,6 +285,23 @@ encode_wcc_data(struct svc_rqst *rqstp, u32 *p, struct svc_fh *fhp)
 	return encode_post_op_attr(rqstp, p, fhp);
 }
 
+/*
+ * Fill in the post_op attr for the wcc data
+ */
+void fill_post_wcc(struct svc_fh *fhp)
+{
+	int err;
+
+	if (fhp->fh_post_saved)
+		printk("nfsd: inode locked twice during operation.\n");
+
+	err = vfs_getattr64(fhp->fh_export->ex_mnt, fhp->fh_dentry,
+			&fhp->fh_post_attr);
+	if (err)
+		fhp->fh_post_saved = 0;
+	else
+		fhp->fh_post_saved = 1;
+}
 
 /*
  * XDR decode functions
@@ -807,7 +823,7 @@ nfs3svc_encode_readdirres(struct svc_rqst *rqstp, u32 *p,
 
 static inline u32 *
 encode_entry_baggage(struct nfsd3_readdirres *cd, u32 *p, const char *name,
-	     int namlen, ino_t ino)
+		int namlen, u64 ino)
 {
 	*p++ = xdr_one;				 /* mark entry present */
 	p    = xdr_encode_hyper(p, ino);	 /* file id */
@@ -823,11 +839,11 @@ static inline u32 *
 encode_entryplus_baggage(struct nfsd3_readdirres *cd, u32 *p,
 		struct svc_fh *fhp)
 {
-		p = encode_post_op_attr(cd->rqstp, p, fhp);
-		*p++ = xdr_one;			/* yes, a file handle follows */
-		p = encode_fh(p, fhp);
-		fh_put(fhp);
-		return p;
+	p = encode_post_op_attr(cd->rqstp, p, fhp);
+	*p++ = xdr_one;			/* yes, a file handle follows */
+	p = encode_fh(p, fhp);
+	fh_put(fhp);
+	return p;
 }
 
 static int
@@ -873,7 +889,7 @@ compose_entry_fh(struct nfsd3_readdirres *cd, struct svc_fh *fhp,
 #define NFS3_ENTRYPLUS_BAGGAGE	(1 + 21 + 1 + (NFS3_FHSIZE >> 2))
 static int
 encode_entry(struct readdir_cd *ccd, const char *name,
-	     int namlen, off_t offset, ino_t ino, unsigned int d_type, int plus)
+	     int namlen, off_t offset, u64 ino, unsigned int d_type, int plus)
 {
 	struct nfsd3_readdirres *cd = container_of(ccd, struct nfsd3_readdirres,
 		       					common);
@@ -1019,16 +1035,32 @@ encode_entry(struct readdir_cd *ccd, const char *name,
 
 int
 nfs3svc_encode_entry(struct readdir_cd *cd, const char *name,
-		     int namlen, loff_t offset, ino_t ino, unsigned int d_type)
+		     int namlen, loff_t offset, u64 ino, unsigned int d_type)
 {
 	return encode_entry(cd, name, namlen, offset, ino, d_type, 0);
 }
 
 int
+nfs3svc_encode_entry32(struct readdir_cd *cd, const char *name,
+		     int namlen, loff_t offset, u32 ino, unsigned int d_type)
+{
+	return encode_entry(cd, name, namlen, offset, (u64) ino, d_type, 0);
+}
+
+int
 nfs3svc_encode_entry_plus(struct readdir_cd *cd, const char *name,
-			  int namlen, loff_t offset, ino_t ino, unsigned int d_type)
+			  int namlen, loff_t offset, u64 ino,
+			  unsigned int d_type)
 {
 	return encode_entry(cd, name, namlen, offset, ino, d_type, 1);
+}
+
+int
+nfs3svc_encode_entry_plus32(struct readdir_cd *cd, const char *name,
+			  int namlen, loff_t offset, u32 ino,
+			  unsigned int d_type)
+{
+	return encode_entry(cd, name, namlen, offset, (u64) ino, d_type, 1);
 }
 
 /* FSSTAT */

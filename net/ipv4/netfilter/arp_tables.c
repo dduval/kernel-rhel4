@@ -1298,7 +1298,7 @@ static int __init init(void)
 	up(&arpt_mutex);
 
 	/* Register setsockopt */
-	ret = nf_register_sockopt(&arpt_sockopts);
+	ret = nf_register_sockopt_owner(&arpt_sockopts, THIS_MODULE);
 	if (ret < 0) {
 		duprintf("Unable to register sockopts.\n");
 		return ret;

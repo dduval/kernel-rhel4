@@ -400,7 +400,9 @@ static int core_frequency_transition(struct powernow_k8_data *data, u32 reqfid)
 	}
 
 	if (data->currfid == reqfid) {
-		printk(KERN_ERR PFX "ph2 null fid transition 0x%x\n", data->currfid);
+		if (!tscsync)
+			printk(KERN_ERR PFX "ph2 null fid transition 0x%x\n",
+			       data->currfid);
 		return 0;
 	}
 
@@ -681,7 +683,8 @@ static int fill_powernow_table(struct powernow_k8_data *data, struct pst_s *pst,
 
 	dprintk(KERN_INFO PFX "cfid 0x%x, cvid 0x%x\n", data->currfid, data->currvid);
 	data->powernow_table = powernow_table;
-	print_basics(data);
+	if (first_cpu(cpu_core_map[data->cpu]) == data->cpu)
+		print_basics(data);
 
 	for (j = 0; j < data->numps; j++)
 		if ((pst[j].fid==data->currfid) && (pst[j].vid==data->currvid))
@@ -1126,10 +1129,13 @@ static int powernowk8_target(struct cpufreq_policy *pol, unsigned targfreq, unsi
 	else {
 		dprintk("targ: curr fid 0x%x, vid 0x%x\n",
 		data->currfid, data->currvid);	  
-		if ((checkvid != data->currvid) || (checkfid != data->currfid)) {
+		if (!tscsync && ((checkvid != data->currvid) ||
+			(checkfid != data->currfid))) {
 			printk(KERN_INFO PFX
-				"error - out of sync, fix 0x%x 0x%x, vid 0x%x 0x%x\n",
-				checkfid, data->currfid, checkvid, data->currvid);
+				"error - out of sync, fid 0x%x 0x%x, "
+				"vid 0x%x 0x%x\n",
+				checkfid, data->currfid, checkvid,
+				data->currvid);
 		}
 	}
 
@@ -1425,6 +1431,7 @@ static int __init powernowk8_init(void)
 		printk(KERN_INFO PFX "Found %s single processor" 
 			"(%d cpu cores) (" VERSION ")\n", 
 			boot_cpu_data.x86_model_id, supported_cpus);
+		return cpufreq_register_driver(&cpufreq_amd64_driver);
 #endif
 	}
 

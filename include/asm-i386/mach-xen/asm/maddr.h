@@ -9,9 +9,19 @@
 #define FOREIGN_FRAME_BIT	(1UL<<31)
 #define FOREIGN_FRAME(m)	((m) | FOREIGN_FRAME_BIT)
 
+/* Definitions for machine and pseudophysical addresses. */
+#ifdef CONFIG_X86_PAE
+typedef unsigned long long paddr_t;
+typedef unsigned long long maddr_t;
+#else
+typedef unsigned long paddr_t;
+typedef unsigned long maddr_t;
+#endif
+
 #ifdef CONFIG_XEN
 
 extern unsigned long *phys_to_machine_mapping;
+extern unsigned long  max_mapnr;
 
 #undef machine_to_phys_mapping
 extern unsigned long *machine_to_phys_mapping;
@@ -21,20 +31,20 @@ static inline unsigned long pfn_to_mfn(unsigned long pfn)
 {
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return pfn;
-	return phys_to_machine_mapping[(unsigned int)(pfn)] &
-		~FOREIGN_FRAME_BIT;
+	BUG_ON(max_mapnr && pfn >= max_mapnr);
+	return phys_to_machine_mapping[pfn] & ~FOREIGN_FRAME_BIT;
 }
 
 static inline int phys_to_machine_mapping_valid(unsigned long pfn)
 {
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return 1;
+	BUG_ON(max_mapnr && pfn >= max_mapnr);
 	return (phys_to_machine_mapping[pfn] != INVALID_P2M_ENTRY);
 }
 
 static inline unsigned long mfn_to_pfn(unsigned long mfn)
 {
-	extern unsigned long max_mapnr;
 	unsigned long pfn;
 
 	if (xen_feature(XENFEAT_auto_translated_physmap))
@@ -83,7 +93,6 @@ static inline unsigned long mfn_to_pfn(unsigned long mfn)
  */
 static inline unsigned long mfn_to_local_pfn(unsigned long mfn)
 {
-	extern unsigned long max_mapnr;
 	unsigned long pfn = mfn_to_pfn(mfn);
 	if ((pfn < max_mapnr)
 	    && !xen_feature(XENFEAT_auto_translated_physmap)
@@ -94,6 +103,7 @@ static inline unsigned long mfn_to_local_pfn(unsigned long mfn)
 
 static inline void set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 {
+	BUG_ON(max_mapnr && pfn >= max_mapnr);
 	if (xen_feature(XENFEAT_auto_translated_physmap)) {
 		BUG_ON(pfn != mfn && mfn != INVALID_P2M_ENTRY);
 		return;
@@ -101,32 +111,13 @@ static inline void set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 	phys_to_machine_mapping[pfn] = mfn;
 }
 
-
-#else /* !CONFIG_XEN */
-
-#define pfn_to_mfn(pfn) (pfn)
-#define mfn_to_pfn(mfn) (mfn)
-#define mfn_to_local_pfn(mfn) (mfn)
-#define set_phys_to_machine(pfn, mfn) BUG_ON((pfn) != (mfn))
-#define phys_to_machine_mapping_valid(pfn) (1)
-
-#endif /* !CONFIG_XEN */
-
-/* Definitions for machine and pseudophysical addresses. */
-#ifdef CONFIG_X86_PAE
-typedef unsigned long long paddr_t;
-typedef unsigned long long maddr_t;
-#else
-typedef unsigned long paddr_t;
-typedef unsigned long maddr_t;
-#endif
-
 static inline maddr_t phys_to_machine(paddr_t phys)
 {
 	maddr_t machine = pfn_to_mfn(phys >> PAGE_SHIFT);
 	machine = (machine << PAGE_SHIFT) | (phys & ~PAGE_MASK);
 	return machine;
 }
+
 static inline paddr_t machine_to_phys(maddr_t machine)
 {
 	paddr_t phys = mfn_to_pfn(machine >> PAGE_SHIFT);
@@ -134,10 +125,33 @@ static inline paddr_t machine_to_phys(maddr_t machine)
 	return phys;
 }
 
-/* VIRT <-> MACHINE conversion */
-#define virt_to_machine(v)	(phys_to_machine(__pa(v)))
-#define virt_to_mfn(v)		(pfn_to_mfn(__pa(v) >> PAGE_SHIFT))
-#define mfn_to_virt(m)		(__va(mfn_to_pfn(m) << PAGE_SHIFT))
+#ifdef CONFIG_X86_PAE
+static inline paddr_t pte_phys_to_machine(paddr_t phys)
+{
+	/*
+	 * In PAE mode, the NX bit needs to be dealt with in the value
+	 * passed to pfn_to_mfn(). On x86_64, we need to mask it off,
+	 * but for i386 the conversion to ulong for the argument will
+	 * clip it off.
+	 */
+	maddr_t machine = pfn_to_mfn(phys >> PAGE_SHIFT);
+	machine = (machine << PAGE_SHIFT) | (phys & ~PHYSICAL_PAGE_MASK);
+	return machine;
+}
+
+static inline paddr_t pte_machine_to_phys(maddr_t machine)
+{
+	/*
+	 * In PAE mode, the NX bit needs to be dealt with in the value
+	 * passed to mfn_to_pfn(). On x86_64, we need to mask it off,
+	 * but for i386 the conversion to ulong for the argument will
+	 * clip it off.
+	 */
+	paddr_t phys = mfn_to_pfn(machine >> PAGE_SHIFT);
+	phys = (phys << PAGE_SHIFT) | (machine & ~PHYSICAL_PAGE_MASK);
+	return phys;
+}
+#endif
 
 #ifdef CONFIG_X86_PAE
 static inline pte_t pfn_pte_ma(unsigned long page_nr, pgprot_t pgprot)
@@ -156,5 +170,24 @@ static inline pte_t pfn_pte_ma(unsigned long page_nr, pgprot_t pgprot)
 #endif
 
 #define __pte_ma(x)	((pte_t) { (x) } )
+
+#else /* !CONFIG_XEN */
+
+#define pfn_to_mfn(pfn) (pfn)
+#define mfn_to_pfn(mfn) (mfn)
+#define mfn_to_local_pfn(mfn) (mfn)
+#define set_phys_to_machine(pfn, mfn) ((void)0)
+#define phys_to_machine_mapping_valid(pfn) (1)
+#define phys_to_machine(phys) ((maddr_t)(phys))
+#define machine_to_phys(mach) ((paddr_t)(mach))
+#define pfn_pte_ma(pfn, prot) pfn_pte(pfn, prot)
+#define __pte_ma(x) __pte(x)
+
+#endif /* !CONFIG_XEN */
+
+/* VIRT <-> MACHINE conversion */
+#define virt_to_machine(v)	(phys_to_machine(__pa(v)))
+#define virt_to_mfn(v)		(pfn_to_mfn(__pa(v) >> PAGE_SHIFT))
+#define mfn_to_virt(m)		(__va(mfn_to_pfn(m) << PAGE_SHIFT))
 
 #endif /* _I386_MADDR_H */

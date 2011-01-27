@@ -408,3 +408,41 @@ void __init time_init(void)
 
 	time_init_hook();
 }
+
+#ifdef CONFIG_TICK_DIVIDER
+
+unsigned int tick_divider = 1;
+
+static int __init divider_setup(char *s)
+{
+	unsigned int divider = 1;
+	get_option(&s, &divider);
+	if (divider >= 1 && HZ/divider >= 25)
+		tick_divider = divider;
+	else
+		printk(KERN_ERR "tick_divider: %d is out of range.\n", divider);
+	return 1;
+}
+
+static int __init hz_setup(char *s)
+{
+	unsigned int hz = 1000;
+
+	get_option(&s, &hz);
+	if ((hz >= HZ/25) && (hz <= HZ)) {
+		if (HZ%hz != 0 && hz != (HZ/(HZ/hz)))
+			printk(KERN_WARNING "hz: value %u does not divide "
+			       "HZ %d evenly; HZ will be rounded to %d\n",
+			       hz, HZ, HZ/(HZ/hz));
+		tick_divider = HZ/hz;
+	} else
+		printk(KERN_ERR "hz: %d is out of range.  Value must be "
+		       "between %d and %d\n", hz, HZ/25, HZ);
+
+	return 1;
+}
+
+__setup("divider=", divider_setup);
+__setup("hz=", hz_setup);
+
+#endif

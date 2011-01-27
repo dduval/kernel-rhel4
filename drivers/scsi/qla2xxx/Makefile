@@ -13,6 +13,7 @@ qla2300-y := ql2300.o ql2300_fw.o
 qla2322-y := ql2322.o ql2322_fw.o
 qla6312-y := ql6312.o ql2300_fw.o ql2322_fw.o
 qla2400-y := ql2400.o ql2400_fw.o
+qla2500-y := ql2500.o ql2500_fw.o
 
 obj-$(CONFIG_QLA_IOCTLMOD) += qioctlmod.o
 obj-$(CONFIG_SCSI_QLA21XX) += qla2xxx.o qla2100.o
@@ -21,3 +22,4 @@ obj-$(CONFIG_SCSI_QLA2300) += qla2xxx.o qla2300.o
 obj-$(CONFIG_SCSI_QLA2322) += qla2xxx.o qla2322.o
 obj-$(CONFIG_SCSI_QLA6312) += qla2xxx.o qla6312.o
 obj-$(CONFIG_SCSI_QLA24XX) += qla2xxx.o qla2400.o
+obj-$(CONFIG_SCSI_QLA25XX) += qla2xxx.o qla2500.o

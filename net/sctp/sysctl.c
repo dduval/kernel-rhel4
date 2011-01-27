@@ -48,6 +48,15 @@ static ctl_handler sctp_sysctl_jiffies_ms;
 static long rto_timer_min = 1;
 static long rto_timer_max = 86400000; /* One day */
 
+int sysctl_sctp_mem[3];
+int sysctl_sctp_rmem[3];
+int sysctl_sctp_wmem[3];
+
+/*
+ * per assoc memory limitationf for sends
+ */
+int sysctl_sctp_wmem[3];
+
 static ctl_table sctp_table[] = {
 	{
 		.ctl_name	= NET_SCTP_RTO_INITIAL,
@@ -204,6 +213,30 @@ static ctl_table sctp_net_table[] = {
 		.procname	= "sctp",
 		.mode		= 0555,
 		.child		= sctp_table
+	},
+	{
+		.ctl_name	= NET_SCTP_BUF_MEM,
+		.procname	= "sctp_mem",
+		.data		= &sysctl_sctp_mem,
+		.maxlen		= sizeof(sysctl_sctp_mem),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.ctl_name	= NET_SCTP_BUF_RMEM,
+		.procname	= "sctp_rmem",
+		.data		= &sysctl_sctp_rmem,
+		.maxlen		= sizeof(sysctl_sctp_rmem),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.ctl_name	= NET_SCTP_BUF_WMEM,
+		.procname	= "sctp_wmem",
+		.data		= &sysctl_sctp_wmem,
+		.maxlen		= sizeof(sysctl_sctp_wmem),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
 	},
 	{ .ctl_name = 0 }
 };

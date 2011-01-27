@@ -358,6 +358,35 @@ give_sigsegv:
 }
 
 /*
+ * Return -1L or the syscall number that @regs is executing.
+ */
+static long current_syscall(struct pt_regs *regs)
+{
+	/*
+	 * We always sign-extend a -1 value being set here,
+	 * so this is always either -1L or a syscall number.
+	 */
+	return regs->orig_rax;
+}
+
+/*
+ * Return a value that is -EFOO if the system call in @regs->orig_rax
+ * returned an error.  This only works for @regs from @current.
+ */
+static long current_syscall_ret(struct pt_regs *regs)
+{
+#ifdef CONFIG_IA32_EMULATION
+	if (test_thread_flag(TIF_IA32))
+		/*
+		 * Sign-extend the value so (int)-EFOO becomes (long)-EFOO
+		 * and will match correctly in comparisons.
+		 */
+		return (int) regs->rax;
+#endif
+	return regs->rax;
+}
+
+/*
  * OK, we're invoking a handler
  */	
 
@@ -371,9 +400,9 @@ handle_signal(unsigned long sig, siginfo_t *info, struct k_sigaction *ka,
 #endif
 
 	/* Are we from a system call? */
-	if ((long)regs->orig_rax >= 0) {
+	if (current_syscall(regs) >= 0) {
 		/* If so, check system call restarting.. */
-		switch (regs->rax) {
+		switch (current_syscall_ret(regs)) {
 		        case -ERESTART_RESTARTBLOCK:
 			case -ERESTARTNOHAND:
 				regs->rax = -EINTR;
@@ -457,16 +486,16 @@ int do_signal(struct pt_regs *regs, sigset_t *oldset)
 
  no_signal:
 	/* Did we come from a system call? */
-	if ((long)regs->orig_rax >= 0) {
+	if (current_syscall(regs) >= 0) {
 		/* Restart the system call - no handlers present */
-		long res = regs->rax;
+		long res = current_syscall_ret(regs);
 		if (res == -ERESTARTNOHAND ||
 		    res == -ERESTARTSYS ||
 		    res == -ERESTARTNOINTR) {
 			regs->rax = regs->orig_rax;
 			regs->rip -= 2;
 		}
-		if (regs->rax == (unsigned long)-ERESTART_RESTARTBLOCK) {
+		if (res == -ERESTART_RESTARTBLOCK) {
 			regs->rax = test_thread_flag(TIF_IA32) ?
 					__NR_ia32_restart_syscall :
 					__NR_restart_syscall;

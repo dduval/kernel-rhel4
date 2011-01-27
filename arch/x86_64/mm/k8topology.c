@@ -151,6 +151,7 @@ int __init k8_scan_nodes(unsigned long start, unsigned long end)
 	if (!found)
 		return -1; 
 
+	numnodes = found;
 	memnode_shift = compute_hash_shift(nodes);
 	if (memnode_shift < 0) { 
 		printk(KERN_ERR "No NUMA node hash function found. Contact maintainer\n"); 

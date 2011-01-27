@@ -565,9 +565,9 @@ static int follow_mount(struct vfsmount **mnt, struct dentry **dentry)
 		struct vfsmount *mounted = lookup_mnt(*mnt, *dentry);
 		if (!mounted)
 			break;
+		dput(*dentry);
 		mntput(*mnt);
 		*mnt = mounted;
-		dput(*dentry);
 		*dentry = dget(mounted->mnt_root);
 		res = 1;
 	}
@@ -583,9 +583,9 @@ static inline int __follow_down(struct vfsmount **mnt, struct dentry **dentry)
 
 	mounted = lookup_mnt(*mnt, *dentry);
 	if (mounted) {
+		dput(*dentry);
 		mntput(*mnt);
 		*mnt = mounted;
-		dput(*dentry);
 		*dentry = dget(mounted->mnt_root);
 		return 1;
 	}
@@ -1244,8 +1244,6 @@ static inline int lookup_flags(unsigned int f)
 	
 	if (f & O_DIRECTORY)
 		retval |= LOOKUP_DIRECTORY;
-	if (f & O_ATOMICLOOKUP)
-		retval |= LOOKUP_ATOMIC;
 
 	return retval;
 }

@@ -37,8 +37,8 @@ static char e1000_driver_string[] = "Intel(R) PRO/1000 Network Driver";
 #define DRIVERNAPI "-NAPI"
 #endif
 #define DRV_VERSION "7.3.20-k2"DRIVERNAPI
-char e1000_driver_version[] = DRV_VERSION;
-static char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
+const char e1000_driver_version[] = DRV_VERSION;
+static const char e1000_copyright[] = "Copyright (c) 1999-2006 Intel Corporation.";
 
 /* e1000_pci_tbl - PCI Device ID Table
  *
@@ -108,6 +108,7 @@ static struct pci_device_id e1000_pci_tbl[] = {
 	INTEL_E1000_ETHERNET_DEVICE(0x10BC),
 	INTEL_E1000_ETHERNET_DEVICE(0x10C4),
 	INTEL_E1000_ETHERNET_DEVICE(0x10C5),
+	INTEL_E1000_ETHERNET_DEVICE(0x10D5),
 	INTEL_E1000_ETHERNET_DEVICE(0x10D9),
 	INTEL_E1000_ETHERNET_DEVICE(0x10DA),
 	/* required last entry */
@@ -188,7 +189,6 @@ static void e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 static int e1000_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd);
 static int e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr,
 			   int cmd);
-void e1000_set_ethtool_ops(struct net_device *netdev);
 static void e1000_enter_82542_rst(struct e1000_adapter *adapter);
 static void e1000_leave_82542_rst(struct e1000_adapter *adapter);
 static void e1000_tx_timeout(struct net_device *dev);
@@ -221,8 +221,6 @@ static struct notifier_block e1000_notifier_reboot = {
 /* for netdump / net console */
 static void e1000_netpoll (struct net_device *netdev);
 #endif
-
-extern void e1000_check_options(struct e1000_adapter *adapter);
 
 #define COPYBREAK_DEFAULT 256
 static unsigned int copybreak = COPYBREAK_DEFAULT;
@@ -322,14 +320,14 @@ module_exit(e1000_exit_module);
 static int e1000_request_irq(struct e1000_adapter *adapter)
 {
 	struct net_device *netdev = adapter->netdev;
-	void (*handler) = &e1000_intr;
+	irq_handler_t handler = e1000_intr;
 	int irq_flags = IRQF_SHARED;
 	int err;
 
 	if (adapter->hw.mac_type >= e1000_82571) {
 		adapter->have_msi = !pci_enable_msi(adapter->pdev);
 		if (adapter->have_msi) {
-			handler = &e1000_intr_msi;
+			handler = e1000_intr_msi;
 			irq_flags = 0;
 		}
 	}
@@ -886,8 +884,6 @@ e1000_probe(struct pci_dev *pdev,
 {
 	struct net_device *netdev;
 	struct e1000_adapter *adapter;
-	unsigned long mmio_start, mmio_len;
-	unsigned long flash_start, flash_len;
 
 	static int cards_found = 0;
 	static int global_quad_port_a = 0; /* global ksp3 port a indication */
@@ -929,11 +925,9 @@ e1000_probe(struct pci_dev *pdev,
 	adapter->hw.back = adapter;
 	adapter->msg_enable = (1 << debug) - 1;
 
-	mmio_start = pci_resource_start(pdev, BAR_0);
-	mmio_len = pci_resource_len(pdev, BAR_0);
-
 	err = -EIO;
-	adapter->hw.hw_addr = ioremap(mmio_start, mmio_len);
+	adapter->hw.hw_addr = ioremap(pci_resource_start(pdev, BAR_0),
+				      pci_resource_len(pdev, BAR_0));
 	if (!adapter->hw.hw_addr)
 		goto err_ioremap;
 
@@ -969,10 +963,6 @@ e1000_probe(struct pci_dev *pdev,
 #endif
 	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
 
-	netdev->mem_start = mmio_start;
-	netdev->mem_end = mmio_start + mmio_len;
-	netdev->base_addr = adapter->hw.io_base;
-
 	adapter->bd_number = cards_found;
 
 	/* setup the private structure */
@@ -985,9 +975,9 @@ e1000_probe(struct pci_dev *pdev,
 	 * because it depends on mac_type */
 	if ((adapter->hw.mac_type == e1000_ich8lan) &&
 	   (pci_resource_flags(pdev, 1) & IORESOURCE_MEM)) {
-		flash_start = pci_resource_start(pdev, 1);
-		flash_len = pci_resource_len(pdev, 1);
-		adapter->hw.flash_address = ioremap(flash_start, flash_len);
+		adapter->hw.flash_address =
+			ioremap(pci_resource_start(pdev, 1),
+				pci_resource_len(pdev, 1));
 		if (!adapter->hw.flash_address)
 			goto err_flashmap;
 	}
@@ -1040,10 +1030,9 @@ e1000_probe(struct pci_dev *pdev,
 	if (e1000_read_mac_addr(&adapter->hw))
 		DPRINTK(PROBE, ERR, "EEPROM Read Error\n");
 	memcpy(netdev->dev_addr, adapter->hw.mac_addr, netdev->addr_len);
-#if 0 /* Not in RHEL4... */
+#if 0 /* not in RHEL4 */
 	memcpy(netdev->perm_addr, adapter->hw.mac_addr, netdev->addr_len);
 #endif
-
 	if (!is_valid_ether_addr(netdev->dev_addr)) {
 		DPRINTK(PROBE, ERR, "Invalid MAC Address\n");
 		goto err_eeprom;
@@ -1127,6 +1116,7 @@ e1000_probe(struct pci_dev *pdev,
 	case E1000_DEV_ID_82571EB_QUAD_COPPER:
 	case E1000_DEV_ID_82571EB_QUAD_FIBER:
 	case E1000_DEV_ID_82571EB_QUAD_COPPER_LOWPROFILE:
+	case E1000_DEV_ID_82571PT_QUAD_COPPER:
 		/* if quad port adapter, disable WoL on all but port A */
 		if (global_quad_port_a != 0)
 			adapter->eeprom_wol = 0;
@@ -1999,8 +1989,11 @@ e1000_setup_rctl(struct e1000_adapter *adapter)
 		/* Configure extra packet-split registers */
 		rfctl = E1000_READ_REG(&adapter->hw, RFCTL);
 		rfctl |= E1000_RFCTL_EXTEN;
-		/* disable IPv6 packet split support */
-		rfctl |= E1000_RFCTL_IPV6_DIS;
+		/* disable packet split support for IPv6 extension headers,
+		 * because some malformed IPv6 headers can hang the RX */
+		rfctl |= (E1000_RFCTL_IPV6_EX_DIS |
+		          E1000_RFCTL_NEW_IPV6_EXT_DIS);
+
 		E1000_WRITE_REG(&adapter->hw, RFCTL, rfctl);
 
 		rctl |= E1000_RCTL_DTYP_PS;
@@ -2578,8 +2571,9 @@ e1000_82547_tx_fifo_stall(unsigned long data)
 			adapter->tx_fifo_head = 0;
 			atomic_set(&adapter->tx_fifo_stall, 0);
 			netif_wake_queue(netdev);
-		} else if (!test_bit(__E1000_DOWN, &adapter->flags))
+		} else {
 			mod_timer(&adapter->tx_fifo_stall_timer, jiffies + 1);
+		}
 	}
 }
 
@@ -3312,14 +3306,13 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	unsigned int first, max_per_txd = E1000_MAX_DATA_PER_TXD;
 	unsigned int max_txd_pwr = E1000_MAX_TXD_PWR;
 	unsigned int tx_flags = 0;
-	unsigned int len = skb->len;
+	unsigned int len = skb->len - skb->data_len;
 	unsigned long flags;
-	unsigned int nr_frags = 0;
-	unsigned int mss = 0;
+	unsigned int nr_frags;
+	unsigned int mss;
 	int count = 0;
 	int tso;
 	unsigned int f;
-	len -= skb->data_len;
 
 	/* This goes back to the question of how to logically map a tx queue
 	 * to a flow.  Right now, performance is impacted slightly negatively
@@ -3353,7 +3346,7 @@ e1000_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 		* points to just header, pull a few bytes of payload from
 		* frags into skb->data */
 		hdr_len = ((skb->h.raw - skb->data) + (skb->h.th->doff << 2));
-		if (skb->data_len && (hdr_len == (skb->len - skb->data_len))) {
+		if (skb->data_len && hdr_len == len) {
 			switch (adapter->hw.mac_type) {
 				unsigned int pull_size;
 			case e1000_82544:
@@ -3648,7 +3641,7 @@ e1000_update_stats(struct e1000_adapter *adapter)
 
 	spin_lock_irqsave(&adapter->stats_lock, flags);
 
-	/* these counters are modified from e1000_adjust_tbi_stats,
+	/* these counters are modified from e1000_tbi_adjust_stats,
 	 * called from the interrupt context, so they must only
 	 * be written while holding adapter->stats_lock
 	 */
@@ -3740,10 +3733,6 @@ e1000_update_stats(struct e1000_adapter *adapter)
 	}
 
 	/* Fill out the OS statistics structure */
-	adapter->net_stats.rx_packets = adapter->stats.gprc;
-	adapter->net_stats.tx_packets = adapter->stats.gptc;
-	adapter->net_stats.rx_bytes = adapter->stats.gorcl;
-	adapter->net_stats.tx_bytes = adapter->stats.gotcl;
 	adapter->net_stats.multicast = adapter->stats.mprc;
 	adapter->net_stats.collisions = adapter->stats.colc;
 
@@ -4128,6 +4117,8 @@ e1000_clean_tx_irq(struct e1000_adapter *adapter,
 	}
 	adapter->total_tx_bytes += total_tx_bytes;
 	adapter->total_tx_packets += total_tx_packets;
+	adapter->net_stats.tx_bytes += total_tx_bytes;
+	adapter->net_stats.tx_packets += total_tx_packets;
 	return cleaned;
 }
 
@@ -4175,8 +4166,8 @@ e1000_rx_checksum(struct e1000_adapter *adapter,
 		/* Hardware complements the payload checksum, so we undo it
 		 * and then put the value in host order for further stack use.
 		 */
-		csum = ntohl(csum ^ 0xFFFF);
-		skb->csum = csum;
+		__sum16 sum = (__force __sum16)htons(csum);
+		skb->csum = ~sum;
 		skb->ip_summed = CHECKSUM_HW;
 	}
 	adapter->hw_csum_good++;
@@ -4348,6 +4339,8 @@ next_desc:
 
 	adapter->total_rx_packets += total_rx_packets;
 	adapter->total_rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_packets += total_rx_packets;
 	return cleaned;
 }
 
@@ -4535,6 +4528,8 @@ next_desc:
 
 	adapter->total_rx_packets += total_rx_packets;
 	adapter->total_rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_bytes += total_rx_bytes;
+	adapter->net_stats.rx_packets += total_rx_packets;
 	return cleaned;
 }
 
@@ -4700,7 +4695,7 @@ e1000_alloc_rx_buffers_ps(struct e1000_adapter *adapter,
 				rx_desc->read.buffer_addr[j+1] =
 				     cpu_to_le64(ps_page_dma->ps_page_dma[j]);
 			} else
-				rx_desc->read.buffer_addr[j+1] = ~0;
+				rx_desc->read.buffer_addr[j+1] = ~cpu_to_le64(0);
 		}
 
 		skb = dev_alloc_skb(adapter->rx_ps_bsize0 + NET_IP_ALIGN);
@@ -4872,6 +4867,7 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 			spin_unlock_irqrestore(&adapter->stats_lock, flags);
 			return -EIO;
 		}
+		spin_unlock_irqrestore(&adapter->stats_lock, flags);
 		if (adapter->hw.media_type == e1000_media_type_copper) {
 			switch (data->reg_num) {
 			case PHY_CTRL:
@@ -4892,12 +4888,8 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 						   DUPLEX_HALF;
 					retval = e1000_set_spd_dplx(adapter,
 								    spddplx);
-					if (retval) {
-						spin_unlock_irqrestore(
-							&adapter->stats_lock,
-							flags);
+					if (retval)
 						return retval;
-					}
 				}
 				if (netif_running(adapter->netdev))
 					e1000_reinit_locked(adapter);
@@ -4906,11 +4898,8 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 				break;
 			case M88E1000_PHY_SPEC_CTRL:
 			case M88E1000_EXT_PHY_SPEC_CTRL:
-				if (e1000_phy_reset(&adapter->hw)) {
-					spin_unlock_irqrestore(
-						&adapter->stats_lock, flags);
+				if (e1000_phy_reset(&adapter->hw))
 					return -EIO;
-				}
 				break;
 			}
 		} else {
@@ -4925,7 +4914,6 @@ e1000_mii_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 				break;
 			}
 		}
-		spin_unlock_irqrestore(&adapter->stats_lock, flags);
 		break;
 	default:
 		return -EOPNOTSUPP;
@@ -4949,22 +4937,6 @@ e1000_pci_clear_mwi(struct e1000_hw *hw)
 	struct e1000_adapter *adapter = hw->back;
 
 	pci_clear_mwi(adapter->pdev);
-}
-
-void
-e1000_read_pci_cfg(struct e1000_hw *hw, uint32_t reg, uint16_t *value)
-{
-	struct e1000_adapter *adapter = hw->back;
-
-	pci_read_config_word(adapter->pdev, reg, value);
-}
-
-void
-e1000_write_pci_cfg(struct e1000_hw *hw, uint32_t reg, uint16_t *value)
-{
-	struct e1000_adapter *adapter = hw->back;
-
-	pci_write_config_word(adapter->pdev, reg, *value);
 }
 
 int

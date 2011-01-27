@@ -5,7 +5,7 @@
  * based on the old aacraid driver that is..
  * Adaptec aacraid device driver for Linux.
  *
- * Copyright (c) 2000 Adaptec, Inc. (aacraid@adaptec.com)
+ * Copyright (c) 2000-2007 Adaptec, Inc. (aacraid@adaptec.com)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +26,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/types.h>
-#include <linux/sched.h>
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
@@ -38,6 +37,7 @@
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
+#include <scsi/scsi_devinfo.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
 
@@ -57,55 +57,55 @@
 /*
  *	Sense codes
  */
- 
-#define SENCODE_NO_SENSE                        0x00
-#define SENCODE_END_OF_DATA                     0x00
-#define SENCODE_BECOMING_READY                  0x04
-#define SENCODE_INIT_CMD_REQUIRED               0x04
+
+#define SENCODE_NO_SENSE			0x00
+#define SENCODE_END_OF_DATA			0x00
+#define SENCODE_BECOMING_READY			0x04
+#define SENCODE_INIT_CMD_REQUIRED		0x04
 #define SENCODE_DATA_PROTECT			0x0E
-#define SENCODE_PARAM_LIST_LENGTH_ERROR         0x1A
-#define SENCODE_INVALID_COMMAND                 0x20
-#define SENCODE_LBA_OUT_OF_RANGE                0x21
-#define SENCODE_INVALID_CDB_FIELD               0x24
-#define SENCODE_LUN_NOT_SUPPORTED               0x25
-#define SENCODE_INVALID_PARAM_FIELD             0x26
-#define SENCODE_PARAM_NOT_SUPPORTED             0x26
-#define SENCODE_PARAM_VALUE_INVALID             0x26
-#define SENCODE_RESET_OCCURRED                  0x29
-#define SENCODE_LUN_NOT_SELF_CONFIGURED_YET     0x3E
-#define SENCODE_INQUIRY_DATA_CHANGED            0x3F
-#define SENCODE_SAVING_PARAMS_NOT_SUPPORTED     0x39
-#define SENCODE_DIAGNOSTIC_FAILURE              0x40
-#define SENCODE_INTERNAL_TARGET_FAILURE         0x44
-#define SENCODE_INVALID_MESSAGE_ERROR           0x49
-#define SENCODE_LUN_FAILED_SELF_CONFIG          0x4c
-#define SENCODE_OVERLAPPED_COMMAND              0x4E
+#define SENCODE_PARAM_LIST_LENGTH_ERROR		0x1A
+#define SENCODE_INVALID_COMMAND			0x20
+#define SENCODE_LBA_OUT_OF_RANGE		0x21
+#define SENCODE_INVALID_CDB_FIELD		0x24
+#define SENCODE_LUN_NOT_SUPPORTED		0x25
+#define SENCODE_INVALID_PARAM_FIELD		0x26
+#define SENCODE_PARAM_NOT_SUPPORTED		0x26
+#define SENCODE_PARAM_VALUE_INVALID		0x26
+#define SENCODE_RESET_OCCURRED			0x29
+#define SENCODE_LUN_NOT_SELF_CONFIGURED_YET	0x3E
+#define SENCODE_INQUIRY_DATA_CHANGED		0x3F
+#define SENCODE_SAVING_PARAMS_NOT_SUPPORTED	0x39
+#define SENCODE_DIAGNOSTIC_FAILURE		0x40
+#define SENCODE_INTERNAL_TARGET_FAILURE		0x44
+#define SENCODE_INVALID_MESSAGE_ERROR		0x49
+#define SENCODE_LUN_FAILED_SELF_CONFIG		0x4c
+#define SENCODE_OVERLAPPED_COMMAND		0x4E
 
 /*
  *	Additional sense codes
  */
- 
-#define ASENCODE_NO_SENSE                       0x00
-#define ASENCODE_END_OF_DATA                    0x05
-#define ASENCODE_BECOMING_READY                 0x01
-#define ASENCODE_INIT_CMD_REQUIRED              0x02
-#define ASENCODE_PARAM_LIST_LENGTH_ERROR        0x00
-#define ASENCODE_INVALID_COMMAND                0x00
-#define ASENCODE_LBA_OUT_OF_RANGE               0x00
-#define ASENCODE_INVALID_CDB_FIELD              0x00
-#define ASENCODE_LUN_NOT_SUPPORTED              0x00
-#define ASENCODE_INVALID_PARAM_FIELD            0x00
-#define ASENCODE_PARAM_NOT_SUPPORTED            0x01
-#define ASENCODE_PARAM_VALUE_INVALID            0x02
-#define ASENCODE_RESET_OCCURRED                 0x00
-#define ASENCODE_LUN_NOT_SELF_CONFIGURED_YET    0x00
-#define ASENCODE_INQUIRY_DATA_CHANGED           0x03
-#define ASENCODE_SAVING_PARAMS_NOT_SUPPORTED    0x00
-#define ASENCODE_DIAGNOSTIC_FAILURE             0x80
-#define ASENCODE_INTERNAL_TARGET_FAILURE        0x00
-#define ASENCODE_INVALID_MESSAGE_ERROR          0x00
-#define ASENCODE_LUN_FAILED_SELF_CONFIG         0x00
-#define ASENCODE_OVERLAPPED_COMMAND             0x00
+
+#define ASENCODE_NO_SENSE			0x00
+#define ASENCODE_END_OF_DATA			0x05
+#define ASENCODE_BECOMING_READY			0x01
+#define ASENCODE_INIT_CMD_REQUIRED		0x02
+#define ASENCODE_PARAM_LIST_LENGTH_ERROR	0x00
+#define ASENCODE_INVALID_COMMAND		0x00
+#define ASENCODE_LBA_OUT_OF_RANGE		0x00
+#define ASENCODE_INVALID_CDB_FIELD		0x00
+#define ASENCODE_LUN_NOT_SUPPORTED		0x00
+#define ASENCODE_INVALID_PARAM_FIELD		0x00
+#define ASENCODE_PARAM_NOT_SUPPORTED		0x01
+#define ASENCODE_PARAM_VALUE_INVALID		0x02
+#define ASENCODE_RESET_OCCURRED			0x00
+#define ASENCODE_LUN_NOT_SELF_CONFIGURED_YET	0x00
+#define ASENCODE_INQUIRY_DATA_CHANGED		0x03
+#define ASENCODE_SAVING_PARAMS_NOT_SUPPORTED	0x00
+#define ASENCODE_DIAGNOSTIC_FAILURE		0x80
+#define ASENCODE_INTERNAL_TARGET_FAILURE	0x00
+#define ASENCODE_INVALID_MESSAGE_ERROR		0x00
+#define ASENCODE_LUN_FAILED_SELF_CONFIG		0x00
+#define ASENCODE_OVERLAPPED_COMMAND		0x00
 
 #define BYTE0(x) (unsigned char)(x)
 #define BYTE1(x) (unsigned char)((x) >> 8)
@@ -117,8 +117,8 @@
  *----------------------------------------------------------------------------*/
 /* SCSI inquiry data */
 struct inquiry_data {
-	u8 inqd_pdt;	/* Peripheral qualifier | Peripheral Device Type  */
-	u8 inqd_dtq;	/* RMB | Device Type Qualifier  */
+	u8 inqd_pdt;	/* Peripheral qualifier | Peripheral Device Type */
+	u8 inqd_dtq;	/* RMB | Device Type Qualifier */
 	u8 inqd_ver;	/* ISO version | ECMA version | ANSI-approved version */
 	u8 inqd_rdf;	/* AENC | TrmIOP | Response data format */
 	u8 inqd_len;	/* Additional length (n-4) */
@@ -132,7 +132,7 @@ struct inquiry_data {
 /*
  *              M O D U L E   G L O B A L S
  */
- 
+
 static int aac_build_sg(struct scsi_cmnd* scsicmd, struct sgmap* sgmap);
 static int aac_build_sg64(struct scsi_cmnd* scsicmd, struct sgmap64* psg);
 static int aac_build_sgraw(struct scsi_cmnd* scsicmd, struct sgmapraw* psg);
@@ -143,25 +143,32 @@ static char *aac_get_status_string(u32 status);
 
 /*
  *	Non dasd selection is handled entirely in aachba now
- */	
- 
+ */
+
 static int nondasd = -1;
+static int aac_cache = 0;
 static int dacmode = -1;
 
-static int commit = -1;
+int aac_commit = -1;
 int startup_timeout = 180;
 int aif_timeout = 120;
 
 module_param(nondasd, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(nondasd, "Control scanning of hba for nondasd devices. 0=off, 1=on");
+module_param_named(cache, aac_cache, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(cache, "Disable Queue Flush commands:\n\tbit 0 - Disable FUA in WRITE SCSI commands\n\tbit 1 - Disable SYNCHRONIZE_CACHE SCSI command\n\tbit 2 - Disable only if Battery not protecting Cache");
 module_param(dacmode, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(dacmode, "Control whether dma addressing is using 64 bit DAC. 0=off, 1=on");
-module_param(commit, int, S_IRUGO|S_IWUSR);
+module_param_named(commit, aac_commit, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(commit, "Control whether a COMMIT_CONFIG is issued to the adapter for foreign arrays.\nThis is typically needed in systems that do not have a BIOS. 0=off, 1=on");
 module_param(startup_timeout, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(startup_timeout, "The duration of time in seconds to wait for adapter to have it's kernel up and\nrunning. This is typically adjusted for large systems that do not have a BIOS.");
 module_param(aif_timeout, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(aif_timeout, "The duration of time in seconds to wait for applications to pick up AIFs before\nderegistering them. This is typically adjusted for heavily burdened systems.");
+
+static int coalescethreshold = 16; /* 8KB coalesce knee */
+module_param(coalescethreshold, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(coalescethreshold, "Control the maximum block size of sequential requests that are fed back to the scsi_merge layer for coalescing. 0=off, 16 block (8KB) default.");
 
 int numacb = -1;
 module_param(numacb, int, S_IRUGO|S_IWUSR);
@@ -179,13 +186,38 @@ int check_interval = 24 * 60 * 60;
 module_param(check_interval, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(check_interval, "Interval in seconds between adapter health checks.");
 
-int check_reset = 1;
-module_param(check_reset, int, S_IRUGO|S_IWUSR);
-MODULE_PARM_DESC(check_reset, "If adapter fails health check, reset the adapter.");
+int aac_check_reset = 1;
+module_param_named(check_reset, aac_check_reset, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(aac_check_reset, "If adapter fails health check, reset the adapter. a value of -1 forces the reset to adapters programmed to ignore it.");
 
-int expose_physicals = 0;
+int expose_physicals = -1;
 module_param(expose_physicals, int, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(expose_physicals, "Expose physical components of the arrays. -1=protect 0=off, 1=on");
+
+int aac_reset_devices = 0;
+module_param_named(reset_devices, aac_reset_devices, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(reset_devices, "Force an adapter reset at initialization.");
+
+static inline int aac_valid_context(struct scsi_cmnd *scsicmd,
+		struct fib *fibptr) {
+	struct scsi_device *device;
+
+	if (unlikely(!scsicmd || !scsicmd->scsi_done)) {
+		dprintk((KERN_WARNING "aac_valid_context: scsi command corrupt\n"));
+		aac_fib_complete(fibptr);
+		aac_fib_free(fibptr);
+		return 0;
+	}
+	scsicmd->SCp.phase = AAC_OWNER_MIDLEVEL;
+	device = scsicmd->device;
+	if (unlikely(!device || !scsi_device_online(device))) {
+		dprintk((KERN_WARNING "aac_valid_context: scsi device corrupt\n"));
+		aac_fib_complete(fibptr);
+		aac_fib_free(fibptr);
+		return 0;
+	}
+	return 1;
+}
 
 /**
  *	aac_get_config_status	-	check the adapter configuration
@@ -217,7 +249,7 @@ int aac_get_config_status(struct aac_dev *dev, int commit_flag)
 			    FsaNormal,
 			    1, 1,
 			    NULL, NULL);
-	if (status < 0 ) {
+	if (status < 0) {
 		printk(KERN_WARNING "aac_get_config_status: SendFIB failed.\n");
 	} else {
 		struct aac_get_config_status_resp *reply
@@ -237,14 +269,14 @@ int aac_get_config_status(struct aac_dev *dev, int commit_flag)
 	aac_fib_complete(fibptr);
 	/* Send a CT_COMMIT_CONFIG to enable discovery of devices */
 	if (status >= 0) {
-		if ((commit == 1) || commit_flag) {
+		if ((aac_commit == 1) || commit_flag) {
 			struct aac_commit_config * dinfo;
 			aac_fib_init(fibptr);
 			dinfo = (struct aac_commit_config *) fib_data(fibptr);
-	
+
 			dinfo->command = cpu_to_le32(VM_ContainerConfig);
 			dinfo->type = cpu_to_le32(CT_COMMIT_CONFIG);
-	
+
 			status = aac_fib_send(ContainerCommand,
 				    fibptr,
 				    sizeof (struct aac_commit_config),
@@ -252,7 +284,7 @@ int aac_get_config_status(struct aac_dev *dev, int commit_flag)
 				    1, 1,
 				    NULL, NULL);
 			aac_fib_complete(fibptr);
-		} else if (commit == 0) {
+		} else if (aac_commit == 0) {
 			printk(KERN_WARNING
 			  "aac_get_config_status: Foreign device configurations are being ignored\n");
 		}
@@ -270,7 +302,7 @@ int aac_get_config_status(struct aac_dev *dev, int commit_flag)
 int aac_get_containers(struct aac_dev *dev)
 {
 	struct fsa_dev_info *fsa_dev_ptr;
-	u32 index; 
+	u32 index;
 	int status = 0;
 	struct fib * fibptr;
 	struct aac_get_container_count *dinfo;
@@ -300,11 +332,10 @@ int aac_get_containers(struct aac_dev *dev)
 
 	if (maximum_num_containers < MAXIMUM_NUM_CONTAINERS)
 		maximum_num_containers = MAXIMUM_NUM_CONTAINERS;
-	fsa_dev_ptr = (struct fsa_dev_info *) kmalloc(
-	  sizeof(*fsa_dev_ptr) * maximum_num_containers, GFP_KERNEL);
+	fsa_dev_ptr = kzalloc(sizeof(*fsa_dev_ptr) * maximum_num_containers,
+			GFP_KERNEL);
 	if (!fsa_dev_ptr)
 		return -ENOMEM;
-	memset(fsa_dev_ptr, 0, sizeof(*fsa_dev_ptr) * maximum_num_containers);
 
 	dev->fsa_dev = fsa_dev_ptr;
 	dev->maximum_num_containers = maximum_num_containers;
@@ -331,7 +362,7 @@ int aac_get_containers(struct aac_dev *dev)
 static void aac_internal_transfer(struct scsi_cmnd *scsicmd, void *data, unsigned int offset, unsigned int len)
 {
 	void *buf;
-	unsigned int transfer_len;
+	int transfer_len;
 	struct scatterlist *sg = scsicmd->request_buffer;
 
 	if (scsicmd->use_sg) {
@@ -342,11 +373,15 @@ static void aac_internal_transfer(struct scsi_cmnd *scsicmd, void *data, unsigne
 		transfer_len = min(scsicmd->request_bufflen, len + offset);
 	}
 	transfer_len -= offset;
-	if (buf && transfer_len)
+	if (buf && transfer_len > 0)
 		memcpy(buf + offset, data, transfer_len);
 
-	if (scsicmd->use_sg) 
+	if (scsicmd->use_sg) {
+#ifdef CONFIG_PARISC
+		flush_kernel_dcache_page(kmap_atomic_to_page(buf - sg->offset));
+#endif
 		kunmap_atomic(buf - sg->offset, KM_IRQ0);
+	}
 
 }
 
@@ -356,7 +391,9 @@ static void get_container_name_callback(void *context, struct fib * fibptr)
 	struct scsi_cmnd * scsicmd;
 
 	scsicmd = (struct scsi_cmnd *) context;
-	scsicmd->SCp.phase = AAC_OWNER_MIDLEVEL;
+
+	if (!aac_valid_context(scsicmd, fibptr))
+		return;
 
 	dprintk((KERN_DEBUG "get_container_name_callback[cpu %d]: t = %ld.\n", smp_processor_id(), jiffies));
 	BUG_ON(fibptr == NULL);
@@ -376,7 +413,7 @@ static void get_container_name_callback(void *context, struct fib * fibptr)
 			do {
 				*dp++ = (*sp) ? *sp++ : ' ';
 			} while (--count > 0);
-			aac_internal_transfer(scsicmd, d, 
+			aac_internal_transfer(scsicmd, d,
 			  offsetof(struct inquiry_data, inqd_pid), sizeof(d));
 		}
 	}
@@ -412,13 +449,13 @@ static int aac_get_container_name(struct scsi_cmnd * scsicmd)
 	dinfo->count = cpu_to_le32(sizeof(((struct aac_get_name_resp *)NULL)->data));
 
 	status = aac_fib_send(ContainerCommand,
-		  cmd_fibcontext, 
+		  cmd_fibcontext,
 		  sizeof (struct aac_get_name),
-		  FsaNormal, 
-		  0, 1, 
-		  (fib_callback) get_container_name_callback, 
+		  FsaNormal,
+		  0, 1,
+		  (fib_callback)get_container_name_callback,
 		  (void *) scsicmd);
-	
+
 	/*
 	 *	Check that the command queued to the controller
 	 */
@@ -426,18 +463,18 @@ static int aac_get_container_name(struct scsi_cmnd * scsicmd)
 		scsicmd->SCp.phase = AAC_OWNER_FIRMWARE;
 		return 0;
 	}
-		
+
 	printk(KERN_WARNING "aac_get_container_name: aac_fib_send failed with status: %d.\n", status);
 	aac_fib_complete(cmd_fibcontext);
 	aac_fib_free(cmd_fibcontext);
 	return -1;
 }
 
-static int _aac_probe_container3(struct scsi_cmnd * scsicmd)
+static int aac_probe_container_callback2(struct scsi_cmnd * scsicmd)
 {
 	struct fsa_dev_info *fsa_dev_ptr = ((struct aac_dev *)(scsicmd->device->host->hostdata))->fsa_dev;
 
-	if (fsa_dev_ptr[scmd_id(scsicmd)].valid)
+	if ((fsa_dev_ptr[scmd_id(scsicmd)].valid & 1))
 		return aac_scsi_cmd(scsicmd);
 
 	scsicmd->result = DID_NO_CONNECT << 16;
@@ -445,13 +482,18 @@ static int _aac_probe_container3(struct scsi_cmnd * scsicmd)
 	return 0;
 }
 
-static int _aac_probe_container2(void * context, struct fib * fibptr)
+static void _aac_probe_container2(void * context, struct fib * fibptr)
 {
-	struct scsi_cmnd * scsicmd = (struct scsi_cmnd *)context;
-	struct fsa_dev_info *fsa_dev_ptr = ((struct aac_dev *)(scsicmd->device->host->hostdata))->fsa_dev;
+	struct fsa_dev_info *fsa_dev_ptr;
 	int (*callback)(struct scsi_cmnd *);
+	struct scsi_cmnd * scsicmd = (struct scsi_cmnd *)context;
+
+
+	if (!aac_valid_context(scsicmd, fibptr))
+		return;
 
 	scsicmd->SCp.Status = 0;
+	fsa_dev_ptr = fibptr->dev->fsa_dev;
 	if (fsa_dev_ptr) {
 		struct aac_mount * dresp = (struct aac_mount *) fib_data(fibptr);
 		fsa_dev_ptr += scmd_id(scsicmd);
@@ -474,10 +516,11 @@ static int _aac_probe_container2(void * context, struct fib * fibptr)
 	aac_fib_free(fibptr);
 	callback = (int (*)(struct scsi_cmnd *))(scsicmd->SCp.ptr);
 	scsicmd->SCp.ptr = NULL;
-	return (*callback)(scsicmd);
+	(*callback)(scsicmd);
+	return;
 }
 
-static int _aac_probe_container1(void * context, struct fib * fibptr)
+static void _aac_probe_container1(void * context, struct fib * fibptr)
 {
 	struct scsi_cmnd * scsicmd;
 	struct aac_mount * dresp;
@@ -487,10 +530,14 @@ static int _aac_probe_container1(void * context, struct fib * fibptr)
 	dresp = (struct aac_mount *) fib_data(fibptr);
 	dresp->mnt[0].capacityhigh = 0;
 	if ((le32_to_cpu(dresp->status) != ST_OK) ||
-	    (le32_to_cpu(dresp->mnt[0].vol) != CT_NONE))
-		return _aac_probe_container2(context, fibptr);
+	    (le32_to_cpu(dresp->mnt[0].vol) != CT_NONE)) {
+		_aac_probe_container2(context, fibptr);
+		return;
+	}
 	scsicmd = (struct scsi_cmnd *) context;
-	scsicmd->SCp.phase = AAC_OWNER_MIDLEVEL;
+
+	if (!aac_valid_context(scsicmd, fibptr))
+		return;
 
 	aac_fib_init(fibptr);
 
@@ -505,21 +552,18 @@ static int _aac_probe_container1(void * context, struct fib * fibptr)
 			  sizeof(struct aac_query_mount),
 			  FsaNormal,
 			  0, 1,
-			  (fib_callback) _aac_probe_container2,
+			  _aac_probe_container2,
 			  (void *) scsicmd);
 	/*
 	 *	Check that the command queued to the controller
 	 */
-	if (status == -EINPROGRESS) {
+	if (status == -EINPROGRESS)
 		scsicmd->SCp.phase = AAC_OWNER_FIRMWARE;
-		return 0;
-	}
-	if (status < 0) {
+	else if (status < 0) {
 		/* Inherit results from VM_NameServe, if any */
 		dresp->status = cpu_to_le32(ST_OK);
-		return _aac_probe_container2(context, fibptr);
+		_aac_probe_container2(context, fibptr);
 	}
-	return 0;
 }
 
 static int _aac_probe_container(struct scsi_cmnd * scsicmd, int (*callback)(struct scsi_cmnd *))
@@ -544,7 +588,7 @@ static int _aac_probe_container(struct scsi_cmnd * scsicmd, int (*callback)(stru
 			  sizeof(struct aac_query_mount),
 			  FsaNormal,
 			  0, 1,
-			  (fib_callback) _aac_probe_container1,
+			  _aac_probe_container1,
 			  (void *) scsicmd);
 		/*
 		 *	Check that the command queued to the controller
@@ -580,7 +624,7 @@ static int _aac_probe_container(struct scsi_cmnd * scsicmd, int (*callback)(stru
  *	Queries the controller about the given volume. The volume information
  *	is updated in the struct fsa_dev_info structure rather than returned.
  */
-static int aac_probe_container1(struct scsi_cmnd * scsicmd)
+static int aac_probe_container_callback1(struct scsi_cmnd * scsicmd)
 {
 	scsicmd->device = NULL;
 	return 0;
@@ -588,67 +632,78 @@ static int aac_probe_container1(struct scsi_cmnd * scsicmd)
 
 int aac_probe_container(struct aac_dev *dev, int cid)
 {
-	struct scsi_cmnd scsicmd;
-	struct scsi_device scsidev;
+	struct scsi_cmnd *scsicmd = kmalloc(sizeof(*scsicmd), GFP_KERNEL);
+	struct scsi_device *scsidev = kmalloc(sizeof(*scsidev), GFP_KERNEL);
+	int status;
 
-	scsicmd.device = &scsidev;
-	scsidev.id = cid;
-	scsidev.host = dev->scsi_host_ptr;
+	if (!scsicmd || !scsidev) {
+		kfree(scsicmd);
+		kfree(scsidev);
+		return -ENOMEM;
+	}
+	scsicmd->list.next = NULL;
+	scsicmd->scsi_done = (void (*)(struct scsi_cmnd*))aac_probe_container_callback1;
 
-	if (_aac_probe_container(&scsicmd, aac_probe_container1) == 0)
-		while (scsicmd.device == &scsidev)
+	scsicmd->device = scsidev;
+	scsidev->sdev_state = 0;
+	scsidev->id = cid;
+	scsidev->host = dev->scsi_host_ptr;
+
+	if (_aac_probe_container(scsicmd, aac_probe_container_callback1) == 0)
+		while (scsicmd->device == scsidev)
 			schedule();
-	return scsicmd.SCp.Status;
+	kfree(scsidev);
+	status = scsicmd->SCp.Status;
+	kfree(scsicmd);
+	return status;
 }
-
-/* Local Structure to set SCSI inquiry data strings */
-struct scsi_inq {
-	char vid[8];         /* Vendor ID */
-	char pid[16];        /* Product ID */
-	char prl[4];         /* Product Revision Level */
-};
 
 /**
  *	InqStrCopy	-	string merge
  *	@a:	string to copy from
  *	@b:	string to copy to
  *
- * 	Copy a String from one location to another
+ *	Copy a String from one location to another
  *	without copying \0
  */
 
 static void inqstrcpy(char *a, char *b)
 {
 
-	while(*a != (char)0) 
+	while (*a != (char)0)
 		*b++ = *a++;
 }
 
 static char *container_types[] = {
-        "None",
-        "Volume",
-        "Mirror",
-        "Stripe",
-        "RAID5",
-        "SSRW",
-        "SSRO",
-        "Morph",
-        "Legacy",
-        "RAID4",
-        "RAID10",             
-        "RAID00",             
-        "V-MIRRORS",          
-        "PSEUDO R4",          
+	"None",
+	"Volume",
+	"Mirror",
+	"Stripe",
+	"RAID5",
+	"SSRW",
+	"SSRO",
+	"Morph",
+	"Legacy",
+	"RAID4",
+	"RAID10",
+	"RAID00",
+	"V-MIRRORS",
+	"PSEUDO R4",
 	"RAID50",
 	"RAID5D",
 	"RAID5D0",
 	"RAID1E",
 	"RAID6",
 	"RAID60",
-        "Unknown"
+	"Unknown"
 };
 
-
+char * get_container_type(unsigned tindex)
+{
+	if (tindex >= ARRAY_SIZE(container_types))
+		tindex = ARRAY_SIZE(container_types) - 1;
+	return container_types[tindex];
+}
 
 /* Function: setinqstr
  *
@@ -659,7 +714,7 @@ static char *container_types[] = {
  * files instead of in OS dependant driver source.
  */
 
-static void setinqstr(struct aac_dev *dev, void *data, int tindex)
+void setinqstr(struct aac_dev *dev, void *data, int tindex)
 {
 	struct scsi_inq *str;
 
@@ -668,16 +723,21 @@ static void setinqstr(struct aac_dev *dev, void *data, int tindex)
 
 	if (dev->supplement_adapter_info.AdapterTypeText[0]) {
 		char * cp = dev->supplement_adapter_info.AdapterTypeText;
-		int c = sizeof(str->vid);
-		while (*cp && *cp != ' ' && --c)
-			++cp;
-		c = *cp;
-		*cp = '\0';
-		inqstrcpy (dev->supplement_adapter_info.AdapterTypeText,
-		  str->vid); 
-		*cp = c;
-		while (*cp && *cp != ' ')
-			++cp;
+		int c;
+		if ((cp[0] == 'A') && (cp[1] == 'O') && (cp[2] == 'C'))
+			inqstrcpy("SMC", str->vid);
+		else {
+			c = sizeof(str->vid);
+			while (*cp && *cp != ' ' && --c)
+				++cp;
+			c = *cp;
+			*cp = '\0';
+			inqstrcpy (dev->supplement_adapter_info.AdapterTypeText,
+				   str->vid);
+			*cp = c;
+			while (*cp && *cp != ' ')
+				++cp;
+		}
 		while (*cp == ' ')
 			++cp;
 		/* last six chars reserved for vol type */
@@ -709,6 +769,101 @@ static void setinqstr(struct aac_dev *dev, void *data, int tindex)
 			inqstrcpy (container_types[tindex], findit + 1);
 	}
 	inqstrcpy ("V1.0", str->prl);
+}
+
+static void get_container_serial_callback(void *context, struct fib * fibptr)
+{
+	struct aac_get_serial_resp * get_serial_reply;
+	struct scsi_cmnd * scsicmd;
+
+	BUG_ON(fibptr == NULL);
+
+	scsicmd = (struct scsi_cmnd *) context;
+	if (!aac_valid_context(scsicmd, fibptr))
+		return;
+
+	get_serial_reply = (struct aac_get_serial_resp *) fib_data(fibptr);
+	/* Failure is irrelevant, using default value instead */
+	if (le32_to_cpu(get_serial_reply->status) == CT_OK) {
+		char sp[13];
+		/* EVPD bit set */
+		sp[0] = INQD_PDT_DA;
+		sp[1] = scsicmd->cmnd[2];
+		sp[2] = 0;
+		sp[3] = snprintf(sp+4, sizeof(sp)-4, "%08X",
+		  le32_to_cpu(get_serial_reply->uid));
+		aac_internal_transfer(scsicmd, sp, 0, sizeof(sp));
+	}
+
+	scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8 | SAM_STAT_GOOD;
+
+	aac_fib_complete(fibptr);
+	aac_fib_free(fibptr);
+	scsicmd->scsi_done(scsicmd);
+}
+
+/**
+ *	aac_get_container_serial - get container serial, none blocking.
+ */
+static int aac_get_container_serial(struct scsi_cmnd * scsicmd)
+{
+	int status;
+	struct aac_get_serial *dinfo;
+	struct fib * cmd_fibcontext;
+	struct aac_dev * dev;
+
+	dev = (struct aac_dev *)scsicmd->device->host->hostdata;
+
+	if (!(cmd_fibcontext = aac_fib_alloc(dev)))
+		return -ENOMEM;
+
+	aac_fib_init(cmd_fibcontext);
+	dinfo = (struct aac_get_serial *) fib_data(cmd_fibcontext);
+
+	dinfo->command = cpu_to_le32(VM_ContainerConfig);
+	dinfo->type = cpu_to_le32(CT_CID_TO_32BITS_UID);
+	dinfo->cid = cpu_to_le32(scmd_id(scsicmd));
+
+	status = aac_fib_send(ContainerCommand,
+		  cmd_fibcontext,
+		  sizeof (struct aac_get_serial),
+		  FsaNormal,
+		  0, 1,
+		  (fib_callback) get_container_serial_callback,
+		  (void *) scsicmd);
+
+	/*
+	 *	Check that the command queued to the controller
+	 */
+	if (status == -EINPROGRESS) {
+		scsicmd->SCp.phase = AAC_OWNER_FIRMWARE;
+		return 0;
+	}
+
+	printk(KERN_WARNING "aac_get_container_serial: aac_fib_send failed with status: %d.\n", status);
+	aac_fib_complete(cmd_fibcontext);
+	aac_fib_free(cmd_fibcontext);
+	return -1;
+}
+
+/* Function: setinqserial
+ *
+ * Arguments: [1] pointer to void [1] int
+ *
+ * Purpose: Sets SCSI Unit Serial number.
+ *          This is a fake. We should read a proper
+ *          serial number from the container. <SuSE>But
+ *          without docs it's quite hard to do it :-)
+ *          So this will have to do in the meantime.</SuSE>
+ */
+
+static int setinqserial(struct aac_dev *dev, void *data, int cid)
+{
+	/*
+	 *	This breaks array migration.
+	 */
+	return snprintf((char *)(data), sizeof(struct scsi_inq) - 4, "%08X%02X",
+			le32_to_cpu(dev->adapter_info.serial[0]), cid);
 }
 
 static void set_sense(u8 *sense_buf, u8 sense_key, u8 sense_code,
@@ -764,9 +919,8 @@ static int aac_bounds_32(struct aac_dev * dev, struct scsi_cmnd * cmd, u64 lba)
 			    ASENCODE_INTERNAL_TARGET_FAILURE, 0, 0,
 			    0, 0);
 		memcpy(cmd->sense_buffer, &dev->fsa_dev[cid].sense_data,
-		  (sizeof(dev->fsa_dev[cid].sense_data) > sizeof(cmd->sense_buffer))
-		    ? sizeof(cmd->sense_buffer)
-		    : sizeof(dev->fsa_dev[cid].sense_data));
+		       min_t(size_t, sizeof(dev->fsa_dev[cid].sense_data),
+			     SCSI_SENSE_BUFFERSIZE));
 		cmd->scsi_done(cmd);
 		return 1;
 	}
@@ -790,7 +944,7 @@ static int aac_read_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u3
 	readcmd->block[1] = cpu_to_le32((u32)((lba&0xffffffff00000000LL)>>32));
 	readcmd->count = cpu_to_le32(count<<9);
 	readcmd->cid = cpu_to_le16(scmd_id(cmd));
-	readcmd->flags = cpu_to_le16(1);
+	readcmd->flags = cpu_to_le16(IO_TYPE_READ);
 	readcmd->bpTotal = 0;
 	readcmd->bpComplete = 0;
 
@@ -847,7 +1001,7 @@ static int aac_read_block(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32
 	aac_fib_init(fib);
 	readcmd = (struct aac_read *) fib_data(fib);
 	readcmd->command = cpu_to_le32(VM_CtBlockRead);
-	readcmd->cid = cpu_to_le16(scmd_id(cmd));
+	readcmd->cid = cpu_to_le32(scmd_id(cmd));
 	readcmd->block = cpu_to_le32((u32)(lba&0xffffffff));
 	readcmd->count = cpu_to_le32(count * 512);
 
@@ -869,7 +1023,7 @@ static int aac_read_block(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32
 			  (void *) cmd);
 }
 
-static int aac_write_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32 count)
+static int aac_write_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32 count, int fua)
 {
 	u16 fibsize;
 	struct aac_raw_io *writecmd;
@@ -879,7 +1033,10 @@ static int aac_write_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u
 	writecmd->block[1] = cpu_to_le32((u32)((lba&0xffffffff00000000LL)>>32));
 	writecmd->count = cpu_to_le32(count<<9);
 	writecmd->cid = cpu_to_le16(scmd_id(cmd));
-	writecmd->flags = 0;
+	writecmd->flags = (fua && ((aac_cache & 5) != 1) &&
+	  (((aac_cache & 5) != 5) || !fib->dev->cache_protected)) ?
+		cpu_to_le16(IO_TYPE_WRITE|IO_SUREWRITE) :
+		cpu_to_le16(IO_TYPE_WRITE);
 	writecmd->bpTotal = 0;
 	writecmd->bpComplete = 0;
 
@@ -898,7 +1055,7 @@ static int aac_write_raw_io(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u
 			  (void *) cmd);
 }
 
-static int aac_write_block64(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32 count)
+static int aac_write_block64(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32 count, int fua)
 {
 	u16 fibsize;
 	struct aac_write64 *writecmd;
@@ -929,14 +1086,14 @@ static int aac_write_block64(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, 
 			  (void *) cmd);
 }
 
-static int aac_write_block(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32 count)
+static int aac_write_block(struct fib * fib, struct scsi_cmnd * cmd, u64 lba, u32 count, int fua)
 {
 	u16 fibsize;
 	struct aac_write *writecmd;
 	aac_fib_init(fib);
 	writecmd = (struct aac_write *) fib_data(fib);
 	writecmd->command = cpu_to_le32(VM_CtBlockWrite);
-	writecmd->cid = cpu_to_le16(scmd_id(cmd));
+	writecmd->cid = cpu_to_le32(scmd_id(cmd));
 	writecmd->block = cpu_to_le32((u32)(lba&0xffffffff));
 	writecmd->count = cpu_to_le32(count * 512);
 	writecmd->sg.count = cpu_to_le32(1);
@@ -1054,6 +1211,15 @@ static int aac_scsi_32(struct fib * fib, struct scsi_cmnd * cmd)
 				  (fib_callback) aac_srb_callback, (void *) cmd);
 }
 
+static int aac_scsi_32_64(struct fib * fib, struct scsi_cmnd * cmd)
+{
+	if ((sizeof(dma_addr_t) > 4) &&
+	 (num_physpages > (0xFFFFFFFFULL >> PAGE_SHIFT)) &&
+	 (fib->dev->adapter_info.options & AAC_OPT_SGMAP_HOST64))
+		return FAILED;
+	return aac_scsi_32(fib, cmd);
+}
+
 int aac_get_adapter_info(struct aac_dev* dev)
 {
 	struct fib* fibptr;
@@ -1071,11 +1237,11 @@ int aac_get_adapter_info(struct aac_dev* dev)
 	memset(info,0,sizeof(*info));
 
 	rcode = aac_fib_send(RequestAdapterInfo,
-			 fibptr, 
+			 fibptr,
 			 sizeof(*info),
-			 FsaNormal, 
+			 FsaNormal,
 			 -1, 1, /* First `interrupt' command uses special wait */
-			 NULL, 
+			 NULL,
 			 NULL);
 
 	if (rcode < 0) {
@@ -1086,29 +1252,29 @@ int aac_get_adapter_info(struct aac_dev* dev)
 	memcpy(&dev->adapter_info, info, sizeof(*info));
 
 	if (dev->adapter_info.options & AAC_OPT_SUPPLEMENT_ADAPTER_INFO) {
-		struct aac_supplement_adapter_info * info;
+		struct aac_supplement_adapter_info * sinfo;
 
 		aac_fib_init(fibptr);
 
-		info = (struct aac_supplement_adapter_info *) fib_data(fibptr);
+		sinfo = (struct aac_supplement_adapter_info *) fib_data(fibptr);
 
-		memset(info,0,sizeof(*info));
+		memset(sinfo,0,sizeof(*sinfo));
 
 		rcode = aac_fib_send(RequestSupplementAdapterInfo,
 				 fibptr,
-				 sizeof(*info),
+				 sizeof(*sinfo),
 				 FsaNormal,
 				 1, 1,
 				 NULL,
 				 NULL);
 
 		if (rcode >= 0)
-			memcpy(&dev->supplement_adapter_info, info, sizeof(*info));
+			memcpy(&dev->supplement_adapter_info, sinfo, sizeof(*sinfo));
 	}
 
 
-	/* 
-	 * GetBusInfo 
+	/*
+	 * GetBusInfo
 	 */
 
 	aac_fib_init(fibptr);
@@ -1131,15 +1297,18 @@ int aac_get_adapter_info(struct aac_dev* dev)
 			 1, 1,
 			 NULL, NULL);
 
+	/* reasoned default */
+	dev->maximum_num_physicals = 16;
 	if (rcode >= 0 && le32_to_cpu(bus_info->Status) == ST_OK) {
 		dev->maximum_num_physicals = le32_to_cpu(bus_info->TargetsPerBus);
 		dev->maximum_num_channels = le32_to_cpu(bus_info->BusCount);
 	}
 
 	if (!dev->in_reset) {
+		char buffer[16];
 		tmp = le32_to_cpu(dev->adapter_info.kernelrev);
 		printk(KERN_INFO "%s%d: kernel %d.%d-%d[%d] %.*s\n",
-			dev->name, 
+			dev->name,
 			dev->id,
 			tmp>>24,
 			(tmp>>16)&0xff,
@@ -1157,17 +1326,32 @@ int aac_get_adapter_info(struct aac_dev* dev)
 			dev->name, dev->id,
 			tmp>>24,(tmp>>16)&0xff,tmp&0xff,
 			le32_to_cpu(dev->adapter_info.biosbuild));
-		if (le32_to_cpu(dev->adapter_info.serial[0]) != 0xBAD0)
-			printk(KERN_INFO "%s%d: serial %x\n",
-				dev->name, dev->id,
-				le32_to_cpu(dev->adapter_info.serial[0]));
+		buffer[0] = '\0';
+		if (aac_show_serial_number(
+		  shost_to_class(dev->scsi_host_ptr), buffer))
+			printk(KERN_INFO "%s%d: serial %s",
+			  dev->name, dev->id, buffer);
+		if (dev->supplement_adapter_info.VpdInfo.Tsid[0]) {
+			printk(KERN_INFO "%s%d: TSID %.*s\n",
+			  dev->name, dev->id,
+			  (int)sizeof(dev->supplement_adapter_info.VpdInfo.Tsid),
+			  dev->supplement_adapter_info.VpdInfo.Tsid);
+		}
+		if (!aac_check_reset || ((aac_check_reset != 1) &&
+		  (dev->supplement_adapter_info.SupportedOptions2 &
+		  AAC_OPTION_IGNORE_RESET))) {
+			printk(KERN_INFO "%s%d: Reset Adapter Ignored\n",
+			  dev->name, dev->id);
+		}
 	}
 
+	dev->cache_protected = 0;
+	dev->jbod = ((dev->supplement_adapter_info.FeatureBits &
+		AAC_FEATURE_JBOD) != 0);
 	dev->nondasd_support = 0;
 	dev->raid_scsi_mode = 0;
-	if(dev->adapter_info.options & AAC_OPT_NONDASD){
+	if(dev->adapter_info.options & AAC_OPT_NONDASD)
 		dev->nondasd_support = 1;
-	}
 
 	/*
 	 * If the firmware supports ROMB RAID/SCSI mode and we are currently
@@ -1188,11 +1372,10 @@ int aac_get_adapter_info(struct aac_dev* dev)
 	if (dev->raid_scsi_mode != 0)
 		printk(KERN_INFO "%s%d: ROMB RAID/SCSI mode enabled\n",
 				dev->name, dev->id);
-		
-	if(nondasd != -1) {  
+
+	if (nondasd != -1)
 		dev->nondasd_support = (nondasd!=0);
-	}
-	if(dev->nondasd_support != 0){
+	if(dev->nondasd_support != 0) {
 		printk(KERN_INFO "%s%d: Non-DASD support enabled.\n",dev->name, dev->id);
 	}
 
@@ -1230,7 +1413,9 @@ int aac_get_adapter_info(struct aac_dev* dev)
 	 * interface.
 	 */
 	dev->a_ops.adapter_scsi = (dev->dac_support)
-				? aac_scsi_64
+	  ? ((aac_get_driver_ident(dev->cardtype)->quirks & AAC_QUIRK_SCSI_32)
+				? aac_scsi_32_64
+				: aac_scsi_64)
 				: aac_scsi_32;
 	if (dev->raw_io_interface) {
 		dev->a_ops.adapter_bounds = (dev->raw_io_64)
@@ -1291,9 +1476,11 @@ static void io_callback(void *context, struct fib * fibptr)
 	u32 cid;
 
 	scsicmd = (struct scsi_cmnd *) context;
-	scsicmd->SCp.phase = AAC_OWNER_MIDLEVEL;
 
-	dev = (struct aac_dev *)scsicmd->device->host->hostdata;
+	if (!aac_valid_context(scsicmd, fibptr))
+		return;
+
+	dev = fibptr->dev;
 	cid = scmd_id(scsicmd);
 
 	if (nblank(dprintk(x))) {
@@ -1357,9 +1544,8 @@ static void io_callback(void *context, struct fib * fibptr)
 				    ASENCODE_INTERNAL_TARGET_FAILURE, 0, 0,
 				    0, 0);
 		memcpy(scsicmd->sense_buffer, &dev->fsa_dev[cid].sense_data,
-		  (sizeof(dev->fsa_dev[cid].sense_data) > sizeof(scsicmd->sense_buffer))
-		    ? sizeof(scsicmd->sense_buffer)
-		    : sizeof(dev->fsa_dev[cid].sense_data));
+		       min_t(size_t, sizeof(dev->fsa_dev[cid].sense_data),
+			     SCSI_SENSE_BUFFERSIZE));
 	}
 	aac_fib_complete(fibptr);
 	aac_fib_free(fibptr);
@@ -1383,7 +1569,7 @@ static int aac_read(struct scsi_cmnd * scsicmd)
 	case READ_6:
 		dprintk((KERN_DEBUG "aachba: received a read(6) command on id %d.\n", scmd_id(scsicmd)));
 
-		lba = ((scsicmd->cmnd[1] & 0x1F) << 16) | 
+		lba = ((scsicmd->cmnd[1] & 0x1F) << 16) |
 			(scsicmd->cmnd[2] << 8) | scsicmd->cmnd[3];
 		count = scsicmd->cmnd[4];
 
@@ -1393,32 +1579,32 @@ static int aac_read(struct scsi_cmnd * scsicmd)
 	case READ_16:
 		dprintk((KERN_DEBUG "aachba: received a read(16) command on id %d.\n", scmd_id(scsicmd)));
 
-		lba = 	((u64)scsicmd->cmnd[2] << 56) |
-		 	((u64)scsicmd->cmnd[3] << 48) |
+		lba =	((u64)scsicmd->cmnd[2] << 56) |
+			((u64)scsicmd->cmnd[3] << 48) |
 			((u64)scsicmd->cmnd[4] << 40) |
 			((u64)scsicmd->cmnd[5] << 32) |
-			((u64)scsicmd->cmnd[6] << 24) | 
+			((u64)scsicmd->cmnd[6] << 24) |
 			(scsicmd->cmnd[7] << 16) |
 			(scsicmd->cmnd[8] << 8) | scsicmd->cmnd[9];
-		count = (scsicmd->cmnd[10] << 24) | 
+		count = (scsicmd->cmnd[10] << 24) |
 			(scsicmd->cmnd[11] << 16) |
 			(scsicmd->cmnd[12] << 8) | scsicmd->cmnd[13];
 		break;
 	case READ_12:
 		dprintk((KERN_DEBUG "aachba: received a read(12) command on id %d.\n", scmd_id(scsicmd)));
 
-		lba = ((u64)scsicmd->cmnd[2] << 24) | 
+		lba = ((u64)scsicmd->cmnd[2] << 24) |
 			(scsicmd->cmnd[3] << 16) |
-		    	(scsicmd->cmnd[4] << 8) | scsicmd->cmnd[5];
-		count = (scsicmd->cmnd[6] << 24) | 
+			(scsicmd->cmnd[4] << 8) | scsicmd->cmnd[5];
+		count = (scsicmd->cmnd[6] << 24) |
 			(scsicmd->cmnd[7] << 16) |
-		      	(scsicmd->cmnd[8] << 8) | scsicmd->cmnd[9];
+			(scsicmd->cmnd[8] << 8) | scsicmd->cmnd[9];
 		break;
 	default:
 		dprintk((KERN_DEBUG "aachba: received a read(10) command on id %d.\n", scmd_id(scsicmd)));
 
-		lba = ((u64)scsicmd->cmnd[2] << 24) | 
-			(scsicmd->cmnd[3] << 16) | 
+		lba = ((u64)scsicmd->cmnd[2] << 24) |
+			(scsicmd->cmnd[3] << 16) |
 			(scsicmd->cmnd[4] << 8) | scsicmd->cmnd[5];
 		count = (scsicmd->cmnd[7] << 8) | scsicmd->cmnd[8];
 		break;
@@ -1443,7 +1629,7 @@ static int aac_read(struct scsi_cmnd * scsicmd)
 		scsicmd->SCp.phase = AAC_OWNER_FIRMWARE;
 		return 0;
 	}
-		
+
 	printk(KERN_WARNING "aac_read: aac_fib_send failed with status: %d.\n", status);
 	/*
 	 *	For some reason, the Fib didn't queue, return QUEUE_FULL
@@ -1459,6 +1645,7 @@ static int aac_write(struct scsi_cmnd * scsicmd)
 {
 	u64 lba;
 	u32 count;
+	int fua;
 	int status;
 	struct aac_dev *dev;
 	struct fib * cmd_fibcontext;
@@ -1473,18 +1660,20 @@ static int aac_write(struct scsi_cmnd * scsicmd)
 		count = scsicmd->cmnd[4];
 		if (count == 0)
 			count = 256;
+		fua = 0;
 	} else if (scsicmd->cmnd[0] == WRITE_16) { /* 16 byte command */
 		dprintk((KERN_DEBUG "aachba: received a write(16) command on id %d.\n", scmd_id(scsicmd)));
 
-		lba = 	((u64)scsicmd->cmnd[2] << 56) |
+		lba =	((u64)scsicmd->cmnd[2] << 56) |
 			((u64)scsicmd->cmnd[3] << 48) |
 			((u64)scsicmd->cmnd[4] << 40) |
 			((u64)scsicmd->cmnd[5] << 32) |
-			((u64)scsicmd->cmnd[6] << 24) | 
+			((u64)scsicmd->cmnd[6] << 24) |
 			(scsicmd->cmnd[7] << 16) |
 			(scsicmd->cmnd[8] << 8) | scsicmd->cmnd[9];
 		count = (scsicmd->cmnd[10] << 24) | (scsicmd->cmnd[11] << 16) |
 			(scsicmd->cmnd[12] << 8) | scsicmd->cmnd[13];
+		fua = scsicmd->cmnd[1] & 0x8;
 	} else if (scsicmd->cmnd[0] == WRITE_12) { /* 12 byte command */
 		dprintk((KERN_DEBUG "aachba: received a write(12) command on id %d.\n", scmd_id(scsicmd)));
 
@@ -1492,10 +1681,12 @@ static int aac_write(struct scsi_cmnd * scsicmd)
 		    | (scsicmd->cmnd[4] << 8) | scsicmd->cmnd[5];
 		count = (scsicmd->cmnd[6] << 24) | (scsicmd->cmnd[7] << 16)
 		      | (scsicmd->cmnd[8] << 8) | scsicmd->cmnd[9];
+		fua = scsicmd->cmnd[1] & 0x8;
 	} else {
 		dprintk((KERN_DEBUG "aachba: received a write(10) command on id %d.\n", scmd_id(scsicmd)));
 		lba = ((u64)scsicmd->cmnd[2] << 24) | (scsicmd->cmnd[3] << 16) | (scsicmd->cmnd[4] << 8) | scsicmd->cmnd[5];
 		count = (scsicmd->cmnd[7] << 8) | scsicmd->cmnd[8];
+		fua = scsicmd->cmnd[1] & 0x8;
 	}
 	dprintk((KERN_DEBUG "aac_write[cpu %d]: lba = %llu, t = %ld.\n",
 	  smp_processor_id(), (unsigned long long)lba, jiffies));
@@ -1510,7 +1701,7 @@ static int aac_write(struct scsi_cmnd * scsicmd)
 		return 0;
 	}
 
-	status = aac_adapter_write(cmd_fibcontext, scsicmd, lba, count);
+	status = aac_adapter_write(cmd_fibcontext, scsicmd, lba, count, fua);
 
 	/*
 	 *	Check that the command queued to the controller
@@ -1538,25 +1729,27 @@ static void synchronize_callback(void *context, struct fib *fibptr)
 	struct scsi_cmnd *cmd;
 
 	cmd = context;
-	cmd->SCp.phase = AAC_OWNER_MIDLEVEL;
 
-	dprintk((KERN_DEBUG "synchronize_callback[cpu %d]: t = %ld.\n", 
+	if (!aac_valid_context(cmd, fibptr))
+		return;
+
+	dprintk((KERN_DEBUG "synchronize_callback[cpu %d]: t = %ld.\n",
 				smp_processor_id(), jiffies));
 	BUG_ON(fibptr == NULL);
 
 
 	synchronizereply = fib_data(fibptr);
 	if (le32_to_cpu(synchronizereply->status) == CT_OK)
-		cmd->result = DID_OK << 16 | 
+		cmd->result = DID_OK << 16 |
 			COMMAND_COMPLETE << 8 | SAM_STAT_GOOD;
 	else {
 		struct scsi_device *sdev = cmd->device;
-		struct aac_dev *dev = (struct aac_dev *)sdev->host->hostdata;
+		struct aac_dev *dev = fibptr->dev;
 		u32 cid = sdev_id(sdev);
-		printk(KERN_WARNING 
+		printk(KERN_WARNING
 		     "synchronize_callback: synchronize failed, status = %d\n",
 		     le32_to_cpu(synchronizereply->status));
-		cmd->result = DID_OK << 16 | 
+		cmd->result = DID_OK << 16 |
 			COMMAND_COMPLETE << 8 | SAM_STAT_CHECK_CONDITION;
 		set_sense((u8 *)&dev->fsa_dev[cid].sense_data,
 				    HARDWARE_ERROR,
@@ -1564,8 +1757,8 @@ static void synchronize_callback(void *context, struct fib *fibptr)
 				    ASENCODE_INTERNAL_TARGET_FAILURE, 0, 0,
 				    0, 0);
 		memcpy(cmd->sense_buffer, &dev->fsa_dev[cid].sense_data,
-		  min(sizeof(dev->fsa_dev[cid].sense_data), 
-			  sizeof(cmd->sense_buffer)));
+		       min_t(size_t, sizeof(dev->fsa_dev[cid].sense_data),
+			     SCSI_SENSE_BUFFERSIZE));
 	}
 
 	aac_fib_complete(fibptr);
@@ -1582,6 +1775,9 @@ static int aac_synchronize(struct scsi_cmnd *scsicmd)
 	struct scsi_device *sdev = scsicmd->device;
 	int active = 0;
 	struct aac_dev *aac;
+	u64 lba = ((u64)scsicmd->cmnd[2] << 24) | (scsicmd->cmnd[3] << 16) |
+		(scsicmd->cmnd[4] << 8) | scsicmd->cmnd[5];
+	u32 count = (scsicmd->cmnd[7] << 8) | scsicmd->cmnd[8];
 	unsigned long flags;
 
 	/*
@@ -1590,7 +1786,51 @@ static int aac_synchronize(struct scsi_cmnd *scsicmd)
 	 */
 	spin_lock_irqsave(&sdev->list_lock, flags);
 	list_for_each_entry(cmd, &sdev->cmd_list, list)
-		if (cmd != scsicmd && cmd->SCp.phase == AAC_OWNER_FIRMWARE) {
+		if (cmd->SCp.phase == AAC_OWNER_FIRMWARE) {
+			u64 cmnd_lba;
+			u32 cmnd_count;
+
+			if (cmd->cmnd[0] == WRITE_6) {
+				cmnd_lba = ((cmd->cmnd[1] & 0x1F) << 16) |
+					(cmd->cmnd[2] << 8) |
+					cmd->cmnd[3];
+				cmnd_count = cmd->cmnd[4];
+				if (cmnd_count == 0)
+					cmnd_count = 256;
+			} else if (cmd->cmnd[0] == WRITE_16) {
+				cmnd_lba = ((u64)cmd->cmnd[2] << 56) |
+					((u64)cmd->cmnd[3] << 48) |
+					((u64)cmd->cmnd[4] << 40) |
+					((u64)cmd->cmnd[5] << 32) |
+					((u64)cmd->cmnd[6] << 24) |
+					(cmd->cmnd[7] << 16) |
+					(cmd->cmnd[8] << 8) |
+					cmd->cmnd[9];
+				cmnd_count = (cmd->cmnd[10] << 24) |
+					(cmd->cmnd[11] << 16) |
+					(cmd->cmnd[12] << 8) |
+					cmd->cmnd[13];
+			} else if (cmd->cmnd[0] == WRITE_12) {
+				cmnd_lba = ((u64)cmd->cmnd[2] << 24) |
+					(cmd->cmnd[3] << 16) |
+					(cmd->cmnd[4] << 8) |
+					cmd->cmnd[5];
+				cmnd_count = (cmd->cmnd[6] << 24) |
+					(cmd->cmnd[7] << 16) |
+					(cmd->cmnd[8] << 8) |
+					cmd->cmnd[9];
+			} else if (cmd->cmnd[0] == WRITE_10) {
+				cmnd_lba = ((u64)cmd->cmnd[2] << 24) |
+					(cmd->cmnd[3] << 16) |
+					(cmd->cmnd[4] << 8) |
+					cmd->cmnd[5];
+				cmnd_count = (cmd->cmnd[7] << 8) |
+					cmd->cmnd[8];
+			} else
+				continue;
+			if (((cmnd_lba + cmnd_count) < lba) ||
+			  (count && ((lba + count) < cmnd_lba)))
+				continue;
 			++active;
 			break;
 		}
@@ -1603,7 +1843,7 @@ static int aac_synchronize(struct scsi_cmnd *scsicmd)
 	if (active)
 		return SCSI_MLQUEUE_DEVICE_BUSY;
 
-	aac = (struct aac_dev *)scsicmd->device->host->hostdata;
+	aac = (struct aac_dev *)sdev->host->hostdata;
 	if (aac->in_reset)
 		return SCSI_MLQUEUE_HOST_BUSY;
 
@@ -1619,7 +1859,7 @@ static int aac_synchronize(struct scsi_cmnd *scsicmd)
 	synchronizecmd->command = cpu_to_le32(VM_ContainerConfig);
 	synchronizecmd->type = cpu_to_le32(CT_FLUSH_CACHE);
 	synchronizecmd->cid = cpu_to_le32(scmd_id(scsicmd));
-	synchronizecmd->count = 
+	synchronizecmd->count =
 	     cpu_to_le32(sizeof(((struct aac_synchronize_reply *)NULL)->data));
 
 	/*
@@ -1641,7 +1881,7 @@ static int aac_synchronize(struct scsi_cmnd *scsicmd)
 		return 0;
 	}
 
-	printk(KERN_WARNING 
+	printk(KERN_WARNING
 		"aac_synchronize: aac_fib_send failed with status: %d.\n", status);
 	aac_fib_complete(cmd_fibcontext);
 	aac_fib_free(cmd_fibcontext);
@@ -1655,14 +1895,14 @@ static int aac_synchronize(struct scsi_cmnd *scsicmd)
  *	Emulate a SCSI command and queue the required request for the
  *	aacraid firmware.
  */
- 
+
 int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 {
-	u32 cid = 0;
+	u32 cid;
 	struct Scsi_Host *host = scsicmd->device->host;
 	struct aac_dev *dev = (struct aac_dev *)host->hostdata;
 	struct fsa_dev_info *fsa_dev_ptr = dev->fsa_dev;
-	
+
 	if (fsa_dev_ptr == NULL)
 		return -1;
 	/*
@@ -1670,15 +1910,15 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 	 *	Test does not apply to ID 16, the pseudo id for the controller
 	 *	itself.
 	 */
-	if (scmd_id(scsicmd) != host->this_id) {
-		if ((scmd_channel(scsicmd) == CONTAINER_CHANNEL)) {
-			if((scmd_id(scsicmd) >= dev->maximum_num_containers) ||
+	cid = scmd_id(scsicmd);
+	if (cid != host->this_id) {
+		if (scmd_channel(scsicmd) == CONTAINER_CHANNEL) {
+			if((cid >= dev->maximum_num_containers) ||
 					(scsicmd->device->lun != 0)) {
 				scsicmd->result = DID_NO_CONNECT << 16;
 				scsicmd->scsi_done(scsicmd);
 				return 0;
 			}
-			cid = scmd_id(scsicmd);
 
 			/*
 			 *	If the target container doesn't exist, it may have
@@ -1697,13 +1937,53 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 					if (dev->in_reset)
 						return -1;
 					return _aac_probe_container(scsicmd,
-							_aac_probe_container3);
+							aac_probe_container_callback2);
 				default:
 					break;
 				}
 			}
 		} else {  /* check for physical non-dasd devices */
-			if ((dev->nondasd_support == 1) || expose_physicals) {
+			/* ADPml05517 */
+			/*
+			 * If this is a test unit ready and there is already
+			 * a long command outstanding, we will assume a
+			 * sequentially queued device and report back that
+			 * this needs a retry.
+			 */
+			if (scsicmd->cmnd[0] == TEST_UNIT_READY) {
+				struct scsi_cmnd * command;
+				unsigned long flags;
+				spin_lock_irqsave(&scsicmd->device->list_lock,
+				  flags);
+				list_for_each_entry(command,
+				  &scsicmd->device->cmd_list, list)
+				{
+					if (command == scsicmd)
+						continue;
+					if ((command->state == SCSI_STATE_FINISHED)
+					 || (command->state == 0))
+						continue;
+					if (command->timeout_per_command
+					  <= scsicmd->timeout_per_command)
+						continue;
+					spin_unlock_irqrestore(
+					  &scsicmd->device->list_lock,
+					  flags);
+					scsicmd->result = DID_BUS_BUSY << 16 |
+						COMMAND_COMPLETE << 8;
+					scsicmd->scsi_done(scsicmd);
+					return 0;
+				}
+				spin_unlock_irqrestore(
+				  &scsicmd->device->list_lock,
+				  flags);
+			}
+			if (dev->nondasd_support || expose_physicals ||
+					dev->jbod) {
+				/*
+				 *	Read and Write protect the exposed
+				 * physical devices.
+				 */
 				if (scsicmd->device->inq_periph_qual)
 				switch (scsicmd->cmnd[0]) {
 				/* Filter Format? SMART Verify/Fix? */
@@ -1731,10 +2011,9 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 					  ASENCODE_END_OF_DATA, 0, 0, 0, 0);
 					memcpy(scsicmd->sense_buffer,
 					  &dev->fsa_dev[cid].sense_data,
-					  (sizeof(dev->fsa_dev[cid].sense_data)
-					      > sizeof(scsicmd->sense_buffer))
-					    ? sizeof(scsicmd->sense_buffer)
-					    : sizeof(dev->fsa_dev[cid].sense_data));
+					  min_t(size_t, sizeof(
+						dev->fsa_dev[cid].sense_data),
+						SCSI_SENSE_BUFFERSIZE));
 					scsicmd->scsi_done(scsicmd);
 					return 0;
 				}
@@ -1752,7 +2031,7 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 	 * else Command for the controller itself
 	 */
 	else if ((scsicmd->cmnd[0] != INQUIRY) &&	/* only INQUIRY & TUR cmnd supported for controller */
-		(scsicmd->cmnd[0] != TEST_UNIT_READY)) 
+		(scsicmd->cmnd[0] != TEST_UNIT_READY))
 	{
 		dprintk((KERN_WARNING "Only INQUIRY & TUR command supported for controller, rcvd = 0x%x.\n", scsicmd->cmnd[0]));
 		scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8 | SAM_STAT_CHECK_CONDITION;
@@ -1761,9 +2040,8 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 			    SENCODE_INVALID_COMMAND,
 			    ASENCODE_INVALID_COMMAND, 0, 0, 0, 0);
 		memcpy(scsicmd->sense_buffer, &dev->fsa_dev[cid].sense_data,
-		  (sizeof(dev->fsa_dev[cid].sense_data) > sizeof(scsicmd->sense_buffer))
-		    ? sizeof(scsicmd->sense_buffer)
-		    : sizeof(dev->fsa_dev[cid].sense_data));
+		       min_t(size_t, sizeof(dev->fsa_dev[cid].sense_data),
+			     SCSI_SENSE_BUFFERSIZE));
 		scsicmd->scsi_done(scsicmd);
 		return 0;
 	}
@@ -1775,9 +2053,51 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 	{
 		struct inquiry_data inq_data;
 
-		dprintk((KERN_DEBUG "INQUIRY command, ID: %d.\n", scmd_id(scsicmd)));
+		dprintk((KERN_DEBUG "INQUIRY command, ID: %d.\n", cid));
 		memset(&inq_data, 0, sizeof (struct inquiry_data));
 
+		if (scsicmd->cmnd[1] & 0x1) {
+			char *arr = (char *)&inq_data;
+
+			/* EVPD bit set */
+			arr[0] = (scmd_id(scsicmd) == host->this_id) ?
+			  INQD_PDT_PROC : INQD_PDT_DA;
+			if (scsicmd->cmnd[2] == 0) {
+				/* supported vital product data pages */
+				arr[3] = 2;
+				arr[4] = 0x0;
+				arr[5] = 0x80;
+				arr[1] = scsicmd->cmnd[2];
+				aac_internal_transfer(scsicmd, &inq_data, 0,
+				  sizeof(inq_data));
+				scsicmd->result = DID_OK << 16 |
+				  COMMAND_COMPLETE << 8 | SAM_STAT_GOOD;
+			} else if (scsicmd->cmnd[2] == 0x80) {
+				/* unit serial number page */
+				arr[3] = setinqserial(dev, &arr[4],
+				  scmd_id(scsicmd));
+				arr[1] = scsicmd->cmnd[2];
+				aac_internal_transfer(scsicmd, &inq_data, 0,
+				  sizeof(inq_data));
+				return aac_get_container_serial(scsicmd);
+			} else {
+				/* vpd page not implemented */
+				scsicmd->result = DID_OK << 16 |
+				  COMMAND_COMPLETE << 8 |
+				  SAM_STAT_CHECK_CONDITION;
+				set_sense((u8 *) &dev->fsa_dev[cid].sense_data,
+				  ILLEGAL_REQUEST,
+				  SENCODE_INVALID_CDB_FIELD,
+				  ASENCODE_NO_SENSE, 0, 7, 2, 0);
+				memcpy(scsicmd->sense_buffer,
+				  &dev->fsa_dev[cid].sense_data,
+				  min_t(size_t,
+					sizeof(dev->fsa_dev[cid].sense_data),
+					SCSI_SENSE_BUFFERSIZE));
+			}
+			scsicmd->scsi_done(scsicmd);
+			return 0;
+		}
 		inq_data.inqd_ver = 2;	/* claim compliance to SCSI-2 */
 		inq_data.inqd_rdf = 2;	/* A response data format value of two indicates that the data shall be in the format specified in SCSI-2 */
 		inq_data.inqd_len = 31;
@@ -1787,7 +2107,7 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 		 *	Set the Vendor, Product, and Revision Level
 		 *	see: <vendor>.c i.e. aac.c
 		 */
-		if (scmd_id(scsicmd) == host->this_id) {
+		if (cid == host->this_id) {
 			setinqstr(dev, (void *) (inq_data.inqd_vid), ARRAY_SIZE(container_types));
 			inq_data.inqd_pdt = INQD_PDT_PROC;	/* Processor device */
 			aac_internal_transfer(scsicmd, &inq_data, 0, sizeof(inq_data));
@@ -1879,15 +2199,30 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 
 	case MODE_SENSE:
 	{
-		char mode_buf[4];
+		char mode_buf[7];
+		int mode_buf_length = 4;
 
 		dprintk((KERN_DEBUG "MODE SENSE command.\n"));
 		mode_buf[0] = 3;	/* Mode data length */
 		mode_buf[1] = 0;	/* Medium type - default */
-		mode_buf[2] = 0;	/* Device-specific param, bit 8: 0/1 = write enabled/protected */
+		mode_buf[2] = 0;	/* Device-specific param,
+					   bit 8: 0/1 = write enabled/protected
+					   bit 4: 0/1 = FUA enabled */
+		if (dev->raw_io_interface && ((aac_cache & 5) != 1))
+			mode_buf[2] = 0x10;
 		mode_buf[3] = 0;	/* Block descriptor length */
-
-		aac_internal_transfer(scsicmd, mode_buf, 0, sizeof(mode_buf));
+		if (((scsicmd->cmnd[2] & 0x3f) == 8) ||
+		  ((scsicmd->cmnd[2] & 0x3f) == 0x3f)) {
+			mode_buf[0] = 6;
+			mode_buf[4] = 8;
+			mode_buf[5] = 1;
+			mode_buf[6] = ((aac_cache & 6) == 2)
+				? 0 : 0x04; /* WCE */
+			mode_buf_length = 7;
+			if (mode_buf_length > scsicmd->cmnd[4])
+				mode_buf_length = scsicmd->cmnd[4];
+		}
+		aac_internal_transfer(scsicmd, mode_buf, 0, mode_buf_length);
 		scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8 | SAM_STAT_GOOD;
 		scsicmd->scsi_done(scsicmd);
 
@@ -1895,18 +2230,34 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 	}
 	case MODE_SENSE_10:
 	{
-		char mode_buf[8];
+		char mode_buf[11];
+		int mode_buf_length = 8;
 
 		dprintk((KERN_DEBUG "MODE SENSE 10 byte command.\n"));
 		mode_buf[0] = 0;	/* Mode data length (MSB) */
 		mode_buf[1] = 6;	/* Mode data length (LSB) */
 		mode_buf[2] = 0;	/* Medium type - default */
-		mode_buf[3] = 0;	/* Device-specific param, bit 8: 0/1 = write enabled/protected */
+		mode_buf[3] = 0;	/* Device-specific param,
+					   bit 8: 0/1 = write enabled/protected
+					   bit 4: 0/1 = FUA enabled */
+		if (dev->raw_io_interface && ((aac_cache & 5) != 1))
+			mode_buf[3] = 0x10;
 		mode_buf[4] = 0;	/* reserved */
 		mode_buf[5] = 0;	/* reserved */
 		mode_buf[6] = 0;	/* Block descriptor length (MSB) */
 		mode_buf[7] = 0;	/* Block descriptor length (LSB) */
-		aac_internal_transfer(scsicmd, mode_buf, 0, sizeof(mode_buf));
+		if (((scsicmd->cmnd[2] & 0x3f) == 8) ||
+		  ((scsicmd->cmnd[2] & 0x3f) == 0x3f)) {
+			mode_buf[1] = 9;
+			mode_buf[8] = 8;
+			mode_buf[9] = 1;
+			mode_buf[10] = ((aac_cache & 6) == 2)
+				? 0 : 0x04; /* WCE */
+			mode_buf_length = 11;
+			if (mode_buf_length > scsicmd->cmnd[8])
+				mode_buf_length = scsicmd->cmnd[8];
+		}
+		aac_internal_transfer(scsicmd, mode_buf, 0, mode_buf_length);
 
 		scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8 | SAM_STAT_GOOD;
 		scsicmd->scsi_done(scsicmd);
@@ -1946,7 +2297,7 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 		return 0;
 	}
 
-	switch (scsicmd->cmnd[0]) 
+	switch (scsicmd->cmnd[0])
 	{
 		case READ_6:
 		case READ_10:
@@ -1959,11 +2310,11 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 			 *	corresponds to a container. Needed to convert
 			 *	containers to /dev/sd device names
 			 */
-			 
+
 			if (scsicmd->request->rq_disk)
 				strlcpy(fsa_dev_ptr[cid].devname,
 				scsicmd->request->rq_disk->disk_name,
-			  	min(sizeof(fsa_dev_ptr[cid].devname),
+				min(sizeof(fsa_dev_ptr[cid].devname),
 				sizeof(scsicmd->request->rq_disk->disk_name) + 1));
 
 			return aac_read(scsicmd);
@@ -1977,9 +2328,16 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 			return aac_write(scsicmd);
 
 		case SYNCHRONIZE_CACHE:
+			if (((aac_cache & 6) == 6) && dev->cache_protected) {
+				scsicmd->result = DID_OK << 16 |
+					COMMAND_COMPLETE << 8 | SAM_STAT_GOOD;
+				scsicmd->scsi_done(scsicmd);
+				return 0;
+			}
 			/* Issue FIB to tell Firmware to flush it's cache */
-			return aac_synchronize(scsicmd);
-			
+			if ((aac_cache & 6) != 2)
+				return aac_synchronize(scsicmd);
+			/* FALLTHRU */
 		default:
 			/*
 			 *	Unhandled commands
@@ -1990,9 +2348,9 @@ int aac_scsi_cmd(struct scsi_cmnd * scsicmd)
 				ILLEGAL_REQUEST, SENCODE_INVALID_COMMAND,
 				ASENCODE_INVALID_COMMAND, 0, 0, 0, 0);
 			memcpy(scsicmd->sense_buffer, &dev->fsa_dev[cid].sense_data,
-			  (sizeof(dev->fsa_dev[cid].sense_data) > sizeof(scsicmd->sense_buffer))
-			    ? sizeof(scsicmd->sense_buffer)
-			    : sizeof(dev->fsa_dev[cid].sense_data));
+				min_t(size_t,
+				      sizeof(dev->fsa_dev[cid].sense_data),
+				      SCSI_SENSE_BUFFERSIZE));
 			scsicmd->scsi_done(scsicmd);
 			return 0;
 	}
@@ -2010,7 +2368,7 @@ static int query_disk(struct aac_dev *dev, void __user *arg)
 		return -EFAULT;
 	if (qd.cnum == -1)
 		qd.cnum = qd.id;
-	else if ((qd.bus == -1) && (qd.id == -1) && (qd.lun == -1)) 
+	else if ((qd.bus == -1) && (qd.id == -1) && (qd.lun == -1))
 	{
 		if (qd.cnum < 0 || qd.cnum >= dev->maximum_num_containers)
 			return -EINVAL;
@@ -2125,18 +2483,21 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 	struct scsi_cmnd *scsicmd;
 
 	scsicmd = (struct scsi_cmnd *) context;
-	scsicmd->SCp.phase = AAC_OWNER_MIDLEVEL;
-	dev = (struct aac_dev *)scsicmd->device->host->hostdata;
+
+	if (!aac_valid_context(scsicmd, fibptr))
+		return;
 
 	BUG_ON(fibptr == NULL);
+
+	dev = fibptr->dev;
 
 	srbreply = (struct aac_srb_reply *) fib_data(fibptr);
 
 	scsicmd->sense_buffer[0] = '\0';  /* Initialize sense valid flag to false */
 	/*
-	 *	Calculate resid for sg 
+	 *	Calculate resid for sg
 	 */
-	 
+
 	scsicmd->resid = scsicmd->request_bufflen - 
 		le32_to_cpu(srbreply->data_xfer_length);
 
@@ -2156,10 +2517,8 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 	if (le32_to_cpu(srbreply->status) != ST_OK){
 		int len;
 		printk(KERN_WARNING "aac_srb_callback: srb failed, status = %d\n", le32_to_cpu(srbreply->status));
-		len = (le32_to_cpu(srbreply->sense_data_size) > 
-				sizeof(scsicmd->sense_buffer)) ?
-				sizeof(scsicmd->sense_buffer) : 
-				le32_to_cpu(srbreply->sense_data_size);
+		len = min_t(u32, le32_to_cpu(srbreply->sense_data_size),
+			    SCSI_SENSE_BUFFERSIZE);
 		scsicmd->result = DID_ERROR << 16 | COMMAND_COMPLETE << 8 | SAM_STAT_CHECK_CONDITION;
 		memcpy(scsicmd->sense_buffer, srbreply->sense_data, len);
 	}
@@ -2173,37 +2532,34 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 	case SRB_STATUS_SUCCESS:
 		if ((scsicmd->cmnd[0] == INQUIRY) && (expose_physicals <= 0)) {
 			u8 b;
-			u8 b1;
-			/* We can't expose disk devices because we can't tell whether they
-			 * are the raw container drives or stand alone drives.  If they have
-			 * the removable bit set then we should expose them though.
+			/* We can't expose disk devices because we can't tell
+			 * whether they are the raw container drives or stand
+			 * alone drives.  If they have the removable bit set
+			 * then we should expose them though.
 			 */
-			b = (*(u8*)scsicmd->request_buffer)&0x1f;
-			b1 = ((u8*)scsicmd->request_buffer)[1];
-			if( b==TYPE_TAPE || b==TYPE_WORM || b==TYPE_ROM || b==TYPE_MOD|| b==TYPE_MEDIUM_CHANGER 
-					|| (b==TYPE_DISK && (b1&0x80)) ){
-				scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
+			b = *((u8*)scsicmd->request_buffer);
+			if (((b & 0x1F) != TYPE_DISK) ||
+			  (((u8*)scsicmd->request_buffer)[1] & 0x80) ||
 			/*
 			 * We will allow disk devices if in RAID/SCSI mode and
 			 * the channel is 2
 			 */
-			} else if ((dev->raid_scsi_mode) &&
-					(scmd_channel(scsicmd) == 2)) {
+			  ((dev->raid_scsi_mode) &&
+					(scmd_channel(scsicmd) == 2)) ||
+			  (dev->jbod && !(b >> 5)))
 				scsicmd->result = DID_OK << 16 |
 						COMMAND_COMPLETE << 8;
-			} else if (expose_physicals) {
+			else if (expose_physicals) {
 				scsicmd->device->inq_periph_qual = 1;
 				/* Insurance */
 				(*(u8*)scsicmd->request_buffer) |= 1 << 5;
-				scsicmd->result = DID_OK << 16 | 
+				scsicmd->result = DID_OK << 16 |
 						COMMAND_COMPLETE << 8;
-			} else {
+			} else
 				scsicmd->result = DID_NO_CONNECT << 16 |
 						COMMAND_COMPLETE << 8;
-			}
-		} else {
+		} else
 			scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
-		}
 		break;
 	case SRB_STATUS_DATA_OVERRUN:
 		switch(scsicmd->cmnd[0]){
@@ -2215,7 +2571,7 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 		case  WRITE_12:
 		case  READ_16:
 		case  WRITE_16:
-			if(le32_to_cpu(srbreply->data_xfer_length) < scsicmd->underflow ) {
+			if (le32_to_cpu(srbreply->data_xfer_length) < scsicmd->underflow) {
 				printk(KERN_WARNING"aacraid: SCSI CMD underflow\n");
 			} else {
 				printk(KERN_WARNING"aacraid: SCSI CMD Data Overrun\n");
@@ -2223,39 +2579,36 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 			scsicmd->result = DID_ERROR << 16 | COMMAND_COMPLETE << 8;
 			break;
 		case INQUIRY: {
-		if (expose_physicals <= 0) {
-			u8 b;
-			u8 b1;
-			/* We can't expose disk devices because we can't tell whether they
-			* are the raw container drives or stand alone drives
-			*/
-			b = (*(u8*)scsicmd->request_buffer)&0x0f;
-			b1 = ((u8*)scsicmd->request_buffer)[1];
-			if( b==TYPE_TAPE || b==TYPE_WORM || b==TYPE_ROM || b==TYPE_MOD|| b==TYPE_MEDIUM_CHANGER
-					|| (b==TYPE_DISK && (b1&0x80)) ){
-				scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
-			/*
-			 * We will allow disk devices if in RAID/SCSI mode and
-			 * the channel is 2
-			 */
-			} else if (((dev->raid_scsi_mode) &&
-					(scmd_channel(scsicmd) == 2)) ||
-					(expose_physicals == 1)) {
+			if (expose_physicals <= 0) {
+				/*
+				 * We can't expose disk devices because we
+				 * can't tell whether they are the raw
+				 * container drives or stand alone drives
+				 */
+				u8 b = *((u8*)scsicmd->request_buffer);
+				if ((((b & 0x1f) != TYPE_DISK) ||
+				  (((u8*)scsicmd->request_buffer)[1] & 0x80)) ||
+				/*
+				 * We will allow disk devices if in RAID/SCSI
+				 * mode and the channel is 2
+				 */
+				  ((dev->raid_scsi_mode) &&
+						(scmd_channel(scsicmd) == 2)) ||
+				  (dev->jbod && !(b >> 5)))
+					scsicmd->result = DID_OK << 16 |
+						COMMAND_COMPLETE << 8;
+				else if (expose_physicals) {
+					scsicmd->device->inq_periph_qual = 1;
+					/* Insurance */
+					(*(u8*)scsicmd->request_buffer) |= 1 << 5;
+					scsicmd->result = DID_OK << 16 |
+							COMMAND_COMPLETE << 8;
+				} else
+					scsicmd->result = DID_NO_CONNECT << 16 |
+							COMMAND_COMPLETE << 8;
+			} else
 				scsicmd->result = DID_OK << 16 |
 						COMMAND_COMPLETE << 8;
-			} else if (expose_physicals) {
-				scsicmd->device->inq_periph_qual = 1;
-				/* Insurance */
-				(*(u8*)scsicmd->request_buffer) |= 1 << 5;
-				scsicmd->result = DID_OK << 16 | 
-						COMMAND_COMPLETE << 8;
-			} else {
-				scsicmd->result = DID_NO_CONNECT << 16 | 
-						COMMAND_COMPLETE << 8;
-			}
-		} else {
-			scsicmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
-		}
 			break;
 		}
 		default:
@@ -2287,7 +2640,7 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 		break;
 
 	case SRB_STATUS_BUSY:
-		scsicmd->result = DID_NO_CONNECT << 16 | COMMAND_COMPLETE << 8;
+		scsicmd->result = DID_BUS_BUSY << 16 | COMMAND_COMPLETE << 8;
 		break;
 
 	case SRB_STATUS_BUS_RESET:
@@ -2316,26 +2669,23 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
 		printk("aacraid: SRB ERROR(%u) %s scsi cmd 0x%x - scsi status 0x%x\n",
 			le32_to_cpu(srbreply->srb_status) & 0x3F,
 			aac_get_status_string(
-				le32_to_cpu(srbreply->srb_status) & 0x3F), 
-			scsicmd->cmnd[0], 
+				le32_to_cpu(srbreply->srb_status) & 0x3F),
+			scsicmd->cmnd[0],
 			le32_to_cpu(srbreply->scsi_status));
 #endif
 		scsicmd->result = DID_ERROR << 16 | COMMAND_COMPLETE << 8;
 		break;
 	}
-	if (le32_to_cpu(srbreply->scsi_status) == 0x02 ){  // Check Condition
+	if (le32_to_cpu(srbreply->scsi_status) == SAM_STAT_CHECK_CONDITION) {
 		int len;
 		scsicmd->result |= SAM_STAT_CHECK_CONDITION;
-		len = (le32_to_cpu(srbreply->sense_data_size) > 
-				sizeof(scsicmd->sense_buffer)) ?
-				sizeof(scsicmd->sense_buffer) :
-				le32_to_cpu(srbreply->sense_data_size);
+		len = min_t(u32, le32_to_cpu(srbreply->sense_data_size),
+			    SCSI_SENSE_BUFFERSIZE);
 #ifdef AAC_DETAILED_STATUS_INFO
 		printk(KERN_WARNING "aac_srb_callback: check condition, status = %d len=%d\n",
 					le32_to_cpu(srbreply->status), len);
 #endif
 		memcpy(scsicmd->sense_buffer, srbreply->sense_data, len);
-		
 	}
 	/*
 	 * OR in the scsi status (already shifted up a bit)
@@ -2352,7 +2702,7 @@ static void aac_srb_callback(void *context, struct fib * fibptr)
  * aac_send_scb_fib
  * @scsicmd: the scsi command block
  *
- * This routine will form a FIB and fill in the aac_srb from the 
+ * This routine will form a FIB and fill in the aac_srb from the
  * scsicmd passed in.
  */
 
@@ -2441,7 +2791,7 @@ static int aac_build_sg(struct scsi_cmnd* scsicmd, struct sgmap* psg)
 		addr = scsicmd->SCp.dma_handle;
 		psg->count = cpu_to_le32(1);
 		psg->sg[0].addr = cpu_to_le32(addr);
-		psg->sg[0].count = cpu_to_le32(scsicmd->request_bufflen);  
+		psg->sg[0].count = cpu_to_le32(scsicmd->request_bufflen);
 		byte_count = scsicmd->request_bufflen;
 	}
 	return le32_to_cpu(psg->count);
@@ -2473,7 +2823,7 @@ static int aac_build_sg64(struct scsi_cmnd* scsicmd, struct sgmap64* psg)
 			int count = sg_dma_len(sg);
 			addr = sg_dma_address(sg);
 			psg->sg[i].addr[0] = cpu_to_le32(addr & 0xffffffff);
-			psg->sg[i].addr[1] = cpu_to_le32(addr >> 32);
+			psg->sg[i].addr[1] = cpu_to_le32(addr>>32);
 			psg->sg[i].count = cpu_to_le32(count);
 			byte_count += count;
 			sg++;
@@ -2568,7 +2918,7 @@ static int aac_build_sgraw(struct scsi_cmnd* scsicmd, struct sgmapraw* psg)
 		psg->count = cpu_to_le32(1);
 		psg->sg[0].next = 0;
 		psg->sg[0].prev = 0;
-		psg->sg[0].addr[1] = cpu_to_le32((u32)(addr >> 32));
+		psg->sg[0].addr[1] = cpu_to_le32((u32)(addr>>32));
 		psg->sg[0].addr[0] = cpu_to_le32((u32)(addr & 0xffffffff));
 		psg->sg[0].count = cpu_to_le32(count);
 		psg->sg[0].flags = 0;
@@ -2615,7 +2965,7 @@ static struct aac_srb_status_info srb_status_info[] = {
 	{ SRB_STATUS_ERROR_RECOVERY,	"Error Recovery"},
 	{ SRB_STATUS_NOT_STARTED,	"Not Started"},
 	{ SRB_STATUS_NOT_IN_USE,	"Not In Use"},
-    	{ SRB_STATUS_FORCE_ABORT,	"Force Abort"},
+	{ SRB_STATUS_FORCE_ABORT,	"Force Abort"},
 	{ SRB_STATUS_DOMAIN_VALIDATION_FAIL,"Domain Validation Failure"},
 	{ 0xff,				"Unknown Error"}
 };

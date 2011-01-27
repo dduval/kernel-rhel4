@@ -1,15 +1,15 @@
 /*
  *  linux/drivers/message/fusion/mptsas.c
- *      For use with LSI Logic PCI chip/adapter(s)
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      For use with LSI PCI SAS chip/adapter(s)
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2007 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
-    This program is free software; you can redistribute it and/or modify
+   This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation; version 2 of the License.
 
@@ -44,8 +44,10 @@
 */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 
-#include <linux/module.h>
+#include <linux/config.h>
+#include <linux/version.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/kdev_t.h>
@@ -77,7 +79,6 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION(my_VERSION);
 
 /* Command line args */
-
 static int mpt_pq_filter = 0;
 module_param(mpt_pq_filter, int, 0);
 MODULE_PARM_DESC(mpt_pq_filter, " Enable peripheral qualifier filter: enable=1  (default=0)");
@@ -94,8 +95,11 @@ static int mpt_cmd_retry_count = 144;
 module_param(mpt_cmd_retry_count, int, 0);
 MODULE_PARM_DESC(mpt_cmd_retry_count, " Device discovery TUR command retry count: default=144");
 
-extern int mpt_enable_deadioc_detect;
+static int mptsas_device_queue_depth = MPT_SCSI_CMD_PER_DEV_HIGH;
+module_param(mptsas_device_queue_depth, int, 0);
+MODULE_PARM_DESC(mptsas_device_queue_depth, " Max Device Queue Depth (default=" __MODULE_STRING(MPT_SCSI_CMD_PER_DEV_HIGH) ")");
 
+extern int mpt_enable_deadioc_detect;
 extern int	mptscsih_TMHandler(MPT_SCSI_HOST *hd, u8 type, u8 bus, u8 id, u8 lun, int ctx2abort, ulong timeout);
 static int	mptsasDoneCtx = -1;
 static int	mptsasTaskCtx = -1;
@@ -103,7 +107,6 @@ static int	mptsasInternalCtx = -1; /* Used only for internal commands */
 
 static void mptsas_hotplug_work(void *arg);
 
-#if defined(CPQ_CIM)
 /**
  * mptsas_sas_io_unit_pg0
  *
@@ -166,7 +169,7 @@ mptsas_sas_io_unit_pg0(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info)
 		error = -ENOMEM;
 		goto out_free_consistent;
 	}
-
+	
 	if (port_info->num_phys)
 		port_info->handle =
 		    le16_to_cpu(buffer->PhyData[0].ControllerDevHandle);
@@ -192,7 +195,7 @@ mptsas_sas_io_unit_pg0(MPT_ADAPTER *ioc, struct mptsas_portinfo *port_info)
  * mptsas_sas_device_pg0
  *
  * obtaining SAS_DEVICE page 0
- *
+ * 
  * @ioc
  * device_info
  *
@@ -668,7 +671,6 @@ mptsas_del_device_components(MPT_ADAPTER *ioc)
 	}
 	up(&ioc->sas_device_info_mutex);
 }
-#endif
 
 /**
  * mptsas_find_vdevice
@@ -729,7 +731,6 @@ mptsas_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 static int
 mptsas_slave_configure(struct scsi_device *sdev)
 {
-#if defined(CPQ_CIM)
 	MPT_SCSI_HOST	*hd = (MPT_SCSI_HOST *)sdev->host->hostdata;
 	MPT_ADAPTER *ioc = hd->ioc;
 	int		channel;
@@ -738,11 +739,22 @@ mptsas_slave_configure(struct scsi_device *sdev)
 	channel = sdev->channel;
 	id = sdev->id;
 
+	dinitprintk((MYIOC_s_INFO_FMT
+		"%s: id=%d channel=%d sdev->queue_depth=%d mptsas_device_queue_depth=%d\n",
+		ioc->name, __FUNCTION__, id, channel, sdev->queue_depth,
+		mptsas_device_queue_depth));
 	if ((ioc->raid_data.isRaid & (1 << id)) == 0)
 		mptsas_add_device_component_single(ioc, channel, id);
-#endif
-	return mptscsih_slave_configure(sdev);
+	return mptscsih_slave_configure(sdev, mptsas_device_queue_depth);
 }
+
+static struct device_attribute mptsas_queue_depth_attr = {
+	.attr = {
+		.name = 	"queue_depth",
+		.mode =		S_IWUSR,
+	},
+	.store = mptscsih_store_queue_depth,
+};
 
 
 /* Show the ioc state for this card */
@@ -770,6 +782,48 @@ static struct class_device_attribute *mptsas_host_attrs[] = {
         NULL,
 };
 
+static ssize_t mptsas_show_sas_address (struct device *dev, char *buf)
+{
+	struct scsi_device *sdev = to_scsi_device(dev);
+	MPT_SCSI_HOST *hd = (MPT_SCSI_HOST *) sdev->host->hostdata;
+	MPT_ADAPTER *ioc = hd->ioc;
+	struct sas_device_info  *si, *sas_info = NULL;
+	ssize_t len = -ENXIO;
+
+	down(&ioc->sas_device_info_mutex);
+	list_for_each_entry(si, &ioc->sas_device_info_list, list) {
+		if (si->os.channel == sdev->channel &&
+		    si->os.id == sdev->id) {
+			sas_info = si;
+			goto out;
+		}
+	}
+
+out:
+	if (sas_info)
+		len = snprintf(buf, 20, "0x%016llx\n",
+				(unsigned long long) sas_info->sas_address);
+
+	up(&ioc->sas_device_info_mutex);
+	return len;
+}
+
+static struct device_attribute mptsas_sas_address_attr = {
+	.attr = {
+		.name =		"suse_sas_address",
+		.mode =		S_IRUSR,
+	},
+	.show = mptsas_show_sas_address
+};
+
+/* Device attributes */
+static struct device_attribute *mptsas_dev_attrs[] = {
+	&mptsas_queue_depth_attr,
+	&mptsas_sas_address_attr,
+	NULL,
+};
+
+
 static struct scsi_host_template mptsas_driver_template = {
 	.module				= THIS_MODULE,
 	.proc_name			= "mptsas",
@@ -780,9 +834,6 @@ static struct scsi_host_template mptsas_driver_template = {
 	.slave_alloc			= mptscsih_slave_alloc,
 	.slave_configure		= mptsas_slave_configure,
 	.slave_destroy			= mptscsih_slave_destroy,
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11))
-	.change_queue_depth 		= mptscsih_change_queue_depth,
-#endif
 	.eh_abort_handler		= mptscsih_abort,
 	.eh_device_reset_handler	= mptscsih_dev_reset,
 	.eh_bus_reset_handler		= mptscsih_bus_reset,
@@ -795,6 +846,7 @@ static struct scsi_host_template mptsas_driver_template = {
 	.cmd_per_lun			= 7,
 	.use_clustering			= ENABLE_CLUSTERING,
 	.shost_attrs			= mptsas_host_attrs,
+	.sdev_attrs			= mptsas_dev_attrs,
 	.dump_sanity_check		= mptscsih_sanity_check,
 	.dump_poll			= mptscsih_poll,
 };
@@ -808,11 +860,9 @@ static struct scsi_host_template mptsas_driver_template = {
  **/
 static void __devexit mptsas_remove(struct pci_dev *pdev)
 {
-#if defined(CPQ_CIM)
 	MPT_ADAPTER *ioc = pci_get_drvdata(pdev);
-  if(ioc->sh != NULL)
-	mptsas_del_device_components(ioc);
-#endif
+	if(ioc->sh != NULL)
+		mptsas_del_device_components(ioc);
 
 	flush_scheduled_work();
 	mptscsih_remove(pdev);
@@ -857,7 +907,7 @@ mptsas_target_reset(MPT_ADAPTER *ioc, u8 channel, u8 id)
 	DBG_DUMP_TM_REQUEST_FRAME(mf);
 
 	if (mpt_send_handshake_request(ioc->TaskCtx, ioc,
-	    sizeof(SCSITaskMgmt_t), (u32 *)mf, 10,NO_SLEEP)) {
+	    sizeof(SCSITaskMgmt_t), (u32 *)mf, 10, NO_SLEEP)) {
 		mpt_free_msg_frame(ioc, mf);
 		dfailprintk((MYIOC_s_WARN_FMT "%s, tm handshake failed @%d!!\n",
 		    ioc->name,__FUNCTION__, __LINE__));
@@ -1039,12 +1089,12 @@ mptsas_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 static int
 mptsas_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 {
-        MPT_SCSI_HOST   *hd =NULL;
+	MPT_SCSI_HOST	*hd =NULL;	
 	struct mptscsih_target_reset	*target_reset_list, *n;
 	int rc;
-
-        if ((ioc->sh != NULL) && (ioc->sh->hostdata != NULL))
-              hd = (MPT_SCSI_HOST *)ioc->sh->hostdata;
+	
+	if ((ioc->sh != NULL) && (ioc->sh->hostdata != NULL))
+ 		hd = (MPT_SCSI_HOST *)ioc->sh->hostdata;
 
 	rc = mptscsih_ioc_reset(ioc, reset_phase);
 
@@ -1053,9 +1103,9 @@ mptsas_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 
 	if (ioc->bus_type != SAS)
 		goto out;
-       if(hd == NULL)
-               goto out;
-
+	
+	if(hd == NULL)
+		goto out;
 
 	if (list_empty(&hd->target_reset_list))
 		goto out;
@@ -1248,36 +1298,10 @@ mptsas_add_device(MPT_ADAPTER *ioc, struct mptsas_hotplug_event *hot_plug_info,
 		return;
 	}
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,14))
 	sdev = scsi_add_device(ioc->sh, channel, id, lun);
 	if (!IS_ERR(sdev))
 		mptsas_hotplug_print(ioc, hot_plug_info, lun,
 		    "attaching");
-#else
-	error = scsi_add_device(ioc->sh, channel, id, lun);
-	if (!error) /* no error */
-		mptsas_hotplug_print(ioc, hot_plug_info, lun,
-		    "attaching");
-#endif
-}
-
-/**
- * scsilun_to_int
- *
- *
- * @scsilun
- *
- **/
-static int scsilun_to_int(struct scsi_lun *scsilun)
-{
-	int i;
-	unsigned int lun;
-
-	lun = 0;
-	for (i = 0; i < sizeof(lun); i += 2)
-		lun = lun | (((scsilun->scsi_lun[i] << 8) |
-			scsilun->scsi_lun[i + 1]) << (i * 8));
-	return lun;
 }
 
 /*
@@ -1365,7 +1389,7 @@ mptsas_scan_target(MPT_ADAPTER *ioc, struct mptsas_hotplug_event *hot_plug_info)
 		} else if (rc == MPT_SCANDV_BUSY) {
 			dinitprintk((MYIOC_s_INFO_FMT "TUR: BUSY\n",
 				ioc->name));
-		         msleep(1000);  /* sleep 1 second */
+			msleep(1000);  /* sleep 1 second */
 			continue;
 		} else if (rc == MPT_SCANDV_SENSE) {
 			u8 skey = hd->pLocal->sense[2] & 0x0F;
@@ -1385,7 +1409,7 @@ mptsas_scan_target(MPT_ADAPTER *ioc, struct mptsas_hotplug_event *hot_plug_info)
 				dinitprintk((MYIOC_s_INFO_FMT
 				    "TUR: Becoming Ready\n",
 				    ioc->name));
-                                    msleep(1000);  /* sleep 1 second */
+				msleep(1000);  /* sleep 1 second */
 				continue;
 			}
 		}
@@ -1437,7 +1461,7 @@ mptsas_scan_target(MPT_ADAPTER *ioc, struct mptsas_hotplug_event *hot_plug_info)
 			goto report_luns_done;
 		} else if (rc == MPT_SCANDV_BUSY) {
 			dinitprintk((MYIOC_s_INFO_FMT "RL: BUSY\n", ioc->name));
-		        msleep(1000);
+			msleep(1000);  /* sleep 1 second */
 			continue;
 		} else if (rc == MPT_SCANDV_SENSE) {
 			u8 skey = hd->pLocal->sense[2] & 0x0F;
@@ -1455,8 +1479,8 @@ mptsas_scan_target(MPT_ADAPTER *ioc, struct mptsas_hotplug_event *hot_plug_info)
 			    (asc == 0x04)&&(ascq == 0x01)) {
 				dinitprintk((MYIOC_s_INFO_FMT
 				    "RL: Becoming Ready\n", ioc->name));
-				     msleep(1000);
-                                     continue;
+				msleep(1000);  /* sleep 1 second */
+				continue;
 			}
 		}
 	}
@@ -1531,11 +1555,9 @@ mptsas_hotplug_work(void *arg)
 
 	switch  (hot_plug_info->event_type) {
 	case MPTSAS_DEL_DEVICE:
-#if defined(CPQ_CIM)
 		mptsas_del_device_component(ioc, channel, id);
 		if (hot_plug_info->refresh_raid_config_pages)
 			mptsas_add_device_component_hotspare(ioc);
-#endif
 		dhotpprintk((MYIOC_s_WARN_FMT
 		    "MPTSAS_DEL_DEVICE: channel=%d id=%d\n",
 		    ioc->name, channel, id));
@@ -1543,16 +1565,13 @@ mptsas_hotplug_work(void *arg)
 		break;
 
 	case MPTSAS_ADD_DEVICE:
-#if defined(CPQ_CIM)
 		if (ioc->raid_data.isRaid & (1 << id))
 			mptsas_add_device_component_ir(ioc, channel, id);
-#endif
 		dhotpprintk((MYIOC_s_WARN_FMT
 		    "MPTSAS_ADD_DEVICE: channel=%d id=%d\n",
 		    ioc->name, channel, id));
 		mptsas_scan_target(ioc, hot_plug_info);
 		break;
-#if defined(CPQ_CIM)
 	case MPTSAS_ADD_INACTIVE_VOLUME:
 		dhotpprintk((MYIOC_s_WARN_FMT
 		    "MPTSAS_ADD_INACTIVE_VOLUME: channel=%d id=%d\n",
@@ -1562,7 +1581,6 @@ mptsas_hotplug_work(void *arg)
 	case MPTSAS_PHYSDISK_ADD:
 		mptsas_add_device_component_single(ioc, channel, id);
 		break;
-#endif
 	default:
 		dhotpprintk((MYIOC_s_WARN_FMT
 		    "Unknown hot_plug event_type=%x: channel=%d id=%d "
@@ -1726,7 +1744,7 @@ mptsas_send_raid_event(MPT_ADAPTER *ioc,
 	case MPI_EVENT_RAID_RC_VOLUME_CREATED:
 		ev->event_type = MPTSAS_ADD_DEVICE;
 		break;
-	case MPI_EVENT_RAID_RC_VOLUME_STATUS_CHANGED:
+/*	case MPI_EVENT_RAID_RC_VOLUME_STATUS_CHANGED:
 		switch (state) {
 		case MPI_RAIDVOL0_STATUS_STATE_FAILED:
 		case MPI_RAIDVOL0_STATUS_STATE_MISSING:
@@ -1741,7 +1759,7 @@ mptsas_send_raid_event(MPT_ADAPTER *ioc,
 			    ": ignoring this event! %d\n", __LINE__));
 			return;
 		}
-		break;
+		break; */
 	default:
 		devtprintk((KERN_INFO MYNAM
 		    ": ignoring this event! %d\n", __LINE__));
@@ -1751,7 +1769,6 @@ mptsas_send_raid_event(MPT_ADAPTER *ioc,
 	schedule_work(&ev->work);
 }
 
-#if defined(CPQ_CIM)
 /*
  * mptsas_send_ir2_event
  *
@@ -1779,7 +1796,105 @@ mptsas_send_ir2_event(MPT_ADAPTER *ioc, PTR_MPI_EVENT_DATA_IR2 ir2_data)
 	INIT_WORK(&ev->work, mptsas_hotplug_work, ev);
 	schedule_work(&ev->work);
 };
-#endif
+
+
+/**
+ *	mptsas_broadcast_primative_work - Work queue thread to handle
+ *	broadcast primitive events
+ *	@arg: work queue payload containing info describing the event
+ *
+ **/
+static void
+mptsas_broadcast_primative_work(void *arg)
+{
+	struct mptsas_broadcast_primative_event *ev = arg;
+	MPT_ADAPTER		*ioc = ev->ioc;
+	MPT_SCSI_HOST		*hd;
+	MPT_FRAME_HDR		*mf;
+	VirtDevice		*vdevice;
+	int			ii;
+	struct scsi_cmnd	*sc;
+	int			task_context;
+	u8			channel, id;
+	int			 lun;
+
+	hd = (MPT_SCSI_HOST *) ioc->sh->hostdata;
+	mpt_findImVolumes(ioc);
+	down(&ioc->AEN_semaphore);
+	dtmprintk((MYIOC_s_WARN_FMT "%s - enter\n", ioc->name, __FUNCTION__));
+	for (ii = 0; ii < ioc->req_depth; ii++) {
+		sc = ioc->ScsiLookup[ii];
+		if (!sc)
+			continue;
+		mf = MPT_INDEX_2_MFPTR(ioc, ii);
+		if (!mf)
+			continue;
+		task_context = mf->u.frame.hwhdr.msgctxu.MsgContext;
+		channel = sc->device->channel;
+		id = sc->device->id;
+		lun = sc->device->lun;
+		vdevice = mptsas_find_vdevice(ioc, channel, id);
+		if (!vdevice)
+			continue;
+		if (vdevice->raidVolume)
+			continue; /* skip raid volumes */
+		if (mptscsih_IssueTaskMgmt(hd,
+		    MPI_SCSITASKMGMT_TASKTYPE_QUERY_TASK,
+		    channel, id, lun, task_context, 30)) {
+			dtmprintk((MYIOC_s_WARN_FMT "%s: QUERY_TASK "
+			    "failed!\n", ioc->name, __FUNCTION__));
+			continue;
+		}
+		if ((hd->tm_iocstatus == MPI_IOCSTATUS_SUCCESS) &&
+		    (hd->tm_response_code == MPI_SCSITASKMGMT_RSP_TM_SUCCEEDED
+		     || hd->tm_response_code ==
+		     MPI_SCSITASKMGMT_RSP_IO_QUEUED_ON_IOC))
+			continue;
+		if (mptscsih_IssueTaskMgmt(hd,
+		    MPI_SCSITASKMGMT_TASKTYPE_ABRT_TASK_SET,
+		    channel, id, lun, 0, 30))
+			dtmprintk((MYIOC_s_WARN_FMT "%s: ABRT_TASK_SET "
+			    "failed!\n", ioc->name, __FUNCTION__));
+		else
+			dtmprintk((MYIOC_s_WARN_FMT "%s: ABRT_TASK_SET "
+			    "successful!\n", ioc->name, __FUNCTION__));
+	}
+
+	ioc->broadcast_aen_busy = 0;
+	dtmprintk((MYIOC_s_WARN_FMT "%s - exit\n", ioc->name, __FUNCTION__));
+	up(&ioc->AEN_semaphore);
+	kfree(ev);
+}
+
+/**
+ *	mptsas_send_broadcast_primative_event - processing of event data
+ *	@ioc: Pointer to MPT_ADAPTER structure
+ *	broadcast_event_data: event data
+ *
+ **/
+static void
+mptsas_send_broadcast_primative_event(MPT_ADAPTER * ioc,
+	EVENT_DATA_SAS_BROADCAST_PRIMITIVE *broadcast_event_data)
+{
+	struct mptsas_broadcast_primative_event *ev;
+
+	if (ioc->broadcast_aen_busy)
+		return;
+
+	if (broadcast_event_data->Primitive !=
+	    MPI_EVENT_PRIMITIVE_ASYNCHRONOUS_EVENT)
+		return;
+
+	ev = kmalloc(sizeof(*ev), GFP_ATOMIC);
+	if (!ev)
+		return;
+
+	ioc->broadcast_aen_busy = 1;
+	memset(ev, 0, sizeof(*ev));
+	INIT_WORK(&ev->work, mptsas_broadcast_primative_work, ev);
+	ev->ioc = ioc;
+	schedule_work(&ev->work);
+}
 
 /**
  * mptsas_event_process
@@ -1803,16 +1918,12 @@ mptsas_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *reply)
 
 	switch (event) {
 	case MPI_EVENT_SAS_DEVICE_STATUS_CHANGE:
-#if defined(CPQ_CIM)
 		ioc->csmi_change_count++;
-#endif
 		mptsas_send_sas_event(ioc,
 			(EVENT_DATA_SAS_DEVICE_STATUS_CHANGE *)reply->Data);
 		break;
 	case MPI_EVENT_INTEGRATED_RAID:
-#if defined(CPQ_CIM)
 		ioc->csmi_change_count++;
-#endif
 		mptsas_send_raid_event(ioc,
 			(EVENT_DATA_RAID *)reply->Data);
 		break;
@@ -1822,13 +1933,15 @@ mptsas_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *reply)
 		    (void *)ioc);
 		schedule_work(&ioc->mptscsih_persistTask);
 		break;
-#if defined(CPQ_CIM)
 	case MPI_EVENT_IR2:
 		ioc->csmi_change_count++;
 		mptsas_send_ir2_event(ioc,
 		    (PTR_MPI_EVENT_DATA_IR2)reply->Data);
 		break;
-#endif
+	case MPI_EVENT_SAS_BROADCAST_PRIMITIVE:
+		mptsas_send_broadcast_primative_event(ioc,
+			(EVENT_DATA_SAS_BROADCAST_PRIMITIVE *)reply->Data);
+		break;
 	default:
 		rc = mptscsih_event_process(ioc, reply);
 		break;
@@ -1859,9 +1972,7 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	u8			*mem;
 	int			error=0;
 	int			r;
-#if defined(CPQ_CIM)
 	struct mptsas_portinfo	*port_info;
-#endif
 
 	if ((r = mpt_attach(pdev,id)) != 0)
 		return r;
@@ -1874,27 +1985,27 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/*  Added sanity check on readiness of the MPT adapter.
 	 */
 	if (ioc->last_state != MPI_IOC_STATE_OPERATIONAL) {
-                 if(mpt_enable_deadioc_detect)
-	             return 0;
-                 else {
-                  printk(MYIOC_s_WARN_FMT
-                         "Skipping because it's not operational!\n", ioc->name);
-                      error = -ENODEV;
-               goto out_mptsas_probe;
-                 }
+		if(mpt_enable_deadioc_detect)
+			return 0;
+		else {
+			printk(MYIOC_s_WARN_FMT
+		  		"Skipping because it's not operational!\n",
+		  		ioc->name);
+			error = -ENODEV;
+			goto out_mptsas_probe;
+		}
 	}
 
 	if (!ioc->active) {
-	      if(mpt_enable_deadioc_detect)
-                      return 0;
-               else {
-
-              printk(MYIOC_s_WARN_FMT "Skipping because it's disabled!\n",
-		  ioc->name);
-		error = -ENODEV;
-		goto out_mptsas_probe;
+		if(mpt_enable_deadioc_detect)
+			return 0;
+		else {
+			printk(MYIOC_s_WARN_FMT "Skipping because it's disabled!\n",
+		  	ioc->name);
+			error = -ENODEV;
+			goto out_mptsas_probe;
+		}
 	}
-     }
 
 	/*  Sanity check - ensure at least 1 port is INITIATOR capable
 	 */
@@ -1953,11 +2064,9 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	sh->unique_id = ioc->id;
 	sh->sg_tablesize = ioc->sg_tablesize;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	/* Set the pci device pointer in Scsi_Host structure.
 	 */
 	scsi_set_device(sh, &ioc->pcidev->dev);
-#endif
 
 	spin_unlock_irqrestore(&ioc->FreeQlock, flags);
 
@@ -1975,10 +2084,10 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	memset(mem, 0, sz);
-	hd->ScsiLookup = (struct scsi_cmnd **) mem;
+	ioc->ScsiLookup = (struct scsi_cmnd **) mem;
 
 	dprintk((MYIOC_s_INFO_FMT "ScsiLookup @ %p, sz=%d\n",
-	    ioc->name, hd->ScsiLookup, sz));
+	    ioc->name, ioc->ScsiLookup, sz));
 
 	for (ii=0; ii < ioc->NumberOfBuses; ii++) {
 		/* Allocate memory for the device structures.
@@ -2013,25 +2122,27 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 */
 	hd->cmdPtr = NULL;
 
-	/* Initialize this IOC's  timers
+	/* Initialize this IOC's timers
 	 * To use, set the timer expires field
-	 * and add_timer. Used for internally
-         * generated commands.
+	 * and add_timer.  Used for internally
+	 * generated commands.
 	 */
-       init_timer(&hd->InternalCmdTimer);
-       hd->InternalCmdTimer.data = (unsigned long) hd;
-       hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
+	init_timer(&hd->InternalCmdTimer);
+	hd->InternalCmdTimer.data = (unsigned long) hd;
+	hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
 
-       init_timer(&ioc->TMtimer);
-       ioc->TMtimer.data = (unsigned long) ioc;
-       ioc->TMtimer.function = mptscsih_TM_timeout;
+	init_timer(&ioc->TMtimer);
+	ioc->TMtimer.data = (unsigned long) ioc;
+	ioc->TMtimer.function = mptscsih_TM_timeout;
 
+	init_MUTEX(&ioc->AEN_semaphore);
 	init_MUTEX(&ioc->hot_plug_semaphore);
 
 	hd->mpt_pq_filter = mpt_pq_filter;
 	ioc->sas_data.ptClear = mpt_pt_clear;
 	ioc->sas_data.mpt_sas_hot_plug_enable =
 	    mpt_sas_hot_plug_enable;
+	ioc->sas_data.mptsas_device_queue_depth = mptsas_device_queue_depth;
 
 	if(ioc->sas_data.ptClear==1) {
 		mptbase_sas_persist_operation(
@@ -2045,19 +2156,17 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	hd->scandv_wait_done = 0;
 	hd->last_queue_full = 0;
 
-        init_waitqueue_head(&hd->TM_waitq);
-        hd->TM_wait_done = 0;
+	init_waitqueue_head(&hd->TM_waitq);
+	hd->TM_wait_done = 0;
 
 	INIT_LIST_HEAD(&hd->target_reset_list);
 
-#if defined(CPQ_CIM)
 	INIT_LIST_HEAD(&ioc->sas_device_info_list);
 	init_MUTEX(&ioc->sas_device_info_mutex);
 	port_info = kmalloc(sizeof(*port_info), GFP_KERNEL);
 	if (port_info && !mptsas_sas_io_unit_pg0(ioc, port_info))
 		ioc->num_ports = port_info->num_phys;
 	kfree(port_info);
-#endif
 
 	error = scsi_add_host (sh, &ioc->pcidev->dev);
 	if(error) {
@@ -2067,7 +2176,6 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	scsi_scan_host(sh);
 
-#if defined(CPQ_CIM)
 	/*
 	 * Handling Inactive Volumes
 	 */
@@ -2080,7 +2188,6 @@ mptsas_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		mptsas_add_device_component_ir(ioc,
 		    ioc->raid_data.pIocPg2->RaidVolume[ii].VolumeBus,
 		    ioc->raid_data.pIocPg2->RaidVolume[ii].VolumeID);
-#endif
 
 	return 0;
 
@@ -2095,13 +2202,9 @@ static struct pci_driver mptsas_driver = {
 	.id_table	= mptsas_pci_table,
 	.probe		= mptsas_probe,
 	.remove		= __devexit_p(mptsas_remove),
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	.driver         = {
 		.shutdown = mptscsih_shutdown,
         },
-#else
-	.shutdown       = mptscsih_shutdown,
-#endif
 #ifdef CONFIG_PM
 	.suspend	= mptscsih_suspend,
 	.resume		= mptscsih_resume,

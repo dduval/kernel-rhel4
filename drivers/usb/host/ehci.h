@@ -52,7 +52,6 @@ struct ehci_hcd {			/* one per controller */
 	/* async schedule support */
 	struct ehci_qh		*async;
 	struct ehci_qh		*reclaim;
-	unsigned		reclaim_ready : 1;
 	unsigned		scanning : 1;
 
 	/* periodic schedule support */
@@ -81,6 +80,7 @@ struct ehci_hcd {			/* one per controller */
 	struct dma_pool		*itd_pool;	/* itd per iso urb */
 	struct dma_pool		*sitd_pool;	/* sitd per split iso urb */
 
+	struct timer_list       iaa_watchdog;
 	struct timer_list	watchdog;
 	struct notifier_block	reboot_notifier;
 	unsigned long		actions;
@@ -103,9 +103,21 @@ struct ehci_hcd {			/* one per controller */
 #define hcd_to_ehci(hcd_ptr) container_of(hcd_ptr, struct ehci_hcd, hcd)
 
 
+static inline void
+iaa_watchdog_start(struct ehci_hcd *ehci)
+{
+	WARN_ON(timer_pending(&ehci->iaa_watchdog));
+	mod_timer(&ehci->iaa_watchdog,
+			jiffies + msecs_to_jiffies(EHCI_IAA_MSECS));
+}
+
+static inline void iaa_watchdog_done(struct ehci_hcd *ehci)
+{
+	del_timer(&ehci->iaa_watchdog);
+}
+
 enum ehci_timer_action {
 	TIMER_IO_WATCHDOG,
-	TIMER_IAA_WATCHDOG,
 	TIMER_ASYNC_SHRINK,
 	TIMER_ASYNC_OFF,
 };
@@ -123,9 +135,6 @@ timer_action (struct ehci_hcd *ehci, enum ehci_timer_action action)
 		unsigned long t;
 
 		switch (action) {
-		case TIMER_IAA_WATCHDOG:
-			t = EHCI_IAA_JIFFIES;
-			break;
 		case TIMER_IO_WATCHDOG:
 			t = EHCI_IO_JIFFIES;
 			break;
@@ -142,8 +151,7 @@ timer_action (struct ehci_hcd *ehci, enum ehci_timer_action action)
 		// async queue SHRINK often precedes IAA.  while it's ready
 		// to go OFF neither can matter, and afterwards the IO
 		// watchdog stops unless there's still periodic traffic.
-		if (action != TIMER_IAA_WATCHDOG
-				&& t > ehci->watchdog.expires
+		if (time_before_eq(t, ehci->watchdog.expires)
 				&& timer_pending (&ehci->watchdog))
 			return;
 		mod_timer (&ehci->watchdog, t);

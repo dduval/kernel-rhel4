@@ -251,7 +251,7 @@ static int init_or_cleanup(int init)
 
 	if (!init) goto cleanup;
 
-	ret = nf_register_sockopt(&sock_ops);
+	ret = nf_register_sockopt_owner(&sock_ops, THIS_MODULE);
 
 	if (ret < 0)
 		goto cleanup_nothing;

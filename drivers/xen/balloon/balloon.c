@@ -48,13 +48,25 @@
 #include <asm/hypervisor.h>
 #include <xen/balloon.h>
 #include <xen/interface/memory.h>
+#ifdef CONFIG_XEN_PV_ON_HVM
+#include <asm/maddr.h>
+#include <asm/page.h>
+#endif
 #include <asm/pgalloc.h>
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
 #include <asm/tlb.h>
+#ifdef CONFIG_XEN_PV_ON_HVM
+#include <linux/highmem.h>
+#endif
 #include <linux/list.h>
 
 #include <xen/xenbus.h>
+
+/* for pv-on-hvm */
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H   
+#include <xen/platform-compat.h>
+#endif
 
 #define PAGES2KB(_p) ((_p)<<(PAGE_SHIFT-10))
 
@@ -227,6 +239,8 @@ static int increase_reservation(unsigned long nr_pages)
 
 		/* Update P->M and M->P tables. */
 		set_phys_to_machine(pfn, frame_list[i]);
+
+#ifdef CONFIG_XEN
 		xen_machphys_update(frame_list[i], pfn);
 
 		/* Link back into the page tables if not highmem. */
@@ -238,7 +252,7 @@ static int increase_reservation(unsigned long nr_pages)
 				0);
 			BUG_ON(ret);
 		}
-
+#endif
 		/* Relinquish the page back to the allocator. */
 		ClearPageReserved(page);
 		set_page_count(page, 1);
@@ -283,9 +297,11 @@ static int decrease_reservation(unsigned long nr_pages)
 		if (!PageHighMem(page)) {
 			v = phys_to_virt(pfn << PAGE_SHIFT);
 			scrub_pages(v, 1);
+#ifdef CONFIG_XEN
 			ret = HYPERVISOR_update_va_mapping(
 				(unsigned long)v, __pte_ma(0), 0);
 			BUG_ON(ret);
+#endif
 		}
 #ifdef CONFIG_XEN_SCRUB_PAGES
 		else {
@@ -296,9 +312,11 @@ static int decrease_reservation(unsigned long nr_pages)
 #endif
 	}
 
+#ifdef CONFIG_XEN
 	/* Ensure that ballooned highmem pages don't have kmaps. */
 	kmap_flush_unused();
 	flush_tlb_all();
+#endif
 
 	balloon_lock(flags);
 
@@ -457,16 +475,22 @@ static struct notifier_block xenstore_notifier;
 
 static int __init balloon_init(void)
 {
+#if defined(CONFIG_X86) && defined(CONFIG_XEN) 
 	unsigned long pfn;
 	struct page *page;
+#endif
 
 	if (!is_running_on_xen())
 		return -ENODEV;
 
 	IPRINTK("Initialising balloon driver.\n");
 
+#ifdef CONFIG_XEN
 	current_pages = min(xen_start_info->nr_pages, max_pfn);
 	totalram_pages = current_pages;
+#else
+	current_pages = totalram_pages;
+#endif
 	target_pages  = current_pages;
 	balloon_low   = 0;
 	balloon_high  = 0;
@@ -487,11 +511,13 @@ static int __init balloon_init(void)
 	balloon_pde->write_proc = balloon_write;
 #endif
     
+#if defined(CONFIG_X86) && defined(CONFIG_XEN) 
 	/* Initialise the balloon with excess memory space. */
 	for (pfn = xen_start_info->nr_pages; pfn < max_pfn; pfn++) {
 		page = pfn_to_page(pfn);
 		balloon_append(page);
 	}
+#endif
 
 	target_watch.callback = watch_target;
 	xenstore_notifier.notifier_call = balloon_init_watcher;
@@ -512,6 +538,7 @@ void balloon_update_driver_allowance(long delta)
 	balloon_unlock(flags);
 }
 
+#ifdef CONFIG_XEN
 static int dealloc_pte_fn(
 	pte_t *pte, struct page *pmd_page, unsigned long addr, void *data)
 {
@@ -529,6 +556,7 @@ static int dealloc_pte_fn(
 	BUG_ON(ret != 1);
 	return 0;
 }
+#endif
 
 struct page **alloc_empty_pages_and_pagevec(int nr_pages)
 {
@@ -560,12 +588,17 @@ struct page **alloc_empty_pages_and_pagevec(int nr_pages)
 			};
 			set_xen_guest_handle(reservation.extent_start, &gmfn);
 			ret = HYPERVISOR_memory_op(XENMEM_decrease_reservation,
-						&reservation);
+						   &reservation);
 			if (ret == 1)
 				ret = 0; /* success */
 		} else {
+#ifdef CONFIG_XEN
 			ret = apply_to_page_range(&init_mm, vaddr, PAGE_SIZE,
-						dealloc_pte_fn, NULL);
+						  dealloc_pte_fn, NULL);
+#else
+			/* Cannot handle non-auto translate mode. */
+			ret = 1;
+#endif
 		}
 
 		if (ret != 0) {
@@ -581,7 +614,9 @@ struct page **alloc_empty_pages_and_pagevec(int nr_pages)
 
  out:
 	schedule_work(&balloon_worker);
+#ifdef CONFIG_XEN
 	flush_tlb_all();
+#endif
 	return pagevec;
 
  err:

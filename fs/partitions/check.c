@@ -19,6 +19,7 @@
 #include <linux/kmod.h>
 #include <linux/ctype.h>
 #include <linux/devfs_fs_kernel.h>
+#include <linux/genhd.h>
 
 #include "check.h"
 #include "devfs.h"
@@ -235,11 +236,27 @@ static ssize_t part_size_read(struct hd_struct * p, char *page)
 {
 	return sprintf(page, "%llu\n",(unsigned long long)p->nr_sects);
 }
-static ssize_t part_stat_read(struct hd_struct * p, char *page)
+static ssize_t part_stats_read(struct hd_struct *p, char *page)
 {
-	return sprintf(page, "%8u %8llu %8u %8llu\n",
-		       p->reads, (unsigned long long)p->read_sectors,
-		       p->writes, (unsigned long long)p->write_sectors);
+	preempt_disable();
+	part_round_stats(p);
+	preempt_enable();
+	return sprintf(page,
+		"%8u %8u %8llu %8u "
+		"%8u %8u %8llu %8u "
+		"%8u %8u %8u"
+		"\n",
+		part_stat_read(p, reads),
+		part_stat_read(p, read_merges),
+		(unsigned long long)part_stat_read(p, read_sectors),
+		jiffies_to_msecs(part_stat_read(p, read_ticks)),
+		part_stat_read(p, writes),
+		part_stat_read(p, write_merges),
+		(unsigned long long)part_stat_read(p, write_sectors),
+		jiffies_to_msecs(part_stat_read(p, write_ticks)),
+		get_partstats(p)->in_flight,
+		jiffies_to_msecs(part_stat_read(p, io_ticks)),
+		jiffies_to_msecs(part_stat_read(p, time_in_queue)));
 }
 static struct part_attribute part_attr_dev = {
 	.attr = {.name = "dev", .mode = S_IRUGO },
@@ -255,7 +272,7 @@ static struct part_attribute part_attr_size = {
 };
 static struct part_attribute part_attr_stat = {
 	.attr = {.name = "stat", .mode = S_IRUGO },
-	.show	= part_stat_read
+	.show	= part_stats_read
 };
 
 static struct attribute * default_attrs[] = {
@@ -271,6 +288,7 @@ extern struct subsystem block_subsys;
 static void part_release(struct kobject *kobj)
 {
 	struct hd_struct * p = container_of(kobj,struct hd_struct,kobj);
+	free_partstats(p);
 	kfree(p);
 }
 
@@ -291,6 +309,7 @@ void delete_partition(struct gendisk *disk, int part)
 	p->start_sect = 0;
 	p->nr_sects = 0;
 	p->reads = p->writes = p->read_sectors = p->write_sectors = 0;
+	part_stat_reset(p);
 	devfs_remove("%s/part%d", disk->devfs_name, part);
 	kobject_unregister(&p->kobj);
 }
@@ -302,8 +321,12 @@ void add_partition(struct gendisk *disk, int part, sector_t start, sector_t len)
 	p = kmalloc(sizeof(*p), GFP_KERNEL);
 	if (!p)
 		return;
-	
+
 	memset(p, 0, sizeof(*p));
+	if (!init_partstats(p)) {
+		kfree(p);
+		return;
+	}
 	p->start_sect = start;
 	p->nr_sects = len;
 	p->partno = part;

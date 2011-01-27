@@ -230,6 +230,8 @@ sysc_sigpending:
 	brasl	%r14,do_signal    # call do_signal
 	tm	__TI_flags+7(%r9),_TIF_RESTART_SVC
 	jo	sysc_restart
+	tm	__TI_flags+7(%r9),_TIF_SINGLE_STEP
+	jo	sysc_singlestep
 	j	sysc_leave        # out of here, do NOT recheck
 
 #
@@ -611,6 +613,16 @@ mcck_int_handler:
 	brasl   %r14,s390_do_machine_check
 mcck_return:
         RESTORE_ALL 0
+
+/*
+ * Reset channel path machine check handler.
+ */
+	.globl rchp_mcck_int_handler
+rchp_mcck_int_handler:
+	SAVE_ALL_BASE __LC_SAVE_AREA+64
+	SAVE_ALL __LC_MCK_OLD_PSW,__LC_SAVE_AREA+64,0
+	brasl	%r14,do_rchp_mcck
+	RESTORE_ALL 0
 
 #ifdef CONFIG_SMP
 /*

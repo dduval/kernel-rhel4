@@ -118,7 +118,14 @@ MODULE_PARM_DESC(ql4xcmdretrycount,
 		 "Maximum number of mid-layer retries allowed for a command.  "
 		 "Default value is 20");
 
-static int ql4xmaxqdepth = 0;
+int ql4xqfullrampup = 120;
+module_param(ql4xqfullrampup, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(ql4xqfullrampup,
+		 "Number of seconds to wait to begin to ramp-up the queue "
+		 "depth for a device after a queue-full condition has been "
+		 "detected.  Default is 120 seconds.");
+
+int ql4xmaxqdepth = 0;
 module_param(ql4xmaxqdepth, int, S_IRUGO|S_IRUSR);
 MODULE_PARM_DESC(ql4xmaxqdepth,
 		 "Maximum queue depth to report for target devices.");
@@ -142,6 +149,7 @@ int ql4_mod_unload = 0;
 MODULE_AUTHOR("QLogic Corporation");
 MODULE_DESCRIPTION("QLogic ISP4XXX iSCSI Host Bus Adapter driver");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(QLA4XXX_DRIVER_VERSION);
 
 /*
  * Proc info processing
@@ -276,7 +284,9 @@ qla4xxx_module_init(void)
 	int status;
 
 	printk(KERN_INFO
-	    "QLogic iSCSI HBA Driver (%p)\n", qla4xxx_set_info);
+	    "QLogic iSCSI HBA Driver (%p) v%s\n",
+	       qla4xxx_set_info /* code start */,
+	       QLA4XXX_DRIVER_VERSION);
 
 #if ISP_RESET_TEST
 	printk(KERN_INFO "qla4xxx: Adapter Reset Test Enabled!  "
@@ -2292,6 +2302,7 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 {
 	int t, l;
 	int processed;
+	int timer_extended = 0;
 	scsi_qla_host_t *dest_ha;
 	struct scsi_cmnd *cmd;
 	ulong      flags;
@@ -2301,8 +2312,8 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 	cmd = sp->cmd;
 	dest_ha = sp->ha;
 
-	DEBUG2(printk("scsi%d: %s: sp->state = %x\n",
-		      dest_ha->host_no, __func__, sp->state);)
+	DEBUG2(printk("scsi%d: %s: sp=%p sp->state = %x\n",
+		      dest_ha->host_no, __func__, sp, sp->state);)
 
 	t = cmd->device->id;
 	l = cmd->device->lun;
@@ -2315,8 +2326,7 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 	 */
 	processed = 0;
 	spin_lock_irqsave(&dest_ha->list_lock, flags);
-	if ((sp->state == SRB_RETRY_STATE)
-	    ) {
+	if ((sp->state == SRB_RETRY_STATE)) {
 
 		DEBUG2(printk("scsi%d: Found in (Scsi) Retry queue "
 			      "pid %ld, State = %x., "
@@ -2350,6 +2360,7 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 		processed++;
 	}
 	spin_unlock_irqrestore(&dest_ha->list_lock, flags);
+	
 	if (processed) {
 		qla4xxx_done(dest_ha);
 		DEBUG2(printk("scsi%d: %s: Leaving 1\n", dest_ha->host_no, __func__);)
@@ -2377,6 +2388,11 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 		if (sp == dest_ha->active_srb_array
 		    [(unsigned long)sp->cmd->host_scribble]) {
 
+			DEBUG2(printk("scsi%d: %s: Found in ISP pid=%ld "
+			    "hdl=%ld\n", dest_ha->host_no, __func__,
+			    cmd->serial_number,
+			    (unsigned long)sp->cmd->host_scribble));
+
 			if (sp->flags & SRB_TAPE) {
 				/*
 				 * We cannot allow the midlayer error handler
@@ -2389,6 +2405,7 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 					      dest_ha->host_no, __func__));
 				qla4xxx_extend_timeout(sp->cmd,
 						       EXTEND_CMD_TOV);
+				timer_extended = 1;
 			}
 
 			sp->state = SRB_ACTIVE_TIMEOUT_STATE;
@@ -2405,6 +2422,10 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 	}
 	else if (sp->state == SRB_ACTIVE_TIMEOUT_STATE) {
 		/* double timeout */
+		DEBUG2(printk("scsi%d: %s: Found in Active timeout state "
+				"pid %ld, State = %x.\n",
+				dest_ha->host_no, __func__,
+				sp->cmd->serial_number, sp->state));
 	}
 	else {
 		/* EMPTY */
@@ -2417,6 +2438,11 @@ qla4xxx_os_cmd_timeout(srb_t *sp)
 			dest_ha->host_no, __func__, sp->state);
 	}
 	spin_unlock_irqrestore(&dest_ha->list_lock, cpu_flags);
+
+	if (!timer_extended)
+		sp_put(dest_ha, sp);
+
+	DEBUG2(printk("scsi%d: %s: Leaving 2\n", dest_ha->host_no, __func__);)
 }
 
 
@@ -2648,7 +2674,8 @@ qla4xxx_timer(unsigned long p)
 			if (atomic_read(&ddb_entry->state) !=
 			    DEV_STATE_ONLINE &&
 			    ddb_entry->fw_ddb_device_state ==
-			    DDB_DS_SESSION_FAILED) {
+			    DDB_DS_SESSION_FAILED &&
+			    !test_bit(DF_NO_RELOGIN, &ddb_entry->flags)) {
 				/* Reset retry relogin timer */
 				atomic_inc(&ddb_entry->relogin_retry_count);
 				QL4PRINT(QLP2, printk(
@@ -2658,7 +2685,7 @@ qla4xxx_timer(unsigned long p)
 				    ddb_entry->fw_ddb_index,
 				    atomic_read(&ddb_entry->relogin_retry_count)));
 				start_dpc++;
-				QL4PRINT(QLP3, printk(
+				QL4PRINT(QLP2, printk(
 				    "scsi%d:%d:%d: index [%d] initate relogin "
 				    "after %d seconds\n", ha->host_no,
 				    ddb_entry->bus, ddb_entry->target,
@@ -2933,17 +2960,18 @@ qla4xxx_do_dpc(void *data)
 				clear_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
 				clear_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags);
 #else
-			if (test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags) ||
-			    (test_bit(DPC_RESET_HA, &ha->dpc_flags)))
-				qla4xxx_recover_adapter(ha, PRESERVE_DDB_LIST);
-			
-			if (test_and_clear_bit(DPC_RESET_HA_INTR, &ha->dpc_flags)) {
-				uint8_t wait_time = RESET_INTR_TOV;
+			if (test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags)) {
+				uint8_t wait_time = RESET_INTR_TOV*2;
 
 				qla4xxx_flush_active_srbs(ha);
 
 				while ((RD_REG_DWORD(&ha->reg->ctrl_status) &
-				    (CSR_SOFT_RESET|CSR_FORCE_SOFT_RESET)) != 0) {
+                                        CSR_SOFT_RESET) != 0) {
+					if (qla4xxx_poll_and_ack_scsi_reset(ha)
+					    == QLA_SUCCESS) {
+						wait_time = RESET_INTR_TOV*2;
+					}
+
 					if (--wait_time == 0)
 						break;
 
@@ -2959,6 +2987,10 @@ qla4xxx_do_dpc(void *data)
 				}
 				else if (!qla4xxx_hba_going_away) {
 					set_bit(DPC_RESET_HA_INTR_COMPLETION, &ha->dpc_flags);
+					clear_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
+					clear_bit(DPC_RESET_HA, &ha->dpc_flags);
+					clear_bit(DPC_RETRY_RESET_HA, &ha->dpc_flags);
+					clear_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags);
 				}
 			}
 
@@ -2978,6 +3010,10 @@ qla4xxx_do_dpc(void *data)
 					}
 				}
 			}
+			if (test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags) ||
+			    (test_bit(DPC_RESET_HA, &ha->dpc_flags)))
+				qla4xxx_recover_adapter(ha, PRESERVE_DDB_LIST);
+			
 #endif
 		}
 
@@ -3323,7 +3359,7 @@ void qla4xxx_hw_reset(scsi_qla_host_t *ha){
 	unsigned long flags = 0;
 
 	QL4PRINT(QLP2,
-		 printk(KERN_ERR "scsi%d: %s\n", ha->host_no, __func__));
+		 printk(KERN_ERR "scsi%d: SOFT RESET issued\n", ha->host_no));
 
 	/*
 	 * If the SCSI Reset Interrupt bit is set, clear it.
@@ -3384,15 +3420,16 @@ qla4xxx_soft_reset(scsi_qla_host_t *ha){
 		msleep(1000);
 	} while ((--max_wait_time));
 
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	ctrl_status = RD_REG_DWORD(&ha->reg->ctrl_status);
 	if ((ctrl_status & CSR_NET_RESET_INTR) != 0) {
 		QL4PRINT(QLP2,
 			 printk(KERN_WARNING "scsi%d: Network Reset Intr not cleared "
 				"by Network function, clearing it now!\n", ha->host_no));
-		spin_lock_irqsave(&ha->hardware_lock, flags);
 		WRT_REG_DWORD(&ha->reg->ctrl_status, SET_RMASK(CSR_NET_RESET_INTR));
 		PCI_POSTING(&ha->reg->ctrl_status);
-		spin_unlock_irqrestore(&ha->hardware_lock, flags);
 	}
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	/* Wait until the firmware tells us the Soft Reset is done */
 	max_wait_time = SOFT_RESET_TOV;
@@ -3428,12 +3465,16 @@ qla4xxx_soft_reset(scsi_qla_host_t *ha){
 	 * Issue a force soft reset to workaround this scenario.
 	 */
 	if (max_wait_time == 0) {
+		QL4PRINT(QLP2, printk(KERN_ERR "scsi%d: FORCED SOFT RESET issued\n",
+				      ha->host_no));
+		
 		/* Issue Force Soft Reset */
 		spin_lock_irqsave(&ha->hardware_lock, flags);
 		WRT_REG_DWORD(&ha->reg->ctrl_status,
 			SET_RMASK(CSR_FORCE_SOFT_RESET));
 		PCI_POSTING(&ha->reg->ctrl_status);
 		spin_unlock_irqrestore(&ha->hardware_lock, flags);
+		
 		/* Wait until the firmware tells us the Soft Reset is done */
 		max_wait_time = SOFT_RESET_TOV;
 		do {
@@ -3441,7 +3482,7 @@ qla4xxx_soft_reset(scsi_qla_host_t *ha){
 			ctrl_status = RD_REG_DWORD(&ha->reg->ctrl_status);
 			spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
-			if ((ctrl_status & CSR_FORCE_SOFT_RESET) == 0) {
+			if ((ctrl_status & CSR_SOFT_RESET) == 0) {
 				status = QLA_SUCCESS;
 				break;
 			}
@@ -3511,7 +3552,7 @@ qla4xxx_cmd_wait(scsi_qla_host_t *ha){
 		}
 	}		     /* End of While (wait_cnt) */
 
-	QL4PRINT(QLP2,printk("(%d): %s: Done waiting on commands - array_index=%d\n",
+	QL4PRINT(QLP2,printk("scsi%d: %s: Done waiting on commands - array_index=%d\n",
 			     ha->host_no, __func__, index));
 
 	LEAVE("qla4xxx_cmd_wait");
@@ -3556,6 +3597,11 @@ qla4xxx_recover_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list){
 	 */
 	status = qla4xxx_cmd_wait(ha);
 
+	if (qla4xxx_poll_and_ack_scsi_reset(ha) == QLA_SUCCESS) {
+		status = QLA_ERROR;
+		goto exit_recover_adapter;
+	}
+
 	qla4xxx_disable_intrs(ha);
 
 	/* Flush any pending ddb changed AENs */
@@ -3566,6 +3612,12 @@ qla4xxx_recover_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list){
 	 */
 	if (status == QLA_SUCCESS) {
 		qla4xxx_flush_active_srbs(ha);
+
+		if (qla4xxx_poll_and_ack_scsi_reset(ha) == QLA_SUCCESS) {
+			status = QLA_ERROR;
+			goto exit_recover_adapter;
+		}
+
 		DEBUG2(printk(
 		    "scsi%d: %s - Performing soft reset..\n",
 				ha->host_no,__func__));
@@ -3636,11 +3688,17 @@ qla4xxx_recover_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list){
 		clear_bit(DPC_RETRY_RESET_HA, &ha->dpc_flags);
 	}
 
+exit_recover_adapter:
+
 	ha->adapter_error_count++;
 
  	if (status == QLA_SUCCESS) {
  		qla4xxx_enable_intrs(ha);
-                DEBUG2(printk("scsi%d: recover adapter .. DONE\n", ha->host_no));
+		DEBUG2(printk("scsi%d: recover adapter .. DONE (%lld)\n",
+			      ha->host_no, (unsigned long long)ha->adapter_error_count));
+	} else {
+		DEBUG2(printk("scsi%d: recover adapter .. FAILED (%lld)\n",
+			      ha->host_no, (unsigned long long)ha->adapter_error_count));
 	}
 
 	LEAVE("qla4xxx_recover_adapter");

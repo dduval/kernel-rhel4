@@ -13,6 +13,7 @@
 #include <linux/types.h>
 #include <linux/compiler.h>
 #include <linux/bitops.h>
+#include <linux/log2.h>
 #include <asm/byteorder.h>
 #include <asm/bug.h>
 
@@ -27,6 +28,19 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define ALIGN(x,a) (((x)+(a)-1)&~((a)-1))
+#define FIELD_SIZEOF(t, f) (sizeof(((t*)0)->f))
+#define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+#define roundup(x, y) ((((x) + ((y) - 1)) / (y)) * (y))
+
+/**
+ * upper_32_bits - return bits 32-63 of a number
+ * @n: the number we're accessing
+ *
+ * A basic shift-right of a 64- or 32-bit quantity.  Use this to suppress
+ * the "right shift count >= width of type" warning when that quantity is
+ * 32-bits.
+ */
+#define upper_32_bits(n) ((u32)(((n) >> 16) >> 16))
 
 #define	KERN_EMERG	"<0>"	/* system is unusable			*/
 #define	KERN_ALERT	"<1>"	/* action must be taken immediately	*/
@@ -121,10 +135,12 @@ static inline int __attribute_pure__ long_log2(unsigned long x)
 	return r;
 }
 
-static inline unsigned long __attribute_const__ roundup_pow_of_two(unsigned long x)
+/*
+ * static inline unsigned long __attribute_const__ roundup_pow_of_two(unsigned long x)
 {
 	return (1UL << fls(x - 1));
 }
+*/
 
 extern int printk_ratelimit(void);
 extern int __printk_ratelimit(int ratelimit_jiffies, int ratelimit_burst);
@@ -227,6 +243,8 @@ extern void dump_stack(void);
 #else
 #error "Please fix asm/byteorder.h"
 #endif /* __LITTLE_ENDIAN */
+#define NIP6_FMT "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x"
+#define NIPQUAD_FMT "%u.%u.%u.%u"
 
 /*
  * min()/max() macros that also do
@@ -309,3 +327,4 @@ extern void BUILD_BUG(void);
 #endif
 
 #endif
+

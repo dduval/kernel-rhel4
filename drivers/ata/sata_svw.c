@@ -45,6 +45,8 @@
 #include <linux/interrupt.h>
 #include <linux/device.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/scsi.h>
 #include <linux/libata.h>
 
 #ifdef CONFIG_PPC_OF
@@ -57,6 +59,7 @@
 
 enum {
 	K2_FLAG_NO_ATAPI_DMA		= (1 << 29),
+	K2_FLAG_BAR_POS_3		= (1 << 26),
 
 	/* Taskfile registers offsets */
 	K2_SATA_TF_CMD_OFFSET		= 0x00,
@@ -86,19 +89,27 @@ enum {
 	/* Port stride */
 	K2_SATA_PORT_OFFSET		= 0x100,
 
-	board_svw4			= 0,
-	board_svw8			= 1,
+	chip_svw4			= 0,
+	chip_svw8			= 1,
+	chip_svw42			= 2,	/* bar 3 */
+	chip_svw43			= 3,	/* bar 5 */
 };
 
 static const struct k2_board_info {
 	unsigned int		n_ports;
 	unsigned long		port_flags;
 } k2_board_info[] = {
-	/* board_svw4 */
+	/* chip_svw4 */
 	{ 4, K2_FLAG_NO_ATAPI_DMA },
 
-	/* board_svw8 */
+	/* chip_svw8 */
 	{ 8, K2_FLAG_NO_ATAPI_DMA },
+
+	/* chip_svw42 */ 
+	{ 4, ATA_FLAG_SATA |ATA_FLAG_NO_LEGACY | ATA_FLAG_MMIO | K2_FLAG_BAR_POS_3 },
+
+	/* chip_svw43 */
+	{ 4, ATA_FLAG_SATA |ATA_FLAG_NO_LEGACY | ATA_FLAG_MMIO },
 };
 
 static u8 k2_stat_check_status(struct ata_port *ap);
@@ -106,10 +117,25 @@ static u8 k2_stat_check_status(struct ata_port *ap);
 
 static int k2_sata_check_atapi_dma(struct ata_queued_cmd *qc)
 {
+	u8 cmnd = qc->scsicmd->cmnd[0];
+
 	if (qc->ap->flags & K2_FLAG_NO_ATAPI_DMA)
 		return -1;	/* ATAPI DMA not supported */
+	else {
+		switch (cmnd) {
+		case READ_10:
+		case READ_12:
+		case READ_16:
+		case WRITE_10:
+		case WRITE_12:
+		case WRITE_16:
+			return 0;
 
-	return 0;
+		default:
+			return -1;
+		}
+
+	}
 }
 
 static u32 k2_sata_scr_read (struct ata_port *ap, unsigned int sc_reg)
@@ -394,11 +420,15 @@ static int k2_sata_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 	const struct k2_board_info *board_info =
 			&k2_board_info[ent->driver_data];
 	int pci_dev_busy = 0;
-	int rc;
+	int rc, bar_pos;
 	int i;
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev, "version " DRV_VERSION "\n");
+
+	bar_pos = 5;
+	if (board_info->port_flags & K2_FLAG_BAR_POS_3)
+		bar_pos = 3;
 
 	/*
 	 * If this driver happens to only be useful on Apple's K2, then
@@ -411,8 +441,9 @@ static int k2_sata_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 	 * Check if we have resources mapped at all (second function may
 	 * have been disabled by firmware)
 	 */
-	if (pci_resource_len(pdev, 5) == 0)
+	if (pci_resource_len(pdev, bar_pos) == 0) {
 		return -ENODEV;
+	}
 
 	/* Request PCI regions */
 	rc = pci_request_regions(pdev, DRV_NAME);
@@ -438,7 +469,7 @@ static int k2_sata_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 	probe_ent->dev = pci_dev_to_dev(pdev);
 	INIT_LIST_HEAD(&probe_ent->node);
 
-	mmio_base = pci_iomap(pdev, 5, 0);
+	mmio_base = pci_iomap(pdev, bar_pos, 0);
 	if (mmio_base == NULL) {
 		rc = -ENOMEM;
 		goto err_out_free_ent;
@@ -503,12 +534,13 @@ err_out:
  * controller
  * */
 static const struct pci_device_id k2_sata_pci_tbl[] = {
-	{ PCI_VDEVICE(SERVERWORKS, 0x0240), board_svw4 },
-	{ PCI_VDEVICE(SERVERWORKS, 0x0241), board_svw4 },
-	{ PCI_VDEVICE(SERVERWORKS, 0x0242), board_svw8 },
-	{ PCI_VDEVICE(SERVERWORKS, 0x024a), board_svw4 },
-	{ PCI_VDEVICE(SERVERWORKS, 0x024b), board_svw4 },
-
+	{ PCI_VDEVICE(SERVERWORKS, 0x0240), chip_svw4 },
+	{ PCI_VDEVICE(SERVERWORKS, 0x0241), chip_svw4 },
+	{ PCI_VDEVICE(SERVERWORKS, 0x0242), chip_svw8 },
+	{ PCI_VDEVICE(SERVERWORKS, 0x024a), chip_svw4 },
+	{ PCI_VDEVICE(SERVERWORKS, 0x024b), chip_svw4 },
+	{ PCI_VDEVICE(SERVERWORKS, 0x0410), chip_svw42 },
+	{ PCI_VDEVICE(SERVERWORKS, 0x0411), chip_svw43 },
 	{ }
 };
 

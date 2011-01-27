@@ -48,7 +48,7 @@ int __netpoll_rx(struct sk_buff *skb);
 void netpoll_reset_locks(struct netpoll *np);
 
 #ifdef CONFIG_NETPOLL
-extern struct net_device *skb_bond(struct sk_buff *);
+extern inline struct net_device *skb_bond(struct sk_buff *);
 static inline int netpoll_rx(struct sk_buff *skb)
 {
 	struct net_device *orig_dev = skb_bond(skb);

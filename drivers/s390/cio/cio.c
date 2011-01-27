@@ -847,6 +847,7 @@ void
 reipl(unsigned long devno)
 {
 	clear_all_subchannels();
+	local_irq_disable();
 	cio_reset_channel_paths();
 	do_reipl(devno);
 }

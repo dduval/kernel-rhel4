@@ -41,27 +41,6 @@ struct hw_interrupt_type;
  */
 
 /*
- * Special IRQ vectors used by the SMP architecture, 0xf0-0xff
- *
- *  some of the following vectors are 'rare', they are merged
- *  into a single vector (CALL_FUNCTION_VECTOR) to save vector space.
- *  TLB, reschedule and local APIC vectors are performance-critical.
- *
- *  Vectors 0xf0-0xf9 are free (reserved for future Linux use).
- */
-#ifndef CONFIG_XEN
-#define SPURIOUS_APIC_VECTOR	0xff
-#define ERROR_APIC_VECTOR	0xfe
-#define INVALIDATE_TLB_VECTOR	0xfd
-#define RESCHEDULE_VECTOR	0xfc
-#define TASK_MIGRATION_VECTOR	0xfb
-#define CALL_FUNCTION_VECTOR	0xfa
-#define KDB_VECTOR	0xf9
-
-#define THERMAL_APIC_VECTOR	0xf0
-#endif
-
-/*
  * Local APIC timer IRQ vector is on a different priority level,
  * to work around the 'lost local interrupt if more than 2 IRQ
  * sources per level' errata.

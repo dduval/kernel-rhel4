@@ -69,8 +69,6 @@ static void proc_delete_inode(struct inode *inode)
 	/* Let go of any associated proc directory entry */
 	de = PROC_I(inode)->pde;
 	if (de) {
-		if (de->owner)
-			module_put(de->owner);
 		de_put(de);
 	}
 	clear_inode(inode);
@@ -215,8 +213,6 @@ struct inode *proc_get_inode(struct super_block *sb, unsigned int ino,
 			inode->i_size = de->size;
 		if (de->nlink)
 			inode->i_nlink = de->nlink;
-		if (!try_module_get(de->owner))
-			goto out_fail;
 		if (de->proc_iops)
 			inode->i_op = de->proc_iops;
 		if (de->proc_fops)

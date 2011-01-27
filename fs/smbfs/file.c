@@ -232,7 +232,7 @@ smb_file_read(struct file * file, char __user * buf, size_t count, loff_t *ppos)
 
 	VERBOSE("before read, size=%ld, flags=%x, atime=%ld\n",
 		(long)dentry->d_inode->i_size,
-		dentry->d_inode->i_flags, dentry->d_inode->i_atime);
+		dentry->d_inode->i_flags, dentry->d_inode->i_atime.tv_sec);
 
 	status = generic_file_read(file, buf, count, ppos);
 out:
@@ -266,7 +266,7 @@ smb_file_sendfile(struct file *file, loff_t *ppos,
 	struct dentry *dentry = file->f_dentry;
 	ssize_t status;
 
-	VERBOSE("file %s/%s, pos=%Ld, count=%d\n",
+	VERBOSE("file %s/%s, pos=%Lu, count=%lu\n",
 		DENTRY_PATH(dentry), *ppos, count);
 
 	status = smb_revalidate_inode(dentry);
@@ -342,7 +342,8 @@ smb_file_write(struct file *file, const char __user *buf, size_t count, loff_t *
 		result = generic_file_write(file, buf, count, ppos);
 		VERBOSE("pos=%ld, size=%ld, mtime=%ld, atime=%ld\n",
 			(long) file->f_pos, (long) dentry->d_inode->i_size,
-			dentry->d_inode->i_mtime, dentry->d_inode->i_atime);
+			dentry->d_inode->i_mtime.tv_sec,
+			dentry->d_inode->i_atime.tv_sec);
 	}
 out:
 	return result;
@@ -362,7 +363,7 @@ smb_file_open(struct inode *inode, struct file * file)
 	SMB_I(inode)->openers++;
 out:
 	unlock_kernel();
-	return 0;
+	return result;
 }
 
 static int

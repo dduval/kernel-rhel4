@@ -1,10 +1,10 @@
 /*
  *  linux/drivers/message/fusion/mptfc.c
- *      For use with LSI Logic PCI chip/adapter(s)
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      For use with LSI PCI chip/adapter(s)
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2007 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -43,8 +43,11 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
-#include <linux/module.h>
+
+#include <linux/config.h>
+#include <linux/version.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/kdev_t.h>
@@ -81,10 +84,28 @@ static int mpt_pq_filter = 0;
 module_param(mpt_pq_filter, int, 0);
 MODULE_PARM_DESC(mpt_pq_filter, " Enable peripheral qualifier filter: enable=1  (default=0)");
 
+static int mptfc_device_queue_depth = MPT_SCSI_CMD_PER_DEV_HIGH;
+module_param(mptfc_device_queue_depth, int, 0);
+MODULE_PARM_DESC(mptfc_device_queue_depth, " Max Device Queue Depth (default=" __MODULE_STRING(MPT_SCSI_CMD_PER_DEV_HIGH) ")");
+
 static int	mptfcDoneCtx = -1;
 static int	mptfcTaskCtx = -1;
 static int	mptfcInternalCtx = -1; /* Used only for internal commands */
 
+static int mptfc_slave_configure(struct scsi_device *sdev);
+
+static struct device_attribute mptfc_queue_depth_attr = {
+	.attr = {
+		.name = 	"queue_depth",
+		.mode =		S_IWUSR,
+	},
+	.store = mptscsih_store_queue_depth,
+};
+
+static struct device_attribute *mptfc_dev_attrs[] = {
+	&mptfc_queue_depth_attr,
+	NULL,
+};
 
 /* Show the ioc state for this card */
 static ssize_t
@@ -119,11 +140,8 @@ static struct scsi_host_template mptfc_driver_template = {
 	.info				= mptscsih_info,
 	.queuecommand			= mptscsih_qcmd,
 	.slave_alloc			= mptscsih_slave_alloc,
-	.slave_configure		= mptscsih_slave_configure,
+	.slave_configure		= mptfc_slave_configure,
 	.slave_destroy			= mptscsih_slave_destroy,
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11))
-	.change_queue_depth 		= mptscsih_change_queue_depth,
-#endif
 	.eh_abort_handler		= mptscsih_abort,
 	.eh_device_reset_handler	= mptscsih_dev_reset,
 	.eh_bus_reset_handler		= mptscsih_bus_reset,
@@ -136,6 +154,7 @@ static struct scsi_host_template mptfc_driver_template = {
 	.cmd_per_lun			= 7,
 	.use_clustering			= ENABLE_CLUSTERING,
 	.shost_attrs			= mptfc_host_attrs,
+	.sdev_attrs			= mptfc_dev_attrs,
 	.dump_sanity_check		= mptscsih_sanity_check,
 	.dump_poll			= mptscsih_poll,
 };
@@ -161,12 +180,42 @@ static struct pci_device_id mptfc_pci_table[] = {
 		PCI_ANY_ID, PCI_ANY_ID },
 	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVICEID_FC949E,
 		PCI_ANY_ID, PCI_ANY_ID },
-        { 0x1657, MPI_MANUFACTPAGE_DEVICEID_FC949E,
-                PCI_ANY_ID, PCI_ANY_ID },
+	{ 0x1657, MPI_MANUFACTPAGE_DEVICEID_FC949E,
+		PCI_ANY_ID, PCI_ANY_ID },
 	{0}	/* Terminating entry */
 };
 MODULE_DEVICE_TABLE(pci, mptfc_pci_table);
 
+/**
+ * mptfc_slave_configure
+ *
+ *
+ * @sdev
+ *
+ **/
+static int
+mptfc_slave_configure(struct scsi_device *sdev)
+{
+#ifdef MPT_DEBUG_INIT
+	MPT_SCSI_HOST	*hd = (MPT_SCSI_HOST *)sdev->host->hostdata;
+	MPT_ADAPTER *ioc = hd->ioc;
+	int		channel;
+	int		id;
+
+	channel = sdev->channel;
+	id = sdev->id;
+
+	dinitprintk((MYIOC_s_INFO_FMT
+		"%s: id=%d channel=%d sdev->queue_depth=%d mptfc_device_queue_depth=%d\n",
+		ioc->name, __FUNCTION__, id, channel, sdev->queue_depth,
+		mptfc_device_queue_depth));
+#endif
+
+	return mptscsih_slave_configure(sdev, mptfc_device_queue_depth);
+}
+
+/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
+/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -273,11 +322,9 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	sh->unique_id = ioc->id;
 	sh->sg_tablesize = ioc->sg_tablesize;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	/* Set the pci device pointer in Scsi_Host structure.
 	 */
 	scsi_set_device(sh, &ioc->pcidev->dev);
-#endif
 
 	spin_unlock_irqrestore(&ioc->FreeQlock, flags);
 
@@ -295,10 +342,10 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	memset(mem, 0, sz);
-	hd->ScsiLookup = (struct scsi_cmnd **) mem;
+	ioc->ScsiLookup = (struct scsi_cmnd **) mem;
 
 	dprintk((MYIOC_s_INFO_FMT "ScsiLookup @ %p, sz=%d\n",
-		 ioc->name, hd->ScsiLookup, sz));
+		 ioc->name, ioc->ScsiLookup, sz));
 
 	for (ii=0; ii < ioc->NumberOfBuses; ii++) {
 		/* Allocate memory for the device structures.
@@ -335,13 +382,14 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Initialize this IOC's timers
 	 * To use, set the timer expires field
-	 * and add_timer. Used for internally
-         * generated commands.
+	 * and add_timer.  Used for internally
+	 * generated commands.
 	 */
-        init_timer(&hd->InternalCmdTimer);
+	init_timer(&hd->InternalCmdTimer);
 	hd->InternalCmdTimer.data = (unsigned long) hd;
 	hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
-        init_timer(&ioc->TMtimer);
+
+	init_timer(&ioc->TMtimer);
 	ioc->TMtimer.data = (unsigned long) ioc;
 	ioc->TMtimer.function = mptscsih_TM_timeout;
 
@@ -356,8 +404,8 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	hd->scandv_wait_done = 0;
 	hd->last_queue_full = 0;
 
-        init_waitqueue_head(&hd->TM_waitq);
-        hd->TM_wait_done = 0;
+	init_waitqueue_head(&hd->TM_waitq);
+	hd->TM_wait_done = 0;
 
 	error = scsi_add_host (sh, &ioc->pcidev->dev);
 	if(error) {
@@ -380,13 +428,9 @@ static struct pci_driver mptfc_driver = {
 	.id_table	= mptfc_pci_table,
 	.probe		= mptfc_probe,
 	.remove		= __devexit_p(mptscsih_remove),
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	.driver         = {
 		.shutdown = mptscsih_shutdown,
         },
-#else
-	.shutdown       = mptscsih_shutdown,
-#endif
 #ifdef CONFIG_PM
 	.suspend	= mptscsih_suspend,
 	.resume		= mptscsih_resume,
@@ -400,8 +444,8 @@ mptfc_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply)
 	MPT_SCSI_HOST *hd;
 	u8 event = le32_to_cpu(pEvReply->Event) & 0xFF;
 
-	devtprintk((MYIOC_s_INFO_FMT "MPT event (=%02Xh) routed to FC host driver!\n",
-			ioc->name, event));
+//	devtprintk((MYIOC_s_INFO_FMT "MPT event (=%02Xh) routed to FC host driver!\n",
+//			ioc->name, event));
 
 	if (ioc->sh == NULL ||
 		((hd = (MPT_SCSI_HOST *)ioc->sh->hostdata) == NULL))
@@ -438,14 +482,13 @@ mptfc_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply)
 	case MPI_EVENT_EVENT_CHANGE:			/* 0A */
 	case MPI_EVENT_INTEGRATED_RAID:			/* 0B */
 	default:
-		devtprintk((KERN_INFO "%s:  Ignoring event (=%02Xh)\n",
+		devtprintk((KERN_INFO "%s:  Ignoring event (=%02Xh)\n", 
 			__FUNCTION__, event));
 		break;
 	}
 
 	return 1;		/* currently means nothing really */
 }
-
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /**
@@ -464,9 +507,9 @@ mptfc_init(void)
 	mptfcTaskCtx = mpt_register(mptscsih_taskmgmt_complete, MPTFC_DRIVER);
 	mptfcInternalCtx = mpt_register(mptscsih_scandv_complete, MPTFC_DRIVER);
 
-        if (mpt_event_register(mptfcDoneCtx, mptfc_event_process) == 0) {
+	if (mpt_event_register(mptfcDoneCtx, mptfc_event_process) == 0) {
 		devtprintk((KERN_INFO MYNAM
-                  ": mptfc_event_process Registered for IOC event notifications\n"));
+		  ": mptfc_event_process Registered for IOC event notifications\n"));
 	}
 
 	if (mpt_reset_register(mptfcDoneCtx, mptscsih_ioc_reset) == 0) {
@@ -487,7 +530,6 @@ static void __exit
 mptfc_exit(void)
 {
 	pci_unregister_driver(&mptfc_driver);
-
 
 	mpt_reset_deregister(mptfcDoneCtx);
 	dprintk((KERN_INFO MYNAM

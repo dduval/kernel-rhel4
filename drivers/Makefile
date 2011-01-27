@@ -30,6 +30,7 @@ obj-$(CONFIG_NUBUS)		+= nubus/
 obj-$(CONFIG_ATM)		+= atm/
 obj-$(CONFIG_PPC_PMAC)		+= macintosh/
 obj-$(CONFIG_XEN)		+= xen/
+obj-$(CONFIG_XEN_PV_ON_HVM)	+= xenpv_hvm/
 obj-$(CONFIG_IDE)		+= ide/
 obj-$(CONFIG_FC4)		+= fc4/
 obj-$(CONFIG_SCSI)		+= scsi/

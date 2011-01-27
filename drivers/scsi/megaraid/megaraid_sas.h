@@ -18,14 +18,15 @@
 /**
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"00.00.03.13"
-#define MEGASAS_RELDATE				"Jun 12, 2007"
-#define MEGASAS_EXT_VERSION			"Tue Jun 12 12:35:50 PDT 2007"
+#define MEGASAS_VERSION				"00.00.03.18-rh2"
+#define MEGASAS_RELDATE				"June 4, 2008"
+#define MEGASAS_EXT_VERSION			"Wed June 4 14:11:20 PDT 2008"
 
 /*
  * Device IDs
  */
 #define	PCI_DEVICE_ID_LSI_SAS1078R		0x0060
+#define	PCI_DEVICE_ID_LSI_SAS1078DE		0x007C
 #define	PCI_DEVICE_ID_LSI_VERDE_ZCR		0x0413
 #define	PCI_DEVICE_ID_LSI_SAS1064R		0x0411
 #define	PCI_DEVICE_ID_DELL_PERC5		0x0015
@@ -544,6 +545,10 @@ struct megasas_ctrl_info {
 #define MEGASAS_DBG_LVL				1
 #define MEGASAS_FW_BUSY				1
 
+/* Frame Type */
+#define IO_FRAME				0
+#define PTHRU_FRAME				1
+
 /*
  * When SCSI mid-layer calls driver's reset routine, driver waits for
  * MEGASAS_RESET_WAIT_TIME seconds for all outstanding IO to complete. Note
@@ -574,7 +579,8 @@ struct megasas_ctrl_info {
 #define IS_DMA64				(sizeof(dma_addr_t) == 8)
 
 #define MFI_OB_INTR_STATUS_MASK			0x00000002
-#define MFI_POLL_TIMEOUT_SECS			10
+#define MFI_POLL_TIMEOUT_SECS			60
+#define MEGASAS_COMPLETION_TIMER_INTERVAL	(HZ/10)
 
 #define MFI_REPLY_1078_MESSAGE_INTERRUPT	0x80000000
 
@@ -1114,6 +1120,8 @@ struct megasas_instance {
 
 	u8 flag;
 	unsigned long last_time;
+
+	struct timer_list io_completion_timer;
 };
 
 #define MEGASAS_IS_LOGICAL(scp)						\

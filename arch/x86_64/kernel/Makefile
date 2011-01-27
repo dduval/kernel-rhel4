@@ -10,6 +10,7 @@ obj-y	:= process.o semaphore.o signal.o entry.o traps.o irq.o \
 		setup64.o bootflag.o e820.o reboot.o warmreboot.o 
 obj-y += mce.o
 obj-y += dmi_scan.o
+obj-$(CONFIG_X86_LOCAL_APIC)	+= perfctr-watchdog.o
 
 obj-$(CONFIG_X86_MCE_AMD)       += mce_amd.o
 obj-$(CONFIG_MTRR)		+= ../../i386/kernel/cpu/mtrr/

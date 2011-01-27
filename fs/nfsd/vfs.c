@@ -1216,7 +1216,10 @@ nfsd_create_v3(struct svc_rqst *rqstp, struct svc_fh *fhp,
 
 	if (createmode == NFS3_CREATE_EXCLUSIVE) {
 		/* solaris7 gets confused (bugid 4218508) if these have
-		 * the high bit set, so just clear the high bits.
+		 * the high bit set, so just clear the high bits. If this is
+		 * ever changed to use different attrs for storing the
+		 * verifier, then do_open_lookup() will also need to be fixed
+		 * accordingly.
 		 */
 		v_mtime = verifier[0]&0x7fffffff;
 		v_atime = verifier[1]&0x7fffffff;
@@ -1639,9 +1642,11 @@ out_nfserr:
  * Read entries from a directory.
  * The  NFSv3/4 verifier we ignore for now.
  */
+/* ARGSUSED */
 int
 nfsd_readdir(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t *offsetp, 
-	     struct readdir_cd *cdp, encode_dent_fn func)
+	     struct readdir_cd *cdp,
+	     encode_dent_fn func, encode_dent_fn32 func32)
 {
 	int		err;
 	struct file	*file;
@@ -1665,7 +1670,13 @@ nfsd_readdir(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t *offsetp,
 
 	do {
 		cdp->err = nfserr_eof; /* will be cleared on successful read */
+#if BITS_PER_LONG < 64
+		err = vfs_readdir64(file, (filldir64_t) func, cdp);
+		if (err == -ENOSYS)
+			err = vfs_readdir(file, (filldir_t) func32, cdp);
+#else
 		err = vfs_readdir(file, (filldir_t) func, cdp);
+#endif
 	} while (err >=0 && cdp->err == nfs_ok);
 	if (err)
 		err = nfserrno(err);

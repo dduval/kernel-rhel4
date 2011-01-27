@@ -558,7 +558,7 @@ static ssize_t qla2x00_sysfs_write_fw_dump(struct kobject *kobj, char *buf,
 			    ha->host_no);
 
 			vfree(ha->fw_dump_buffer);
-			if (!IS_QLA24XX(ha) && !IS_QLA54XX(ha))
+			if (!IS_QLA24XX(ha) && !IS_QLA54XX(ha) && !IS_QLA25XX(ha))
 				free_pages((unsigned long)ha->fw_dump,
 				    ha->fw_dump_order);
 			ha->fw_dump_reading = 0;
@@ -571,7 +571,7 @@ static ssize_t qla2x00_sysfs_write_fw_dump(struct kobject *kobj, char *buf,
 		if ((ha->fw_dump || ha->fw_dumped) && !ha->fw_dump_reading) {
 			ha->fw_dump_reading = 1;
 
-			if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+			if (IS_QLA24XX(ha) || IS_QLA54XX(ha) || IS_QLA25XX(ha))
 				dump_size = FW_DUMP_SIZE_24XX;
 			else {
 				dump_size = FW_DUMP_SIZE_1M;
@@ -593,12 +593,19 @@ static ssize_t qla2x00_sysfs_write_fw_dump(struct kobject *kobj, char *buf,
 			    "Firmware dump ready for read on (%ld).\n",
 			    ha->host_no);
 			memset(ha->fw_dump_buffer, 0, dump_size);
+
+			/* temporarily remove support for these dumps.
+                           until 8 Gb. code is completed
 			if (IS_QLA2100(ha) || IS_QLA2200(ha))
  				qla2100_ascii_fw_dump(ha);
  			else if (IS_QLA23XX(ha))
  				qla2300_ascii_fw_dump(ha);
 			else if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
  				qla24xx_ascii_fw_dump(ha);
+			else if (IS_QLA25XX(ha))
+ 				qla25xx_ascii_fw_dump(ha);
+			*/
+
 			ha->fw_dump_buffer_len = strlen(ha->fw_dump_buffer);
 		}
 		break;
@@ -637,7 +644,7 @@ static ssize_t qla2x00_sysfs_write_nvram(struct kobject *kobj, char *buf,
 		return 0;
 
 	/* Checksum NVRAM. */
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		uint32_t *iter;
 		uint32_t chksum;
 
@@ -698,7 +705,7 @@ qla2x00_get_pci_info_str(struct scsi_qla_host *ha, char *str)
 	}
 
 	strcpy(str, "PCI");
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_QLA24XX_TYPE(ha)) {
 		pci_bus = (ha->pci_attr & CSRX_PCIX_BUS_MODE_MASK) >> 8;
 		if (pci_bus == 0 || pci_bus == 8) {
 			strcat(str, " (");
@@ -737,13 +744,15 @@ qla2x00_get_fw_version_str(struct scsi_qla_host *ha, char *str)
 	    ha->fw_minor_version,
 	    ha->fw_subminor_version);
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		if (ha->fw_attributes & BIT_0)
 			strcat(str, "[Class 2] ");
 		if (ha->fw_attributes & BIT_1)
 			strcat(str, "[IP] ");
 		if (ha->fw_attributes & BIT_2)
 			strcat(str, "[Multi-ID] ");
+		if (ha->fw_attributes & BIT_10)
+			strcat(str, "[84XX] ");
 		if (ha->fw_attributes & BIT_13)
 			strcat(str, "[Experimental] ");
 		return str;
@@ -1147,17 +1156,31 @@ qla2x00_set_isp_flags(scsi_qla_host_t *ha)
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP2422:
 		ha->device_type |= DT_ISP2422;
+		ha->device_type |= DT_FWI2;
 		ha->device_type |= DT_IIDMA;
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP2432:
 		ha->device_type |= DT_ISP2432;
+		ha->device_type |= DT_FWI2;
+		ha->device_type |= DT_IIDMA;
+		break;
+	case PCI_DEVICE_ID_QLOGIC_ISP8432:
+		ha->device_type |= DT_ISP8432;
+		ha->device_type |= DT_FWI2;
 		ha->device_type |= DT_IIDMA;
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP5422:
 		ha->device_type |= DT_ISP5422;
+		ha->device_type |= DT_FWI2;
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP5432:
 		ha->device_type |= DT_ISP5432;
+		ha->device_type |= DT_FWI2;
+		break;
+	case PCI_DEVICE_ID_QLOGIC_ISP2532:
+		ha->device_type |= DT_ISP2532;
+		ha->device_type |= DT_FWI2;
+		ha->device_type |= DT_IIDMA;
 		break;
 	}
 }
@@ -1191,6 +1214,10 @@ qla2x00_wait_for_loop_ready(scsi_qla_host_t *ha)
 	    atomic_read(&ha->loop_state) == LOOP_DOWN) ||
 	    test_bit(CFG_ACTIVE, &ha->cfg_flags) ||
 	    atomic_read(&ha->loop_state) != LOOP_READY) {
+		if (atomic_read(&ha->loop_state) == LOOP_DEAD) {
+			return_status = QLA_FUNCTION_FAILED;
+			break;
+		}
 		msleep(1000);
 		if (time_after_eq(jiffies, loop_timeout)) {
 			return_status = QLA_FUNCTION_FAILED;
@@ -2115,7 +2142,7 @@ iospace_error_exit:
 int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 {
 	int	ret;
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg;
 	struct device_reg_24xx __iomem *reg24;
 	struct Scsi_Host *host;
 	scsi_qla_host_t *ha;
@@ -2138,6 +2165,8 @@ int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 	/* Clear our data area */
 	ha = (scsi_qla_host_t *)host->hostdata;
 	memset(ha, 0, sizeof(scsi_qla_host_t));
+	reg = &ha->iobase->isp;
+	reg24 = &ha->iobase->isp24;
 
 	ha->pdev = pdev;
 	ha->host = host;
@@ -2196,7 +2225,7 @@ int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 		ha->request_q_length = REQUEST_ENTRY_CNT_2200;
 		ha->response_q_length = RESPONSE_ENTRY_CNT_2300;
 		ha->last_loop_id = SNS_LAST_LOOP_ID_2300;
-	} else if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	} else if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha)) {
 		ha->max_targets = MAX_TARGETS_2200;
 		ha->mbx_count = MAILBOX_REGISTER_COUNT;
 		ha->request_q_length = REQUEST_ENTRY_CNT_24XX;
@@ -2209,7 +2238,6 @@ int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 	} else {
 		qla_printk(KERN_WARNING, ha,
 		    "Unrecognized ISP -- %s!\n", pci_name(pdev));
-
 		goto probe_failed;
 	}
 	host->can_queue = ha->request_q_length + 128;
@@ -2331,14 +2359,14 @@ int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 	/* Disable ISP interrupts. */
 	qla2x00_disable_intrs(ha);
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
-		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
+	if (IS_FWI2_CAPABLE(ha)) {
+		reg24 = &ha->iobase->isp24;
 		spin_lock_irqsave(&ha->hardware_lock, flags);
 		WRT_REG_DWORD(&reg24->hccr, HCCRX_CLR_HOST_INT);
 		WRT_REG_DWORD(&reg24->hccr, HCCRX_CLR_RISC_INT);
 		spin_unlock_irqrestore(&ha->hardware_lock, flags);
 	} else {
-		reg = ha->iobase;
+		reg = &ha->iobase->isp;
 		spin_lock_irqsave(&ha->hardware_lock, flags);
 		WRT_REG_WORD(&reg->semaphore, 0);
 		WRT_REG_WORD(&reg->hccr, HCCR_CLR_RISC_INT);
@@ -2448,6 +2476,8 @@ void qla2x00_remove_one(struct pci_dev *pdev)
 	    &sysfs_fw_dump_attr);
 	sysfs_remove_bin_file(&ha->host->shost_gendev.kobj, &sysfs_nvram_attr);
 
+	qla84xx_put_chip(ha);
+
 	scsi_remove_host(ha->host);
 
 	qla2x00_free_device(ha);
@@ -2485,6 +2515,12 @@ qla2x00_free_device(scsi_qla_host_t *ha)
 			wait_for_completion(&ha->dpc_exited);
 		}
 	}
+
+	if (ha->flags.fce_enabled)
+		qla2x00_disable_fce_trace(ha, NULL, NULL);
+
+	if (ha->eft)
+		qla2x00_disable_eft_trace(ha);
 
 	ha->flags.online = 0;
 
@@ -2628,7 +2664,7 @@ qla2x00_proc_info(struct Scsi_Host *shost, char *buffer,
 	copy_info(&info, "Driver version %s\n", qla2x00_version_str);
 
 	copy_info(&info, "ISP: %s", ha->brd_info->isp_name);
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_QLA24XX_TYPE(ha) || IS_QLA25XX(ha)) {
 		copy_info(&info, "\n");
 	} else {
 		tmp_sn = ((ha->serial0 & 0x1f) << 16) | (ha->serial2 << 8) |
@@ -3335,6 +3371,17 @@ qla2x00_mem_free(scsi_qla_host_t *ha)
 	/* free sp pool */
 	qla2x00_free_sp_pool(ha);
 
+	if (ha->fce)
+		dma_free_coherent(&ha->pdev->dev, fce_calc_size(ha->fce_dbufs),
+		    ha->fce, ha->fce_dma);
+
+	if (ha->fw_dump) {
+		if (ha->eft)
+			dma_free_coherent(&ha->pdev->dev,
+			    ntohl(ha->fw_dump->eft_size), ha->eft, ha->eft_dma);
+		vfree(ha->fw_dump);
+	}
+
 	if (ha->sns_cmd)
 		dma_free_coherent(&ha->pdev->dev, sizeof(struct sns_cmd_pkt),
 		    ha->sns_cmd, ha->sns_cmd_dma);
@@ -3374,6 +3421,8 @@ qla2x00_mem_free(scsi_qla_host_t *ha)
 		    (ha->request_q_length + 1) * sizeof(request_t),
 		    ha->request_ring, ha->request_dma);
 
+	ha->eft = NULL;
+	ha->eft_dma = 0;
 	ha->sns_cmd = NULL;
 	ha->sns_cmd_dma = 0;
 	ha->ct_sns = NULL;
@@ -3414,20 +3463,9 @@ qla2x00_mem_free(scsi_qla_host_t *ha)
 	}
 	INIT_LIST_HEAD(&ha->fcports);
 
-	if (ha->fw_dump)
-		free_pages((unsigned long)ha->fw_dump, ha->fw_dump_order);
-
-	if (ha->fw_dump24)
-		vfree(ha->fw_dump24);
-
-	if (ha->fw_dump_buffer)
-		vfree(ha->fw_dump_buffer);
-
 	ha->fw_dump = NULL;
-	ha->fw_dump24 = NULL;
 	ha->fw_dumped = 0;
 	ha->fw_dump_reading = 0;
-	ha->fw_dump_buffer = NULL;
 }
 
 /*
@@ -4496,7 +4534,6 @@ qla2x00_done(scsi_qla_host_t *old_ha)
 
 
 			case DID_ABORT:
-				sp->flags &= ~SRB_ABORT_PENDING;
 				sp->flags |= SRB_ABORTED;
 
 				if (sp->flags & SRB_TIMEOUT)

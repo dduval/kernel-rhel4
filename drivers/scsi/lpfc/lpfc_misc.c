@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_misc.c 2759 2005-12-09 19:47:01Z sf_support $
+ * $Id: lpfc_misc.c 3122 2008-01-07 18:49:20Z sf_support $
  */
 
 #include <linux/version.h>
@@ -191,54 +191,3 @@ lpfc_geportname(struct lpfc_name * pn1, struct lpfc_name * pn2)
 	return (2);		/* equal */
 }
 
-int
-lpfc_sli_brdready(struct lpfc_hba * phba, uint32_t mask)
-{
-	uint32_t status;
-	int i = 0;
-
-	/* Read the HBA Host Status Register */
-	status = readl(phba->HSregaddr);
-
-	/* Check status register to see what current state is */
-	while ((status & mask) != mask) {
-
-		/* Check every 100ms for 5 retries, then every 500ms for 5, then
-		 * every 2.5 sec for 5, then reset board and every 2.5 sec for
-		 * 4.
-		 */
-		if (i++ >= 20) {
-			phba->hba_state = LPFC_HBA_ERROR;
-			return ETIMEDOUT;
-		}
-
-		/* Check to see if any errors occurred during init */
-		if (status & HS_FFERM) {
-			phba->hba_state = LPFC_HBA_ERROR;
-			return EIO;
-		}
-
-		if (i <= 5) {
-			msleep(10);
-		} else if (i <= 10) {
-			msleep(500);
-		} else {
-			msleep(2500);
-		}
-
-		if (i == 15) {
-			phba->hba_state = LPFC_STATE_UNKNOWN; /* Do post */
-			lpfc_sli_brdrestart(phba);
-		}
-		/* Read the HBA Host Status Register */
-		status = readl(phba->HSregaddr);
-	}
-
-	/* Check to see if any errors occurred during init */
-	if (status & HS_FFERM) {
-		phba->hba_state = LPFC_HBA_ERROR;
-		return EIO;
-	}
-
-	return(0);
-}

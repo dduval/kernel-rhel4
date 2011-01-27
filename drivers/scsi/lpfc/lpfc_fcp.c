@@ -1,7 +1,7 @@
 /********************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_fcp.c 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_fcp.c 3122 2008-01-07 18:49:20Z sf_support $
  */
 
 #include <linux/version.h>
@@ -400,8 +400,7 @@ __lpfc_issue_lip(struct lpfc_hba *phba)
 	LPFC_MBOXQ_t *pmboxq;
 	int mbxstatus = MBXERR_ERROR;
 
-	if ((phba->fc_flag & FC_OFFLINE_MODE) ||
-	    (phba->hba_state != LPFC_HBA_READY))
+	if (phba->fc_flag & FC_OFFLINE_MODE)
 		return -EPERM;
 
 	pmboxq = mempool_alloc(phba->mbox_mem_pool,GFP_KERNEL);
@@ -438,6 +437,9 @@ lpfc_issue_lip (struct class_device *cdev, const char *buf, size_t count)
 	    (val != 1))
 		return -EINVAL;
 
+	if (phba->hba_state != LPFC_HBA_READY)
+		return -EPERM;
+
 	err = __lpfc_issue_lip(phba);
 	if (err)
 		return err;
@@ -453,6 +455,10 @@ static int
 lpfc_issue_fc_host_lip(struct Scsi_Host *host)
 {
 	struct lpfc_hba *phba = (struct lpfc_hba *) host->hostdata[0];
+
+	if (phba->hba_state != LPFC_HBA_READY)
+		return -EPERM;
+
 	return __lpfc_issue_lip(phba);
 }
 #endif
@@ -486,8 +492,11 @@ lpfc_board_online_store(struct class_device *cdev, const char *buf,
 	struct Scsi_Host *host = class_to_shost(cdev);
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
  	int val=0;
+	uint32_t word0=0;
+	struct lpfc_sli *psli;
 
 	if (!phba) return -EPERM;
+	psli = &phba->sli;
 
  	if (sscanf(buf, "%d", &val) != 1)
 		return -EINVAL;
@@ -497,7 +506,30 @@ lpfc_board_online_store(struct class_device *cdev, const char *buf,
 	}
 	else if (!val && !(phba->fc_flag & FC_OFFLINE_MODE)) {
 		lpfc_offline(phba);
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 1;
+		if (!(psli->sliinit.sli_flag & LPFC_SLI2_ACTIVE))
+			word0 = readl(phba->MBslimaddr);
+		spin_unlock_irq(phba->host->host_lock);
+
+		while ((word0 & OWN_CHIP) == OWN_CHIP) {
+			mdelay(100);
+			spin_lock_irq(phba->host->host_lock);
+			if (!(psli->sliinit.sli_flag & LPFC_SLI2_ACTIVE))
+				word0 = readl(phba->MBslimaddr);
+			else
+				word0 = 0;
+			spin_unlock_irq(phba->host->host_lock);
+		}
+
 		lpfc_sli_brdrestart(phba);
+
+		msleep(2500);
+		lpfc_sli_brdready(phba, HS_FFRDY | HS_MBRDY);
+
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 	}
 
 	return strlen(buf);
@@ -1145,7 +1177,7 @@ static ssize_t
 lpfc_soft_wwpn_show(struct class_device *cdev, char *buf) {
 	struct Scsi_Host *host = class_to_shost(cdev);
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
-	return snprintf(buf, PAGE_SIZE, "0x%llx\n",
+	return snprintf(buf, PAGE_SIZE, "0x%llx\n", 
 			(unsigned long long)phba->cfg_soft_wwpn); }
 
 
@@ -1160,6 +1192,9 @@ lpfc_soft_wwpn_store(struct class_device *cdev, const char *buf, size_t count)
 	/* count may include a LF at end of string */
 	if (buf[cnt-1] == '\n')
 		cnt--;
+
+	if (phba->over_temp_state == HBA_OVER_TEMP)
+		return -EPERM;
 
 	if (!phba->soft_wwpn_enable || (cnt < 16) || (cnt > 18) ||
 	    ((cnt == 17) && (*buf++ != 'x')) ||
@@ -1287,7 +1322,34 @@ LPFC_ATTR_RW(linkdown_tmo, 0, 0, 254,
 # Set loop mode if you want to run as an NL_Port. Value range is [0,0x6].
 # Default value is 0.
 */
-LPFC_ATTR_R(topology, 0, 0, 6, "Select Fibre Channel topology");
+static int
+lpfc_topology_set(struct lpfc_hba *phba, int val)
+{
+	int err;
+	uint32_t prev_val;
+	if (val >= 0 && val <= 6) {
+		prev_val = phba->cfg_topology;
+		phba->cfg_topology = val;
+		err = __lpfc_issue_lip(phba);
+		if (err)
+			phba->cfg_topology = prev_val;
+		return err;
+	}
+	lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+		"%d:0463 lpfc_topology attribute cannot be set to %d, "
+		"allowed range is [0, 6]\n",
+		phba->brd_no, val);
+	return -EINVAL;
+}
+
+static int lpfc_topology = 0;
+module_param(lpfc_topology, int, 0);
+MODULE_PARM_DESC(lpfc_topology, "Select Fibre Channel topology");
+lpfc_param_show(topology)
+lpfc_param_init(topology, 0, 0, 6)
+lpfc_param_store(topology)
+static CLASS_DEVICE_ATTR(lpfc_topology, S_IRUGO | S_IWUSR,
+			  lpfc_topology_show, lpfc_topology_store);
 
 /*
 # lpfc_link_speed: Link speed selection for initializing the Fibre Channel
@@ -1299,7 +1361,42 @@ LPFC_ATTR_R(topology, 0, 0, 6, "Select Fibre Channel topology");
 #       8  = 8 Gigabaud
 # Value range is [0,8]. Default value is 0.
 */
-LPFC_ATTR_R(link_speed, 0, 0, 8, "Select link speed");
+static int
+lpfc_link_speed_set(struct lpfc_hba *phba, int val)
+{
+	int err;
+	uint32_t prev_val;
+
+	if (((val == LINK_SPEED_1G) && !(phba->lmt & LMT_1Gb)) ||
+		((val == LINK_SPEED_2G) && !(phba->lmt & LMT_2Gb)) ||
+		((val == LINK_SPEED_4G) && !(phba->lmt & LMT_4Gb)) ||
+		((val == LINK_SPEED_8G) && !(phba->lmt & LMT_8Gb)) ||
+		((val == LINK_SPEED_10G) && !(phba->lmt & LMT_10Gb)))
+		return -EINVAL;
+
+	if (val >= 0 && val <= 8) {
+		prev_val = phba->cfg_link_speed;
+		phba->cfg_link_speed = val;
+		err = __lpfc_issue_lip(phba);
+		if (err)
+			phba->cfg_link_speed = prev_val;
+		return err;
+	}
+	lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+		"%d:0461 lpfc_link_speed attribute cannot be set to %d, "
+		"allowed range is [0, 8]\n",
+		phba->brd_no, val);
+	return -EINVAL;
+}
+
+static int lpfc_link_speed = 0;
+module_param(lpfc_link_speed, int, 0);
+MODULE_PARM_DESC(lpfc_link_speed, "Select link speed");
+lpfc_param_show(link_speed)
+lpfc_param_init(link_speed, 0, 0, 8)
+lpfc_param_store(link_speed)
+static CLASS_DEVICE_ATTR(lpfc_link_speed, S_IRUGO | S_IWUSR,
+			  lpfc_link_speed_show, lpfc_link_speed_store);
 
 /*
 # lpfc_fcp_class:  Determines FC class to use for the FCP protocol.
@@ -1419,11 +1516,11 @@ LPFC_ATTR_RW(discovery_min_wait, 3, 0, 60,
 # waits for the discovery of the remote ports to stop during the HBA
 # initialization.
 # Value range is [0,CFG_DISC_INFINITE_WAIT]. Default value is
-# CFG_DISC_INFINITE_WAIT.
+# 60 seconds.
 # NOTE: Setting parameter to a maximum value of CFG_DISC_INFINITE_WAIT
 # seconds removes the limit. 
 */
-LPFC_ATTR_RW(discovery_wait_limit, CFG_DISC_INFINITE_WAIT, 0,
+LPFC_ATTR_RW(discovery_wait_limit, 60, 0,
 	     CFG_DISC_INFINITE_WAIT,
 	     "The maximum number of seconds driver waits for the discovery "
 	     "to complete");
@@ -1665,9 +1762,7 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		case MBX_DUMP_CONTEXT:
 		case MBX_RUN_DIAGS:
 		case MBX_RESTART:
-		case MBX_FLASH_WR_ULA:
 		case MBX_SET_MASK:
-		case MBX_SET_SLIM:
 		case MBX_SET_DEBUG:
 			if (!(phba->fc_flag & FC_OFFLINE_MODE)) {
 				printk(KERN_WARNING "mbox_read:Command 0x%x "
@@ -1691,6 +1786,8 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		case MBX_UPDATE_CFG:
 		case MBX_LOAD_AREA:
 		case MBX_LOAD_EXP_ROM:
+		case MBX_SET_VARIABLE:
+		case MBX_WRITE_WWN:
 			break;
 		case MBX_READ_SPARM64:
 		case MBX_READ_LA:
@@ -1738,7 +1835,6 @@ sysfs_mbox_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	}
 	else if (phba->sysfs_mbox.offset != off ||
 		 phba->sysfs_mbox.state  != SMBOX_READING) {
-		printk(KERN_WARNING  "mbox_read: Bad State\n");
 		sysfs_mbox_idle(phba);
 		spin_unlock_irqrestore(host->host_lock, iflag);
 		return -EINVAL;
@@ -1870,6 +1966,16 @@ lpfc_set_starget_loss_tmo(struct scsi_target *starget, uint32_t timeout)
 		lpfc_nodev_tmo = 1;
 		lpfc_linkdown_tmo = 0;
 	}
+
+	/*
+	 * Update the transport's dev_loss_tmo value.
+	 *
+	 * Return the driver's global value for device loss timeout plus
+	 * five seconds to allow the driver's nodev timer to run.
+	 * This should be lpfc_nodev_tmo or lpfc_linkdown_tmo, which ever is
+	 * greater.
+	 */
+	fc_starget_dev_loss_tmo(starget) = lpfc_nodev_tmo + 5;
 }
 
 #ifdef RHEL_U3_FC_XPORT
@@ -2305,7 +2411,7 @@ lpfc_sli_async_event_handler(struct lpfc_hba * phba,
 		lpfc_printf_log(phba,
 			KERN_ERR,
 			LOG_SLI,
-			"%d:0327 Ring %d handler: unexpected ASYNC_STATUS"
+			"%d:0331 Ring %d handler: unexpected ASYNC_STATUS"
 			" evt_code 0x%x\n",
 			phba->brd_no,
 			pring->ringno,
@@ -2316,7 +2422,7 @@ lpfc_sli_async_event_handler(struct lpfc_hba * phba,
 	if (evt_code == ASYNC_TEMP_WARN) {
 		evt_type = LPFC_THRESHOLD_TEMP;
 		lpfc_printf_log(phba,
-				KERN_WARNING,
+				KERN_ERR,
 				LOG_TEMP,
 				"%d:0339 Adapter is very hot, please take "
 				"corrective action. temperature : %ld Celsius\n",
@@ -2326,7 +2432,7 @@ lpfc_sli_async_event_handler(struct lpfc_hba * phba,
 	if (evt_code == ASYNC_TEMP_SAFE) {
 		evt_type = LPFC_NORMAL_TEMP;
 		lpfc_printf_log(phba,
-				KERN_INFO,
+				KERN_ERR,
 				LOG_TEMP,
 				"%d:0340 Adapter temperature is OK now. "
 				"temperature : %ld Celsius\n",

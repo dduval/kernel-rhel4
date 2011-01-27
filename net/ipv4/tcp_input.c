@@ -597,6 +597,16 @@ static inline void vegas_rtt_calc(struct tcp_opt *tp, __u32 rtt)
 	tp->vegas.cntRTT++;
 }
 
+static u32 tcp_rto_min(struct sock *sk)
+{
+	struct dst_entry *dst = __sk_dst_get(sk);
+	u32 rto_min = TCP_RTO_MIN;
+	
+	if (dst && dst_metric_locked(dst, RTAX_RTO_MIN))
+		rto_min = dst->metrics[RTAX_RTO_MIN-1];
+	return rto_min;
+}
+
 /* Called to compute a smoothed rtt estimate. The data fed to this
  * routine either comes from timestamps, or from segments that were
  * known _not_ to have been retransmitted [see Karn/Partridge
@@ -606,8 +616,9 @@ static inline void vegas_rtt_calc(struct tcp_opt *tp, __u32 rtt)
  * To save cycles in the RFC 1323 implementation it was better to break
  * it up into three procedures. -- erics
  */
-static void tcp_rtt_estimator(struct tcp_opt *tp, __u32 mrtt)
+static void tcp_rtt_estimator(struct sock *sk, __u32 mrtt)
 {
+	struct tcp_opt *tp = tcp_sk(sk);
 	long m = mrtt; /* RTT */
 
 	if (tcp_vegas_enabled(tp))
@@ -660,13 +671,13 @@ static void tcp_rtt_estimator(struct tcp_opt *tp, __u32 mrtt)
 			if (tp->mdev_max < tp->rttvar)
 				tp->rttvar -= (tp->rttvar-tp->mdev_max)>>2;
 			tp->rtt_seq = tp->snd_nxt;
-			tp->mdev_max = TCP_RTO_MIN;
+			tp->mdev_max = tcp_rto_min(sk);
 		}
 	} else {
 		/* no previous measure. */
 		tp->srtt = m<<3;	/* take the measured time to be rtt */
 		tp->mdev = m<<1;	/* make sure rto = 3*rtt */
-		tp->mdev_max = tp->rttvar = max(tp->mdev, TCP_RTO_MIN);
+		tp->mdev_max = tp->rttvar = max(tp->mdev, tcp_rto_min(sk));
 		tp->rtt_seq = tp->snd_nxt;
 	}
 
@@ -864,7 +875,7 @@ static void tcp_init_metrics(struct sock *sk)
 	}
 	if (dst_metric(dst, RTAX_RTTVAR) > tp->mdev) {
 		tp->mdev = dst_metric(dst, RTAX_RTTVAR);
-		tp->mdev_max = tp->rttvar = max(tp->mdev, TCP_RTO_MIN);
+		tp->mdev_max = tp->rttvar = max(tp->mdev, tcp_rto_min(sk));
 	}
 	tcp_set_rto(tp);
 	tcp_bound_rto(tp);
@@ -1976,7 +1987,7 @@ tcp_fastretrans_alert(struct sock *sk, u32 prior_snd_una,
 /* Read draft-ietf-tcplw-high-performance before mucking
  * with this code. (Superceeds RFC1323)
  */
-static void tcp_ack_saw_tstamp(struct tcp_opt *tp, int flag)
+static void tcp_ack_saw_tstamp(struct sock *sk, int flag)
 {
 	__u32 seq_rtt;
 
@@ -1995,14 +2006,15 @@ static void tcp_ack_saw_tstamp(struct tcp_opt *tp, int flag)
 	 * answer arrives rto becomes 120 seconds! If at least one of segments
 	 * in window is lost... Voila.	 			--ANK (010210)
 	 */
+	struct tcp_opt *tp = tcp_sk(sk);
 	seq_rtt = tcp_time_stamp - tp->rcv_tsecr;
-	tcp_rtt_estimator(tp, seq_rtt);
+	tcp_rtt_estimator(sk, seq_rtt);
 	tcp_set_rto(tp);
 	tp->backoff = 0;
 	tcp_bound_rto(tp);
 }
 
-static void tcp_ack_no_tstamp(struct tcp_opt *tp, u32 seq_rtt, int flag)
+static void tcp_ack_no_tstamp(struct sock *sk, u32 seq_rtt, int flag)
 {
 	/* We don't have a timestamp. Can only use
 	 * packets that are not retransmitted to determine
@@ -2012,24 +2024,26 @@ static void tcp_ack_no_tstamp(struct tcp_opt *tp, u32 seq_rtt, int flag)
 	 * where the network delay has increased suddenly.
 	 * I.e. Karn's algorithm. (SIGCOMM '87, p5.)
 	 */
+	struct tcp_opt *tp = tcp_sk(sk);
 
 	if (flag & FLAG_RETRANS_DATA_ACKED)
 		return;
 
-	tcp_rtt_estimator(tp, seq_rtt);
+	tcp_rtt_estimator(sk, seq_rtt);
 	tcp_set_rto(tp);
 	tp->backoff = 0;
 	tcp_bound_rto(tp);
 }
 
 static __inline__ void
-tcp_ack_update_rtt(struct tcp_opt *tp, int flag, s32 seq_rtt)
+tcp_ack_update_rtt(struct sock *sk, int flag, s32 seq_rtt)
 {
+	struct tcp_opt *tp = tcp_sk(sk);
 	/* Note that peer MAY send zero echo. In this case it is ignored. (rfc1323) */
 	if (tp->saw_tstamp && tp->rcv_tsecr)
-		tcp_ack_saw_tstamp(tp, flag);
+		tcp_ack_saw_tstamp(sk, flag);
 	else if (seq_rtt >= 0)
-		tcp_ack_no_tstamp(tp, seq_rtt, flag);
+		tcp_ack_no_tstamp(sk, seq_rtt, flag);
 }
 
 /*
@@ -2496,7 +2510,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, __s32 *seq_rtt_p)
 	}
 
 	if (acked&FLAG_ACKED) {
-		tcp_ack_update_rtt(tp, acked, seq_rtt);
+		tcp_ack_update_rtt(sk, acked, seq_rtt);
 		tcp_ack_packets_out(sk, tp);
 	}
 
@@ -4836,7 +4850,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 				 */
 				if (tp->saw_tstamp && tp->rcv_tsecr &&
 				    !tp->srtt)
-					tcp_ack_saw_tstamp(tp, 0);
+					tcp_ack_saw_tstamp(sk, 0);
 
 				if (tp->tstamp_ok)
 					tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;

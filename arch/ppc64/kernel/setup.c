@@ -601,7 +601,7 @@ void __init setup_system(void)
 	 * Initialize xmon
 	 */
 #ifdef CONFIG_XMON_DEFAULT
-	xmon_init();
+	xmon_init(1);
 #endif
 	/*
 	 * Register early console
@@ -1111,14 +1111,17 @@ __setup("decr_overclock=", set_decr_overclock );
 #ifdef CONFIG_XMON
 static int __init early_xmon(char *p)
 {
-	if (strcmp(p, "early") == 0) {
-		/* ensure xmon is enabled */
-		xmon_init();
-		debugger(0);
+	/* ensure xmon is enabled */
+	if (p) {
+		if (strncmp(p, "on", 2) == 0)
+			xmon_init(1);
+		if (strncmp(p, "off", 3) == 0)
+			xmon_init(0);
+		if (strncmp(p, "early", 5) != 0)
+			return 0;
 	}
-	else if (strcmp(p, "on") == 0) {
-		xmon_init();
-	}
+	xmon_init(1);
+	debugger(NULL);
 
 	return 0;
 }

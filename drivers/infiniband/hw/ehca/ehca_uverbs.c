@@ -94,14 +94,14 @@ struct page *ehca_nopage(struct vm_area_struct *vma,
 		if (!cq) {
 			ehca_gen_err("cq is NULL ret=NOPAGE_SIGBUS");
 			return NOPAGE_SIGBUS;
-		}
+  		}
 
 		if (cq->ownpid != cur_pid) {
-			ehca_err(cq->ib_cq.device,
+  			ehca_err(cq->ib_cq.device,
 				 "Invalid caller pid=%x ownpid=%x",
 				 cur_pid, cq->ownpid);
 			return NOPAGE_SIGBUS;
-		}
+  		}
 
 		if (rsrc_type == 2) {
 			ehca_dbg(cq->ib_cq.device, "cq=%p cq queuearea", cq);
@@ -110,8 +110,8 @@ struct page *ehca_nopage(struct vm_area_struct *vma,
 			ehca_dbg(cq->ib_cq.device, "offset=%lx vaddr=%p",
 				 offset, vaddr);
 			mypage = virt_to_page(vaddr);
-		}
-		break;
+  		}
+  		break;
 
 	case 2: /* QP */
 		spin_lock_irqsave(&ehca_qp_idr_lock, flags);
@@ -122,15 +122,15 @@ struct page *ehca_nopage(struct vm_area_struct *vma,
 		if (!qp) {
 			ehca_gen_err("qp is NULL ret=NOPAGE_SIGBUS");
 			return NOPAGE_SIGBUS;
-		}
+  		}
 
 		pd = container_of(qp->ib_qp.pd, struct ehca_pd, ib_pd);
 		if (pd->ownpid != cur_pid) {
-			ehca_err(qp->ib_qp.device,
+  			ehca_err(qp->ib_qp.device,
 				 "Invalid caller pid=%x ownpid=%x",
 				 cur_pid, pd->ownpid);
 			return NOPAGE_SIGBUS;
-		}
+  		}
 
 		if (rsrc_type == 2) {	/* rqueue */
 			ehca_dbg(qp->ib_qp.device, "qp=%p qp rqueuearea", qp);
@@ -146,22 +146,22 @@ struct page *ehca_nopage(struct vm_area_struct *vma,
 			ehca_dbg(qp->ib_qp.device, "offset=%lx vaddr=%p",
 				 offset, vaddr);
 			mypage = virt_to_page(vaddr);
-		}
-		break;
+  		}
+  		break;
 
-	default:
+  	default:
 		ehca_gen_err("bad queue type %x", q_type);
 		return NOPAGE_SIGBUS;
-	}
+  	}
 
 	if (!mypage) {
 		ehca_gen_err("Invalid page adr==NULL ret=NOPAGE_SIGBUS");
 		return NOPAGE_SIGBUS;
-	}
+  	}
 	get_page(mypage);
 
 	return mypage;
-}
+  }
 
 static struct vm_operations_struct ehcau_vm_ops = {
 	.nopage = ehca_nopage,
@@ -169,23 +169,23 @@ static struct vm_operations_struct ehcau_vm_ops = {
 
 int ehca_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 {
-	u64 fileoffset = vma->vm_pgoff << PAGE_SHIFT;
-	u32 idr_handle = fileoffset >> 32;
-	u32 q_type = (fileoffset >> 28) & 0xF;	  /* CQ, QP,...        */
-	u32 rsrc_type = (fileoffset >> 24) & 0xF; /* sq,rq,cmnd_window */
+	u64 fileoffset = vma->vm_pgoff;
+	u32 idr_handle = fileoffset & 0x1FFFFFF;
+	u32 q_type = (fileoffset >> 27) & 0x1;	  /* CQ, QP,...        */
+	u32 rsrc_type = (fileoffset >> 25) & 0x3; /* sq,rq,cmnd_window */
 	u32 cur_pid = current->tgid;
 	u32 ret;
-	u64 vsize, physical;
-	unsigned long flags;
+ 	u64 vsize, physical;
 	struct ehca_cq *cq;
 	struct ehca_qp *qp;
 	struct ehca_pd *pd;
+	struct ib_uobject *uobject;
 
 	switch (q_type) {
-	case  1: /* CQ */
-		spin_lock_irqsave(&ehca_cq_idr_lock, flags);
+	case  0: /* CQ */
+		read_lock(&ehca_cq_idr_lock);
 		cq = idr_find(&ehca_cq_idr, idr_handle);
-		spin_unlock_irqrestore(&ehca_cq_idr_lock, flags);
+		read_unlock(&ehca_cq_idr_lock);
 
 		/* make sure this mmap really belongs to the authorized user */
 		if (!cq)
@@ -242,10 +242,10 @@ int ehca_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 		}
 		break;
 
-	case 2: /* QP */
-		spin_lock_irqsave(&ehca_qp_idr_lock, flags);
+	case 1: /* QP */
+		read_lock(&ehca_qp_idr_lock);
 		qp = idr_find(&ehca_qp_idr, idr_handle);
-		spin_unlock_irqrestore(&ehca_qp_idr_lock, flags);
+		read_unlock(&ehca_qp_idr_lock);
 
 		/* make sure this mmap really belongs to the authorized user */
 		if (!qp)
@@ -259,7 +259,8 @@ int ehca_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
 			return -ENOMEM;
 		}
 
-		if (!qp->ib_qp.uobject || qp->ib_qp.uobject->context != context)
+		uobject = IS_SRQ(qp) ? qp->ib_srq.uobject : qp->ib_qp.uobject;
+		if (!uobject || uobject->context != context)
 			return -EINVAL;
 
 		switch (rsrc_type) {

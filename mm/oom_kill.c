@@ -20,6 +20,8 @@
 #include <linux/swap.h>
 #include <linux/timex.h>
 #include <linux/jiffies.h>
+#include <linux/module.h>
+#include <linux/notifier.h>
 
 int oom_kill_enabled = 1;
 int sysctl_panic_on_oom;
@@ -238,6 +240,20 @@ retry:
 	return;
 }
 
+static struct notifier_block *oom_notify_list;
+
+int register_oom_notifier(struct notifier_block *nb)
+{
+	return notifier_chain_register(&oom_notify_list, nb);
+}
+EXPORT_SYMBOL_GPL(register_oom_notifier);
+
+int unregister_oom_notifier(struct notifier_block *nb)
+{
+	return notifier_chain_unregister(&oom_notify_list, nb);
+}
+EXPORT_SYMBOL_GPL(unregister_oom_notifier);
+
 /**
  * out_of_memory - is the system out of memory?
  */
@@ -250,6 +266,12 @@ void out_of_memory(int gfp_mask)
 	static spinlock_t oom_lock = SPIN_LOCK_UNLOCKED;
 	static unsigned long first, last, count, lastkill;
 	unsigned long now, since;
+	unsigned long freed = 0;
+
+	notifier_call_chain(&oom_notify_list, 0, &freed);
+	if (freed > 0)
+		/* Got some memory back in the last second. */
+		return;
 
 	spin_lock(&oom_lock);
 	now = jiffies;

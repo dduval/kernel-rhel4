@@ -45,7 +45,7 @@ void
 qla2x00_lock_nvram_access(scsi_qla_host_t *ha)
 {
 	uint16_t data;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	if (!IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA2300(ha)) {
 		data = RD_REG_WORD(&reg->nvram);
@@ -77,7 +77,7 @@ qla2x00_lock_nvram_access(scsi_qla_host_t *ha)
 void
 qla2x00_unlock_nvram_access(scsi_qla_host_t *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	if (!IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA2300(ha)) {
 		WRT_REG_WORD(&reg->u.isp2300.host_semaphore, 0);
@@ -93,11 +93,9 @@ static int
 qla2x00_clear_nvram_protection(scsi_qla_host_t *ha)
 {
 	int ret, stat;
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t word;
 	uint16_t wprot, wprot_old;
-
-	reg = ha->iobase;
 
 	/* Clear NVRAM write protection. */
 	ret = QLA_FUNCTION_FAILED;
@@ -151,9 +149,8 @@ qla2x00_clear_nvram_protection(scsi_qla_host_t *ha)
 static void
 qla2x00_set_nvram_protection(scsi_qla_host_t *ha, int stat)
 {
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t word;
-	reg = ha->iobase;
 
 	if (stat != QLA_SUCCESS)
 		return;
@@ -228,7 +225,7 @@ qla2x00_write_nvram_word(scsi_qla_host_t *ha, uint32_t addr, uint16_t data)
 	int count;
 	uint16_t word;
 	uint32_t nv_cmd;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	qla2x00_nv_write(ha, NVR_DATA_OUT);
 	qla2x00_nv_write(ha, 0);
@@ -279,7 +276,7 @@ qla2x00_write_nvram_word_tmo(scsi_qla_host_t *ha, uint32_t addr, uint16_t data,
 	int ret, count;
 	uint16_t word;
 	uint32_t nv_cmd;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	ret = QLA_SUCCESS;
 
@@ -350,7 +347,7 @@ static uint16_t
 qla2x00_nvram_request(scsi_qla_host_t *ha, uint32_t nv_cmd)
 {
 	uint8_t		cnt;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint16_t	data = 0;
 	uint16_t	reg_data;
 
@@ -393,7 +390,7 @@ qla2x00_nvram_request(scsi_qla_host_t *ha, uint32_t nv_cmd)
 static void
 qla2x00_nv_deselect(scsi_qla_host_t *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	WRT_REG_WORD(&reg->nvram, NVR_DESELECT);
 	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
@@ -408,7 +405,7 @@ qla2x00_nv_deselect(scsi_qla_host_t *ha)
 static void
 qla2x00_nv_write(scsi_qla_host_t *ha, uint16_t data)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	WRT_REG_WORD(&reg->nvram, data | NVR_SELECT | NVR_WRT_ENABLE);
 	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
@@ -496,6 +493,15 @@ qla24xx_read_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	return dwptr;
 }
 
+static void
+qla2xxx_read_flash_data(struct scsi_qla_host *ha, uint8_t *buf,
+    uint32_t offset, uint32_t length)
+{
+  /* XXX, Marcus slow path code for now */
+	qla24xx_read_flash_data(ha, (uint32_t *)buf, offset >> 2,
+	    length >> 2);
+}
+
 uint8_t *
 qla2x00_read_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
     uint32_t bytes)
@@ -504,7 +510,10 @@ qla2x00_read_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 	uint16_t *wptr;
 	uint32_t *dwptr;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_QLA25XX(ha)) {
+		qla2xxx_read_flash_data(ha, buf,
+		((FA_VPD_NVRAM_ADDR << 2) | (naddr << 2)), bytes );
+	} else if (IS_QLA24XX_TYPE(ha)) {
 		/* Dword reads to flash. */
 		dwptr = (uint32_t *)buf;
 		for (i = 0; i < bytes >> 2; i++, naddr++)
@@ -652,7 +661,11 @@ qla2x00_write_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 
 	ret = QLA_SUCCESS;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+
+	if (IS_QLA25XX(ha)) {
+		ret = qla24xx_write_flash_data(ha, (uint32_t *)buf,
+		    FA_VPD_NVRAM_ADDR | naddr, bytes >> 2);
+	} else if (IS_QLA24XX_TYPE(ha)) {
 		/* Enable flash write. */
 		WRT_REG_DWORD(&reg->ctrl_status,
 		    RD_REG_DWORD(&reg->ctrl_status) | CSRX_FLASH_ENABLE);

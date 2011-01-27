@@ -21,7 +21,6 @@
 #define O_LARGEFILE     0200000
 #define O_DIRECT	0400000	/* direct disk access hint */
 #define O_NOATIME	01000000
-#define O_ATOMICLOOKUP 01000000 /* tux hack */
 
 #define F_DUPFD		0	/* dup */
 #define F_GETFD		1	/* get close_on_exec */

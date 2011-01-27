@@ -35,6 +35,7 @@
 #include <asm/iSeries/HvLpEvent.h>
 #include <asm/rtas.h>
 #include <asm/cputable.h>
+#include <asm/mmu.h>
 
 #define DEFINE(sym, val) \
 	asm volatile("\n->" #sym " %0 " #val : : "i" (val))
@@ -108,6 +109,12 @@ int main(void)
         DEFINE(LPPACASRR1, offsetof(struct ItLpPaca, xSavedSrr1));
 	DEFINE(LPPACAANYINT, offsetof(struct ItLpPaca, xIntDword.xAnyInt));
 	DEFINE(LPPACADECRINT, offsetof(struct ItLpPaca, xIntDword.xFields.xDecrInt));
+
+	/* SLB shadow buffer */
+	DEFINE(SLBSHADOW_STACKVSID,
+	       offsetof(struct slb_shadow, save_area[SLB_NUM_BOLTED - 1].vsid));
+	DEFINE(SLBSHADOW_STACKESID,
+	       offsetof(struct slb_shadow, save_area[SLB_NUM_BOLTED - 1].esid));
 
 	/* RTAS */
 	DEFINE(RTASBASE, offsetof(struct rtas_t, base));

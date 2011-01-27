@@ -38,6 +38,23 @@
 #define EDAC_MC_LABEL_LEN	31
 #define MC_PROC_NAME_MAX_LEN 7
 
+#define edac_printk(level, prefix, fmt, arg...) \
+	printk(level "EDAC " prefix ": " fmt, ##arg)
+
+#define edac_mc_printk(mci, level, fmt, arg...) \
+	printk(level "EDAC MC%d: " fmt, mci->mc_idx, ##arg)
+
+#define edac_mc_chipset_printk(mci, level, prefix, fmt, arg...) \
+	printk(level "EDAC " prefix " MC%d: " fmt, mci->mc_idx, ##arg)
+
+/* edac_device printk */
+#define edac_device_printk(ctl, level, fmt, arg...) \
+	printk(level "EDAC DEVICE%d: " fmt, ctl->dev_idx, ##arg)
+
+/* edac_pci printk */
+#define edac_pci_printk(ctl, level, fmt, arg...) \
+	printk(level "EDAC PCI%d: " fmt, ctl->pci_idx, ##arg)
+
 #if PAGE_SHIFT < 20
 #define PAGES_TO_MiB( pages )	( ( pages ) >> ( 20 - PAGE_SHIFT ) )
 #else				/* PAGE_SHIFT > 20 */
@@ -52,11 +69,13 @@ do { if (level <= edac_debug_level) printk(KERN_DEBUG fmt, ##args); } while(0)
 #define debugf1( ... ) edac_debug_printk(1, __VA_ARGS__ )
 #define debugf2( ... ) edac_debug_printk(2, __VA_ARGS__ )
 #define debugf3( ... ) edac_debug_printk(3, __VA_ARGS__ )
+#define debugf4( ... ) edac_debug_printk(4, __VA_ARGS__ )
 #else				/* !CONFIG_EDAC_DEBUG */
 #define debugf0( ... )
 #define debugf1( ... )
 #define debugf2( ... )
 #define debugf3( ... )
+#define debugf4( ... )
 #endif				/* !CONFIG_EDAC_DEBUG */
 
 
@@ -430,6 +449,12 @@ extern void edac_mc_handle_ue(struct mem_ctl_info *mci,
 
 extern void edac_mc_handle_ue_no_info(struct mem_ctl_info *mci,
 					   const char *msg);
+
+extern void edac_mc_handle_fbd_ue(struct mem_ctl_info *mci, unsigned int csrow,
+				  unsigned int channel0, unsigned int channel1,
+				  char *msg);
+extern void edac_mc_handle_fbd_ce(struct mem_ctl_info *mci, unsigned int csrow,
+	 			  unsigned int channel, char *msg);
 
 /*
  * This kmalloc's and initializes all the structures.

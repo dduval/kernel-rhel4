@@ -72,7 +72,10 @@ typedef struct _PORT_CTRL_STAT_REGS {
 	__le32  IPReassemblyTimeout;	        /* 192 xc0   *  */
 	__le32  EthMaxFramePayload;	        /* 196 xc4   *  */
 	__le32  TCPMaxWindowSize;	        /* 200 xc8   *  */
-	__le32  TCPCurrentTimestampHi;	        /* 204 xcc   *  */
+	union {
+		__le32  TCPCurrentTimestampHi;	/* 204 xcc   *  4022 */
+		__le32  fcn_spec_ctrl;	        /* 204 xcc   *  4032 */
+	} u3;
 	__le32  TCPCurrentTimestampLow;	        /* 208 xd0   *  */
 	__le32  LocalRAMAddress;	        /* 212 xd4   *  */
 	__le32  LocalRAMData;		        /* 216 xd8   *  */
@@ -437,6 +440,7 @@ typedef struct isp_reg_t {
 
 /* ISP port_ctrl definitions */
 #define PCR_CONFIG_COMPLETE			0x00008000  /* 4022 */
+#define PCR_ENABLE_FUNCTION			0x00000010  /* 4022 */
 #define PCR_BIOS_BOOTED_FIRMWARE		0x00008000  /* 4010 */
 #define PCR_ENABLE_SERIAL_DATA			0x00001000  /* 4010 */
 #define PCR_SERIAL_DATA_OUT			0x00000800  /* 4010 */
@@ -602,12 +606,6 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 		#define FW_ADDSTATE_IPV4_SEC_ENABLED  		0x00100000
 		#define FW_ADDSTATE_IPV6_PRI_ENABLED  		0x00200000
 		#define FW_ADDSTATE_IPV6_SEC_ENABLED  		0x00400000
-		#define FW_ADDSTATE_DHCPV6_ENABLED  		0x00800000
-		#define FW_ADDSTATE_IPV6_AUTOCONFIG_ENABLED  	0x01000000
-		#define FW_ADDSTATE_IPV6_ADDR0_STATE  		0x02000000
-		#define FW_ADDSTATE_IPV6_ADDR0_EXPIRED  	0x04000000
-		#define FW_ADDSTATE_IPV6_ADDR1_STATE  		0x08000000
-		#define FW_ADDSTATE_IPV6_ADDR1_EXPIRED  	0x10000000
 #define MBOX_CMD_GET_INIT_FW_CTRL_BLOCK_DEFAULTS 0x006A
 #define MBOX_CMD_GET_DATABASE_ENTRY_DEFAULTS    0x006B
 #define MBOX_CMD_CONN_OPEN_SESS_LOGIN           0x0074
@@ -880,7 +878,7 @@ typedef struct _ADDRESS_CTRL_BLK {
 	uint8_t   IPAddr[4];			/* 50-53 IPv4 */
 	__le16    VLANTagCtrl;			/* 54-55 IPv4 */
 	uint8_t   IPv4AddrState;		/* 56 */
-	uint8_t   IPv4CacheId;			/* 567 */
+	uint8_t   IPv4CacheId;			/* 57 */
 	uint8_t   Reserved4[8];			/* 58-5F */
 	uint8_t   SubnetMask[4];		/* 60-63 IPv4 */
 	uint8_t   Reserved5[12];		/* 64-6F */
@@ -937,7 +935,7 @@ typedef struct _ADDRESS_CTRL_BLK {
 	uint8_t   IPv6LinkLocalAddrState;       /* 222     */
 	/* states also apply to ipv6_addr0 & ipv6_addr1 */
    #define IPV6_ADDRSTATE_UNCONFIGURED			0
-   #define IPV6_ADDRSTATE_INVLID			1
+   #define IPV6_ADDRSTATE_INVALID			1
    #define IPV6_ADDRSTATE_ACQUIRING			2
    #define IPV6_ADDRSTATE_TENTATIVE			3
    #define IPV6_ADDRSTATE_DEPRICATED			4
@@ -947,6 +945,11 @@ typedef struct _ADDRESS_CTRL_BLK {
 	uint8_t   IPv6Addr0State;         	/* 223     */
 	uint8_t   IPv6Addr1State;         	/* 224     */
 	uint8_t   IPv6DefaultRouterState;       /* 225     */
+   #define IPV6_RTRSTATE_UNKNOWN			0
+   #define IPV6_RTRSTATE_MANUAL				1
+   #define IPV6_RTRSTATE_ADVERTISED			3
+   #define IPV6_RTRSTATE_STALE				4
+
 	uint8_t   IPv6TrafficClass;         	/* 226     */
 	uint8_t   IPv6HopLimit;         	/* 227     */
 	uint8_t   IPv6InterfaceID[8];         	/* 228-22F */
@@ -962,7 +965,6 @@ typedef struct _ADDRESS_CTRL_BLK {
 	uint8_t	IPv6RouterAdLinkMTUSize[4];	/* 270-273 */
 	uint8_t	Reserved14[140];		/* 274-2FF */
 } ADDRESS_CTRL_BLK, *PADDRESS_CTRL_BLK;         /* 300     */
-
 
 typedef struct _INIT_FW_CTRL_BLK {
 	ADDRESS_CTRL_BLK   pri_acb;

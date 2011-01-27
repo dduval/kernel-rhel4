@@ -1332,7 +1332,7 @@ int __init ip_conntrack_init(void)
 	       ip_conntrack_htable_size, ip_conntrack_max,
 	       sizeof(struct ip_conntrack));
 
-	ret = nf_register_sockopt(&so_getorigdst);
+	ret = nf_register_sockopt_owner(&so_getorigdst, THIS_MODULE);
 	if (ret != 0) {
 		printk(KERN_ERR "Unable to register netfilter socket option\n");
 		return ret;

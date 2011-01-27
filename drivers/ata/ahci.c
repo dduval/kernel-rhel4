@@ -82,6 +82,7 @@ enum {
 	board_ahci_vt8251	= 2,
 	board_ahci_ign_iferr	= 3,
 	board_ahci_sb600	= 4,
+	board_ahci_sb700	= 5,
 
 	/* global controller registers */
 	HOST_CAP		= 0x00, /* host capabilities */
@@ -174,7 +175,8 @@ enum {
 	AHCI_FLAG_IGN_IRQ_IF_ERR	= (1 << 25), /* ignore IRQ_IF_ERR */
 	AHCI_FLAG_HONOR_PI		= (1 << 26), /* honor PORTS_IMPL */
 	AHCI_FLAG_IGN_SERR_INTERNAL	= (1 << 27), /* ignore SERR_INTERNAL */
-	AHCI_FLAG_32BIT_ONLY		= (1 << 28), /* force 32bit */
+	AHCI_FLAG_SECT255		= (1 << 28), /* max 255 sect */
+	AHCI_FLAG_32BIT_ONLY            = (1 << 29), /* force 32bit */
 };
 
 struct ahci_cmd_hdr {
@@ -225,6 +227,7 @@ static void ahci_vt8251_error_handler(struct ata_port *ap);
 static void ahci_post_internal_cmd(struct ata_queued_cmd *qc);
 static int ahci_port_suspend(struct ata_port *ap, pm_message_t mesg);
 static int ahci_port_resume(struct ata_port *ap);
+static void ahci_dev_config(struct ata_port *ap, struct ata_device *dev);
 static int ahci_pci_device_suspend(struct pci_dev *pdev, pm_message_t mesg);
 static int ahci_pci_device_resume(struct pci_dev *pdev);
 static void ahci_remove_one (struct pci_dev *pdev);
@@ -255,6 +258,8 @@ static const struct ata_port_operations ahci_ops = {
 	.check_status		= ahci_check_status,
 	.check_altstatus	= ahci_check_status,
 	.dev_select		= ata_noop_dev_select,
+
+	.dev_config		= ahci_dev_config,
 
 	.tf_read		= ahci_tf_read,
 
@@ -361,12 +366,23 @@ static const struct ata_port_info ahci_port_info[] = {
 				  ATA_FLAG_MMIO | ATA_FLAG_PIO_DMA |
 				  ATA_FLAG_SKIP_D2H_BSY |
 				  AHCI_FLAG_IGN_SERR_INTERNAL |
-				  AHCI_FLAG_32BIT_ONLY,
+				  AHCI_FLAG_32BIT_ONLY |
+				  AHCI_FLAG_SECT255,
+		.pio_mask	= 0x1f, /* pio0-4 */
+		.udma_mask	= 0x7f, /* udma0-6 ; FIXME */
+		.port_ops	= &ahci_ops,
+	},	
+	/* board_ahci_sb700 */	
+	{
+		.sht		= &ahci_sht,
+		.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY |
+				  ATA_FLAG_MMIO | ATA_FLAG_PIO_DMA |
+				  ATA_FLAG_SKIP_D2H_BSY |
+				  AHCI_FLAG_IGN_SERR_INTERNAL,
 		.pio_mask	= 0x1f, /* pio0-4 */
 		.udma_mask	= 0x7f, /* udma0-6 ; FIXME */
 		.port_ops	= &ahci_ops,
 	},
-
 };
 
 static const struct pci_device_id ahci_pci_tbl[] = {
@@ -398,6 +414,10 @@ static const struct pci_device_id ahci_pci_tbl[] = {
 	{ PCI_VDEVICE(INTEL, 0x292f), board_ahci_pi }, /* ICH9M */
 	{ PCI_VDEVICE(INTEL, 0x294d), board_ahci_pi }, /* ICH9 */
 	{ PCI_VDEVICE(INTEL, 0x294e), board_ahci_pi }, /* ICH9M */
+	{ PCI_VDEVICE(INTEL, 0x502a), board_ahci }, /* Tolapai */
+	{ PCI_VDEVICE(INTEL, 0x502b), board_ahci }, /* Tolapai */
+	{ PCI_VDEVICE(INTEL, 0x3a05), board_ahci_pi }, /* ICH10 */
+	{ PCI_VDEVICE(INTEL, 0x3a25), board_ahci_pi }, /* ICH10 */
 
 	/* JMicron 360/1/3/5/6, match class to avoid IDE function */
 	{ PCI_VENDOR_ID_JMICRON, PCI_ANY_ID, PCI_ANY_ID, PCI_ANY_ID,
@@ -405,10 +425,12 @@ static const struct pci_device_id ahci_pci_tbl[] = {
 
 	/* ATI */
 	{ PCI_VDEVICE(ATI, 0x4380), board_ahci_sb600 }, /* ATI SB600 */
-	{ PCI_VDEVICE(ATI, 0x4390), board_ahci_sb600 }, /* ATI SB700 IDE */
-	{ PCI_VDEVICE(ATI, 0x4391), board_ahci_sb600 }, /* ATI SB700 AHCI */
-	{ PCI_VDEVICE(ATI, 0x4392), board_ahci_sb600 }, /* ATI SB700 nraid5 */
-	{ PCI_VDEVICE(ATI, 0x4393), board_ahci_sb600 }, /* ATI SB700 raid5 */
+	{ PCI_VDEVICE(ATI, 0x4390), board_ahci_sb700 }, /* ATI SB700/800 */
+	{ PCI_VDEVICE(ATI, 0x4391), board_ahci_sb700 }, /* ATI SB700/800 */
+	{ PCI_VDEVICE(ATI, 0x4392), board_ahci_sb700 }, /* ATI SB700/800 */
+	{ PCI_VDEVICE(ATI, 0x4393), board_ahci_sb700 }, /* ATI SB700/800 */
+	{ PCI_VDEVICE(ATI, 0x4394), board_ahci_sb700 }, /* ATI SB700/800 */
+	{ PCI_VDEVICE(ATI, 0x4395), board_ahci_sb700 }, /* ATI SB700/800 */
 
 	/* VIA */
 	{ PCI_VDEVICE(VIA, 0x3349), board_ahci_vt8251 }, /* VIA VT8251 */
@@ -784,6 +806,17 @@ static void ahci_init_controller(void __iomem *mmio, struct pci_dev *pdev,
 	writel(tmp | HOST_IRQ_EN, mmio + HOST_CTL);
 	tmp = readl(mmio + HOST_CTL);
 	VPRINTK("HOST_CTL 0x%x\n", tmp);
+}
+
+static void ahci_dev_config(struct ata_port *ap, struct ata_device *dev)
+{
+	struct ahci_host_priv *hpriv = ap->host->private_data;
+
+	if (hpriv->flags & AHCI_FLAG_SECT255) {
+		dev->max_sectors = 255;
+		ata_dev_printk(dev, KERN_INFO,
+				"AHCI: Limiting to 255 sectors per command\n");
+	}
 }
 
 static unsigned int ahci_dev_classify(struct ata_port *ap)
@@ -1170,6 +1203,7 @@ static void ahci_host_intr(struct ata_port *ap)
 	void __iomem *mmio = ap->host->mmio_base;
 	void __iomem *port_mmio = ahci_port_base(mmio, ap->port_no);
 	struct ata_eh_info *ehi = &ap->eh_info;
+	int resetting = !!(ap->pflags & ATA_PFLAG_RESETTING);
 	u32 status, qc_active;
 	int rc;
 
@@ -1187,29 +1221,13 @@ static void ahci_host_intr(struct ata_port *ap)
 		qc_active = readl(port_mmio + PORT_CMD_ISSUE);
 
 	rc = ata_qc_complete_multiple(ap, qc_active, NULL);
-	if (rc > 0)
-		return;
-	if (rc < 0) {
+
+	/* while resetting, invalid completions are expected */
+	if (unlikely(rc < 0 && !resetting)) {
 		ehi->err_mask |= AC_ERR_HSM;
 		ehi->action |= ATA_EH_SOFTRESET;
 		ata_port_freeze(ap);
-		return;
 	}
-
-	/* hmmm... a spurious interupt */
-
-	/* some devices send D2H reg with I bit set during NCQ command phase */
-	if (ap->sactive && (status & PORT_IRQ_D2H_REG_FIS))
-		return;
-
-	/* ignore interim PIO setup fis interrupts */
-	if (ata_tag_valid(ap->active_tag) && (status & PORT_IRQ_PIOS_FIS))
-		return;
-
-	if (ata_ratelimit())
-		ata_port_printk(ap, KERN_INFO, "spurious interrupt "
-				"(irq_stat 0x%x active_tag %d sactive 0x%x)\n",
-				status, ap->active_tag, ap->sactive);
 }
 
 static void ahci_irq_clear(struct ata_port *ap)
@@ -1575,12 +1593,15 @@ static int ahci_host_init(struct ata_probe_ent *probe_ent)
 	} else
 		probe_ent->n_ports = cap_n_ports;
 
-	using_dac = hpriv->cap & HOST_CAP_64;
-	if (using_dac && (probe_ent->port_flags & AHCI_FLAG_32BIT_ONLY)) {
+	/* some chips lie about 64bit support */
+	if ((hpriv->cap & HOST_CAP_64) &&
+	    (probe_ent->port_flags & AHCI_FLAG_32BIT_ONLY)) {
 		dev_printk(KERN_INFO, &pdev->dev,
 			   "controller can't do 64bit DMA, forcing 32bit\n");
-		using_dac = 0;
+		hpriv->cap &= ~HOST_CAP_64;
 	}
+
+	using_dac = hpriv->cap & HOST_CAP_64;
 
 	if (using_dac &&
 	    !pci_set_dma_mask(pdev, DMA_64BIT_MASK)) {
@@ -1762,6 +1783,9 @@ static int ahci_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	if (have_msi)
 		hpriv->flags |= AHCI_FLAG_MSI;
+
+	if (probe_ent->port_flags & AHCI_FLAG_SECT255)
+		hpriv->flags |= AHCI_FLAG_SECT255;
 
 	/* initialize adapter */
 	rc = ahci_host_init(probe_ent);

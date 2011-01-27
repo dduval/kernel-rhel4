@@ -16,6 +16,16 @@ qim_get_ioctl_scrap_mem(struct qla_host_ioctl *, void **, uint32_t);
 extern void
 qim_free_ioctl_scrap_mem(struct qla_host_ioctl *);
 
+extern int
+qim_issue_iocb(scsi_qla_host_t *, void *, dma_addr_t, size_t);
+
+extern int
+qim_issue_iocb_timeout(scsi_qla_host_t *, void *, dma_addr_t, size_t,
+    uint32_t);
+
+extern int
+qim84xx_reset_chip(scsi_qla_host_t *, uint16_t, uint16_t *);
+
 extern void *
 Q64BIT_TO_PTR(uint64_t, uint16_t);
 

@@ -131,14 +131,15 @@ static u64 ehca_dma_map_page(struct ib_device *dev,
 			      size_t size,
 			      enum dma_data_direction direction)
 {
-	return dma_map_page(dev->dma_device, page, offset, size, direction);
+  	return ibmebus_map_single(dev, (page_address(page) +  offset),
+			 	   size, direction);
 }
 
 static void ehca_dma_unmap_page(struct ib_device *dev,
 				 u64 addr, size_t size,
 				 enum dma_data_direction direction)
 {
-	dma_unmap_page(dev->dma_device, addr, size, direction);
+	ibmebus_unmap_single(dev, addr, size, direction);
 }
 
 int ehca_map_sg(struct ib_device *dev, struct scatterlist *sg, int nents,

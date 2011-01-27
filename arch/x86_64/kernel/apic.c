@@ -425,8 +425,7 @@ void __init setup_local_APIC (void)
 	}
 
 	nmi_watchdog_default();
-	if (nmi_watchdog == NMI_LOCAL_APIC)
-		setup_apic_nmi_watchdog();
+	setup_apic_nmi_watchdog();
 	apic_pm_activate();
 }
 
@@ -680,10 +679,12 @@ static void setup_APIC_timer(unsigned int clocks)
 
 	/* wait for irq slice */
  	if (vxtime.hpet_address) {
- 		int trigger = hpet_readl(HPET_T0_CMP);
- 		while (hpet_readl(HPET_COUNTER) >= trigger)
- 			/* do nothing */ ;
- 		while (hpet_readl(HPET_COUNTER) <  trigger)
+		/*
+		 * Wait for the comparator value to change which signals that
+		 * the tick slice has expired.
+		 */
+		u32 trigger = hpet_readl(HPET_T0_CMP);
+		while (hpet_readl(HPET_T0_CMP) == trigger)
  			/* do nothing */ ;
  	} else {
 		int c1, c2;
@@ -742,7 +743,7 @@ int __init calibrate_APIC_clock(void)
 	printk(KERN_INFO "Detected %d.%03d MHz APIC timer.\n",
 		result / 1000 / 1000, result / 1000 % 1000);
 
-	return result * APIC_DIVISOR / HZ;
+	return result * APIC_DIVISOR / REAL_HZ;
 }
 
 static unsigned int calibration_result;
@@ -848,29 +849,33 @@ void setup_APIC_extened_lvt(unsigned char lvt_off, unsigned char vector,
 void smp_local_timer_interrupt(struct pt_regs *regs)
 {
 	int cpu = smp_processor_id();
+	int i;
 
-	profile_tick(CPU_PROFILING, regs);
-	if (--per_cpu(prof_counter, cpu) <= 0) {
-		/*
-		 * The multiplier may have changed since the last time we got
-		 * to this point as a result of the user writing to
-		 * /proc/profile. In this case we need to adjust the APIC
-		 * timer accordingly.
-		 *
-		 * Interrupts are already masked off at this point.
-		 */
-		per_cpu(prof_counter, cpu) = per_cpu(prof_multiplier, cpu);
-		if (per_cpu(prof_counter, cpu) != 
-		    per_cpu(prof_old_multiplier, cpu)) {
-			__setup_APIC_LVTT(calibration_result/
-					per_cpu(prof_counter, cpu));
-			per_cpu(prof_old_multiplier, cpu) =
-				per_cpu(prof_counter, cpu);
-		}
+	for (i = 0; i < tick_divider; i++) {
+		profile_tick(CPU_PROFILING, regs);
+		if (--per_cpu(prof_counter, cpu) <= 0) {
+			/*
+			 * The multiplier may have changed since the last time
+			 * we got to this point as a result of the user writing
+			 * to /proc/profile. In this case we need to adjust the
+			 * APIC timer accordingly.
+			 *
+			 * Interrupts are already masked off at this point.
+			 */
+			per_cpu(prof_counter, cpu) = per_cpu(prof_multiplier,
+							     cpu);
+			if (per_cpu(prof_counter, cpu) !=
+			    per_cpu(prof_old_multiplier, cpu)) {
+				__setup_APIC_LVTT(calibration_result/
+						  per_cpu(prof_counter, cpu));
+				per_cpu(prof_old_multiplier, cpu) =
+					per_cpu(prof_counter, cpu);
+			}
 
 #ifdef CONFIG_SMP
-		update_process_times(user_mode(regs));
+			update_process_times(user_mode(regs));
 #endif
+		}
 	}
 
 	/*

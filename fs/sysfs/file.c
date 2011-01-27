@@ -360,10 +360,12 @@ int sysfs_add_file(struct dentry * dir, const struct attribute * attr, int type)
 {
 	struct sysfs_dirent * parent_sd = dir->d_fsdata;
 	umode_t mode = (attr->mode & S_IALLUGO) | S_IFREG;
-	int error = 0;
+	int error = -EEXIST;
 
 	down(&dir->d_inode->i_sem);
-	error = sysfs_make_dirent(parent_sd, NULL, (void *) attr, mode, type);
+	if (!sysfs_dirent_exist(parent_sd, attr->name))
+		error = sysfs_make_dirent(parent_sd, NULL, (void *) attr,
+					  mode, type);
 	up(&dir->d_inode->i_sem);
 
 	return error;

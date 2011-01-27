@@ -3,9 +3,12 @@
 
 static inline void do_timer_interrupt_hook(struct pt_regs *regs)
 {
-	do_timer(regs);
+	int i;
+	for (i = 0; i < tick_divider; i++) {
+		do_timer(regs);
 
-	voyager_timer_interrupt(regs);
+		voyager_timer_interrupt(regs);
+	}
 }
 
 static inline int do_timer_overflow(int count)

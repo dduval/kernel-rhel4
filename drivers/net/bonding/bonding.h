@@ -147,6 +147,7 @@ struct bond_params {
 	int arp_interval;
 	int arp_validate;
 	int use_carrier;
+	int fail_over_mac;
 	int updelay;
 	int downdelay;
 	int lacp_fast;
@@ -199,6 +200,7 @@ struct bonding {
 	struct   timer_list mii_timer;
 	struct   timer_list arp_timer;
 	s8       kill_timers;
+	s8	 send_grat_arp;
 	struct   net_device_stats stats;
 #ifdef CONFIG_PROC_FS
 	struct   proc_dir_entry *proc_entry;

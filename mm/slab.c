@@ -2583,6 +2583,7 @@ free_percpu(const void *objp)
 			continue;
 		kfree(p->ptrs[i]);
 	}
+	kfree(p);
 }
 
 EXPORT_SYMBOL(free_percpu);

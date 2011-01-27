@@ -12,6 +12,13 @@
 #include <xen/interface/xen.h> 
 #include <xen/foreign_page.h>
 
+/*
+ * Need to repeat this here in order to not include pgtable.h (which in turn
+ * depends on definitions made here), but to be able to use the symbolic
+ * below. The preprocessor will warn if the two definitions aren't identical.
+ */
+#define _PAGE_PRESENT	0x001
+
 #define arch_free_page(_page,_order)			\
 ({	int foreign = PageForeign(_page);		\
 	if (foreign)					\
@@ -19,12 +26,6 @@
 	foreign;					\
 })
 #define HAVE_ARCH_FREE_PAGE
-
-#ifdef CONFIG_XEN_SCRUB_PAGES
-#define scrub_pages(_p,_n) memset((void *)(_p), 0, (_n) << PAGE_SHIFT)
-#else
-#define scrub_pages(_p,_n) ((void)0)
-#endif
 
 /* PAGE_SHIFT determines the page size */
 #define PAGE_SHIFT	12
@@ -34,12 +35,14 @@
 #define PAGE_SIZE	(1UL << PAGE_SHIFT)
 #endif
 #define PAGE_MASK	(~(PAGE_SIZE-1))
+
 /* See Documentation/x86_64/mm.txt for a description of the memory map. */
-#define __PHYSICAL_MASK_SHIFT	40
+#define __PHYSICAL_MASK_SHIFT	46
 #define __PHYSICAL_MASK		((1UL << __PHYSICAL_MASK_SHIFT) - 1)
-#define __VIRTUAL_MASK_SHIFT	48	/* P3: Incorrect, we use 39 in RHEL 4 */
+#define __VIRTUAL_MASK_SHIFT	48
 #define __VIRTUAL_MASK		((1UL << __VIRTUAL_MASK_SHIFT) - 1)
-#define PHYSICAL_PAGE_MASK	(~(PAGE_SIZE-1) & (__PHYSICAL_MASK << PAGE_SHIFT))
+
+#define PHYSICAL_PAGE_MASK	(~(PAGE_SIZE-1) & __PHYSICAL_MASK)
 #define PTE_MASK	PHYSICAL_PAGE_MASK
 
 #define THREAD_ORDER 1 
@@ -101,63 +104,60 @@ typedef struct { unsigned long pml4; } pml4_t;
 
 typedef struct { unsigned long pgprot; } pgprot_t;
 
-static inline paddr_t pte_machine_to_phys(maddr_t machine)
-{
-	paddr_t phys = mfn_to_pfn((machine & PTE_MASK) >> PAGE_SHIFT);
-	phys = (phys << PAGE_SHIFT) | (machine & ~PTE_MASK);
-	return phys;
-}
-
-#define pte_val(x)	(((x).pte & 1) ? pte_machine_to_phys((x).pte) : \
+#define pte_val(x)	(((x).pte & _PAGE_PRESENT) ? \
+			 pte_machine_to_phys((x).pte) : \
 			 (x).pte)
 #define pte_val_ma(x)	((x).pte)
 
 static inline unsigned long pmd_val(pmd_t x)
 {
 	unsigned long ret = x.pmd;
-	if (ret) ret = pte_machine_to_phys(ret);
+#ifdef CONFIG_XEN_COMPAT_030002
+	if (ret) ret = pte_machine_to_phys(ret) | _PAGE_PRESENT;
+#else
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
+#endif
 	return ret;
 }
 
 static inline unsigned long pgd_val(pgd_t x)
 {
 	unsigned long ret = x.pgd;
-	if (ret) ret = pte_machine_to_phys(ret);
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
 	return ret;
 }
 
 static inline unsigned long pml4_val(pml4_t x)
 {
 	unsigned long ret = x.pml4;
-	if (ret) ret = pte_machine_to_phys(ret);
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
 	return ret;
 }
 
 #define pgprot_val(x)	((x).pgprot)
 
-#define __pte_ma(x)	((pte_t) { (x) } )
 
 static inline pte_t __pte(unsigned long x)
 {
-	if (x & 1) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pte_t) { (x) });
 }
 
 static inline pmd_t __pmd(unsigned long x)
 {
-	if ((x & 1)) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pmd_t) { (x) });
 }
 
 static inline pgd_t __pgd(unsigned long x)
 {
-	if ((x & 1)) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pgd_t) { (x) });
 }
 
 static inline pml4_t __pml4(unsigned long x)
 {
-	if ((x & 1)) x = phys_to_machine(x);
+	if (x & _PAGE_PRESENT) x = pte_phys_to_machine(x);
 	return ((pml4_t) { (x) });
 }
 

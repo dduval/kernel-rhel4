@@ -280,7 +280,10 @@
 
 #define EXT_CC_RESERVED0N_OS						\
     QL_IOCTL_CMD(0x15)
-
+#define EXT_CC_RESERVED0O_OS						\
+    QL_IOCTL_CMD(0x16)
+#define EXT_CC_RESERVED0P_OS						\
+    QL_IOCTL_CMD(0x17)
 #define EXT_CC_RESERVED0Z_OS						\
     QL_IOCTL_CMD(0x21)
 

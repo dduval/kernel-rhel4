@@ -52,6 +52,9 @@
 #define OPENOWNER_POOL_SIZE	8
 
 static spinlock_t		state_spinlock = SPIN_LOCK_UNLOCKED;
+static int			nfs4_state_workqueue_users;
+struct workqueue_struct		*nfs4_state_workqueue = NULL;
+static DECLARE_MUTEX(nfs4_state_workqueue_sem);
 
 nfs4_stateid zero_stateid;
 
@@ -85,6 +88,37 @@ destroy_nfsv4_state(struct nfs_server *server)
 	}
 }
 
+static int
+nfs4_state_workqueue_up(void)
+{
+	int ret = 0;
+
+	down(&nfs4_state_workqueue_sem);
+	if (nfs4_state_workqueue == NULL)
+		nfs4_state_workqueue = create_singlethread_workqueue("nfsv4-work");
+	if (nfs4_state_workqueue) {
+		++nfs4_state_workqueue_users;
+		ret = 1;
+	}
+	up(&nfs4_state_workqueue_sem);
+	return ret;
+}
+
+static void
+nfs4_state_workqueue_down(void)
+{
+	down(&nfs4_state_workqueue_sem);
+	if (--nfs4_state_workqueue_users != 0)
+		goto out;
+	if (nfs4_state_workqueue != NULL) {
+		flush_workqueue(nfs4_state_workqueue);
+		destroy_workqueue(nfs4_state_workqueue);
+		nfs4_state_workqueue = NULL;
+	}
+out:
+	up(&nfs4_state_workqueue_sem);
+}
+
 /*
  * nfs4_get_client(): returns an empty client structure
  * nfs4_put_client(): drops reference to client structure
@@ -97,10 +131,15 @@ nfs4_alloc_client(struct in_addr *addr)
 {
 	struct nfs4_client *clp;
 
-	if (nfs_callback_up() < 0)
+	if (!nfs4_state_workqueue_up())
 		return NULL;
+	if (nfs_callback_up() < 0) {
+		nfs4_state_workqueue_down();
+		return NULL;
+	}
 	if ((clp = kmalloc(sizeof(*clp), GFP_KERNEL)) == NULL) {
 		nfs_callback_down();
+		nfs4_state_workqueue_down();
 		return NULL;
 	}
 	memset(clp, 0, sizeof(*clp));
@@ -140,6 +179,7 @@ nfs4_free_client(struct nfs4_client *clp)
 		rpc_shutdown_client(clp->cl_rpcclient);
 	kfree(clp);
 	nfs_callback_down();
+	nfs4_state_workqueue_down();
 }
 
 static struct nfs4_client *__nfs4_find_client(struct in_addr *addr)
@@ -564,7 +604,7 @@ void nfs4_close_state(struct nfs4_state *state, mode_t mode)
 
 	atomic_inc(&state->owner->so_count);
 	down_read(&state->owner->so_client->cl_sem);
-	schedule_work(work);
+	queue_work(nfs4_state_workqueue, work);
 	return;
 
 synchronous:

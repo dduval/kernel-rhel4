@@ -73,6 +73,8 @@ __ccw_device_sense_pgid_start(struct ccw_device *cdev)
 		ccw->cda = (__u32) __pa (&cdev->private->pgid[i]);
 		if (cdev->private->iretry > 0) {
 			cdev->private->iretry--;
+			/* Reset internal retry indication. */
+			cdev->private->flags.intretry = 0;
 			ret = cio_start (sch, cdev->private->iccws, 
 					 cdev->private->imask);
 			/* ret is 0, -EBUSY, -EACCES or -ENODEV */
@@ -123,8 +125,14 @@ __ccw_device_check_sense_pgid(struct ccw_device *cdev)
 
 	sch = to_subchannel(cdev->dev.parent);
 	irb = &cdev->private->irb;
-	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC))
-		return -ETIME;
+	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC)) {
+		/* Retry Sense PGID if requested. */
+		if (cdev->private->flags.intretry) {
+			cdev->private->flags.intretry = 0;
+			return -EAGAIN;
+		} else
+			return -ETIME;
+	}
 	if (irb->esw.esw0.erw.cons &&
 	    (irb->ecw[0]&(SNS0_CMD_REJECT|SNS0_INTERVENTION_REQ))) {
 		/*
@@ -252,6 +260,8 @@ __ccw_device_do_pgid(struct ccw_device *cdev, __u8 func)
 	ret = -EACCES;
 	if (cdev->private->iretry > 0) {
 		cdev->private->iretry--;
+		/* Reset internal retry indication. */
+		cdev->private->flags.intretry = 0;
 		ret = cio_start(sch, cdev->private->iccws,
 				cdev->private->imask);
 		/* We expect an interrupt in case of success or busy
@@ -291,6 +301,8 @@ static int __ccw_device_do_nop(struct ccw_device *cdev)
 	ret = -EACCES;
 	if (cdev->private->iretry > 0) {
 		cdev->private->iretry--;
+		/* Reset internal retry indication. */
+		cdev->private->flags.intretry = 0;
 		ret = cio_start(sch, cdev->private->iccws,
 				cdev->private->imask);
 		/* We expect an interrupt in case of success or busy
@@ -319,8 +331,14 @@ __ccw_device_check_pgid(struct ccw_device *cdev)
 
 	sch = to_subchannel(cdev->dev.parent);
 	irb = &cdev->private->irb;
-	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC))
-		return -ETIME;
+	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC)) {
+		/* Retry Set Path Group ID if requested. */
+		if (cdev->private->flags.intretry) {
+			cdev->private->flags.intretry = 0;
+			return -EAGAIN;
+		} else
+			return -ETIME;
+	}
 	if (irb->esw.esw0.erw.cons) {
 		if (irb->ecw[0] & SNS0_CMD_REJECT)
 			return -EOPNOTSUPP;
@@ -355,8 +373,14 @@ static int __ccw_device_check_nop(struct ccw_device *cdev)
 
 	sch = to_subchannel(cdev->dev.parent);
 	irb = &cdev->private->irb;
-	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC))
-		return -ETIME;
+	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC)) {
+		/* Retry NOP if requested. */
+		if (cdev->private->flags.intretry) {
+			cdev->private->flags.intretry = 0;
+			return -EAGAIN;
+		} else
+			return -ETIME;
+	}
 	if (irb->scsw.cc == 3) {
 		CIO_MSG_EVENT(2, "NOP - Device %04x on Subchannel 0.0.%04x,"
 			      " lpm %02X, became 'not operational'\n",

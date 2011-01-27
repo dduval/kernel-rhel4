@@ -216,7 +216,7 @@ smb_set_inode_attr(struct inode *inode, struct smb_fattr *fattr)
 	if (inode->i_mtime.tv_sec != last_time || inode->i_size != last_sz) {
 		VERBOSE("%ld changed, old=%ld, new=%ld, oz=%ld, nz=%ld\n",
 			inode->i_ino,
-			(long) last_time, (long) inode->i_mtime,
+			(long) last_time, (long) inode->i_mtime.tv_sec,
 			(long) last_sz, (long) inode->i_size);
 
 		if (!S_ISDIR(inode->i_mode))
@@ -539,7 +539,7 @@ int smb_fill_super(struct super_block *sb, void *raw_data, int silent)
 
 	/* Allocate the global temp buffer and some superblock helper structs */
 	/* FIXME: move these to the smb_sb_info struct */
-	VERBOSE("alloc chunk = %d\n", sizeof(struct smb_ops) +
+	VERBOSE("alloc chunk = %lu\n", sizeof(struct smb_ops) +
 		sizeof(struct smb_mount_data_kernel));
 	mem = smb_kmalloc(sizeof(struct smb_ops) +
 			  sizeof(struct smb_mount_data_kernel), GFP_KERNEL);

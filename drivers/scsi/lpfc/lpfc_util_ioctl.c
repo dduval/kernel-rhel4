@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_util_ioctl.c 3037 2007-05-22 14:02:22Z sf_support $
+ * $Id: lpfc_util_ioctl.c 3122 2008-01-07 18:49:20Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -132,7 +132,7 @@ iCfgParam lpfc_iCfgParam[LPFC_TOTAL_NUM_OF_CFG_PARAM] = {
 	 "Select Fibre Channel topology"},
 
 	{"link_speed",
-	 0, 4, 0, 0,
+	 0, 8, 0, 0,
 	 (ushort) (CFG_EXPORT),
 	 (ushort) CFG_RESTART,
 	 "Select link speed"},
@@ -662,7 +662,9 @@ lpfc_ioctl_write_ctlreg(struct lpfc_hba * phba,
 
 	spin_lock_irqsave(phba->host->host_lock, iflag); /* HBA state */
 
-	if (!(phba->fc_flag & FC_OFFLINE_MODE)) {
+	/* Allow writing to 0x50 - 0x70 registers for offline utility */
+	if (!(phba->fc_flag & FC_OFFLINE_MODE) &&
+	     ((offset < 0x50) || (offset > 0x70))) {
 		spin_unlock_irqrestore(phba->host->host_lock, iflag); /* HBA state */
 		rc = EPERM;
 		return (rc);
@@ -789,6 +791,8 @@ lpfc_ioctl_timeout_iocb_cmpl(struct lpfc_hba * phba,
 			     struct lpfc_iocbq * rsp_iocb_q)
 {
 	struct lpfc_timedout_iocb_ctxt *iocb_ctxt = cmd_iocb_q->context1;
+	struct list_head *curr, *next;
+	struct lpfc_dmabuf *mlast;
 
 	if (!iocb_ctxt) {
 		if (cmd_iocb_q->context2) {
@@ -813,6 +817,13 @@ lpfc_ioctl_timeout_iocb_cmpl(struct lpfc_hba * phba,
 	}
 
 	if (iocb_ctxt->bmp) {
+		list_for_each_safe(curr, next, &iocb_ctxt->bmp->list) {
+			mlast = list_entry(curr, struct lpfc_dmabuf, list);
+			list_del(&mlast->list);
+			lpfc_mbuf_free(phba, mlast->virt, mlast->phys);
+			kfree(mlast);
+		}
+
 		lpfc_mbuf_free(phba, 
 			       iocb_ctxt->bmp->virt, 
 			       iocb_ctxt->bmp->phys);
@@ -859,6 +870,8 @@ lpfc_ioctl_send_scsi_fcp(struct lpfc_hba * phba,
 	uint32_t iocb_wait_timeout = cip->lpfc_arg5;
 	uint32_t iocb_retries;
 	struct lpfc_timedout_iocb_ctxt *iocb_ctxt;
+	struct list_head *curr, *next;
+	struct lpfc_dmabuf *mlast;
 
 	/*
 	 * Rspcnt is really data buffer size
@@ -874,17 +887,6 @@ lpfc_ioctl_send_scsi_fcp(struct lpfc_hba * phba,
 
 	reqbfrcnt = cip->lpfc_arg4;
 	snsbfrcnt = cip->lpfc_flag;
-	if ((reqbfrcnt + cip->lpfc_outsz) > (80 * 4096)) {
-		/* lpfc_ioctl:error <idx> */
-		lpfc_printf_log(phba,
-			       KERN_ERR,
-				LOG_LIBDFC,
-			       "%d:1604 libdfc error Data: %d\n",
-				phba->brd_no,
-			       0);
-		rc = ERANGE;
-		goto sndsczout;
-	}
 
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	if (copy_from_user((uint8_t *) & wwpn, (uint8_t *) cip->lpfc_arg3,
@@ -992,9 +994,9 @@ lpfc_ioctl_send_scsi_fcp(struct lpfc_hba * phba,
 
 	/* Allocate data buffer, and fill it if its a write */
 	if (cip->lpfc_outsz == 0) {
-		outdmp = dfc_cmd_data_alloc(phba, outdta, bpl, 512);
+		outdmp = dfc_fcp_cmd_data_alloc(phba, outdta, bpl, 512, bmp);
 	} else {
-		outdmp = dfc_cmd_data_alloc(phba, outdta, bpl, cip->lpfc_outsz);
+		outdmp = dfc_fcp_cmd_data_alloc(phba, outdta, bpl, cip->lpfc_outsz, bmp);
 	}
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	if (outdmp == 0) {
@@ -1017,6 +1019,9 @@ lpfc_ioctl_send_scsi_fcp(struct lpfc_hba * phba,
 	if (pndl->nlp_fcp_info & NLP_FCP_2_DEVICE) {
 		cmd->ulpFCP2Rcvy = 1;
 	}
+
+	if ((fcpcmd->fcpCntl3) && (fcpcmd->fcpDl == 0))
+		fcpcmd->fcpCntl3 = 0;
 
 	switch (fcpcmd->fcpCntl3) {
 	case READ_DATA:
@@ -1235,6 +1240,13 @@ sndsczout:
 	if (mp) {
 		lpfc_mbuf_free(phba, mp->virt, mp->phys);
 		kfree(mp);
+	}
+
+	list_for_each_safe(curr, next, &bmp->list) {
+		mlast = list_entry(curr, struct lpfc_dmabuf, list);
+		list_del(&mlast->list);
+		lpfc_mbuf_free(phba, mlast->virt, mlast->phys);
+		kfree(mlast);
 	}
 
 	if (bmp) {
@@ -1793,6 +1805,20 @@ lpfc_sli_ioctl_mbox_cmpl(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	mempool_free( pmb, phba->mbox_mem_pool);
 	return;
 }
+static void
+lpfc_ioctl_wake_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq)
+{
+	wait_queue_head_t *pdone_q;
+
+	/* 
+	 * If pdone_q is empty, the driver thread gave up waiting and
+	 * continued running.
+	 */
+	pdone_q = (wait_queue_head_t *) pmboxq->context1;
+	if (pdone_q)
+		wake_up(pdone_q);
+	return;
+}
 
 int
 lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
@@ -1822,6 +1848,14 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 	}
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if (phba->over_temp_state == HBA_OVER_TEMP) {
+		rc = EPERM;
+		goto lpfc_ioctl_mbox_out;
+	}
+	if (phba->restart_pending ) {
+		rc = EIO;
+		goto lpfc_ioctl_mbox_out;
+	}
 	psli = &phba->sli;
 
 	pmbox = mempool_alloc(phba->mbox_mem_pool, GFP_ATOMIC);
@@ -1863,7 +1897,6 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 
 	switch (pmbox->mbxCommand) {
 		/* Offline only */
-	case MBX_WRITE_NV:
 	case MBX_INIT_LINK:
 	case MBX_DOWN_LINK:
 	case MBX_CONFIG_LINK:
@@ -1874,10 +1907,7 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 	case MBX_DUMP_CONTEXT:
 	case MBX_RUN_DIAGS:
 	case MBX_RESTART:
-	case MBX_FLASH_WR_ULA:
 	case MBX_SET_MASK:
-	case MBX_SET_SLIM:
-	case MBX_SET_DEBUG:
 		if (!(phba->fc_flag & FC_OFFLINE_MODE)) {
 			rc = ENODEV;
 			goto lpfc_ioctl_mbox_free_pbfrnfo_virt;
@@ -1900,6 +1930,11 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 	case MBX_LOAD_EXP_ROM:
 	case MBX_BEACON:
 	case MBX_DEL_LD_ENTRY:
+	case MBX_SET_DEBUG:
+	case MBX_SET_VARIABLE:
+	case MBX_WRITE_VPARMS:
+	case MBX_WRITE_NV:
+	case MBX_WRITE_WWN:
 		break;
 
 		/* Online / Offline - with DMA */
@@ -1981,6 +2016,15 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 		break;
 	}		/* switch pmbox->command */
 
+	/*
+	 * If HBA encountered an error attention, allow only DUMP
+	 * mailbox command until the HBA is restarted.
+	 */
+	if ((phba->stopped) &&
+		(pmbox->mbxCommand != MBX_DUMP_MEMORY)) {
+		rc = ENODEV;
+		goto lpfc_ioctl_mbox_free_pbfrnfo_virt;
+	}
 
 	pmboxq = mempool_alloc(phba->mbox_mem_pool, GFP_ATOMIC);
 	if (!pmboxq) {
@@ -2015,7 +2059,7 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 
 		/* setup wake call as IOCB callback */
 		if (pmb->mbxCommand != MBX_KILL_BOARD) {
-			pmboxq->mbox_cmpl = lpfc_sli_wake_mbox_wait;
+			pmboxq->mbox_cmpl = lpfc_ioctl_wake_mbox_wait;
 		}
 
 		/* setup context field to pass wait_queue pointer to wake
@@ -2023,7 +2067,7 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 		pmboxq->context1 = &done_q;
 
 		/* start to sleep before we wait, to avoid races */
-		set_current_state(TASK_INTERRUPTIBLE);
+		set_current_state(TASK_UNINTERRUPTIBLE);
 		add_wait_queue(&done_q, &wq_entry);
 
 		/* now issue the command */
@@ -2040,9 +2084,9 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 				   lpfc_mbox_tmo_val(phba, pmb->mbxCommand) * HZ);
 				spin_lock_irqsave(phba->host->host_lock, iflag);
 				pmboxq->context1 = NULL;
-				/* if schedule_timeout returns 0, we timed out
-				   and were not woken up */
-				if ((timeleft == 0) || signal_pending(current)) {
+				if (timeleft == 0) {
+					/* if schedule_timeout returns 0, we
+					   timed out and were not woken up */
 					retval = MBX_TIMEOUT;
 				} else {
 					retval = MBX_SUCCESS;
@@ -3046,8 +3090,6 @@ lpfc_ioctl_list_bind(struct lpfc_hba * phba,
 		memcpy(&bind_array[next_index].wwnn, &pndl->nlp_nodename,
 		       sizeof (HBA_WWN));
 		bind_array[next_index].flags |= HBA_BIND_UNMAPPED;
-		if (pndl->nlp_flag & NLP_TGT_NO_SCSIID)
-			bind_array[next_index].flags |= HBA_BIND_NOSCSIID;
 		if (pndl->nlp_flag & NLP_NODEV_TMO)
 			bind_array[next_index].flags |= HBA_BIND_NODEVTMO;
 
@@ -3810,6 +3852,153 @@ dfc_cmd_data_alloc(struct lpfc_hba * phba,
 	return (mlist);
 out:
 	dfc_cmd_data_free(phba, mlist);
+	return (0);
+}
+
+DMABUFEXT_t *
+dfc_fcp_cmd_data_alloc(struct lpfc_hba * phba,
+		   char *indataptr, struct ulp_bde64 * bpl,
+		   uint32_t size, struct lpfc_dmabuf *bmp_list)
+{
+	DMABUFEXT_t *mlist = 0;
+	DMABUFEXT_t *dmp;
+	int cnt, offset = 0, i = 0;
+	struct pci_dev *pcidev;
+	uint32_t num_bmps, num_bde, max_bde;
+	uint32_t top_num_bdes = 0;
+	struct list_head *curr, *next;
+	struct lpfc_dmabuf *mlast;
+	struct lpfc_dmabuf *bmp;
+	struct ulp_bde64 *topbpl = NULL;
+	num_bmps = 1;
+	num_bde = 0;
+	
+
+	pcidev = phba->pcidev;
+
+	/*
+	 * 3 bdes are reserved for a fcp_command, a fcp_reponse and
+	 * a continuation bde.
+	 */
+	max_bde = (LPFC_BPL_SIZE / sizeof(struct ulp_bde64))-3;
+
+
+	while (size) {
+		/* We get chucks of 4K */
+		if (size > 8192)
+			cnt = 8192;
+		else
+			cnt = size;
+
+		if (num_bde == max_bde) {
+			bmp = kmalloc(sizeof (struct lpfc_dmabuf),
+				GFP_KERNEL);
+			if (bmp == 0) {
+				goto out;
+			}
+			memset(bmp, 0, sizeof (struct lpfc_dmabuf));
+			bmp->virt =
+				lpfc_mbuf_alloc(phba, 0, &bmp->phys);
+			if (!bmp->virt) {
+				kfree(bmp);
+				goto out;
+			}
+			max_bde = ((LPFC_BPL_SIZE / sizeof(struct ulp_bde64))-3);
+			/* Fill in continuation entry to next bpl */
+			bpl->addrHigh =
+				le32_to_cpu(putPaddrHigh(bmp->phys));
+			bpl->addrLow =
+				le32_to_cpu(putPaddrLow(bmp->phys));
+			bpl->tus.f.bdeFlags = BPL64_SIZE_WORD;
+			num_bde++;
+			if (num_bmps == 1) {
+				top_num_bdes = num_bde;
+			} else {
+				topbpl->tus.f.bdeSize = (num_bde *
+					sizeof (struct ulp_bde64));
+				topbpl->tus.w =
+					le32_to_cpu(topbpl->tus.w);
+			}
+			topbpl = bpl;
+			bpl = (struct ulp_bde64 *) bmp->virt;
+			list_add_tail(&bmp->list, &bmp_list->list);
+			num_bde = 0;
+			num_bmps++;
+		}
+
+		/* allocate DMABUFEXT_t buffer header */
+		dmp = kmalloc(sizeof (DMABUFEXT_t), GFP_KERNEL);
+		if ( dmp == 0 ) {
+			goto out;
+		}
+
+		INIT_LIST_HEAD(&dmp->dma.list);
+
+		/* Queue it to a linked list */
+		if (mlist)
+			list_add_tail(&dmp->dma.list, &mlist->dma.list);
+		else
+			mlist = dmp;
+
+		/* allocate buffer */
+		dmp->dma.virt = dma_alloc_coherent(&pcidev->dev, 
+						   cnt, 
+						   &(dmp->dma.phys), 
+						   GFP_KERNEL);
+
+		if (dmp->dma.virt == 0) {
+			goto out;
+		}
+		dmp->size = cnt;
+
+		if (indataptr) {
+			/* Copy data from user space in */
+			if (copy_from_user
+			    ((uint8_t *) dmp->dma.virt,
+			     (uint8_t *) (indataptr + offset), (ulong) cnt)) {
+				goto out;
+			}
+			bpl->tus.f.bdeFlags = 0;
+
+			pci_dma_sync_single_for_device(phba->pcidev,
+				dmp->dma.phys, LPFC_BPL_SIZE, PCI_DMA_TODEVICE);
+
+		} else {
+			memset((uint8_t *)dmp->dma.virt, 0, cnt);
+			bpl->tus.f.bdeFlags = BUFF_USE_RCV;
+		}
+
+		/* build buffer ptr list for IOCB */
+		bpl->addrLow = le32_to_cpu( putPaddrLow(dmp->dma.phys) );
+		bpl->addrHigh = le32_to_cpu( putPaddrHigh(dmp->dma.phys) );
+		bpl->tus.f.bdeSize = (ushort) cnt;
+		bpl->tus.w = le32_to_cpu(bpl->tus.w);
+		bpl++;
+		num_bde++;
+		i++;
+		offset += cnt;
+		size -= cnt;
+	}
+
+	if (num_bmps == 1)
+		mlist->flag = i;
+	else {
+		mlist->flag = top_num_bdes;
+		topbpl->tus.f.bdeSize = (num_bde *
+			sizeof (struct ulp_bde64));
+		topbpl->tus.w =
+			le32_to_cpu(topbpl->tus.w);
+	}
+
+	return (mlist);
+out:
+	dfc_cmd_data_free(phba, mlist);
+	list_for_each_safe(curr, next, &bmp_list->list) {
+		mlast = list_entry(curr, struct lpfc_dmabuf, list);
+		list_del(&mlast->list);
+		lpfc_mbuf_free(phba, mlast->virt, mlast->phys);
+		kfree(mlast);
+	}
 	return (0);
 }
 

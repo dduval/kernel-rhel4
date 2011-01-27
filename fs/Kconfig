@@ -1715,30 +1715,25 @@ config SMB_NLS_REMOTE
 	  smbmount from samba 2.2.0 or later supports this.
 
 config CIFS
-	tristate "CIFS support (advanced network filesystem for Samba, Window and other CIFS compliant servers)"
-	depends on INET
-	select NLS
-	help
-	  This is the client VFS module for the Common Internet File System
-	  (CIFS) protocol which is the successor to the Server Message Block 
-	  (SMB) protocol, the native file sharing mechanism for most early
-	  PC operating systems.  The CIFS protocol is fully supported by 
-	  file servers such as Windows 2000 (including Windows 2003, NT 4  
-	  and Windows XP) as well by Samba (which provides excellent CIFS
-	  server support for Linux and many other operating systems). Currently
-	  you must use the smbfs client filesystem to access older SMB servers
-	  such as Windows 9x and OS/2.
+        tristate "CIFS support (advanced network filesystem for Samba, Window and other CIFS compliant servers)"
+        depends on INET
+        select NLS
+        help
+          This is the client VFS module for the Common Internet File System
+          (CIFS) protocol which is the successor to the Server Message Block
+          (SMB) protocol, the native file sharing mechanism for most early
+          PC operating systems.  The CIFS protocol is fully supported by
+          file servers such as Windows 2000 (including Windows 2003, NT 4
+          and Windows XP) as well by Samba (which provides excellent CIFS
+          server support for Linux and many other operating systems). Limited
+          support for OS/2 and Windows ME and similar servers is provided as well.
 
-	  The intent of the cifs module is to provide an advanced
-	  network file system client for mounting to CIFS compliant servers, 
-	  including support for dfs (hierarchical name space), secure per-user
-	  session establishment, safe distributed caching (oplock), optional
-	  packet signing, Unicode and other internationalization improvements, 
-	  and optional Winbind (nsswitch) integration. You do not need to enable
-	  cifs if running only a (Samba) server. It is possible to enable both
-	  smbfs and cifs (e.g. if you are using CIFS for accessing Windows 2003
-	  and Samba 3 servers, and smbfs for accessing old servers). If you need 
-	  to mount to Samba or Windows 2003 servers from this machine, say Y.
+          The intent of the cifs module is to provide an advanced
+          network file system client for mounting to CIFS compliant servers,
+          including support for dfs (hierarchical name space), secure per-user
+          session establishment, safe distributed caching (oplock), optional
+          packet signing, Unicode and other internationalization improvements.
+          If you need to mount to Samba or Windows from this machine, say Y.
 
 config CIFS_STATS
         bool "CIFS statistics"
@@ -1746,6 +1741,46 @@ config CIFS_STATS
         help
           Enabling this option will cause statistics for each server share
 	  mounted by the cifs client to be displayed in /proc/fs/cifs/Stats
+
+config CIFS_STATS2
+        bool "Extended statistics"
+        depends on CIFS_STATS
+        help
+          Enabling this option will allow more detailed statistics on SMB
+          request timing to be displayed in /proc/fs/cifs/DebugData and also
+          allow optional logging of slow responses to dmesg (depending on the
+          value of /proc/fs/cifs/cifsFYI, see fs/cifs/README for more details).
+          These additional statistics may have a minor effect on performance
+          and memory utilization.
+
+          Unless you are a developer or are doing network performance analysis
+          or tuning, say N.
+
+config CIFS_WEAK_PW_HASH
+       bool "Support legacy servers which use weaker LANMAN security"
+       depends on CIFS
+       help
+         Modern CIFS servers including Samba and most Windows versions
+         (since 1997) support stronger NTLM (and even NTLMv2 and Kerberos)
+         security mechanisms. These hash the password more securely
+         than the mechanisms used in the older LANMAN version of the
+          SMB protocol needed to establish sessions with old SMB servers.
+
+         Enabling this option allows the cifs module to mount to older
+         LANMAN based servers such as OS/2 and Windows 95, but such
+         mounts may be less secure than mounts using NTLM or more recent
+         security mechanisms if you are on a public network.  Unless you
+         have a need to access old SMB servers (and are on a private 
+         network) you probably want to say N.  Even if this support
+         is enabled in the kernel build, they will not be used
+         automatically. At runtime LANMAN mounts are disabled but
+         can be set to required (or optional) either in
+         /proc/fs/cifs (see fs/cifs/README for more detail) or via an
+         option on the mount command. This support is disabled by 
+         default in order to reduce the possibility of a downgrade
+         attack.
+ 
+         If unsure, say N.
 
 config CIFS_XATTR
         bool "CIFS extended attributes (EXPERIMENTAL)"
@@ -1771,6 +1806,30 @@ config CIFS_POSIX
 	  negotiate a newer dialect with servers, such as Samba 3.0.5
 	  or later, that optionally can handle more POSIX like (rather
 	  than Windows like) file behavior.  If unsure, say N.
+
+config CIFS_DEBUG2
+        bool "Enable additional CIFS debugging routines"
+        depends on CIFS
+        help
+           Enabling this option adds a few more debugging routines
+           to the cifs code which slightly increases the size of
+           the cifs module and can cause additional logging of debug
+           messages in some error paths, slowing performance. This
+           option can be turned off unless you are debugging
+           cifs problems.  If unsure, say N.
+
+config CIFS_EXPERIMENTAL
+          bool "CIFS Experimental Features (EXPERIMENTAL)"
+          depends on CIFS && EXPERIMENTAL
+          help
+            Enables cifs features under testing. These features are
+            experimental and currently include DFS support and directory
+            change notification ie fcntl(F_DNOTIFY), as well as the upcall
+            mechanism which will be used for Kerberos session negotiation
+            and uid remapping.  Some of these features also may depend on
+            setting a value of 1 to the pseudo-file /proc/fs/cifs/Experimental
+            (which is disabled by default). See the file fs/cifs/README
+            for more details.  If unsure, say N.
 
 config NCP_FS
 	tristate "NCP file system support (to mount NetWare volumes)"

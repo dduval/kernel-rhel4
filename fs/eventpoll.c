@@ -101,6 +101,9 @@
 /* Maximum number of poll wake up nests we are allowing */
 #define EP_MAX_POLLWAKE_NESTS 4
 
+/* Maximum msec timeout value storeable in a long int */
+#define EP_MAX_MSTIMEO min(1000ULL * MAX_SCHEDULE_TIMEOUT / HZ, (LONG_MAX - 999ULL) / HZ)
+
 /* Macro to allocate a "struct epitem" from the slab cache */
 #define EPI_MEM_ALLOC()	(struct epitem *) kmem_cache_alloc(epi_cache, SLAB_KERNEL)
 
@@ -1449,7 +1452,7 @@ static int ep_events_transfer(struct eventpoll *ep,
 	 * We need to lock this because we could be hit by
 	 * eventpoll_release_file() and epoll_ctl(EPOLL_CTL_DEL).
 	 */
-	down_read(&ep->sem);
+	down_write(&ep->sem);
 
 	/* Collect/extract ready items */
 	if (ep_collect_ready_items(ep, &txlist, maxevents) > 0) {
@@ -1460,7 +1463,7 @@ static int ep_events_transfer(struct eventpoll *ep,
 		ep_reinject_items(ep, &txlist);
 	}
 
-	up_read(&ep->sem);
+	up_write(&ep->sem);
 
 	return eventcnt;
 }
@@ -1479,7 +1482,7 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 	 * and the overflow condition. The passed timeout is in milliseconds,
 	 * that why (t * HZ) / 1000.
 	 */
-	jtimeout = timeout == -1 || timeout > (MAX_SCHEDULE_TIMEOUT - 1000) / HZ ?
+	jtimeout = (timeout < 0 || timeout >= EP_MAX_MSTIMEO) ?
 		MAX_SCHEDULE_TIMEOUT: (timeout * HZ + 999) / 1000;
 
 retry:

@@ -21,7 +21,6 @@
 #define O_DIRECTORY	0200000	/* must be a directory */
 #define O_NOFOLLOW	0400000 /* don't follow links */
 #define O_NOATIME	01000000
-#define O_ATOMICLOOKUP	02000000 /* do atomic file lookup */
 
 #define F_DUPFD		0	/* dup */
 #define F_GETFD		1	/* get close_on_exec */

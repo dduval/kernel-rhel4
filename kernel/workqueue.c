@@ -220,6 +220,11 @@ static int worker_thread(void *__cwq)
 
 static void flush_cpu_workqueue(struct cpu_workqueue_struct *cwq)
 {
+	if (crashdump_mode()) {
+		dump_run_workqueue();
+		return;
+	}
+
 	if (cwq->thread == current) {
 		/*
 		 * Probably keventd trying to flush its own queue. So simply run

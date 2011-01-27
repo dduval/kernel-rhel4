@@ -847,6 +847,8 @@ shrink_zone(struct zone *zone, struct scan_control *sc)
 	sc->nr_to_reclaim = SWAP_CLUSTER_MAX;
 
 	while (nr_active || nr_inactive) {
+		if (current->flags & PF_MEMDIE)
+			break;
 		/* stop after we are way above pages_high, someone might have exited */
 		if ((zone->free_pages > zone->pages_high*2) && !sc->order)
 			break;
@@ -901,6 +903,9 @@ shrink_caches(struct zone **zones, struct scan_control *sc)
 
 	for (i = 0; zones[i] != NULL; i++) {
 		struct zone *zone = zones[i];
+
+		if (current->flags & PF_MEMDIE)
+			return NULL;
 
 		if (zone->present_pages == 0)
 			continue;
@@ -978,6 +983,10 @@ int try_to_free_pages(struct zone **zones,
 		sc.nr_congested = 0;
 		sc.priority = priority;
 		sc.nr_ios = 0;
+
+		if (current->flags & PF_MEMDIE)
+			goto out;
+
 		shrink_caches(zones, &sc);
 		shrink_slab(sc.nr_scanned, gfp_mask, lru_pages);
 		if (reclaim_state) {
@@ -1090,7 +1099,8 @@ loop_again:
 						priority != DEF_PRIORITY)
 					continue;
 
-				if (zone->free_pages <= zone->pages_high) {
+				if (zone->free_pages <= 
+					(zone->pages_high + zone->protection[i])) {
 					end_zone = i;
 					goto scan;
 				}
@@ -1125,7 +1135,8 @@ scan:
 				continue;
 
 			if (nr_pages == 0) {	/* Not software suspend */
-				if (zone->free_pages <= zone->pages_high)
+				if (zone->free_pages <= 
+					(zone->pages_high + zone->protection[end_zone]))
 					all_zones_ok = 0;
 			}
 			zone->temp_priority = priority;

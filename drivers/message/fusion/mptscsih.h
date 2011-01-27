@@ -3,10 +3,10 @@
  *      High performance SCSI / Fibre Channel SCSI Host device driver.
  *      For use with PCI chip/adapter(s):
  *          LSIFC9xx/LSI409xx Fibre Channel
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2007 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  *  $Id: mptscsih.h,v 1.1.2.2 2003/05/07 14:08:35 Exp $
  */
@@ -64,7 +64,7 @@
 #define MPT_SCANDV_BUSY			(0x00000040)
 
 //#define MPT_SCSI_CMD_PER_DEV_HIGH	64
-#define MPT_SCSI_CMD_PER_DEV_HIGH      48
+#define MPT_SCSI_CMD_PER_DEV_HIGH	48
 #define MPT_SCSI_CMD_PER_DEV_LOW	32
 
 #define MPT_SCSI_CMD_PER_LUN		7
@@ -108,11 +108,7 @@ typedef struct _internal_cmd {
 
 extern void mptscsih_remove(struct pci_dev *);
 // This was changed in the 2.6.13 kernel
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 extern void mptscsih_shutdown(struct device *);
-#else
-extern void mptscsih_shutdown(struct pci_dev *);
-#endif
 #ifdef CONFIG_PM
 extern int mptscsih_suspend(struct pci_dev *pdev, pm_message_t state);
 extern int mptscsih_resume(struct pci_dev *pdev);
@@ -122,7 +118,7 @@ extern const char * mptscsih_info(struct Scsi_Host *SChost);
 extern int mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *));
 extern int mptscsih_slave_alloc(struct scsi_device *device);
 extern void mptscsih_slave_destroy(struct scsi_device *device);
-extern int mptscsih_slave_configure(struct scsi_device *device);
+extern int mptscsih_slave_configure(struct scsi_device *device, int queue_depth);
 extern int mptscsih_abort(struct scsi_cmnd * SCpnt);
 extern int mptscsih_dev_reset(struct scsi_cmnd * SCpnt);
 extern int mptscsih_bus_reset(struct scsi_cmnd * SCpnt);
@@ -133,7 +129,9 @@ extern int mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_F
 extern int mptscsih_scandv_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *r);
 extern int mptscsih_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply);
 extern int mptscsih_ioc_reset(MPT_ADAPTER *ioc, int post_reset);
+extern ssize_t mptscsih_store_queue_depth(struct device *dev, const char *buf, size_t count);
 extern void mptscsih_InternalCmdTimer_expired(unsigned long data);
+extern void mptscsih_DVCmdTimer_expired(unsigned long data);
 extern int mptscsih_readFCDevicePage0(MPT_ADAPTER *ioc, u8 bus, u8 targetId, pFCDevicePage0_t fcDevicePage);
 extern void mptscsih_hot_plug_worker_thread(void * arg);
 extern int mptscsih_TMHandler(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 target, u8 lun, int ctx2abort, ulong timeout);
@@ -141,4 +139,4 @@ extern int mptscsih_change_queue_depth(struct scsi_device *sdev, int qdepth);
 extern int mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *iocmd);
 extern int mptscsih_sanity_check(struct scsi_device *sdev);
 extern void mptscsih_poll(struct scsi_device *sdev);
-extern void scsi_print_command(struct scsi_cmnd *cmd);
+extern int	 mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, u8 lun, int ctx2abort, ulong timeout);

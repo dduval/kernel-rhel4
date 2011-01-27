@@ -28,6 +28,7 @@
 #include <linux/slab.h>
 #include <linux/swap.h>
 #include <linux/writeback.h>
+#include <linux/task_io_accounting_ops.h>
 
 /*
  * for max sense size
@@ -2121,17 +2122,24 @@ void drive_stat_acct(struct request *rq, int nr_sectors, int new_io)
 		return;
 
 	if (rw == READ) {
-		disk_stat_add(rq->rq_disk, read_sectors, nr_sectors);
+		all_stat_add(rq->rq_disk, read_sectors, nr_sectors,
+			     rq->sector);
 		if (!new_io)
-			disk_stat_inc(rq->rq_disk, read_merges);
+			all_stat_inc(rq->rq_disk, read_merges, rq->sector);
 	} else if (rw == WRITE) {
-		disk_stat_add(rq->rq_disk, write_sectors, nr_sectors);
+		all_stat_add(rq->rq_disk, write_sectors, nr_sectors,
+			     rq->sector);
 		if (!new_io)
-			disk_stat_inc(rq->rq_disk, write_merges);
+			all_stat_inc(rq->rq_disk, write_merges, rq->sector);
 	}
 	if (new_io) {
+		struct hd_struct *part = get_part(rq->rq_disk, rq->sector);
 		disk_round_stats(rq->rq_disk);
 		rq->rq_disk->in_flight++;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight++;
+		}
 	}
 }
 
@@ -2183,6 +2191,19 @@ void disk_round_stats(struct gendisk *disk)
 }
 
 EXPORT_SYMBOL_GPL(disk_round_stats);
+
+void part_round_stats(struct hd_struct *part)
+{
+	unsigned long now = jiffies;
+	struct partstats *ps = get_partstats(part);
+
+	part_stat_add(part, time_in_queue, ps->in_flight * (now - ps->stamp));
+	ps->stamp = now;
+
+	if (ps->in_flight)
+		part_stat_add(part, io_ticks, (now - ps->stamp_idle));
+	ps->stamp_idle = now;
+}
 
 /*
  * queue lock must be held
@@ -2303,8 +2324,14 @@ static int attempt_merge(request_queue_t *q, struct request *req,
 	elv_merge_requests(q, req, next);
 
 	if (req->rq_disk) {
+		struct hd_struct *part
+			= get_part(req->rq_disk, req->sector);
 		disk_round_stats(req->rq_disk);
 		req->rq_disk->in_flight--;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight--;
+		}
 	}
 
 	__blk_put_request(q, next);
@@ -2531,17 +2558,6 @@ static inline void blk_partition_remap(struct bio *bio)
 
 	if (bdev != bdev->bd_contains) {
 		struct hd_struct *p = bdev->bd_part;
-
-		switch (bio->bi_rw) {
-		case READ:
-			p->read_sectors += bio_sectors(bio);
-			p->reads++;
-			break;
-		case WRITE:
-			p->write_sectors += bio_sectors(bio);
-			p->writes++;
-			break;
-		}
 		bio->bi_sector += p->start_sect;
 		bio->bi_bdev = bdev->bd_contains;
 	}
@@ -2665,10 +2681,12 @@ void submit_bio(int rw, struct bio *bio)
 	BIO_BUG_ON(!bio->bi_size);
 	BIO_BUG_ON(!bio->bi_io_vec);
 	bio->bi_rw = rw;
-	if (rw & WRITE)
+	if (rw & WRITE) {
 		mod_page_state(pgpgout, count);
-	else
+	} else {
+		task_io_account_read(bio->bi_size);
 		mod_page_state(pgpgin, count);
+	}
 
 	if (unlikely(block_dump)) {
 		char b[BDEVNAME_SIZE];
@@ -2986,6 +3004,7 @@ EXPORT_SYMBOL(end_that_request_chunk);
 void end_that_request_last(struct request *req)
 {
 	struct gendisk *disk = req->rq_disk;
+	sector_t sector = req->sector;
 	struct completion *waiting = req->waiting;
 
 	if (unlikely(laptop_mode) && blk_fs_request(req))
@@ -2993,18 +3012,24 @@ void end_that_request_last(struct request *req)
 
 	if (disk && blk_fs_request(req)) {
 		unsigned long duration = jiffies - req->start_time;
+		struct hd_struct *part = get_part(disk, req->sector);
+
 		switch (rq_data_dir(req)) {
 		    case WRITE:
-			disk_stat_inc(disk, writes);
-			disk_stat_add(disk, write_ticks, duration);
+			all_stat_inc(disk, writes, sector);
+			all_stat_add(disk, write_ticks, duration, sector);
 			break;
 		    case READ:
-			disk_stat_inc(disk, reads);
-			disk_stat_add(disk, read_ticks, duration);
+			all_stat_inc(disk, reads, sector);
+			all_stat_add(disk, read_ticks, duration, sector);
 			break;
 		}
 		disk_round_stats(disk);
 		disk->in_flight--;
+		if (part) {
+			part_round_stats(part);
+			get_partstats(part)->in_flight--;
+		}
 	}
 	__blk_put_request(req->q, req);
 	/* Do this LAST! The structure may be freed immediately afterwards */

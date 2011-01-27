@@ -387,6 +387,7 @@ e1000_set_mac_type(struct e1000_hw *hw)
 	case E1000_DEV_ID_82571EB_SERDES_DUAL:
 	case E1000_DEV_ID_82571EB_SERDES_QUAD:
 	case E1000_DEV_ID_82571EB_QUAD_COPPER:
+	case E1000_DEV_ID_82571PT_QUAD_COPPER:
 	case E1000_DEV_ID_82571EB_QUAD_FIBER:
 	case E1000_DEV_ID_82571EB_QUAD_COPPER_LOWPROFILE:
 		hw->mac_type = e1000_82571;
@@ -718,6 +719,11 @@ e1000_reset_hw(struct e1000_hw *hw)
     DEBUGOUT("Masking off all interrupts\n");
     E1000_WRITE_REG(hw, IMC, 0xffffffff);
 
+    if (hw->mac_type == e1000_82571 && hw->alt_mac_addr_is_present) {
+    	hw->laa_is_present = 1;
+    	e1000_rar_set(hw, hw->mac_addr, E1000_RAR_ENTRIES - 1);
+    }
+
     /* Clear any pending interrupt events. */
     icr = E1000_READ_REG(hw, ICR);
 
@@ -1016,6 +1022,13 @@ e1000_init_hw(struct e1000_hw *hw)
         break;
     }
 
+#if defined(CONFIG_PPC64) || defined(CONFIG_PPC)
+    if (hw->mac_type == e1000_82571) {
+        uint32_t gcr = E1000_READ_REG(hw, GCR);
+        gcr |= E1000_GCR_DISABLE_TIMEOUT_MECHANISM;
+        E1000_WRITE_REG(hw, GCR, gcr);
+    }
+#endif 
 
     if (hw->mac_type == e1000_82573) {
         uint32_t gcr = E1000_READ_REG(hw, GCR);
@@ -5692,11 +5705,41 @@ e1000_read_mac_addr(struct e1000_hw * hw)
 {
     uint16_t offset;
     uint16_t eeprom_data, i;
+    u16 mac_addr_offset = 0;
 
     DEBUGFUNC("e1000_read_mac_addr");
 
+    if (hw->mac_type == e1000_82571) {
+        /* Check for an alternate MAC address.  An alternate MAC address can
+         * be setup by pre-boot software and must be treated like a permanent
+         * address and must override the actual permanent MAC address. */
+        if (e1000_read_eeprom(hw, EEPROM_ALT_MAC_ADDR_PTR, 1,
+                              &mac_addr_offset) < 0) {
+            DEBUGOUT("EEPROM Read Error\n");
+            return -E1000_ERR_EEPROM;
+        }
+        if (mac_addr_offset == 0xFFFF)
+            mac_addr_offset = 0;
+
+        if (mac_addr_offset) {
+            if (E1000_READ_REG(hw, STATUS) & E1000_STATUS_FUNC_1)
+                mac_addr_offset += NODE_ADDRESS_SIZE/sizeof(u16);
+
+            /* make sure we have a valid mac address here before using it */
+            if (e1000_read_eeprom(hw, mac_addr_offset, 1, &eeprom_data) < 0) {
+                DEBUGOUT("EEPROM Read Error\n");
+                return -E1000_ERR_EEPROM;
+            }
+            if (eeprom_data & 0x0001)
+                mac_addr_offset = 0;
+	}
+
+        if (mac_addr_offset) 
+                hw->alt_mac_addr_is_present = 1;
+    }
+
     for (i = 0; i < NODE_ADDRESS_SIZE; i += 2) {
-        offset = i >> 1;
+        offset = mac_addr_offset + (i >> 1);
         if (e1000_read_eeprom(hw, offset, 1, &eeprom_data) < 0) {
             DEBUGOUT("EEPROM Read Error\n");
             return -E1000_ERR_EEPROM;
@@ -5712,8 +5755,9 @@ e1000_read_mac_addr(struct e1000_hw * hw)
     case e1000_82546_rev_3:
     case e1000_82571:
     case e1000_80003es2lan:
-        if (E1000_READ_REG(hw, STATUS) & E1000_STATUS_FUNC_1)
-            hw->perm_mac_addr[5] ^= 0x01;
+        if (!mac_addr_offset &&
+            (E1000_READ_REG(hw, STATUS) & E1000_STATUS_FUNC_1))
+                hw->perm_mac_addr[5] ^= 0x01;
         break;
     }
 
@@ -8606,7 +8650,7 @@ e1000_read_ich8_data(struct e1000_hw *hw, uint32_t index,
 
     DEBUGFUNC("e1000_read_ich8_data");
 
-    if (size < 1  || size > 2 || data == 0x0 ||
+    if (size < 1  || size > 2 || data == NULL ||
         index > ICH_FLASH_LINEAR_ADDR_MASK)
         return error;
 
@@ -8840,7 +8884,7 @@ e1000_read_ich8_word(struct e1000_hw *hw, uint32_t index, uint16_t *data)
  * amount of NVM used in each bank is a *minimum* of 4 KBytes, but in fact the
  * bank size may be 4, 8 or 64 KBytes
  *****************************************************************************/
-int32_t
+static int32_t
 e1000_erase_ich8_4k_segment(struct e1000_hw *hw, uint32_t bank)
 {
     union ich8_hws_flash_status hsfsts;

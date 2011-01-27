@@ -1,7 +1,7 @@
 /*
  * SuperTrak EX Series Storage Controller driver for Linux
  *
- *	Copyright (C) 2005, 2006 Promise Technology Inc.
+ *	Copyright (C) 2005-2007 Promise Technology Inc.
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -11,18 +11,15 @@
  *	Written By:
  *		Ed Lin <promise_linux@promise.com>
  *
- *	Version: 3.0.0.1
- *
  */
 
-#include <linux/config.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
-#include <linux/sched.h>
 #include <linux/time.h>
 #include <linux/pci.h>
+#include <linux/blkdev.h>
 #include <linux/interrupt.h>
 #include <linux/types.h>
 #include <linux/module.h>
@@ -30,62 +27,19 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/byteorder.h>
-#ifndef LINUX_VERSION_CODE
-#include <linux/version.h>
-#endif
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
-#include <linux/blk.h>
-#else
-#include <linux/blkdev.h>
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
-#include <scsi.h>
-#include <sd.h>
-#include <hosts.h>
-#else
 #include <scsi/scsi.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_host.h>
-#endif
+#include <scsi/scsi_dbg.h>
 #include <linux/diskdump.h>
+
 #define DRV_NAME "stex"
-#define ST_DRIVER_VERSION "3.0.0.1"
+#define ST_DRIVER_VERSION "3.6.0101.2"
 #define ST_VER_MAJOR 		3
-#define ST_VER_MINOR 		0
-#define ST_OEM 			0
-#define ST_BUILD_VER 		1
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,8)
-#ifndef __iomem
-#define __iomem
-#endif
-
-typedef u16 __le16;
-typedef u32 __le32;
-
-#ifndef DMA_64BIT_MASK
-#define DMA_64BIT_MASK 0xffffffffffffffffULL
-#endif
-#ifndef DMA_32BIT_MASK
-#define DMA_32BIT_MASK 0xffffffffULL
-#endif
-#endif
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,6)
-#ifndef MSEC_PER_SEC
-#define MSEC_PER_SEC 1000L
-#endif
-
-#if HZ <= MSEC_PER_SEC && !(MSEC_PER_SEC % HZ)
-#define msleep(m) schedule_timeout((m + (MSEC_PER_SEC / HZ) - 1) / (MSEC_PER_SEC / HZ))
-#elif HZ > MSEC_PER_SEC && !(HZ % MSEC_PER_SEC)
-#define msleep(m) schedule_timeout(m * (HZ / MSEC_PER_SEC))
-#else
-#define msleep(m) schedule_timeout((m * HZ + MSEC_PER_SEC - 1) / MSEC_PER_SEC)
-#endif
-#endif
+#define ST_VER_MINOR 		6
+#define ST_OEM 			0101
+#define ST_BUILD_VER 		2
 
 enum {
 	/* MU register offset */
@@ -120,8 +74,10 @@ enum {
 	MU_STATE_STARTED			= 4,
 	MU_STATE_RESETTING			= 5,
 
-	MU_MAX_DELAY_TIME			= 240000,
+	MU_MAX_DELAY				= 120,
 	MU_HANDSHAKE_SIGNATURE			= 0x55aaaa55,
+	MU_HANDSHAKE_SIGNATURE_HALF		= 0x5a5a0000,
+	MU_HARD_RESET_WAIT			= 30000,
 	HMU_PARTNER_TYPE			= 2,
 
 	/* firmware returned values */
@@ -159,13 +115,10 @@ enum {
 	SG_CF_64B				= 0x40,	/* 64 bit item */
 	SG_CF_HOST				= 0x20,	/* sg in host memory */
 
-	ST_MAX_ARRAY_SUPPORTED			= 16,
-	ST_MAX_TARGET_NUM			= (ST_MAX_ARRAY_SUPPORTED+1),
-	ST_MAX_LUN_PER_TARGET			= 16,
-
 	st_shasta				= 0,
 	st_vsc					= 1,
-	st_yosemite				= 2,
+	st_vsc1					= 2,
+	st_yosemite				= 3,
 
 	PASSTHRU_REQ_TYPE			= 0x00000001,
 	PASSTHRU_REQ_NO_WAKEUP			= 0x00000100,
@@ -192,6 +145,8 @@ enum {
 	MGT_CMD_SIGNATURE			= 0xba,
 
 	INQUIRY_EVPD				= 0x01,
+
+	ST_ADDITIONAL_MEM			= 0x200000,
 };
 
 /* SCSI inquiry data */
@@ -253,7 +208,9 @@ struct handshake_frame {
 	__le32 partner_ver_minor;
 	__le32 partner_ver_oem;
 	__le32 partner_ver_build;
-	u32 reserved1[4];
+	__le32 extra_offset;	/* NEW */
+	__le32 extra_size;	/* NEW */
+	u32 reserved1[2];
 };
 
 struct req_msg {
@@ -263,7 +220,7 @@ struct req_msg {
 	u8 task_attr;
 	u8 task_manage;
 	u8 prd_entry;
-	u8 payload_sz;		/* payload size in 4-byte */
+	u8 payload_sz;		/* payload size in 4-byte, not used */
 	u8 cdb[STEX_CDB_LENGTH];
 	u8 variable[REQ_VARIABLE_LEN];
 };
@@ -343,6 +300,7 @@ struct st_hba {
 	void __iomem *mmio_base;	/* iomapped PCI memory space */
 	void *dma_mem;
 	dma_addr_t dma_handle;
+	size_t dma_size;
 
 	struct Scsi_Host *host;
 	struct pci_dev *pdev;
@@ -357,10 +315,6 @@ struct st_hba {
 	struct st_ccb ccb[MU_MAX_REQUEST];
 	struct st_ccb *wait_ccb;
 	wait_queue_head_t waitq;
-
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,8)
-	struct timer_list ioctl_timer;
-#endif
 
 	unsigned int mu_status;
 	int out_req_cnt;
@@ -380,18 +334,12 @@ static const char console_inq_page[] =
 	0x0C,0x20,0x20,0x20,0x20,0x20,0x20,0x20
 };
 
-static const char mode_sense_cache[] =
-{
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4
-};
 MODULE_AUTHOR("Ed Lin");
 MODULE_DESCRIPTION("Promise Technology SuperTrak EX Controllers");
 MODULE_LICENSE("GPL");
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,4)
 MODULE_VERSION(ST_DRIVER_VERSION);
-#endif
 
-static inline void stex_gettime(u32 *time)
+static void stex_gettime(__le32 *time)
 {
 	struct timeval tv;
 	do_gettimeofday(&tv);
@@ -400,7 +348,7 @@ static inline void stex_gettime(u32 *time)
 	*(time + 1) = cpu_to_le32((tv.tv_sec >> 16) >> 16);
 }
 
-static inline u16 stex_alloc_tag(unsigned long *bitmap)
+static u16 stex_alloc_tag(unsigned long *bitmap)
 {
 	int i;
 	i = find_first_zero_bit(bitmap, TAG_BITMAP_LENGTH);
@@ -409,12 +357,12 @@ static inline u16 stex_alloc_tag(unsigned long *bitmap)
 	return (u16)i;
 }
 
-static inline void stex_free_tag(unsigned long *bitmap, u16 tag)
+static void stex_free_tag(unsigned long *bitmap, u16 tag)
 {
 	__clear_bit((int)tag, bitmap);
 }
 
-static inline struct status_msg *stex_get_status(struct st_hba *hba)
+static struct status_msg *stex_get_status(struct st_hba *hba)
 {
 	struct status_msg *status =
 		hba->status_buffer + hba->status_tail;
@@ -425,7 +373,26 @@ static inline struct status_msg *stex_get_status(struct st_hba *hba)
 	return status;
 }
 
-static inline struct req_msg *stex_alloc_req(struct st_hba *hba)
+static void stex_set_sense(struct scsi_cmnd *cmd, u8 sk, u8 asc, u8 ascq)
+{
+	cmd->result = (DRIVER_SENSE << 24) | SAM_STAT_CHECK_CONDITION;
+
+	cmd->sense_buffer[0] = 0x70;    /* fixed format, current */
+	cmd->sense_buffer[2] = sk;
+	cmd->sense_buffer[7] = 18 - 8;  /* additional sense length */
+	cmd->sense_buffer[12] = asc;
+	cmd->sense_buffer[13] = ascq;
+}
+
+static void stex_invalid_field(struct scsi_cmnd *cmd,
+			       void (*done)(struct scsi_cmnd *))
+{
+	/* "Invalid field in cbd" */
+	stex_set_sense(cmd, ILLEGAL_REQUEST, 0x24, 0x0);
+	done(cmd);
+}
+
+static struct req_msg *stex_alloc_req(struct st_hba *hba)
 {
 	struct req_msg *req = ((struct req_msg *)hba->dma_mem) +
 		hba->req_head;
@@ -436,7 +403,7 @@ static inline struct req_msg *stex_alloc_req(struct st_hba *hba)
 	return req;
 }
 
-static inline void stex_map_sg(struct st_hba *hba,
+static int stex_map_sg(struct st_hba *hba,
 	struct req_msg *req, struct scsi_cmnd *cmd)
 {
 	struct pci_dev *pdev = hba->pdev;
@@ -455,6 +422,8 @@ static inline void stex_map_sg(struct st_hba *hba,
 		src = (struct scatterlist *) cmd->request_buffer;
 		n_elem = pci_map_sg(pdev, src,
 			cmd->use_sg, cmd->sc_data_direction);
+		if (n_elem <= 0)
+			return -EIO;
 		dst->sg_count = cpu_to_le16((u16)n_elem);
 
 		for (i = 0; i < n_elem; i++, src++) {
@@ -466,7 +435,7 @@ static inline void stex_map_sg(struct st_hba *hba,
 			dst->table[i].ctrl = SG_CF_64B | SG_CF_HOST;
 		}
 		dst->table[--i].ctrl |= SG_CF_EOT;
-		return;
+		return 0;
 	}
 
 	dma_handle = pci_map_single(pdev, cmd->request_buffer,
@@ -478,9 +447,10 @@ static inline void stex_map_sg(struct st_hba *hba,
 	dst->table[0].addr_hi = cpu_to_le32((dma_handle >> 16) >> 16);
 	dst->table[0].count = cpu_to_le32((u32)cmd->request_bufflen);
 	dst->table[0].ctrl = SG_CF_EOT | SG_CF_64B | SG_CF_HOST;
+	return 0;
 }
 
-static int stex_direct_cp(struct scsi_cmnd *cmd,
+static int stex_direct_copy(struct scsi_cmnd *cmd,
 	const void *src, unsigned int len)
 {
 	void *dest;
@@ -538,7 +508,6 @@ stex_send_cmd(struct st_hba *hba, struct req_msg *req, u16 tag)
 	req->tag = cpu_to_le16(tag);
 	req->task_attr = TASK_ATTRIBUTE_SIMPLE;
 	req->task_manage = 0; /* not supported yet */
-	req->payload_sz = (u8)(sizeof(struct req_msg)/sizeof(u32));
 
 	hba->ccb[tag].req = req;
 	hba->out_req_cnt++;
@@ -559,7 +528,7 @@ stex_slave_config(struct scsi_device *sdev)
 }
 
 static int
-stex_queuecommand(struct scsi_cmnd *cmd, void (* fn)(struct scsi_cmnd *))
+stex_queuecommand(struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
 {
 	struct st_hba *hba;
 	struct Scsi_Host *host;
@@ -568,64 +537,55 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* fn)(struct scsi_cmnd *))
 	u16 tag;
 	host = cmd->device->host;
 	id = cmd->device->id;
-	lun = cmd->device->channel; /* firmware lun issue work around */
+	lun = cmd->device->lun;
 	hba = (struct st_hba *) &host->hostdata[0];
+	if (hba->mu_status != MU_STATE_STARTED)
+		return SCSI_MLQUEUE_HOST_BUSY;
 
 	switch (cmd->cmnd[0]) {
-	case READ_6:
-	case WRITE_6:
-		cmd->cmnd[9] = 0;
-		cmd->cmnd[8] = cmd->cmnd[4];
-		cmd->cmnd[7] = 0;
-		cmd->cmnd[6] = 0;
-		cmd->cmnd[5] = cmd->cmnd[3];
-		cmd->cmnd[4] = cmd->cmnd[2];
-		cmd->cmnd[3] = cmd->cmnd[1] & 0x1f;
-		cmd->cmnd[2] = 0;
-		cmd->cmnd[1] &= 0xe0;
-		cmd->cmnd[0] += READ_10 - READ_6;
-		break;
-	case MODE_SENSE:
-	{
-		static char mode_sense[4] = { 3, 0, 0, 0 };
-
-		if (cmd->cmnd[1] == 0x00 && cmd->cmnd[2] == 0x08)
-			stex_direct_cp(cmd, mode_sense_cache,
-				sizeof(mode_sense_cache)); /* cache enabled */
-		else
-			stex_direct_cp(cmd, mode_sense, sizeof(mode_sense));
-		cmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
-		fn(cmd);
-		return 0;
-	}
 	case MODE_SENSE_10:
 	{
-		static char mode_sense10[8] = { 0, 6, 0, 0, 0, 0, 0, 0 };
-
-		stex_direct_cp(cmd, mode_sense10, sizeof(mode_sense10));
-		cmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
-		fn(cmd);
+		static char ms10_caching_page[12] =
+			{ 0, 0x12, 0, 0, 0, 0, 0, 0, 0x8, 0xa, 0x4, 0 };
+		unsigned char page;
+		page = cmd->cmnd[2] & 0x3f;
+		if (page == 0x8 || page == 0x3f) {
+			stex_direct_copy(cmd, ms10_caching_page,
+					sizeof(ms10_caching_page));
+			cmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
+			done(cmd);
+		} else
+			stex_invalid_field(cmd, done);
 		return 0;
 	}
+	case REPORT_LUNS:
+		/*
+		 * The shasta firmware does not report actual luns in the
+		 * target, so fail the command to force sequential lun scan.
+		 * Also, the console device does not support this command.
+		 */
+		if (hba->cardtype == st_shasta || id == host->max_id - 1) {
+			stex_invalid_field(cmd, done);
+			return 0;
+		}
+		break;
 	case TEST_UNIT_READY:
-	case START_STOP:
-		if (id == ST_MAX_ARRAY_SUPPORTED) {
+		if (id == host->max_id - 1) {
 			cmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
-			fn(cmd);
+			done(cmd);
 			return 0;
 		}
 		break;
 	case INQUIRY:
-		if (id != ST_MAX_ARRAY_SUPPORTED)
+		if (id != host->max_id - 1)
 			break;
 		if (lun == 0 && (cmd->cmnd[1] & INQUIRY_EVPD) == 0) {
-			stex_direct_cp(cmd, console_inq_page,
+			stex_direct_copy(cmd, console_inq_page,
 				sizeof(console_inq_page));
 			cmd->result = DID_OK << 16 | COMMAND_COMPLETE << 8;
+			done(cmd);
 		} else
-			cmd->result = DID_NO_CONNECT << 16 |
-					COMMAND_COMPLETE << 8;
-		fn(cmd);
+			stex_invalid_field(cmd, done);
 		return 0;
 	case PASSTHRU_CMD:
 		if (cmd->cmnd[1] == PASSTHRU_GET_DRVVER) {
@@ -635,33 +595,28 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* fn)(struct scsi_cmnd *))
 			ver.oem = ST_OEM;
 			ver.build = ST_BUILD_VER;
 			ver.signature[0] = PASSTHRU_SIGNATURE;
-			ver.console_id = ST_MAX_ARRAY_SUPPORTED;
+			ver.console_id = host->max_id - 1;
 			ver.host_no = hba->host->host_no;
-			cmd->result = stex_direct_cp(cmd, &ver, sizeof(ver)) ?
+			cmd->result = stex_direct_copy(cmd, &ver, sizeof(ver)) ?
 				DID_OK << 16 | COMMAND_COMPLETE << 8 :
 				DID_ERROR << 16 | COMMAND_COMPLETE << 8;
-			fn(cmd);
+			done(cmd);
 			return 0;
 		}
 	default:
 		break;
 	}
 
-	cmd->scsi_done = fn;
+	cmd->scsi_done = done;
 
 	if (unlikely((tag = stex_alloc_tag((unsigned long *)&hba->tag))
-		== TAG_BITMAP_LENGTH))
+		>= host->can_queue))
 		return SCSI_MLQUEUE_HOST_BUSY;
 
 	req = stex_alloc_req(hba);
 
-	if (hba->cardtype == st_yosemite) {
-		req->lun = lun * (ST_MAX_TARGET_NUM - 1) + id;
-		req->target = 0;
-	} else {
-		req->lun = lun;
-		req->target = id;
-	}
+	req->lun = lun;
+	req->target = id;
 
 	/* cdb */
 	memcpy(req->cdb, cmd->cmnd, STEX_CDB_LENGTH);
@@ -684,7 +639,7 @@ stex_queuecommand(struct scsi_cmnd *cmd, void (* fn)(struct scsi_cmnd *))
 	return 0;
 }
 
-static inline void stex_unmap_sg(struct st_hba *hba, struct scsi_cmnd *cmd)
+static void stex_unmap_sg(struct st_hba *hba, struct scsi_cmnd *cmd)
 {
 	if (cmd->sc_data_direction != DMA_NONE) {
 		if (cmd->use_sg)
@@ -696,7 +651,7 @@ static inline void stex_unmap_sg(struct st_hba *hba, struct scsi_cmnd *cmd)
 	}
 }
 
-static inline void stex_scsi_done(struct st_ccb *ccb)
+static void stex_scsi_done(struct st_ccb *ccb)
 {
 	struct scsi_cmnd *cmd = ccb->cmd;
 	int result;
@@ -738,7 +693,7 @@ static inline void stex_scsi_done(struct st_ccb *ccb)
 	cmd->scsi_done(cmd);
 }
 
-static inline void stex_copy_data(struct st_ccb *ccb,
+static void stex_copy_data(struct st_ccb *ccb,
 	struct status_msg *resp, unsigned int variable)
 {
 	void *p;
@@ -766,7 +721,7 @@ static void stex_ys_commands(struct st_hba *hba,
 	struct scatterlist *sg;
 	if (ccb->cmd->cmnd[0] == MGT_CMD &&
 		resp->scsi_status != SAM_STAT_CHECK_CONDITION) {
-		ccb->cmd->request_bufflen =
+		ccb->cmd->resid = ccb->cmd->request_bufflen -
 			le32_to_cpu(*(__le32 *)&resp->variable[0]);
 		return;
 	}
@@ -789,19 +744,6 @@ static void stex_ys_commands(struct st_hba *hba,
 			ccb->srb_status = SRB_STATUS_SUCCESS;
 		if (ccb->cmd->use_sg)
 			kunmap_atomic((void *)inq_data - sg->offset, KM_IRQ0);
-	} else if (ccb->cmd->cmnd[0] == REPORT_LUNS) {
-		u8 *rl;
-
-		if (ccb->cmd->use_sg)
-			rl = kmap_atomic(sg->page, KM_IRQ0) + sg->offset;
-		else
-			rl = ccb->cmd->request_buffer;
-		if (rl[2] || rl[3]) {
-			rl[2] = 0x00;
-			rl[3] = 0x08;
-		}
-		if (ccb->cmd->use_sg)
-			kunmap_atomic((void *)rl - sg->offset, KM_IRQ0);
 	}
 }
 
@@ -824,8 +766,17 @@ static void stex_mu_intr(struct st_hba *hba, u32 doorbell)
 		return;
 	}
 
-	if (unlikely(hba->mu_status != MU_STATE_STARTED ||
-		hba->out_req_cnt <= 0)) {
+	/*
+	 * it's not a valid status payload if:
+	 * 1. there are no pending requests(e.g. during init stage)
+	 * 2. there are some pending requests, but the controller is in
+	 *     reset status, and its type is not st_yosemite
+	 * firmware of st_yosemite in reset status will return pending requests
+	 * to driver, so we allow it to pass
+	 */
+	if (unlikely(hba->out_req_cnt <= 0 ||
+			(hba->mu_status == MU_STATE_RESETTING &&
+			 hba->cardtype != st_yosemite))) {
 		hba->status_tail = hba->status_head;
 		goto update_status;
 	}
@@ -833,7 +784,7 @@ static void stex_mu_intr(struct st_hba *hba, u32 doorbell)
 	while (hba->status_tail != hba->status_head) {
 		resp = stex_get_status(hba);
 		tag = le16_to_cpu(resp->tag);
-		if (unlikely(tag >= TAG_BITMAP_LENGTH)) {
+		if (unlikely(tag >= hba->host->can_queue)) {
 			printk(KERN_WARNING DRV_NAME
 				"(%s): invalid tag\n", pci_name(hba->pdev));
 			continue;
@@ -844,7 +795,6 @@ static void stex_mu_intr(struct st_hba *hba, u32 doorbell)
 			continue;
 		}
 
-		hba->out_req_cnt--;
 		ccb = &hba->ccb[tag];
 		if (hba->wait_ccb == ccb)
 			hba->wait_ccb = NULL;
@@ -852,6 +802,7 @@ static void stex_mu_intr(struct st_hba *hba, u32 doorbell)
 			printk(KERN_WARNING DRV_NAME
 				"(%s): lagging req\n", pci_name(hba->pdev));
 			stex_free_tag((unsigned long *)&hba->tag, tag);
+			hba->out_req_cnt--;
 			continue;
 		}
 
@@ -869,7 +820,20 @@ static void stex_mu_intr(struct st_hba *hba, u32 doorbell)
 		ccb->srb_status = resp->srb_status;
 		ccb->scsi_status = resp->scsi_status;
 
-		if (ccb->req_type & PASSTHRU_REQ_TYPE) {
+		if (likely(ccb->cmd != NULL)) {
+			if (hba->cardtype == st_yosemite)
+				stex_ys_commands(hba, ccb, resp);
+
+			if (unlikely(ccb->cmd->cmnd[0] == PASSTHRU_CMD &&
+				ccb->cmd->cmnd[1] == PASSTHRU_GET_ADAPTER))
+				stex_controller_info(hba, ccb);
+
+			stex_free_tag((unsigned long *)&hba->tag, tag);
+			stex_unmap_sg(hba, ccb->cmd);
+			stex_scsi_done(ccb);
+			hba->out_req_cnt--;
+		} else if (ccb->req_type & PASSTHRU_REQ_TYPE) {
+			hba->out_req_cnt--;
 			if (ccb->req_type & PASSTHRU_REQ_NO_WAKEUP) {
 				ccb->req_type = 0;
 				continue;
@@ -877,18 +841,7 @@ static void stex_mu_intr(struct st_hba *hba, u32 doorbell)
 			ccb->req_type = 0;
 			if (waitqueue_active(&hba->waitq))
 				wake_up(&hba->waitq);
-			continue;
 		}
-
-		if (hba->cardtype == st_yosemite)
-			stex_ys_commands(hba, ccb, resp);
-
-		if (ccb->cmd->cmnd[0] == PASSTHRU_CMD &&
-			ccb->cmd->cmnd[1] == PASSTHRU_GET_ADAPTER)
-			stex_controller_info(hba, ccb);
-		stex_free_tag((unsigned long *)&hba->tag, tag);
-		stex_unmap_sg(hba, ccb->cmd);
-		stex_scsi_done(ccb);
 	}
 
 update_status:
@@ -921,46 +874,38 @@ static irqreturn_t stex_intr(int irq, void *__hba, struct pt_regs *regs)
 	return IRQ_RETVAL(handled);
 }
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,8)
-static void stex_timeout(wait_queue_head_t *waitq_p)
-{
-	if (waitqueue_active(waitq_p))
-		wake_up(waitq_p);
-}
-
-static void stex_add_timer(struct st_hba *hba, unsigned long data, int sched)
-{
-	hba->ioctl_timer.data = data;
-	hba->ioctl_timer.function = (void (*)(unsigned long))stex_timeout;
-	mod_timer(&hba->ioctl_timer, jiffies + sched);
-}
-#endif
-
 static int stex_handshake(struct st_hba *hba)
 {
 	void __iomem *base = hba->mmio_base;
 	struct handshake_frame *h;
 	dma_addr_t status_phys;
-	int i;
+	u32 data;
+	unsigned long before;
 
 	if (readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE) {
 		writel(MU_INBOUND_DOORBELL_HANDSHAKE, base + IDBL);
 		readl(base + IDBL);
-		for (i = 0; readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE
-			&& i < MU_MAX_DELAY_TIME; i++) {
+		before = jiffies;
+		while (readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE) {
+			if (time_after(jiffies, before + MU_MAX_DELAY * HZ)) {
+				printk(KERN_ERR DRV_NAME
+					"(%s): no handshake signature\n",
+					pci_name(hba->pdev));
+				return -1;
+			}
 			rmb();
 			diskdump_msleep(1);
-		}
-
-		if (i == MU_MAX_DELAY_TIME) {
-			printk(KERN_ERR DRV_NAME
-				"(%s): no handshake signature\n",
-				pci_name(hba->pdev));
-			return -1;
 		}
 	}
 
 	udelay(10);
+
+	data = readl(base + OMR1);
+	if ((data & 0xffff0000) == MU_HANDSHAKE_SIGNATURE_HALF) {
+		data &= 0x0000ffff;
+		if (hba->host->can_queue > data)
+			hba->host->can_queue = data;
+	}
 
 	h = (struct handshake_frame *)(hba->dma_mem + MU_REQ_BUFFER_SIZE);
 	h->rb_phy = cpu_to_le32(hba->dma_handle);
@@ -971,6 +916,11 @@ static int stex_handshake(struct st_hba *hba)
 	h->status_cnt = cpu_to_le16(MU_STATUS_COUNT);
 	stex_gettime(&h->hosttime);
 	h->partner_type = HMU_PARTNER_TYPE;
+	if (hba->dma_size > MU_BUFFER_SIZE) {
+		h->extra_offset = cpu_to_le32(MU_BUFFER_SIZE);
+		h->extra_size = cpu_to_le32(ST_ADDITIONAL_MEM);
+	} else
+		h->extra_offset = h->extra_size = 0;
 
 	status_phys = hba->dma_handle + MU_REQ_BUFFER_SIZE;
 	writel(status_phys, base + IMR0);
@@ -984,17 +934,16 @@ static int stex_handshake(struct st_hba *hba)
 	readl(base + IDBL); /* flush */
 
 	udelay(10);
-	for (i = 0; readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE
-		&& i < MU_MAX_DELAY_TIME; i++) {
+	before = jiffies;
+	while (readl(base + OMR0) != MU_HANDSHAKE_SIGNATURE) {
+		if (time_after(jiffies, before + MU_MAX_DELAY * HZ)) {
+			printk(KERN_ERR DRV_NAME
+				"(%s): no signature after handshake frame\n",
+				pci_name(hba->pdev));
+			return -1;
+		}
 		rmb();
 		diskdump_msleep(1);
-	}
-
-	if (i == MU_MAX_DELAY_TIME) {
-		printk(KERN_ERR DRV_NAME
-			"(%s): no signature after handshake frame\n",
-			pci_name(hba->pdev));
-		return -1;
 	}
 
 	writel(0, base + IMR0);
@@ -1013,21 +962,27 @@ static int stex_abort(struct scsi_cmnd *cmd)
 {
 	struct Scsi_Host *host = cmd->device->host;
 	struct st_hba *hba = (struct st_hba *)host->hostdata;
-	u16 tag;
-	void __iomem *base = hba->mmio_base;
+	u16 tag = cmd->request->tag;
+	void __iomem *base;
 	u32 data;
 	int result = SUCCESS;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-	unsigned long flags;
-	spin_lock_irqsave(host->host_lock, flags);
-#endif
-	for (tag = 0; tag < MU_MAX_REQUEST; tag++)
-		if (hba->ccb[tag].cmd == cmd && (hba->tag & (1 << tag))) {
-			hba->wait_ccb = &(hba->ccb[tag]);
-			break;
-		}
-	if (tag >= MU_MAX_REQUEST)
-		goto out;
+
+	printk(KERN_INFO DRV_NAME
+		"(%s): aborting command\n", pci_name(hba->pdev));
+	scsi_print_command(cmd);
+
+	base = hba->mmio_base;
+	if (tag < host->can_queue && hba->ccb[tag].cmd == cmd)
+		hba->wait_ccb = &hba->ccb[tag];
+	else {
+		for (tag = 0; tag < host->can_queue; tag++)
+			if (hba->ccb[tag].cmd == cmd) {
+				hba->wait_ccb = &hba->ccb[tag];
+				break;
+			}
+		if (tag >= host->can_queue)
+			goto out;
+	}
 
 	data = readl(base + ODBL);
 	if (data == 0 || data == 0xffffffff)
@@ -1050,9 +1005,6 @@ fail_out:
 	hba->wait_ccb = NULL;
 	result = FAILED;
 out:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-	spin_unlock_irqrestore(host->host_lock, flags);
-#endif
 	return result;
 }
 
@@ -1073,13 +1025,18 @@ static void stex_hard_reset(struct st_hba *hba)
 	pci_read_config_byte(bus->self, PCI_BRIDGE_CONTROL, &pci_bctl);
 	pci_bctl |= PCI_BRIDGE_CTL_BUS_RESET;
 	pci_write_config_byte(bus->self, PCI_BRIDGE_CONTROL, pci_bctl);
-	diskdump_msleep(1);
+
+	/*
+	 * 1 ms may be enough for 8-port controllers. But 16-port controllers
+	 * require more time to finish bus reset. Use 100 ms here for safety
+	 */
+	diskdump_msleep(100);
 	pci_bctl &= ~PCI_BRIDGE_CTL_BUS_RESET;
 	pci_write_config_byte(bus->self, PCI_BRIDGE_CONTROL, pci_bctl);
 
-	for (i = 0; i < MU_MAX_DELAY_TIME; i++) {
+	for (i = 0; i < MU_HARD_RESET_WAIT; i++) {
 		pci_read_config_word(hba->pdev, PCI_COMMAND, &pci_cmd);
-		if (pci_cmd & PCI_COMMAND_MASTER)
+		if (pci_cmd != 0xffff && (pci_cmd & PCI_COMMAND_MASTER))
 			break;
 		diskdump_msleep(1);
 	}
@@ -1095,6 +1052,10 @@ static int stex_reset(struct scsi_cmnd *cmd)
 	struct st_hba *hba;
 	unsigned long before;
 	hba = (struct st_hba *) &cmd->device->host->hostdata[0];
+
+	printk(KERN_INFO DRV_NAME
+		"(%s): resetting host\n", pci_name(hba->pdev));
+	scsi_print_command(cmd);
 
 	hba->mu_status = MU_STATE_RESETTING;
 	spin_unlock_irq_dump(hba->host->host_lock);
@@ -1137,36 +1098,6 @@ static int stex_reset(struct scsi_cmnd *cmd)
 	spin_lock_irq(hba->host->host_lock);
 	hba->mu_status = MU_STATE_STARTED;
 	return SUCCESS;
-}
-
-static void stex_init_hba(struct st_hba *hba,
-	struct Scsi_Host * host, struct pci_dev *pdev)
-{
-	host->max_channel = ST_MAX_LUN_PER_TARGET - 1; /* fw lun work around */
-	host->max_id = ST_MAX_TARGET_NUM;
-	host->max_lun = 1; /* fw lun work around */
-	host->unique_id = host->host_no;
-	host->max_cmd_len = STEX_CDB_LENGTH;
-
-	hba->host = host;
-	hba->pdev = pdev;
-	init_waitqueue_head(&hba->waitq);
-#if LINUX_VERSION_CODE  <= KERNEL_VERSION(2,6,8)
-	init_timer(&hba->ioctl_timer);
-#endif
-}
-
-static int stex_init_shm(struct st_hba *hba, struct pci_dev *pdev)
-{
-	hba->dma_mem = pci_alloc_consistent(pdev,
-		MU_BUFFER_SIZE, &hba->dma_handle);
-	if (!hba->dma_mem)
-		return -ENOMEM;
-
-	hba->status_buffer =
-		(struct status_msg *)(hba->dma_mem + MU_REQ_BUFFER_SIZE);
-	hba->mu_status = MU_STATE_STARTING;
-	return 0;
 }
 
 static void stex_internal_flush(struct st_hba *hba, u16 tag)
@@ -1214,11 +1145,11 @@ static int stex_proc_info(struct Scsi_Host *host, char *buffer, char **start,
 		return 0;
 	}
 	len = sprintf(buffer,
-		"***** SuperTrak EX8350/8300/16350/16300 Driver %s*****\n",
+		"***** SuperTrak EX Series Storage Controller driver %s*****\n",
 		ST_DRIVER_VERSION);
 
 	len += sprintf(buffer + len,
-		"***** Copyright 2005 by Promise Technology, Inc.   *****\n\n");
+		"***** Copyright 2005-2007 Promise Technology, Inc. *****\n\n");
 
 	pos = begin + len;
 
@@ -1247,18 +1178,18 @@ stop_output:
 static int stex_biosparam(struct scsi_device *sdev,
 	struct block_device *bdev, sector_t capacity, int geom[])
 {
-	int heads = 255, sectors = 63, cylinders;
+	int heads = 255, sectors = 63;
 
 	if (capacity < 0x200000) {
 		heads = 64;
 		sectors = 32;
 	}
 
-	cylinders = sector_div(capacity, heads * sectors);
+	sector_div(capacity, heads * sectors);
 
 	geom[0] = heads;
 	geom[1] = sectors;
-	geom[2] = cylinders;
+	geom[2] = capacity;
 
 	return 0;
 }
@@ -1396,7 +1327,7 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_scsi_host_put;
 	}
 
-	hba->mmio_base = ioremap(pci_resource_start(pdev, 0),
+	hba->mmio_base = ioremap_nocache(pci_resource_start(pdev, 0),
 		pci_resource_len(pdev, 0));
 	if ( !hba->mmio_base) {
 		printk(KERN_ERR DRV_NAME "(%s): memory map failed\n",
@@ -1412,16 +1343,42 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_iounmap;
 	}
 
-	err = stex_init_shm(hba, pdev);
-	if (err) {
+	hba->cardtype = (unsigned int) id->driver_data;
+	if (hba->cardtype == st_vsc && (pdev->subsystem_device & 0xf) == 0x1)
+		hba->cardtype = st_vsc1;
+	hba->dma_size = (hba->cardtype == st_vsc1) ?
+		(MU_BUFFER_SIZE + ST_ADDITIONAL_MEM) : (MU_BUFFER_SIZE);
+	hba->dma_mem = dma_alloc_coherent(&pdev->dev,
+		hba->dma_size, &hba->dma_handle, GFP_KERNEL);
+	if (!hba->dma_mem) {
+		err = -ENOMEM;
 		printk(KERN_ERR DRV_NAME "(%s): dma mem alloc failed\n",
 			pci_name(pdev));
 		goto out_iounmap;
 	}
 
-	hba->cardtype = (unsigned int) id->driver_data;
+	hba->status_buffer =
+		(struct status_msg *)(hba->dma_mem + MU_REQ_BUFFER_SIZE);
+	hba->mu_status = MU_STATE_STARTING;
 
-	stex_init_hba(hba, host, pdev);
+	if (hba->cardtype == st_shasta) {
+		host->max_lun = 8;
+		host->max_id = 16 + 1;
+	} else if (hba->cardtype == st_yosemite) {
+		host->max_lun = 128;
+		host->max_id = 1 + 1;
+	} else {
+		/* st_vsc and st_vsc1 */
+		host->max_lun = 1;
+		host->max_id = 128 + 1;
+	}
+	host->max_channel = 0;
+	host->unique_id = host->host_no;
+	host->max_cmd_len = STEX_CDB_LENGTH;
+
+	hba->host = host;
+	hba->pdev = pdev;
+	init_waitqueue_head(&hba->waitq);
 
 	err = request_irq(pdev->irq, stex_intr, SA_SHIRQ, DRV_NAME, hba);
 	if (err) {
@@ -1450,8 +1407,8 @@ stex_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 out_free_irq:
 	free_irq(pdev->irq, hba);
 out_pci_free:
-	pci_free_consistent(pdev, MU_BUFFER_SIZE,
-		hba->dma_mem, hba->dma_handle);
+	dma_free_coherent(&pdev->dev, hba->dma_size,
+			  hba->dma_mem, hba->dma_handle);
 out_iounmap:
 	iounmap(hba->mmio_base);
 out_release_regions:
@@ -1471,7 +1428,7 @@ static void stex_hba_stop(struct st_hba *hba)
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	if ((tag = stex_alloc_tag((unsigned long *)&hba->tag))
-		== TAG_BITMAP_LENGTH) {
+		>= hba->host->can_queue) {
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
 		printk(KERN_ERR DRV_NAME "(%s): unable to alloc tag\n",
 			pci_name(hba->pdev));
@@ -1481,15 +1438,8 @@ static void stex_hba_stop(struct st_hba *hba)
 	stex_internal_flush(hba, tag);
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,8)
-	stex_add_timer(hba, (unsigned long)&hba->waitq,
-		ST_INTERNAL_TIMEOUT*HZ);
-	wait_event(hba->waitq,!(hba->ccb[tag].req_type));
-	del_timer_sync(&hba->ioctl_timer);
-#else
 	wait_event_timeout(hba->waitq,
 		!(hba->ccb[tag].req_type), ST_INTERNAL_TIMEOUT*HZ);
-#endif
 	if (hba->ccb[tag].req_type & PASSTHRU_REQ_TYPE)
 		return;
 
@@ -1506,9 +1456,8 @@ static void stex_hba_free(struct st_hba *hba)
 
 	pci_release_regions(hba->pdev);
 
-	if (hba->dma_mem)
-		pci_free_consistent(hba->pdev, MU_BUFFER_SIZE,
-			hba->dma_mem, hba->dma_handle);
+	dma_free_coherent(&hba->pdev->dev, hba->dma_size,
+			  hba->dma_mem, hba->dma_handle);
 }
 
 static void stex_remove(struct pci_dev *pdev)
@@ -1536,14 +1485,32 @@ static void stex_shutdown(struct device *device)
 }
 
 static struct pci_device_id stex_pci_tbl[] = {
-	{ 0x105a, 0x8350, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0xc350, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0xf350, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x4301, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x4302, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x8301, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x8302, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_shasta },
-	{ 0x105a, 0x8650, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_yosemite },
+	/* st_shasta */
+	{ 0x105a, 0x8350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX8350/8300/16350/16300 */
+	{ 0x105a, 0xc350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX12350 */
+	{ 0x105a, 0x4302, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX4350 */
+	{ 0x105a, 0xe350, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_shasta }, /* SuperTrak EX24350 */
+
+	/* st_vsc */
+	{ 0x105a, 0x7250, PCI_ANY_ID, PCI_ANY_ID, 0, 0, st_vsc },
+
+	/* st_yosemite */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x4600, 0, 0,
+		st_yosemite }, /* SuperTrak EX4650 */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x4610, 0, 0,
+		st_yosemite }, /* SuperTrak EX4650o */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x8600, 0, 0,
+		st_yosemite }, /* SuperTrak EX8650EL */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x8601, 0, 0,
+		st_yosemite }, /* SuperTrak EX8650 */
+	{ 0x105a, 0x8650, PCI_ANY_ID, 0x8602, 0, 0,
+		st_yosemite }, /* SuperTrak EX8654 */
+	{ 0x105a, 0x8650, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		st_yosemite }, /* generic st_yosemite */
 	{ }	/* terminate list */
 };
 MODULE_DEVICE_TABLE(pci, stex_pci_tbl);
@@ -1564,16 +1531,7 @@ static int __init stex_init(void)
 		": Promise SuperTrak EX Driver version: %s\n",
 		 ST_DRIVER_VERSION);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,8)
 	return pci_module_init(&stex_pci_driver);
-#else
-	if (!(pci_register_driver(&stex_pci_driver)) ) {
-		pci_unregister_driver(&stex_pci_driver);
-		return -ENODEV;
-	}
-
-	return 0;
-#endif
 }
 
 static void __exit stex_exit(void)

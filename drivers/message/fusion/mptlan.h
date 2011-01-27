@@ -29,7 +29,7 @@
 #include <asm/io.h>
 
 /* Override mptbase.h by pre-defining these! */
-#define MODULEAUTHOR "LSI Logic Corporation"
+#define MODULEAUTHOR "LSI Corporation"
 
 #include "mptbase.h"
 

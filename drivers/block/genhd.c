@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/kmod.h>
 #include <linux/kobj_map.h>
+#include <linux/hash.h>
 
 static struct subsystem block_subsys;
 
@@ -529,12 +530,28 @@ static int diskstats_show(struct seq_file *s, void *v)
 	for (n = 0; n < gp->minors - 1; n++) {
 		struct hd_struct *hd = gp->part[n];
 
-		if (hd && hd->nr_sects)
-			seq_printf(s, "%4d %4d %s %u %u %u %u\n",
-				gp->major, n + gp->first_minor + 1,
-				disk_name(gp, n + 1, buf),
-				hd->reads, hd->read_sectors,
-				hd->writes, hd->write_sectors);
+		if (!hd || !hd->nr_sects)
+			continue;
+
+		preempt_disable();
+		part_round_stats(hd);
+		preempt_enable();
+		seq_printf(s, "%4d %4d %s %u %u %llu "
+			   "%u %u %u %llu %u %u %u %u\n",
+			   gp->major, n + gp->first_minor + 1,
+			   disk_name(gp, n + 1, buf),
+			   part_stat_read(hd, reads),
+			   part_stat_read(hd, read_merges),
+			   (unsigned long long)part_stat_read(hd, read_sectors),
+			   jiffies_to_msecs(part_stat_read(hd, read_ticks)),
+			   part_stat_read(hd, writes),
+			   part_stat_read(hd, write_merges),
+			   (unsigned long long)part_stat_read(hd, write_sectors),
+			   jiffies_to_msecs(part_stat_read(hd, write_ticks)),
+			   get_partstats(hd)->in_flight,
+			   jiffies_to_msecs(part_stat_read(hd, io_ticks)),
+			   jiffies_to_msecs(part_stat_read(hd, time_in_queue))
+			);
 	}
  
 	return 0;
@@ -561,6 +578,7 @@ struct gendisk *alloc_disk(int minors)
 			int size = (minors - 1) * sizeof(struct hd_struct *);
 			disk->part = kmalloc(size, GFP_KERNEL);
 			if (!disk->part) {
+				free_disk_stats(disk);
 				kfree(disk);
 				return NULL;
 			}
@@ -648,3 +666,67 @@ int invalidate_partition(struct gendisk *disk, int index)
 }
 
 EXPORT_SYMBOL(invalidate_partition);
+
+#define PARTSTATS_HASH_BITS 10
+#define PARTSTATS_HASH_SIZE (1 << PARTSTATS_HASH_BITS)
+struct hlist_head partstats_hash[PARTSTATS_HASH_SIZE] =
+	{ [ 0 ... PARTSTATS_HASH_SIZE - 1 ] = HLIST_HEAD_INIT };
+DEFINE_SPINLOCK(partstats_lock);
+#define partstats_hash_fn(part) \
+	hash_long((unsigned long)(part), PARTSTATS_HASH_BITS)
+
+struct partstats *get_partstats(struct hd_struct *part)
+{
+	struct hlist_head *head;
+	struct hlist_node *node;
+	struct partstats *p;
+
+	head = &partstats_hash[partstats_hash_fn(part)];
+	hlist_for_each_entry_rcu(p, node, head, hlist) {
+		if (p->addr == part)
+			return p;
+	}
+	return NULL;
+}
+EXPORT_SYMBOL(get_partstats);
+
+int init_partstats(struct hd_struct *part)
+{
+	struct partstats *ps = kzalloc(sizeof(struct partstats), GFP_KERNEL);
+	struct hlist_head *head;
+
+	if (!ps)
+		return 0;
+	if (!init_part_stats(ps)) {
+		kfree(ps);
+		return 0;
+	}
+
+	spin_lock(&partstats_lock);
+	head = &partstats_hash[partstats_hash_fn(part)];
+	ps->addr = part;
+	hlist_add_head_rcu(&ps->hlist, head);
+	spin_unlock(&partstats_lock);
+
+	return 1;
+}
+
+void free_partstats_rcu(struct rcu_head *head)
+{
+	struct partstats *ps = container_of(head, struct partstats, rcu);
+	free_part_stats(ps);
+	kfree(ps);
+}
+
+void free_partstats(struct hd_struct *part)
+{
+	struct partstats *ps;
+
+	spin_lock(&partstats_lock);
+	ps = get_partstats(part);
+	if(ps) {
+		hlist_del_rcu(&ps->hlist);
+		call_rcu(&ps->rcu, free_partstats_rcu);
+	}
+	spin_unlock(&partstats_lock);
+}

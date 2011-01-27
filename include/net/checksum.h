@@ -84,4 +84,9 @@ csum_block_sub(unsigned int csum, unsigned int csum2, int offset)
 	return csum_sub(csum, csum2);
 }
 
+static inline __wsum csum_unfold(__sum16 n)
+{
+	return (__force __wsum)n;
+}
+
 #endif

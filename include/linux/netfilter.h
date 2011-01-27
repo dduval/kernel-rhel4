@@ -96,6 +96,7 @@ void nf_unregister_hook(struct nf_hook_ops *reg);
 /* Functions to register get/setsockopt ranges (non-inclusive).  You
    need to check permissions yourself! */
 int nf_register_sockopt(struct nf_sockopt_ops *reg);
+int nf_register_sockopt_owner(struct nf_sockopt_ops *reg, struct module *owner);
 void nf_unregister_sockopt(struct nf_sockopt_ops *reg);
 
 extern struct list_head nf_hooks[NPROTO][NF_MAX_HOOKS];

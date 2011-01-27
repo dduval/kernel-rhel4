@@ -215,6 +215,14 @@ struct ip_conntrack
 	/* Traversed often, so hopefully in different cacheline to top */
 	/* These are my tuples; original and reply */
 	struct ip_conntrack_tuple_hash tuplehash[IP_CT_DIR_MAX];
+#ifndef __GENKSYMS__
+	/*
+	 * Normally these go inside ip_ct_tcp, but in order
+	 * to preserve abi, they need to go here
+	 */
+	u_int32_t last_ack;
+	u_int32_t last_win;
+#endif
 };
 
 /* get master conntrack via master expectation */

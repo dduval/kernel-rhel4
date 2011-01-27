@@ -47,6 +47,7 @@ extern int sysctl_vfs_cache_pressure;
 
 static int nfs_opendir(struct inode *, struct file *);
 static int nfs_readdir(struct file *, void *, filldir_t);
+static int nfs_readdir64(struct file *, void *, filldir64_t);
 static struct dentry *nfs_lookup(struct inode *, struct dentry *, struct nameidata *);
 static int nfs_cached_lookup(struct inode *, struct dentry *,
 				struct nfs_fh *, struct nfs_fattr *);
@@ -62,7 +63,7 @@ static int nfs_rename(struct inode *, struct dentry *,
 static int nfs_fsync_dir(struct file *, struct dentry *, int);
 static loff_t nfs_llseek_dir(struct file *, loff_t, int);
 
-struct file_operations nfs_dir_operations = {
+struct file_operations nfs_dir_file_operations = {
 	.llseek		= nfs_llseek_dir,
 	.read		= generic_read_dir,
 	.readdir	= nfs_readdir,
@@ -87,42 +88,64 @@ struct inode_operations nfs_dir_inode_operations = {
 };
 
 #ifdef CONFIG_NFS_V3
-struct inode_operations nfs3_dir_inode_operations = {
-	.create		= nfs_create,
-	.lookup		= nfs_lookup,
-	.link		= nfs_link,
-	.unlink		= nfs_unlink,
-	.symlink	= nfs_symlink,
-	.mkdir		= nfs_mkdir,
-	.rmdir		= nfs_rmdir,
-	.mknod		= nfs_mknod,
-	.rename		= nfs_rename,
-	.permission	= nfs_permission,
-	.getattr	= nfs_getattr,
-	.setattr	= nfs_setattr,
-	.listxattr	= nfs3_listxattr,
-	.getxattr	= nfs3_getxattr,
-	.setxattr	= nfs3_setxattr,
-	.removexattr	= nfs3_removexattr,
+struct file_operations_ext nfs3_dir_file_operations = {
+	.f_op_orig.llseek	= nfs_llseek_dir,
+	.f_op_orig.read		= generic_read_dir,
+	.f_op_orig.readdir	= nfs_readdir,
+	.f_op_orig.open		= nfs_opendir,
+	.f_op_orig.release	= nfs_release,
+	.f_op_orig.fsync	= nfs_fsync_dir,
+	.readdir64 = nfs_readdir64,
+};
+
+struct inode_operations_ext nfs3_dir_inode_operations = {
+	.i_op_orig.create	= nfs_create,
+	.i_op_orig.lookup	= nfs_lookup,
+	.i_op_orig.link		= nfs_link,
+	.i_op_orig.unlink	= nfs_unlink,
+	.i_op_orig.symlink	= nfs_symlink,
+	.i_op_orig.mkdir	= nfs_mkdir,
+	.i_op_orig.rmdir	= nfs_rmdir,
+	.i_op_orig.mknod	= nfs_mknod,
+	.i_op_orig.rename	= nfs_rename,
+	.i_op_orig.permission	= nfs_permission,
+	.i_op_orig.getattr	= nfs_getattr,
+	.i_op_orig.setattr	= nfs_setattr,
+	.i_op_orig.listxattr	= nfs3_listxattr,
+	.i_op_orig.getxattr	= nfs3_getxattr,
+	.i_op_orig.setxattr	= nfs3_setxattr,
+	.i_op_orig.removexattr	= nfs3_removexattr,
+	.getattr64		= nfs_getattr64,
 };
 #endif  /* CONFIG_NFS_V3 */
 
 #ifdef CONFIG_NFS_V4
 
+struct file_operations_ext nfs4_dir_file_operations = {
+	.f_op_orig.llseek	= nfs_llseek_dir,
+	.f_op_orig.read		= generic_read_dir,
+	.f_op_orig.readdir	= nfs_readdir,
+	.f_op_orig.open		= nfs_opendir,
+	.f_op_orig.release	= nfs_release,
+	.f_op_orig.fsync	= nfs_fsync_dir,
+	.readdir64 = nfs_readdir64,
+};
+
 static struct dentry *nfs_atomic_lookup(struct inode *, struct dentry *, struct nameidata *);
-struct inode_operations nfs4_dir_inode_operations = {
-	.create		= nfs_create,
-	.lookup		= nfs_atomic_lookup,
-	.link		= nfs_link,
-	.unlink		= nfs_unlink,
-	.symlink	= nfs_symlink,
-	.mkdir		= nfs_mkdir,
-	.rmdir		= nfs_rmdir,
-	.mknod		= nfs_mknod,
-	.rename		= nfs_rename,
-	.permission	= nfs_permission,
-	.getattr	= nfs_getattr,
-	.setattr	= nfs_setattr,
+struct inode_operations_ext nfs4_dir_inode_operations = {
+	.i_op_orig.create	= nfs_create,
+	.i_op_orig.lookup	= nfs_atomic_lookup,
+	.i_op_orig.link		= nfs_link,
+	.i_op_orig.unlink	= nfs_unlink,
+	.i_op_orig.symlink	= nfs_symlink,
+	.i_op_orig.mkdir	= nfs_mkdir,
+	.i_op_orig.rmdir	= nfs_rmdir,
+	.i_op_orig.mknod	= nfs_mknod,
+	.i_op_orig.rename	= nfs_rename,
+	.i_op_orig.permission	= nfs_permission,
+	.i_op_orig.getattr	= nfs_getattr,
+	.i_op_orig.setattr	= nfs_setattr,
+	.getattr64		= nfs_getattr64,
 };
 
 #endif /* CONFIG_NFS_V4 */
@@ -154,7 +177,6 @@ typedef struct {
 	struct nfs_entry *entry;
 	decode_dirent_t	decode;
 	int		plus;
-	int		error;
 } nfs_readdir_descriptor_t;
 
 /* Now we cache directories properly, by stuffing the dirent
@@ -212,7 +234,6 @@ int nfs_readdir_filler(nfs_readdir_descriptor_t *desc, struct page *page)
 	SetPageError(page);
 	unlock_page(page);
 	nfs_zap_caches(inode);
-	desc->error = error;
 	return -EIO;
 }
 
@@ -384,11 +405,12 @@ static inline unsigned int dt_type(struct inode *inode)
 
 static struct dentry *nfs_readdir_lookup(nfs_readdir_descriptor_t *desc);
 
+typedef int (*nfs_do_filldir_t)(nfs_readdir_descriptor_t *, void *, filldir_t);
+
 /*
  * Once we've found the start of the dirent within a page: fill 'er up...
  */
-static 
-int nfs_do_filldir(nfs_readdir_descriptor_t *desc, void *dirent,
+static int __nfs_do_filldir(nfs_readdir_descriptor_t *desc, void *dirent,
 		   filldir_t filldir)
 {
 	struct file	*file = desc->file;
@@ -439,6 +461,58 @@ int nfs_do_filldir(nfs_readdir_descriptor_t *desc, void *dirent,
 	return res;
 }
 
+static int __nfs_do_filldir64(nfs_readdir_descriptor_t *desc, void *dirent,
+		   filldir64_t filldir)
+{
+	struct file	*file = desc->file;
+	struct nfs_entry *entry = desc->entry;
+	struct dentry	*dentry = NULL;
+	unsigned long long fileid;
+	int		loop_count = 0,
+			res;
+
+	dfprintk(VFS, "NFS: nfs_do_filldir64() filling starting @ cookie %Lu\n", (long long)entry->cookie);
+
+	for(;;) {
+		unsigned d_type = DT_UNKNOWN;
+		/* Note: entry->prev_cookie contains the cookie for
+		 *	 retrieving the current dirent on the server */
+		fileid = entry->ino;
+
+		/* Get a dentry if we have one */
+		if (dentry != NULL)
+			dput(dentry);
+		dentry = nfs_readdir_lookup(desc);
+
+		/* Use readdirplus info */
+		if (dentry != NULL && dentry->d_inode != NULL) {
+			d_type = dt_type(dentry->d_inode);
+			fileid = NFS_FILEID(dentry->d_inode);
+		}
+
+		res = filldir(dirent, entry->name, entry->len, 
+			      file->f_pos, nfs_compat_user_ino64(fileid),
+			      d_type);
+		if (res < 0)
+			break;
+		file->f_pos++;
+		*desc->dir_cookie = entry->cookie;
+		if (dir_decode(desc) != 0) {
+			desc->page_index ++;
+			break;
+		}
+		if (loop_count++ > 200) {
+			loop_count = 0;
+			schedule();
+		}
+	}
+	dir_page_release(desc);
+	if (dentry != NULL)
+		dput(dentry);
+	dfprintk(VFS, "NFS: nfs_do_filldir64() filling ended @ cookie %Lu; returning = %d\n", (unsigned long long)*desc->dir_cookie, res);
+	return res;
+}
+
 /*
  * If we cannot find a cookie in our cache, we suspect that this is
  * because it points to a deleted file, so we ask the server to return
@@ -453,7 +527,7 @@ int nfs_do_filldir(nfs_readdir_descriptor_t *desc, void *dirent,
  */
 static inline
 int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
-		     filldir_t filldir)
+		     filldir_t filldir, nfs_do_filldir_t nfs_do_filldir)
 {
 	struct file	*file = desc->file;
 	struct inode	*inode = file->f_dentry->d_inode;
@@ -468,8 +542,8 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
 		status = -ENOMEM;
 		goto out;
 	}
-	desc->error = NFS_PROTO(inode)->readdir(file->f_dentry, cred, *desc->dir_cookie,
-						page,
+	status = NFS_PROTO(inode)->readdir(file->f_dentry, cred,
+						*desc->dir_cookie, page,
 						NFS_SERVER(inode)->dtsize,
 						desc->plus);
 	spin_lock(&inode->i_lock);
@@ -477,7 +551,7 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
 	spin_unlock(&inode->i_lock);
 	desc->page = page;
 	desc->ptr = kmap(page);		/* matching kunmap in nfs_do_filldir */
-	if (desc->error >= 0) {
+	if (status >= 0) {
 		if ((status = dir_decode(desc)) == 0)
 			desc->entry->prev_cookie = *desc->dir_cookie;
 	} else
@@ -504,7 +578,8 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
    last cookie cache takes care of the common case of reading the
    whole directory.
  */
-static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
+static int __nfs_readdir(struct file *filp, void *dirent, filldir_t filldir,
+	nfs_do_filldir_t nfs_do_filldir)
 {
 	struct dentry	*dentry = filp->f_dentry;
 	struct inode	*inode = dentry->d_inode;
@@ -552,7 +627,8 @@ static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			/* This means either end of directory */
 			if (*desc->dir_cookie && desc->entry->cookie != *desc->dir_cookie) {
 				/* Or that the server has 'lost' a cookie */
-				res = uncached_readdir(desc, dirent, filldir);
+				res = uncached_readdir(desc, dirent, filldir,
+							nfs_do_filldir);
 				if (res >= 0)
 					continue;
 			}
@@ -576,11 +652,20 @@ static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		}
 	}
 	unlock_kernel();
-	if (desc->error < 0)
-		return desc->error;
 	if (res < 0)
 		return res;
 	return 0;
+}
+
+static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
+{
+	return __nfs_readdir(filp, dirent, filldir, __nfs_do_filldir);
+}
+
+static int nfs_readdir64(struct file *filp, void *dirent, filldir64_t filldir)
+{
+	return __nfs_readdir(filp, dirent, (filldir_t)filldir,
+				(nfs_do_filldir_t)__nfs_do_filldir64);
 }
 
 loff_t nfs_llseek_dir(struct file *filp, loff_t offset, int origin)
@@ -1365,9 +1450,9 @@ static int nfs_rmdir(struct inode *dir, struct dentry *dentry)
 static int nfs_sillyrename(struct inode *dir, struct dentry *dentry)
 {
 	static unsigned int sillycounter;
-	const int      i_inosize  = sizeof(dir->i_ino)*2;
+	const int      fileidsize  = sizeof(NFS_FILEID(dir))*2;
 	const int      countersize = sizeof(sillycounter)*2;
-	const int      slen       = strlen(".nfs") + i_inosize + countersize;
+	const int      slen       = strlen(".nfs") + fileidsize + countersize;
 	char           silly[slen+1];
 	struct qstr    qsilly;
 	struct dentry *sdentry;
@@ -1390,8 +1475,9 @@ dentry->d_parent->d_name.name, dentry->d_name.name);
 	if (dentry->d_flags & DCACHE_NFSFS_RENAMED)
 		goto out;
 
-	sprintf(silly, ".nfs%*.*lx",
-		i_inosize, i_inosize, dentry->d_inode->i_ino);
+	sprintf(silly, ".nfs%*.*Lx",
+		fileidsize, fileidsize,
+		(unsigned long long )NFS_FILEID(dentry->d_inode));
 
 	/* Return delegation in anticipation of the rename */
 	nfs_inode_return_delegation(dentry->d_inode);
@@ -1739,13 +1825,19 @@ int nfs_access_cache_shrinker(int nr_to_scan, gfp_t gfp_mask)
 	spin_lock(&nfs_access_lru_lock);
 restart:
 	list_for_each_entry(nfsi, &nfs_access_lru_list, access_cache_inode_lru) {
+		struct rw_semaphore *s_umount;
 		struct inode *inode;
 
 		if (nr_to_scan-- == 0)
 			break;
-		inode = igrab(&nfsi->vfs_inode);
-		if (inode == NULL)
+		s_umount = &nfsi->vfs_inode.i_sb->s_umount;
+		if (!down_read_trylock(s_umount))
 			continue;
+		inode = igrab(&nfsi->vfs_inode);
+		if (inode == NULL) {
+			up_read(s_umount);
+			continue;
+		}
 		spin_lock(&inode->i_lock);
 		if (list_empty(&nfsi->access_cache_entry_lru))
 			goto remove_lru_entry;
@@ -1763,6 +1855,7 @@ remove_lru_entry:
 		}
 		spin_unlock(&inode->i_lock);
 		iput(inode);
+		up_read(s_umount);
 		goto restart;
 	}
 	spin_unlock(&nfs_access_lru_lock);

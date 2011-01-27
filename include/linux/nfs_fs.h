@@ -324,6 +324,7 @@ extern struct inode *nfs_fhget(struct super_block *, struct nfs_fh *,
 extern int nfs_refresh_inode(struct inode *, struct nfs_fattr *);
 extern int nfs_post_op_update_inode(struct inode *inode, struct nfs_fattr *fattr);
 extern int nfs_getattr(struct vfsmount *, struct dentry *, struct kstat *);
+extern int nfs_getattr64(struct vfsmount *, struct dentry *, struct kstat64 *);
 extern int nfs_permission(struct inode *, int, struct nameidata *);
 extern int nfs_access_get_cached(struct inode *, struct rpc_cred *, struct nfs_access_entry *);
 extern void nfs_access_add_cache(struct inode *, struct nfs_access_entry *);
@@ -347,6 +348,7 @@ extern void put_nfs_open_context(struct nfs_open_context *ctx);
 extern void nfs_file_set_open_context(struct file *filp, struct nfs_open_context *ctx);
 extern struct nfs_open_context *nfs_find_open_context(struct inode *inode, int mode);
 extern void nfs_file_clear_open_context(struct file *filp);
+extern u64 nfs_compat_user_ino64(u64 fileid);
 
 /* linux/net/ipv4/ipconfig.c: trims ip addr off front of name, too. */
 extern u32 root_nfs_parse_addr(char *name); /*__init*/
@@ -362,7 +364,7 @@ static inline void nfs_fattr_init(struct nfs_fattr *fattr)
  */
 extern struct inode_operations nfs_file_inode_operations;
 #ifdef CONFIG_NFS_V3
-extern struct inode_operations nfs3_file_inode_operations;
+extern struct inode_operations_ext nfs3_file_inode_operations;
 #endif /* CONFIG_NFS_V3 */
 extern struct file_operations nfs_file_operations;
 extern struct address_space_operations nfs_file_aops;
@@ -409,9 +411,12 @@ extern ssize_t nfs_file_direct_write(struct kiocb *iocb, const char __user *buf,
  */
 extern struct inode_operations nfs_dir_inode_operations;
 #ifdef CONFIG_NFS_V3
-extern struct inode_operations nfs3_dir_inode_operations;
+extern struct inode_operations_ext nfs3_dir_inode_operations;
 #endif /* CONFIG_NFS_V3 */
-extern struct file_operations nfs_dir_operations;
+extern struct file_operations nfs_dir_file_operations;
+#ifdef CONFIG_NFS_V3
+extern struct file_operations_ext nfs3_dir_file_operations;
+#endif /* CONFIG_NFS_V3 */
 extern struct dentry_operations nfs_dentry_operations;
 
 extern int nfs_instantiate(struct dentry *dentry, struct nfs_fh *fh, struct nfs_fattr *fattr);
@@ -419,7 +424,7 @@ extern int nfs_instantiate(struct dentry *dentry, struct nfs_fh *fh, struct nfs_
 /*
  * linux/fs/nfs/symlink.c
  */
-extern struct inode_operations nfs_symlink_inode_operations;
+extern struct inode_operations_ext nfs_symlink_inode_operations;
 
 /*
  * linux/fs/nfs/locks.c
@@ -801,7 +806,9 @@ struct nfs4_exception {
 };
 
 extern struct dentry_operations nfs4_dentry_operations;
-extern struct inode_operations nfs4_dir_inode_operations;
+extern struct file_operations_ext nfs4_dir_file_operations;
+extern struct inode_operations_ext nfs4_dir_inode_operations;
+extern struct inode_operations_ext nfs4_file_inode_operations;
 
 /* nfs4proc.c */
 extern int nfs4_map_errors(int err);

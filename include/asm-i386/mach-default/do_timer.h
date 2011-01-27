@@ -15,14 +15,17 @@
 
 static inline void do_timer_interrupt_hook(struct pt_regs *regs)
 {
-	do_timer(regs);
+	int i;
+	for (i = 0; i < tick_divider; i++)
+		do_timer(regs);
 /*
  * In the SMP case we use the local APIC timer interrupt to do the
  * profiling, except when we simulate SMP mode on a uniprocessor
  * system, in that case we have to call the local interrupt handler.
  */
 #ifndef CONFIG_X86_LOCAL_APIC
-	profile_tick(CPU_PROFILING, regs);
+	for (i = 0; i < tick_divider; i++)
+		profile_tick(CPU_PROFILING, regs);
 #else
 	if (!using_apic_timer)
 		smp_local_timer_interrupt(regs);

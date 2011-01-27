@@ -211,6 +211,7 @@ struct hid_item {
 #define HID_QUIRK_2WHEEL_MOUSE_HACK_BACK	0x080
 #define HID_QUIRK_2WHEEL_MOUSE_HACK_EXTRA	0x100
 #define HID_QUIRK_2WHEEL_MOUSE_HACK_ON		0x200
+#define HID_QUIRK_RESET_LEDS			0x00400000
 
 /*
  * This is the global environment of the parser. This information is

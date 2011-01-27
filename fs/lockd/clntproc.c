@@ -130,7 +130,7 @@ static void nlmclnt_setlockargs(struct nlm_rqst *req, struct file_lock *fl)
 	lock->caller  = system_utsname.nodename;
 	lock->oh.data = req->a_owner;
 	lock->oh.len  = sprintf(req->a_owner, "%d@%s",
-				current->pid, system_utsname.nodename);
+				current->tgid, system_utsname.nodename);
 	locks_copy_lock(&lock->fl, fl);
 }
 

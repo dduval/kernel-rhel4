@@ -398,20 +398,18 @@ config SCSI_ADVANSYS
 	  To compile this driver as a module, choose M here: the
 	  module will be called advansys.
 
-
 config SCSI_ARCMSR
-       tristate "ARECA ARC11X0[PCI-X]/ARC12X0[PCI-EXPRESS] SATA-RAID support"
-       depends on PCI && SCSI
-       help
-         This driver supports all of ARECA's SATA RAID controller cards.
-         This is an ARECA-maintained driver by Erich Chen.
-         If you have any problems, please mail to: < erich@areca.com.tw >
-         Areca supports Linux RAID config tools.
-
-         < http://www.areca.com.tw >
-
-         To compile this driver as a module, choose M here: the
-         module will be called arcmsr (modprobe arcmsr).
+	tristate "ARECA (ARC11xx/12xx/13xx/16xx) SATA/SAS RAID Host Adapter"
+	depends on PCI && SCSI
+	help
+	  This driver supports all of ARECA's SATA/SAS RAID controllers cards.
+	  This is an ARECA maintained driver by Erich Chen. If you have any
+	  problems, please mail to <erich@areca.com.tw>.
+	  Areca suports its Linux RAID Management Tools
+	  Please contact < http://www.areca.com.tw >
+			 <  ftp://ftp.areca.com.tw >
+	  To compile this driver as a module, choose M here: the
+	  module will be called arcmsr.
 
 config SCSI_IN2000
 	tristate "Always IN2000 SCSI support"
@@ -1146,10 +1144,16 @@ config SCSI_PCI2220I
 	  module will be called pci2220i.
 
 config SCSI_PROMISE_STEX
-	tristate "Promise SuperTrak EX support"
+	tristate "Promise SuperTrak EX Series support"
 	depends on PCI && SCSI
-	help
-	  This is support for Promise SuperTrak EX.
+	---help---
+	  This driver supports Promise SuperTrak EX series storage controllers.
+
+	  Promise provides Linux RAID configuration utility for these
+	  controllers. Please visit <http://www.promise.com> to download.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called stex.
 
 config SCSI_PSI240I
 	tristate "PSI240i support"

@@ -354,13 +354,15 @@ static void init_bridge_misc(struct acpiphp_bridge *bridge)
 				     register_slot, bridge, NULL);
 
 	/* install notify handler */
-	status = acpi_install_notify_handler(bridge->handle,
-					     ACPI_SYSTEM_NOTIFY,
-					     handle_hotplug_event_bridge,
-					     bridge);
+	if (bridge->type != BRIDGE_TYPE_HOST) {
+		status = acpi_install_notify_handler(bridge->handle,
+					ACPI_SYSTEM_NOTIFY,
+					handle_hotplug_event_bridge,
+					bridge);
 
-	if (ACPI_FAILURE(status)) {
-		err("failed to register interrupt notify handler\n");
+		if (ACPI_FAILURE(status)) {
+			err("failed to register interrupt notify handler\n");
+		}
 	}
 
 	list_add(&bridge->list, &bridge_list);
@@ -679,6 +681,18 @@ static int add_bridge(acpi_handle handle)
 	return 0;
 }
 
+static struct acpiphp_bridge *acpiphp_handle_to_bridge(acpi_handle handle)
+{
+	struct list_head *head;
+	list_for_each(head, &bridge_list) {
+		struct acpiphp_bridge *bridge = list_entry(head,
+						struct acpiphp_bridge, list);
+		if (bridge->handle == handle)
+			return bridge;
+	}
+
+	return NULL;
+}
 
 static void remove_bridge(acpi_handle handle)
 {
@@ -726,8 +740,6 @@ static int power_off_slot(struct acpiphp_slot *slot)
 	acpi_status status;
 	struct acpiphp_func *func;
 	struct list_head *l;
-	struct acpi_object_list arg_list;
-	union acpi_object arg;
 
 	int retval = 0;
 
@@ -742,27 +754,6 @@ static int power_off_slot(struct acpiphp_slot *slot)
 			status = acpi_evaluate_object(func->handle, "_PS3", NULL, NULL);
 			if (ACPI_FAILURE(status)) {
 				warn("%s: _PS3 failed\n", __FUNCTION__);
-				retval = -1;
-				goto err_exit;
-			} else
-				break;
-		}
-	}
-
-	list_for_each (l, &slot->funcs) {
-		func = list_entry(l, struct acpiphp_func, sibling);
-
-		/* We don't want to call _EJ0 on non-existing functions. */
-		if (func->pci_dev && (func->flags & FUNC_HAS_EJ0)) {
-			/* _EJ0 method take one argument */
-			arg_list.count = 1;
-			arg_list.pointer = &arg;
-			arg.type = ACPI_TYPE_INTEGER;
-			arg.integer.value = 1;
-
-			status = acpi_evaluate_object(func->handle, "_EJ0", &arg_list, NULL);
-			if (ACPI_FAILURE(status)) {
-				warn("%s: _EJ0 failed\n", __FUNCTION__);
 				retval = -1;
 				goto err_exit;
 			} else
@@ -980,6 +971,39 @@ static unsigned int get_slot_status(struct acpiphp_slot *slot)
 }
 
 /**
+ * acpiphp_eject_slot - physically eject the slot
+ */
+static int acpiphp_eject_slot(struct acpiphp_slot *slot)
+{
+	acpi_status status;
+	struct acpiphp_func *func;
+	struct list_head *l;
+	struct acpi_object_list arg_list;
+	union acpi_object arg;
+
+	list_for_each (l, &slot->funcs) {
+		func = list_entry(l, struct acpiphp_func, sibling);
+
+		/* We don't want to call _EJ0 on non-existing functions. */
+		if ((func->flags & FUNC_HAS_EJ0)) {
+			/* _EJ0 method take one argument */
+			arg_list.count = 1;
+			arg_list.pointer = &arg;
+			arg.type = ACPI_TYPE_INTEGER;
+			arg.integer.value = 1;
+
+			status = acpi_evaluate_object(func->handle, "_EJ0", &arg_list, NULL);
+			if (ACPI_FAILURE(status)) {
+				warn("%s: _EJ0 failed\n", __FUNCTION__);
+				return -1;
+			} else
+				break;
+		}
+	}
+	return 0;
+}
+
+/**
  * acpiphp_check_bridge - re-enumerate devices
  *
  * Iterate over all slots under this bridge and make sure that if a
@@ -1002,6 +1026,8 @@ static int acpiphp_check_bridge(struct acpiphp_bridge *bridge)
 			if (retval) {
 				err("Error occurred in disabling\n");
 				goto err_exit;
+			} else {
+				acpiphp_eject_slot(slot);
 			}
 			disabled++;
 		} else {
@@ -1026,6 +1052,37 @@ static int acpiphp_check_bridge(struct acpiphp_bridge *bridge)
  * ACPI event handlers
  */
 
+static acpi_status
+count_sub_bridges(acpi_handle handle, u32 lvl, void *context, void **rv)
+{
+	int *count = (int *)context;
+	struct acpiphp_bridge *bridge;
+
+	bridge = acpiphp_handle_to_bridge(handle);
+	if (bridge)
+		(*count)++;
+	return AE_OK ;
+}
+
+static acpi_status
+check_sub_bridges(acpi_handle handle, u32 lvl, void *context, void **rv)
+{
+	struct acpiphp_bridge *bridge;
+	char objname[64];
+	struct acpi_buffer buffer = { .length = sizeof(objname),
+				      .pointer = objname };
+
+	bridge = acpiphp_handle_to_bridge(handle);
+	if (bridge) {
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &buffer);
+		dbg("%s: re-enumerating slots under %s\n",
+			__FUNCTION__, objname);
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &buffer);
+		acpiphp_check_bridge(bridge);
+	}
+	return AE_OK ;
+}
+
 /**
  * handle_hotplug_event_bridge - handle ACPI event on bridges
  *
@@ -1042,8 +1099,18 @@ static void handle_hotplug_event_bridge(acpi_handle handle, u32 type, void *cont
 	char objname[64];
 	struct acpi_buffer buffer = { .length = sizeof(objname),
 				      .pointer = objname };
+	int num_sub_bridges = 0;
 
-	bridge = (struct acpiphp_bridge *)context;
+	bridge = acpiphp_handle_to_bridge(handle);
+	if (type == ACPI_NOTIFY_BUS_CHECK) {
+		acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, ACPI_UINT32_MAX,
+			count_sub_bridges, &num_sub_bridges, NULL);
+	}
+
+	if (!bridge && !num_sub_bridges) {
+		err("cannot get bridge info\n");
+		return;
+	}
 
 	acpi_get_name(handle, ACPI_FULL_PATHNAME, &buffer);
 
@@ -1051,7 +1118,14 @@ static void handle_hotplug_event_bridge(acpi_handle handle, u32 type, void *cont
 	case ACPI_NOTIFY_BUS_CHECK:
 		/* bus re-enumerate */
 		dbg("%s: Bus check notify on %s\n", __FUNCTION__, objname);
-		acpiphp_check_bridge(bridge);
+		if (bridge) {
+			dbg("%s: re-enumerating slots under %s\n",
+				__FUNCTION__, objname);
+			acpiphp_check_bridge(bridge);
+		}
+		if (num_sub_bridges)
+			acpi_walk_namespace(ACPI_TYPE_DEVICE, handle,
+				ACPI_UINT32_MAX, check_sub_bridges, NULL, NULL);
 		break;
 
 	case ACPI_NOTIFY_DEVICE_CHECK:
@@ -1090,7 +1164,6 @@ static void handle_hotplug_event_bridge(acpi_handle handle, u32 type, void *cont
 		break;
 	}
 }
-
 
 /**
  * handle_hotplug_event_func - handle ACPI event on functions (i.e. slots)
@@ -1134,7 +1207,8 @@ static void handle_hotplug_event_func(acpi_handle handle, u32 type, void *contex
 	case ACPI_NOTIFY_EJECT_REQUEST:
 		/* request device eject */
 		dbg("%s: Device eject notify on %s\n", __FUNCTION__, objname);
-		acpiphp_disable_slot(func->slot);
+		if (!(acpiphp_disable_slot(func->slot)))
+			acpiphp_eject_slot(func->slot);
 		break;
 
 	default:
@@ -1143,6 +1217,52 @@ static void handle_hotplug_event_func(acpi_handle handle, u32 type, void *contex
 	}
 }
 
+/* acpi_root_bridge - check to see if this acpi object is a root bridge
+ *
+ * @handle - the acpi object in question.
+ */
+static int acpi_root_bridge(acpi_handle handle)
+{
+	acpi_status status;
+	struct acpi_device_info *info;
+	struct acpi_buffer buffer = {ACPI_ALLOCATE_BUFFER, NULL};
+	int i;
+
+	status = acpi_get_object_info(handle, &buffer);
+	if (ACPI_SUCCESS(status)) {
+		info = buffer.pointer;
+		if ((info->valid & ACPI_VALID_HID) &&
+			!strcmp(PCI_ROOT_HID_STRING,
+					info->hardware_id.value)) {
+			kfree(buffer.pointer);
+			return 1;
+		}
+		if (info->valid & ACPI_VALID_CID) {
+			for (i=0; i < info->compatibility_id.count; i++) {
+				if (!strcmp(PCI_ROOT_HID_STRING,
+					info->compatibility_id.id[i].value)) {
+					kfree(buffer.pointer);
+					return 1;
+				}
+			}
+		}
+		kfree(buffer.pointer);
+	}
+	return 0;
+}
+
+static acpi_status
+find_root_bridges(acpi_handle handle, u32 lvl, void *context, void **rv)
+{
+	int *count = (int *)context;
+
+	if (acpi_root_bridge(handle)) {
+		acpi_install_notify_handler(handle, ACPI_SYSTEM_NOTIFY,
+				handle_hotplug_event_bridge, NULL);
+			(*count)++;
+	}
+	return AE_OK ;
+}
 
 static struct acpi_pci_driver acpi_pci_hp_driver = {
 	.add =		add_bridge,
@@ -1155,15 +1275,15 @@ static struct acpi_pci_driver acpi_pci_hp_driver = {
  */
 int __init acpiphp_glue_init(void)
 {
-	int num;
+	int num = 0;
 
-	if (list_empty(&pci_root_buses))
-		return -1;
-
-	num = acpi_pci_register_driver(&acpi_pci_hp_driver);
+	acpi_walk_namespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT,
+			ACPI_UINT32_MAX, find_root_bridges, &num, NULL);
 
 	if (num <= 0)
 		return -1;
+	else
+		acpi_pci_register_driver(&acpi_pci_hp_driver);
 
 	return 0;
 }
@@ -1314,7 +1434,6 @@ int acpiphp_enable_slot(struct acpiphp_slot *slot)
 	return retval;
 }
 
-
 /**
  * acpiphp_disable_slot - power off slot
  */
@@ -1353,11 +1472,7 @@ int acpiphp_disable_slot(struct acpiphp_slot *slot)
  */
 u8 acpiphp_get_power_status(struct acpiphp_slot *slot)
 {
-	unsigned int sta;
-
-	sta = get_slot_status(slot);
-
-	return (sta & ACPI_STA_ENABLED) ? 1 : 0;
+	return (slot->flags & SLOT_POWEREDON);
 }
 
 

@@ -18,6 +18,7 @@
  */
 #include "qla_def.h"
 
+#include <linux/delay.h>
 #include <scsi/scsi_tcq.h>
 
 static void qla2x00_mbx_completion(scsi_qla_host_t *, uint16_t);
@@ -48,7 +49,7 @@ irqreturn_t
 qla2100_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 {
 	scsi_qla_host_t	*ha;
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg;
 	int		status;
 	unsigned long	flags;
 	unsigned long	iter;
@@ -61,7 +62,7 @@ qla2100_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		return (IRQ_NONE);
 	}
 
-	reg = ha->iobase;
+	reg = &ha->iobase->isp;
 	status = 0;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
@@ -134,7 +135,7 @@ irqreturn_t
 qla2300_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 {
 	scsi_qla_host_t	*ha;
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg;
 	int		status;
 	unsigned long	flags;
 	unsigned long	iter;
@@ -149,7 +150,7 @@ qla2300_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		return (IRQ_NONE);
 	}
 
-	reg = ha->iobase;
+	reg = &ha->iobase->isp;
 	status = 0;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
@@ -248,14 +249,13 @@ qla2x00_mbx_completion(scsi_qla_host_t *ha, uint16_t mb0)
 {
 	uint16_t	cnt;
 	uint16_t __iomem *wptr;
-	device_reg_t __iomem *reg = ha->iobase;
-	struct device_reg_24xx __iomem *reg24 =
-	    (struct device_reg_24xx __iomem *)ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
 
 	/* Load return mailbox registers. */
 	ha->flags.mbox_int = 1;
 	ha->mailbox_out[0] = mb0;
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+	if (IS_FWI2_CAPABLE(ha))
 		wptr = (uint16_t __iomem *)&reg24->mailbox1;
 	else
 		wptr = (uint16_t __iomem *)MAILBOX_REG(ha, reg, 1);
@@ -263,8 +263,7 @@ qla2x00_mbx_completion(scsi_qla_host_t *ha, uint16_t mb0)
 	for (cnt = 1; cnt < ha->mbx_count; cnt++) {
 		if (IS_QLA2200(ha) && cnt == 8) 
 			wptr = (uint16_t __iomem *)MAILBOX_REG(ha, reg, 8);
-		if (!IS_QLA24XX(ha) && !IS_QLA54XX(ha) && (cnt == 4 ||
-		    cnt == 5))
+		if (!IS_FWI2_CAPABLE(ha) && (cnt == 4 || cnt == 5))
 			ha->mailbox_out[cnt] = qla2x00_debounce_register(wptr);
 		else
 			ha->mailbox_out[cnt] = RD_REG_WORD(wptr);
@@ -295,9 +294,10 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 	uint16_t	handle_cnt;
 	uint16_t	cnt;
 	uint32_t	handles[5];
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t	rscn_entry, host_pid;
 	uint8_t		rscn_queue_index;
+	unsigned long	flags;
 
 	/* Setup to process RIO completion. */
 	handle_cnt = 0;
@@ -377,10 +377,12 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 			qla2100_fw_dump(ha, 1);
 		else if (IS_QLA23XX(ha))
 	    		qla2300_fw_dump(ha, 1);
-		else if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		else if (IS_QLA24XX_TYPE(ha))
 			qla24xx_fw_dump(ha, 1);
+		else if (IS_QLA25XX(ha))
+			qla25xx_fw_dump(ha, 1);
 
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+		if (IS_FWI2_CAPABLE(ha)) {
 			if (mb[1] == 0 && mb[2] == 0) {
 				qla_printk(KERN_ERR, ha,
 				    "Unrecoverable Hardware Error: adapter "
@@ -463,9 +465,10 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		break;
 
 	case MBA_LOOP_DOWN:		/* Loop Down Event */
-		DEBUG2(printk("scsi(%ld): Asynchronous LOOP DOWN (%x).\n",
-		    ha->host_no, mb[1]));
-		qla_printk(KERN_INFO, ha, "LOOP DOWN detected (%x).\n", mb[1]);
+		DEBUG2(printk("scsi(%ld): Asynchronous LOOP DOWN "
+		    "(%x %x %x).\n", ha->host_no, mb[1], mb[2], mb[3]));
+		qla_printk(KERN_INFO, ha, "LOOP DOWN detected (%x %x %x).\n",
+		    mb[1], mb[2], mb[3]);
 
 		if (atomic_read(&ha->loop_state) != LOOP_DOWN) {
 			atomic_set(&ha->loop_state, LOOP_DOWN);
@@ -565,6 +568,7 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		    !IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA6312(ha) &&
 		    !IS_QLA6322(ha) &&
 		    !IS_QLA24XX(ha) && !IS_QLA54XX(ha) &&
+		    !IS_QLA25XX(ha) &&
 		    ha->flags.init_done && mb[1] != 0xffff &&
 		    ((ha->operating_mode == P2P && mb[1] != 0) ||
 		    (ha->operating_mode != P2P && mb[1] !=
@@ -685,6 +689,42 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 		DEBUG2(printk("scsi(%ld): Discard RND Frame -- %04x %04x "
 		    "%04x.\n", ha->host_no, mb[1], mb[2], mb[3]));
 		break;
+
+	case MBA_ISP84XX_ALERT:
+		DEBUG2(printk("scsi(%ld): ISP84XX Alert Notification -- "
+		    "%04x %04x %04x\n", ha->host_no, mb[1], mb[2], mb[3]));
+
+		spin_lock_irqsave(&ha->cs84xx->access_lock, flags);
+		switch (mb[1]) {
+		case A84_PANIC_RECOVERY:
+			qla_printk(KERN_INFO, ha, "Alert 84XX: panic recovery "
+			    "%04x %04x\n", mb[2], mb[3]);
+			break;
+		case A84_OP_LOGIN_COMPLETE:
+			ha->cs84xx->op_fw_version = mb[3] << 16 | mb[2];
+			DEBUG2(qla_printk(KERN_INFO, ha, "Alert 84XX:"
+			    "firmware version %x\n", ha->cs84xx->op_fw_version));
+			break;
+		case A84_DIAG_LOGIN_COMPLETE:
+			ha->cs84xx->diag_fw_version = mb[3] << 16 | mb[2];
+			DEBUG2(qla_printk(KERN_INFO, ha, "Alert 84XX:"
+			    "diagnostic firmware version %x\n",
+			    ha->cs84xx->diag_fw_version));
+			break;
+		case A84_GOLD_LOGIN_COMPLETE:
+			ha->cs84xx->diag_fw_version = mb[3] << 16 | mb[2];
+			ha->cs84xx->fw_update = 1;
+			DEBUG2(qla_printk(KERN_INFO, ha, "Alert 84XX: gold "
+			    "firmware version %x\n",
+			    ha->cs84xx->gold_fw_version));
+			break;
+		default:
+			qla_printk(KERN_ERR, ha,
+			    "Alert 84xx: Invalid Alert %04x %04x %04x\n",
+			    mb[1], mb[2], mb[3]);
+		}
+		spin_unlock_irqrestore(&ha->cs84xx->access_lock, flags);
+		break;
 	}
 }
 
@@ -798,7 +838,7 @@ qla2x00_process_completed_request(struct scsi_qla_host *ha, uint32_t index)
 void
 qla2x00_process_response_queue(struct scsi_qla_host *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	sts_entry_t	*pkt;
 	uint16_t        handle_cnt;
 	uint16_t        cnt;
@@ -911,7 +951,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 
 	sts = (sts_entry_t *) pkt;
 	sts24 = (struct sts_entry_24xx *) pkt;
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		comp_status = le16_to_cpu(sts24->comp_status);
 		scsi_status = le16_to_cpu(sts24->scsi_status) & SS_MASK;
 	} else {
@@ -984,7 +1024,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 	lq = sp->lun_queue;
 
 	sense_len = rsp_info_len = resid_len = 0;
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		sense_len = le32_to_cpu(sts24->sense_len);
 		rsp_info_len = le32_to_cpu(sts24->rsp_data_len);
 		resid_len = le32_to_cpu(sts24->rsp_residual_count);
@@ -1021,7 +1061,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 	/* Check for any FCP transport errors. */
 	if (scsi_status & SS_RESPONSE_INFO_LEN_VALID) {
 		/* Sense data lies beyond any FCP RESPONSE data. */
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		if (IS_FWI2_CAPABLE(ha))
 			sense_data += rsp_info_len;
 		if (rsp_info_len > 3 && rsp_info[3]) {
 			DEBUG2(printk("scsi(%ld:%d:%d:%d) FCP I/O protocol "
@@ -1359,7 +1399,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 	case CS_TIMEOUT:
 		cp->result = DID_BUS_BUSY << 16;
 
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+		if (IS_FWI2_CAPABLE(ha)) {
 			DEBUG2(printk(KERN_INFO
 			    "scsi(%ld:%d:%d:%d): TIMEOUT status detected "
 			    "0x%x-0x%x\n", ha->host_no, cp->device->channel,
@@ -1430,7 +1470,7 @@ qla2x00_status_cont_entry(scsi_qla_host_t *ha, sts_cont_entry_t *pkt)
 		}
 
 		/* Move sense data. */
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		if (IS_FWI2_CAPABLE(ha))
 			host_to_fcp_swap(pkt->data, sizeof(pkt->data));
 		memcpy(sp->request_sense_ptr, pkt->data, sense_sz);
 		DEBUG5(qla2x00_dump_buffer(sp->request_sense_ptr, sense_sz));
@@ -1693,6 +1733,53 @@ qla24xx_process_response_queue(struct scsi_qla_host *ha)
 	WRT_REG_DWORD(&reg->rsp_q_out, ha->rsp_ring_index);
 }
 
+static void
+qla2xxx_check_risc_status(scsi_qla_host_t *ha)
+{
+	int rval;
+	uint32_t cnt;
+	struct device_reg_24xx __iomem *reg = 
+		(struct device_reg_24xx __iomem *)ha->iobase;
+
+	if (!IS_QLA25XX(ha))
+		return;
+
+	rval = QLA_SUCCESS;
+	WRT_REG_DWORD(&reg->iobase_addr, 0x7C00);
+	RD_REG_DWORD(&reg->iobase_addr);
+	WRT_REG_DWORD(&reg->iobase_window, 0x0001);
+	for (cnt = 10000; (RD_REG_DWORD(&reg->iobase_window) & BIT_0) == 0 &&
+	    rval == QLA_SUCCESS; cnt--) {
+		if (cnt) {
+			WRT_REG_DWORD(&reg->iobase_window, 0x0001);
+			udelay(10);
+		} else
+			rval = QLA_FUNCTION_TIMEOUT;
+	}
+	if (rval == QLA_SUCCESS)
+		goto next_test;
+
+	WRT_REG_DWORD(&reg->iobase_window, 0x0003);
+	for (cnt = 100; (RD_REG_DWORD(&reg->iobase_window) & BIT_0) == 0 &&
+	    rval == QLA_SUCCESS; cnt--) {
+		if (cnt) {
+			WRT_REG_DWORD(&reg->iobase_window, 0x0003);
+			udelay(10);
+		} else
+			rval = QLA_FUNCTION_TIMEOUT;
+	}
+	if (rval != QLA_SUCCESS)
+		goto done;
+
+next_test:
+	if (RD_REG_DWORD(&reg->iobase_c8) & BIT_3)
+		qla_printk(KERN_INFO, ha, "Additional code -- 0x55AA.\n");
+
+done:
+	WRT_REG_DWORD(&reg->iobase_window, 0x0000);
+	RD_REG_DWORD(&reg->iobase_window);
+}
+
 /**
  * qla24xx_intr_handler() - Process interrupts for the ISP23xx and ISP63xx.
  * @irq:
@@ -1722,7 +1809,7 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 		return (IRQ_NONE);
 	}
 
-	reg = (struct device_reg_24xx __iomem *)ha->iobase;
+	reg = &ha->iobase->isp24;
 	status = 0;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
@@ -1733,8 +1820,13 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 
 			qla_printk(KERN_INFO, ha, "RISC paused -- HCCR=%x, "
 			    "Dumping firmware!\n", hccr);
-			qla24xx_fw_dump(ha, 1);
 
+			qla2xxx_check_risc_status(ha);
+
+			if (IS_QLA25XX(ha))
+				qla25xx_fw_dump(ha, 1);
+			else
+				qla24xx_fw_dump(ha, 1);
 			set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 			break;
 		} else if ((stat & HSRX_RISC_INT) == 0)

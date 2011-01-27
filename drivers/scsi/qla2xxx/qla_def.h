@@ -85,6 +85,14 @@
 #define PCI_DEVICE_ID_QLOGIC_ISP5432	0x5432
 #endif
 
+#ifndef PCI_DEVICE_ID_QLOGIC_ISP2532
+#define PCI_DEVICE_ID_QLOGIC_ISP2532	0x2532
+#endif
+
+#ifndef PCI_DEVICE_ID_QLOGIC_ISP8432
+#define PCI_DEVICE_ID_QLOGIC_ISP8432	0x8432
+#endif
+
 /*
  * We have MAILBOX_REGISTER_COUNT sized arrays in a few places,
  * but that's fine as we don't look at the last 24 ones for
@@ -316,7 +324,7 @@ typedef struct srb {
 /*
  * ISP I/O Register Set structure definitions.
  */
-typedef volatile struct {
+struct device_reg_2xxx {
 	volatile uint16_t flash_address; /* Flash BIOS address */
 	volatile uint16_t flash_data;	/* Flash BIOS data */
 	uint16_t unused_1[1];		/* Gap */
@@ -409,7 +417,9 @@ typedef volatile struct {
 	} u;
 
 	volatile uint16_t fpm_diag_config;
-	uint16_t unused_5[0x6];		/* Gap */
+	uint16_t unused_5[0x4];		/* Gap */
+	uint16_t risc_hw;
+	uint16_t unused_5_1;
 	volatile uint16_t pcr;		/* Processor Control Register. */
 	uint16_t unused_6[0x5];		/* Gap */
 	volatile uint16_t mctr;		/* Memory Configuration and Timing. */
@@ -462,6 +472,11 @@ typedef volatile struct {
 			volatile uint16_t mailbox23;	/* Also probe reg. */
 		} __attribute__((packed)) isp2200;
 	} u_end;
+};
+
+typedef union {
+	struct device_reg_2xxx isp;
+	struct device_reg_24xx isp24;
 } device_reg_t;
 
 #define ISP_REQ_Q_IN(ha, reg) \
@@ -697,6 +712,7 @@ typedef struct {
 #define MBC_GET_IOCB_STATUS		0x12	/* Get IOCB status command. */
 #define MBC_PORT_PARAMS			0x1A    /* Port iDMA Parameters. */
 #define MBC_GET_TIMEOUT_PARAMS		0x22	/* Get FW timeouts. */
+#define MBC_TRACE_CONTROL		0x27	/* Trace control command. */
 #define MBC_GEN_SYSTEM_ERROR		0x2a	/* Generate System Error. */
 #define MBC_SET_TIMEOUT_PARAMS		0x32	/* Set FW timeouts. */
 #define MBC_MID_INITIALIZE_FIRMWARE	0x48	/* MID Initialize firmware. */
@@ -946,6 +962,14 @@ typedef struct {
 	uint32_t	prim_seq_err_cnt;
 	uint32_t	inval_xmit_word_cnt;
 	uint32_t	inval_crc_cnt;
+	uint32_t	unused1[0x1b];
+	uint32_t	tx_frames;
+	uint32_t	rx_frames;
+	uint32_t	dumped_frames; /* Discarded frame count from H/W. */
+	uint32_t	unused2[2];
+	uint32_t	nos_rcvd;
+	uint32_t	ols_rcvd;
+	uint32_t	reserved[0x57];
 } link_stat_t;
 
 /*
@@ -1943,6 +1967,14 @@ struct ct_fdmi_hba_attributes {
 #define FDMI_PORT_OS_DEVICE_NAME	5
 #define FDMI_PORT_HOST_NAME		6
 
+#define FDMI_PORT_SPEED_1GB		0x1
+#define FDMI_PORT_SPEED_2GB		0x2
+#define FDMI_PORT_SPEED_10GB		0x4
+#define FDMI_PORT_SPEED_4GB		0x8
+#define FDMI_PORT_SPEED_8GB		0x10
+#define FDMI_PORT_SPEED_16GB		0x20
+#define FDMI_PORT_SPEED_UNKNOWN		0x8000
+
 struct ct_fdmi_port_attr {
 	uint16_t type;
 	uint16_t len;
@@ -2275,6 +2307,21 @@ struct gid_list_info {
 };
 #define GID_LIST_SIZE (sizeof(struct gid_list_info) * MAX_FIBRE_DEVICES)
 
+struct qla_chip_state_84xx {
+	struct list_head list;
+	struct kref kref;
+
+	void *bus;
+	spinlock_t access_lock;
+	struct semaphore fw_update_mutex;
+	uint32_t fw_update;
+	uint32_t op_fw_version;
+	uint32_t op_fw_size;
+	uint32_t op_fw_seq_size;
+	uint32_t diag_fw_version;
+	uint32_t gold_fw_version;
+};
+
 /*
  * Linux Host Adapter structure
  */
@@ -2310,6 +2357,7 @@ typedef struct scsi_qla_host {
 		uint32_t	msix_enabled		:1;
 		uint32_t	enable_ip		:1;
 		uint32_t	gpsc_supported		:1;
+		uint32_t        fce_enabled             :1;
 	} flags;
 
 	atomic_t	loop_state;
@@ -2368,9 +2416,12 @@ typedef struct scsi_qla_host {
 #define DT_ISP2432			BIT_8
 #define DT_ISP5422			BIT_9
 #define DT_ISP5432			BIT_10
-#define DT_ISP_LAST			(DT_ISP5432 << 1)
+#define DT_ISP2532			BIT_11
+#define DT_ISP8432			BIT_12
+#define DT_ISP_LAST			(DT_ISP8432 << 1)
 
 #define DT_IIDMA			BIT_26
+#define DT_FWI2				BIT_27
 #define DT_OEM_001			BIT_29
 #define DT_ISP2200A			BIT_30
 #define DT_EXTENDED_IDS			BIT_31
@@ -2387,13 +2438,20 @@ typedef struct scsi_qla_host {
 #define IS_QLA2432(ha)	(DT_MASK(ha) & DT_ISP2432)
 #define IS_QLA5422(ha)	(DT_MASK(ha) & DT_ISP5422)
 #define IS_QLA5432(ha)	(DT_MASK(ha) & DT_ISP5432)
+#define IS_QLA2532(ha)	(DT_MASK(ha) & DT_ISP2532)
+#define IS_QLA8432(ha)	(DT_MASK(ha) & DT_ISP8432)
 
 #define IS_QLA23XX(ha)	(IS_QLA2300(ha) || IS_QLA2312(ha) || IS_QLA2322(ha) || \
     			 IS_QLA6312(ha) || IS_QLA6322(ha))
 #define IS_QLA24XX(ha)	(IS_QLA2422(ha) || IS_QLA2432(ha))
 #define IS_QLA54XX(ha)	(IS_QLA5422(ha) || IS_QLA5432(ha))
+#define IS_QLA25XX(ha)	(IS_QLA2532(ha))
+#define IS_QLA84XX(ha)	(IS_QLA8432(ha))
+#define IS_QLA24XX_TYPE(ha)	(IS_QLA24XX(ha) || IS_QLA54XX(ha) || \
+			IS_QLA84XX(ha))
 
 #define IS_IIDMA_CAPABLE(ha)	((ha)->device_type & DT_IIDMA)
+#define IS_FWI2_CAPABLE(ha)	((ha)->device_type & DT_FWI2)
 #define IS_OEM_001(ha)		((ha)->device_type & DT_OEM_001)
 #define HAS_EXTENDED_IDS(ha)	((ha)->device_type & DT_EXTENDED_IDS)
 
@@ -2488,6 +2546,7 @@ typedef struct scsi_qla_host {
 #define PORT_SPEED_1GB	0x00
 #define PORT_SPEED_2GB	0x01
 #define PORT_SPEED_4GB	0x03
+#define PORT_SPEED_8GB  0x04
 	uint16_t	link_data_rate;		/* F/W operating speed */
 
 	uint8_t		current_topology;
@@ -2642,16 +2701,28 @@ typedef struct scsi_qla_host {
 	uint16_t	fw_seriallink_options24[4];
 
 	/* Firmware dump information. */
-	void		*fw_dump;
+	struct qla2xxx_fw_dump	*fw_dump;
+	int		fw_dump_len;
+	int		fw_dumped;
 	int		fw_dump_order;
 	int		fw_dump_reading;
 	char		*fw_dump_buffer;
 	int		fw_dump_buffer_len;
 
 //ISP24xx
-	int		fw_dumped;
-	void		*fw_dump24;
-	int		fw_dump24_len;
+
+	dma_addr_t	eft_dma;
+	void		*eft;
+
+	struct dentry	*dfs_dir;
+	struct dentry	*dfs_fce;
+	dma_addr_t	fce_dma;
+	void		*fce;
+	uint32_t	fce_dbufs, fce_bufs;
+	uint16_t	fce_mb[8];
+	uint64_t	fce_wr, fce_rd;
+	struct semaphore fce_mutex;
+	void		*fce_vbuf;
 
 	uint8_t		host_str[16];
 	uint32_t	pci_attr;
@@ -2685,6 +2756,7 @@ typedef struct scsi_qla_host {
 #define QLA_LED_ALL_ON		0x07	/* yellow, green, amber */
 #define QLA_LED_RGA_ON		0x07	/* isp2322: red, green, amber */
 
+	struct qla_chip_state_84xx *cs84xx;
 } scsi_qla_host_t;
 
 

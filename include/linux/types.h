@@ -155,6 +155,9 @@ typedef __u64 __bitwise __be64;
 
 #endif /* __KERNEL_STRICT_NAMES */
 
+typedef __u16 __bitwise __sum16;
+typedef __u32 __bitwise __wsum;
+
 /*
  * Below are truly Linux-specific types that should never collide with
  * any application/library that wants linux/types.h.

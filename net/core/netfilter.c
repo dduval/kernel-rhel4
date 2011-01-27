@@ -60,6 +60,12 @@ static struct nf_queue_handler_t {
 } queue_handler[NPROTO];
 static rwlock_t queue_handler_lock = RW_LOCK_UNLOCKED;
 
+struct nf_sockopt_ops_wrapper {
+	struct list_head list;
+	struct nf_sockopt_ops *ops;
+	struct module *owner;
+};
+
 int nf_register_hook(struct nf_hook_ops *reg)
 {
 	struct list_head *i;
@@ -92,16 +98,19 @@ static inline int overlap(int min1, int max1, int min2, int max2)
 }
 
 /* Functions to register sockopt ranges (exclusive). */
-int nf_register_sockopt(struct nf_sockopt_ops *reg)
+int nf_register_sockopt_owner(struct nf_sockopt_ops *reg, struct module *owner)
 {
 	struct list_head *i;
-	int ret = 0;
+	struct nf_sockopt_ops_wrapper *newops;
+	int ret = -ENOMEM;
 
 	if (down_interruptible(&nf_sockopt_mutex) != 0)
 		return -EINTR;
 
 	list_for_each(i, &nf_sockopts) {
-		struct nf_sockopt_ops *ops = (struct nf_sockopt_ops *)i;
+		struct nf_sockopt_ops_wrapper *opsw = 
+			(struct nf_sockopt_ops_wrapper *)i;
+		struct nf_sockopt_ops *ops = opsw->ops;
 		if (ops->pf == reg->pf
 		    && (overlap(ops->set_optmin, ops->set_optmax, 
 				reg->set_optmin, reg->set_optmax)
@@ -117,27 +126,39 @@ int nf_register_sockopt(struct nf_sockopt_ops *reg)
 		}
 	}
 
-	list_add(&reg->list, &nf_sockopts);
+	newops = kmalloc(sizeof(struct nf_sockopt_ops_wrapper), GFP_KERNEL);
+	if (!newops)
+		goto out;
+	newops->ops = reg;
+	newops->owner = owner;
+	list_add(&newops->list, &nf_sockopts);
+	ret = 0;
 out:
 	up(&nf_sockopt_mutex);
 	return ret;
 }
 
+int nf_register_sockopt(struct nf_sockopt_ops *reg)
+{
+	return nf_register_sockopt_owner(reg, NULL);
+}
+
 void nf_unregister_sockopt(struct nf_sockopt_ops *reg)
 {
+	struct nf_sockopt_ops_wrapper *wrapper;
+	struct list_head *i;
+
 	/* No point being interruptible: we're probably in cleanup_module() */
- restart:
 	down(&nf_sockopt_mutex);
-	if (reg->use != 0) {
-		/* To be woken by nf_sockopt call... */
-		/* FIXME: Stuart Young's name appears gratuitously. */
-		set_current_state(TASK_UNINTERRUPTIBLE);
-		reg->cleanup_task = current;
-		up(&nf_sockopt_mutex);
-		schedule();
-		goto restart;
+	list_for_each(i, &nf_sockopts) {
+		wrapper = (struct nf_sockopt_ops_wrapper *)i;
+		if (wrapper->ops->pf == reg->pf) {
+			list_del(&wrapper->list);
+			kfree(wrapper);
+			goto out;
+		}
 	}
-	list_del(&reg->list);
+ out:
 	up(&nf_sockopt_mutex);
 }
 
@@ -289,6 +310,7 @@ static int nf_sockopt(struct sock *sk, int pf, int val,
 		      char __user *opt, int *len, int get)
 {
 	struct list_head *i;
+	struct nf_sockopt_ops_wrapper *opsw;
 	struct nf_sockopt_ops *ops;
 	int ret;
 
@@ -296,8 +318,12 @@ static int nf_sockopt(struct sock *sk, int pf, int val,
 		return -EINTR;
 
 	list_for_each(i, &nf_sockopts) {
-		ops = (struct nf_sockopt_ops *)i;
+		opsw = (struct nf_sockopt_ops_wrapper *)i;
+		ops = opsw->ops;
 		if (ops->pf == pf) {
+			if (!try_module_get(opsw->owner))
+				goto out_nosup;
+
 			if (get) {
 				if (val >= ops->get_optmin
 				    && val < ops->get_optmax) {
@@ -315,16 +341,17 @@ static int nf_sockopt(struct sock *sk, int pf, int val,
 					goto out;
 				}
 			}
+			module_put(opsw->owner);
 		}
 	}
+ out_nosup:
 	up(&nf_sockopt_mutex);
 	return -ENOPROTOOPT;
 	
  out:
 	down(&nf_sockopt_mutex);
 	ops->use--;
-	if (ops->cleanup_task)
-		wake_up_process(ops->cleanup_task);
+	module_put(opsw->owner);
 	up(&nf_sockopt_mutex);
 	return ret;
 }
@@ -826,6 +853,7 @@ EXPORT_SYMBOL(nf_hooks);
 EXPORT_SYMBOL(nf_register_hook);
 EXPORT_SYMBOL(nf_register_queue_handler);
 EXPORT_SYMBOL(nf_register_sockopt);
+EXPORT_SYMBOL(nf_register_sockopt_owner);
 EXPORT_SYMBOL(nf_reinject);
 EXPORT_SYMBOL(nf_setsockopt);
 EXPORT_SYMBOL(nf_unregister_hook);

@@ -54,7 +54,9 @@ struct readdir_cd {
 	int			err;	/* 0, nfserr, or nfserr_eof */
 };
 typedef int		(*encode_dent_fn)(struct readdir_cd *, const char *,
-						int, loff_t, ino_t, unsigned int);
+						int, loff_t, u64, unsigned int);
+typedef int		(*encode_dent_fn32)(struct readdir_cd *, const char *,
+						int, loff_t, u32, unsigned int);
 typedef int (*nfsd_dirop_t)(struct inode *, struct dentry *, int, int);
 
 extern struct svc_program	nfsd_program;
@@ -118,7 +120,8 @@ int		nfsd_unlink(struct svc_rqst *, struct svc_fh *, int type,
 int		nfsd_truncate(struct svc_rqst *, struct svc_fh *,
 				unsigned long size);
 int		nfsd_readdir(struct svc_rqst *, struct svc_fh *,
-			     loff_t *, struct readdir_cd *, encode_dent_fn);
+				loff_t *, struct readdir_cd *,
+				encode_dent_fn, encode_dent_fn32);
 int		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
 				struct kstatfs *);
 

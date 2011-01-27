@@ -235,7 +235,7 @@ enum {
  */
 
 /* Amp gain/mute */
-#define AC_AMP_MUTE			(1<<8)
+#define AC_AMP_MUTE			(1<<7)
 #define AC_AMP_GAIN			(0x7f)
 #define AC_AMP_GET_INDEX		(0xf<<0)
 
@@ -481,7 +481,7 @@ struct hda_codec_ops {
 struct hda_amp_info {
 	u32 key;		/* hash key */
 	u32 amp_caps;		/* amp capabilities */
-	u16 vol[2];		/* current volume & mute*/
+	u16 vol[2];		/* current volume & mute */
 	u16 status;		/* update flag */
 	u16 next;		/* next link */
 };

@@ -46,7 +46,8 @@
 #include "iwch_provider.h"
 #include "iwch_cm.h"
 
-char *states[] = {
+#ifdef DEBUG
+static char *states[] = {
 	"idle",
 	"listen",
 	"connecting",
@@ -61,44 +62,45 @@ char *states[] = {
 	"dead",
 	NULL,
 };
+#endif
 
 static int ep_timeout_secs = 10;
-module_param(ep_timeout_secs, int, 0444);
+module_param(ep_timeout_secs, int, 0644);
 MODULE_PARM_DESC(ep_timeout_secs, "CM Endpoint operation timeout "
 				   "in seconds (default=10)");
 
 static int mpa_rev = 1;
-module_param(mpa_rev, int, 0444);
+module_param(mpa_rev, int, 0644);
 MODULE_PARM_DESC(mpa_rev, "MPA Revision, 0 supports amso1100, "
 		 "1 is spec compliant. (default=1)");
 
 static int markers_enabled = 0;
-module_param(markers_enabled, int, 0444);
+module_param(markers_enabled, int, 0644);
 MODULE_PARM_DESC(markers_enabled, "Enable MPA MARKERS (default(0)=disabled)");
 
 static int crc_enabled = 1;
-module_param(crc_enabled, int, 0444);
+module_param(crc_enabled, int, 0644);
 MODULE_PARM_DESC(crc_enabled, "Enable MPA CRC (default(1)=enabled)");
 
 static int rcv_win = 256 * 1024;
-module_param(rcv_win, int, 0444);
+module_param(rcv_win, int, 0644);
 MODULE_PARM_DESC(rcv_win, "TCP receive window in bytes (default=256)");
 
 static int snd_win = 32 * 1024;
-module_param(snd_win, int, 0444);
+module_param(snd_win, int, 0644);
 MODULE_PARM_DESC(snd_win, "TCP send window in bytes (default=32KB)");
 
 static unsigned int nocong = 0;
-module_param(nocong, uint, 0444);
+module_param(nocong, uint, 0644);
 MODULE_PARM_DESC(nocong, "Turn off congestion control (default=0)");
 
 static unsigned int cong_flavor = 1;
-module_param(cong_flavor, uint, 0444);
+module_param(cong_flavor, uint, 0644);
 MODULE_PARM_DESC(cong_flavor, "TCP Congestion control flavor (default=1)");
 
 static void process_work(struct work_struct *work);
 static struct workqueue_struct *workq;
-DECLARE_WORK(skb_work, process_work);
+static DECLARE_WORK(skb_work, process_work);
 
 static struct sk_buff_head rxq;
 static cxgb3_cpl_handler_func work_handlers[NUM_CPL_CMDS];
@@ -139,7 +141,7 @@ static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_TID_RELEASE, hwtid));
 	skb->priority = CPL_PRIORITY_SETUP;
-	tdev->send(tdev, skb);
+	cxgb3_ofld_send(tdev, skb);
 	return;
 }
 
@@ -161,7 +163,7 @@ int iwch_quiesce_tid(struct iwch_ep *ep)
 	req->val = cpu_to_be64(1 << S_TCB_RX_QUIESCE);
 
 	skb->priority = CPL_PRIORITY_DATA;
-	ep->com.tdev->send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
 }
 
@@ -183,7 +185,7 @@ int iwch_resume_tid(struct iwch_ep *ep)
 	req->val = 0;
 
 	skb->priority = CPL_PRIORITY_DATA;
-	ep->com.tdev->send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
 }
 
@@ -209,8 +211,7 @@ static enum iwch_ep_state state_read(struct iwch_ep_common *epc)
 	return state;
 }
 
-static inline void __state_set(struct iwch_ep_common *epc,
-			       enum iwch_ep_state new)
+static void __state_set(struct iwch_ep_common *epc, enum iwch_ep_state new)
 {
 	epc->state = new;
 }
@@ -230,15 +231,14 @@ static void *alloc_ep(int size, gfp_t gfp)
 {
 	struct iwch_ep_common *epc;
 
-	epc = kmalloc(size, gfp);
+	epc = kzalloc(size, gfp);
 	if (epc) {
-		memset(epc, 0, size);
 		kref_init(&epc->kref);
 		spin_lock_init(&epc->lock);
 		init_waitqueue_head(&epc->waitq);
 	}
 	PDBG("%s alloc ep %p\n", __FUNCTION__, epc);
-	return (void *) epc;
+	return epc;
 }
 
 void __free_ep(struct kref *kref)
@@ -255,8 +255,6 @@ static void release_ep_resources(struct iwch_ep *ep)
 	cxgb3_remove_tid(ep->com.tdev, (void *)ep, ep->hwtid);
 	dst_release(ep->dst);
 	l2t_release(L2DATA(ep->com.tdev), ep->l2t);
-	if (ep->com.tdev->type == T3B)
-		release_tid(ep->com.tdev, ep->hwtid, NULL);
 	put_ep(&ep->com);
 }
 
@@ -478,7 +476,7 @@ static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
 	BUG_ON(skb_cloned(skb));
 
 	mpalen = sizeof(*mpa) + ep->plen;
-	if (skb->data + mpalen + sizeof(*req) > skb->end) {
+	if (skb->data + mpalen + sizeof(*req) > skb_end_pointer(skb)) {
 		kfree_skb(skb);
 		skb=alloc_skb(mpalen + sizeof(*req), GFP_KERNEL);
 		if (!skb) {
@@ -508,7 +506,7 @@ static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
 	 */
 	skb_get(skb);
 	set_arp_failure_handler(skb, arp_failure_discard);
-	skb->h.raw = skb->data;
+	skb_reset_transport_header(skb);
 	len = skb->len;
 	req = (struct tx_data_wr *) skb_push(skb, sizeof(*req));
 	req->wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_TX_DATA));
@@ -560,7 +558,7 @@ static int send_mpa_reject(struct iwch_ep *ep, const void *pdata, u8 plen)
 	skb_get(skb);
 	skb->priority = CPL_PRIORITY_DATA;
 	set_arp_failure_handler(skb, arp_failure_discard);
-	skb->h.raw = skb->data;
+	skb_reset_transport_header(skb);
 	req = (struct tx_data_wr *) skb_push(skb, sizeof(*req));
 	req->wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_TX_DATA));
 	req->wr_lo = htonl(V_WR_TID(ep->hwtid));
@@ -611,7 +609,7 @@ static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
 	 */
 	skb_get(skb);
 	set_arp_failure_handler(skb, arp_failure_discard);
-	skb->h.raw = skb->data;
+	skb_reset_transport_header(skb);
 	len = skb->len;
 	req = (struct tx_data_wr *) skb_push(skb, sizeof(*req));
 	req->wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_TX_DATA));
@@ -788,7 +786,7 @@ static int update_rx_credits(struct iwch_ep *ep, u32 credits)
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_RX_DATA_ACK, ep->hwtid));
 	req->credit_dack = htonl(V_RX_CREDITS(credits) | V_RX_FORCE_ACK(1));
 	skb->priority = CPL_PRIORITY_ACK;
-	ep->com.tdev->send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
 	return credits;
 }
 
@@ -803,7 +801,7 @@ static void process_mpa_reply(struct iwch_ep *ep, struct sk_buff *skb)
 	PDBG("%s ep %p\n", __FUNCTION__, ep);
 
 	/*
- 	 * Stop mpa timer.  If it expired, then the state has
+	 * Stop mpa timer.  If it expired, then the state has
 	 * changed and we bail since ep_timeout already aborted
 	 * the connection.
 	 */
@@ -823,7 +821,8 @@ static void process_mpa_reply(struct iwch_ep *ep, struct sk_buff *skb)
 	/*
 	 * copy the new data into our accumulation buffer.
 	 */
-	memcpy(&(ep->mpa_pkt[ep->mpa_pkt_len]), skb->data, skb->len);
+	skb_copy_from_linear_data(skb, &(ep->mpa_pkt[ep->mpa_pkt_len]),
+				  skb->len);
 	ep->mpa_pkt_len += skb->len;
 
 	/*
@@ -920,7 +919,7 @@ static void process_mpa_request(struct iwch_ep *ep, struct sk_buff *skb)
 	PDBG("%s ep %p\n", __FUNCTION__, ep);
 
 	/*
- 	 * Stop mpa timer.  If it expired, then the state has
+	 * Stop mpa timer.  If it expired, then the state has
 	 * changed and we bail since ep_timeout already aborted
 	 * the connection.
 	 */
@@ -942,7 +941,8 @@ static void process_mpa_request(struct iwch_ep *ep, struct sk_buff *skb)
 	/*
 	 * Copy the new data into our accumulation buffer.
 	 */
-	memcpy(&(ep->mpa_pkt[ep->mpa_pkt_len]), skb->data, skb->len);
+	skb_copy_from_linear_data(skb, &(ep->mpa_pkt[ep->mpa_pkt_len]),
+				  skb->len);
 	ep->mpa_pkt_len += skb->len;
 
 	/*
@@ -1022,7 +1022,7 @@ static int rx_data(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 
 	skb_pull(skb, sizeof(*hdr));
 	skb_trim(skb, dlen);
-	
+
 	ep->rcv_seq += dlen;
 	BUG_ON(ep->rcv_seq != (ntohl(hdr->seq) + dlen));
 
@@ -1041,9 +1041,9 @@ static int rx_data(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		       __FUNCTION__, ep, state_read(&ep->com), ep->hwtid);
 
 		/*
-	 	 * The ep will timeout and inform the ULP of the failure.
+		 * The ep will timeout and inform the ULP of the failure.
 		 * See ep_timeout().
-	 	 */
+		 */
 		break;
 	}
 
@@ -1088,7 +1088,7 @@ static int abort_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	PDBG("%s ep %p\n", __FUNCTION__, ep);
 
 	/*
- 	 * We get 2 abort replies from the HW.  The first one must
+	 * We get 2 abort replies from the HW.  The first one must
 	 * be ignored except for scribbling that we need one more.
 	 */
 	if (!(ep->flags & ABORT_REQ_IN_PROGRESS)) {
@@ -1102,6 +1102,15 @@ static int abort_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	return CPL_RET_BUF_DONE;
 }
 
+/*
+ * Return whether a failed active open has allocated a TID
+ */
+static inline int act_open_has_tid(int status)
+{
+	return status != CPL_ERR_TCAM_FULL && status != CPL_ERR_CONN_EXIST &&
+	       status != CPL_ERR_ARP_MISS;
+}
+
 static int act_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct iwch_ep *ep = ctx;
@@ -1111,7 +1120,7 @@ static int act_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	     status2errno(rpl->status));
 	connect_reply_upcall(ep, status2errno(rpl->status));
 	state_set(&ep->com, DEAD);
-	if (ep->com.tdev->type == T3B)
+	if (ep->com.tdev->type != T3A && act_open_has_tid(rpl->status))
 		release_tid(ep->com.tdev, GET_TID(rpl), NULL);
 	cxgb3_free_atid(ep->com.tdev, ep->atid);
 	dst_release(ep->dst);
@@ -1145,7 +1154,7 @@ static int listen_start(struct iwch_listen_ep *ep)
 	req->opt1 = htonl(V_CONN_POLICY(CPL_CONN_POLICY_ASK));
 
 	skb->priority = 1;
-	ep->com.tdev->send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
 }
 
@@ -1179,7 +1188,7 @@ static int listen_stop(struct iwch_listen_ep *ep)
 	req->cpu_idx = 0;
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_CLOSE_LISTSRV_REQ, ep->stid));
 	skb->priority = 1;
-	ep->com.tdev->send(ep->com.tdev, skb);
+	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
 }
 
@@ -1242,7 +1251,7 @@ static void reject_cr(struct t3cdev *tdev, u32 hwtid, __be32 peer_ip,
 	skb_trim(skb, sizeof(struct cpl_tid_release));
 	skb_get(skb);
 
-	if (tdev->type == T3B)
+	if (tdev->type != T3A)
 		release_tid(tdev, hwtid, skb);
 	else {
 		struct cpl_pass_accept_rpl *rpl;
@@ -1257,7 +1266,7 @@ static void reject_cr(struct t3cdev *tdev, u32 hwtid, __be32 peer_ip,
 		rpl->opt0l_status = htonl(CPL_PASS_OPEN_REJECT);
 		rpl->opt2 = 0;
 		rpl->rsvd = rpl->opt2;
-		tdev->send(tdev, skb);
+		cxgb3_ofld_send(tdev, skb);
 	}
 }
 
@@ -1439,7 +1448,7 @@ static int peer_close(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	}
 	spin_unlock_irqrestore(&ep->com.lock, flags);
 	if (disconnect)
-		iwch_ep_disconnect(ep, 0, GFP_KERNEL);	
+		iwch_ep_disconnect(ep, 0, GFP_KERNEL);
 	if (release)
 		release_ep_resources(ep);
 	return CPL_RET_BUF_DONE;
@@ -1448,10 +1457,10 @@ static int peer_close(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 /*
  * Returns whether an ABORT_REQ_RSS message is a negative advice.
  */
-static inline int is_neg_adv_abort(unsigned int status)
+static int is_neg_adv_abort(unsigned int status)
 {
-        return status == CPL_ERR_RTX_NEG_ADVICE ||
-               status == CPL_ERR_PERSIST_NEG_ADVICE;
+	return status == CPL_ERR_RTX_NEG_ADVICE ||
+	       status == CPL_ERR_PERSIST_NEG_ADVICE;
 }
 
 static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -1472,7 +1481,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	}
 
 	/*
- 	 * We get 2 peer aborts from the HW.  The first one must
+	 * We get 2 peer aborts from the HW.  The first one must
 	 * be ignored except for scribbling that we need one more.
 	 */
 	if (!(ep->flags & PEER_ABORT_IN_PROGRESS)) {
@@ -1499,7 +1508,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		wake_up(&ep->com.waitq);
 		break;
 	case MPA_REQ_RCVD:
-	
+
 		/*
 		 * We're gonna mark this puppy DEAD, but keep
 		 * the reference on it until the ULP accepts or
@@ -1534,7 +1543,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		break;
 	}
 	dst_confirm(ep->dst);
-	
+
 	rpl_skb = get_skb(skb, sizeof(*rpl), GFP_KERNEL);
 	if (!rpl_skb) {
 		printk(KERN_ERR MOD "%s - cannot allocate skb!\n",
@@ -1550,7 +1559,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	rpl->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(rpl) = htonl(MK_OPCODE_TID(CPL_ABORT_RPL, ep->hwtid));
 	rpl->cmd = CPL_ABORT_NO_RST;
-	ep->com.tdev->send(ep->com.tdev, rpl_skb);
+	cxgb3_ofld_send(ep->com.tdev, rpl_skb);
 	if (state != ABORTING) {
 		state_set(&ep->com, DEAD);
 		release_ep_resources(ep);
@@ -1619,7 +1628,8 @@ static int terminate(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	PDBG("%s ep %p\n", __FUNCTION__, ep);
 	skb_pull(skb, sizeof(struct cpl_rdma_terminate));
 	PDBG("%s saving %d bytes of term msg\n", __FUNCTION__, skb->len);
-	memcpy(ep->com.qp->attr.terminate_buffer, skb->data, skb->len);
+	skb_copy_from_linear_data(skb, ep->com.qp->attr.terminate_buffer,
+				  skb->len);
 	ep->com.qp->attr.terminate_msg_len = skb->len;
 	ep->com.qp->attr.is_terminate_local = 0;
 	return CPL_RET_BUF_DONE;
@@ -1757,11 +1767,11 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 			     conn_param->private_data_len);
 	if (err)
 		goto err;
-	
+
 	/* wait for wr_ack */
 	wait_event(ep->com.waitq, ep->com.rpl_done);
 	err = ep->com.rpl_err;
-	if (err) 
+	if (err)
 		goto err;
 
 	state_set(&ep->com, FPDU_MODE);
@@ -1772,7 +1782,6 @@ err:
 	ep->com.cm_id = NULL;
 	ep->com.qp = NULL;
 	cm_id->rem_ref(cm_id);
-	abort_connection(ep, NULL, GFP_KERNEL);
 	put_ep(&ep->com);
 	return err;
 }
@@ -1906,6 +1915,7 @@ int iwch_create_listen(struct iw_cm_id *cm_id, int backlog)
 fail3:
 	cxgb3_free_stid(ep->com.tdev, ep->stid);
 fail2:
+	cm_id->rem_ref(cm_id);
 	put_ep(&ep->com);
 fail1:
 out:
@@ -1937,7 +1947,7 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 	int ret=0;
 	unsigned long flags;
 	int close = 0;
-	
+
 	spin_lock_irqsave(&ep->com.lock, flags);
 
 	PDBG("%s ep %p state %s, abrupt %d\n", __FUNCTION__, ep,
@@ -1955,7 +1965,7 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 		}
 		goto out;
 	}
-	
+
 	switch (ep->com.state) {
 	case MPA_REQ_WAIT:
 	case MPA_REQ_SENT:
@@ -1991,7 +2001,7 @@ int iwch_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
 		     struct l2t_entry *l2t)
 {
 	struct iwch_ep *ep = ctx;
-	
+
 	if (ep->dst != old)
 		return 0;
 
@@ -2031,7 +2041,7 @@ static int sched(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 static int set_tcb_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct cpl_set_tcb_rpl *rpl = cplhdr(skb);
-	
+
 	if (rpl->status != CPL_ERR_NONE) {
 		printk(KERN_ERR MOD "Unexpected SET_TCB_RPL status %u "
 		       "for tid %u\n", rpl->status, GET_TID(rpl));

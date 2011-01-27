@@ -1405,7 +1405,7 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
 {
 	u32 bmval0 = bmval[0];
 	u32 bmval1 = bmval[1];
-	struct kstat stat;
+	struct kstat64 stat;
 	struct svc_fh tempfh;
 	struct kstatfs statfs;
 	int buflen = *countp << 2;
@@ -1421,7 +1421,7 @@ nfsd4_encode_fattr(struct svc_fh *fhp, struct svc_export *exp,
 	BUG_ON(bmval0 & ~NFSD_SUPPORTED_ATTRS_WORD0);
 	BUG_ON(bmval1 & ~NFSD_SUPPORTED_ATTRS_WORD1);
 
-	status = vfs_getattr(exp->ex_mnt, dentry, &stat);
+	status = vfs_getattr64(exp->ex_mnt, dentry, &stat);
 	if (status)
 		goto out_nfserr;
 	if ((bmval0 & (FATTR4_WORD0_FILES_FREE | FATTR4_WORD0_FILES_TOTAL)) ||
@@ -1603,7 +1603,7 @@ out_acl:
 	if (bmval0 & FATTR4_WORD0_FILEID) {
 		if ((buflen -= 8) < 0)
 			goto out_resource;
-		WRITE64((u64) stat.ino);
+		WRITE64(stat.ino64);
 	}
 	if (bmval0 & FATTR4_WORD0_FILES_AVAIL) {
 		if ((buflen -= 8) < 0)
@@ -1738,16 +1738,15 @@ out_acl:
 		WRITE32(stat.mtime.tv_nsec);
 	}
 	if (bmval1 & FATTR4_WORD1_MOUNTED_ON_FILEID) {
-		struct dentry *mnt_pnt, *mnt_root;
-
 		if ((buflen -= 8) < 0)
                 	goto out_resource;
-		mnt_root = exp->ex_mnt->mnt_root;
-		if (mnt_root->d_inode == dentry->d_inode) {
-			mnt_pnt = exp->ex_mnt->mnt_mountpoint;
-			WRITE64((u64) mnt_pnt->d_inode->i_ino);
-		} else
-                	WRITE64((u64) stat.ino);
+		if (exp->ex_mnt->mnt_root->d_inode == dentry->d_inode) {
+			status = vfs_getattr64(exp->ex_mnt->mnt_parent,
+				exp->ex_mnt->mnt_mountpoint, &stat);
+			if (status)
+				goto out_nfserr;
+		}
+                WRITE64(stat.ino64);
 	}
 	*attrlenp = htonl((char *)p - (char *)attrlenp - 4);
 	*countp = p - buffer;
@@ -1772,7 +1771,7 @@ out_serverfault:
 
 static int
 nfsd4_encode_dirent(struct readdir_cd *ccd, const char *name, int namlen,
-		    loff_t offset, ino_t ino, unsigned int d_type)
+		    loff_t offset, u64 ino, unsigned int d_type)
 {
 	struct nfsd4_readdir *cd = container_of(ccd, struct nfsd4_readdir, common);
 	int buflen;
@@ -1895,6 +1894,13 @@ out:
 nospc:
 	cd->common.err = nfserr_toosmall;
 	return -EINVAL;
+}
+
+static int
+nfsd4_encode_dirent32(struct readdir_cd *ccd, const char *name, int namlen,
+		    loff_t offset, u32 ino, unsigned int d_type)
+{
+	return nfsd4_encode_dirent(ccd, name, namlen, offset, (u64) ino, d_type);
 }
 
 static void
@@ -2325,8 +2331,8 @@ nfsd4_encode_readdir(struct nfsd4_compoundres *resp, int nfserr, struct nfsd4_re
 
 	offset = readdir->rd_cookie;
 	nfserr = nfsd_readdir(readdir->rd_rqstp, readdir->rd_fhp,
-			      &offset,
-			      &readdir->common, nfsd4_encode_dirent);
+			      &offset, &readdir->common,
+			      nfsd4_encode_dirent, nfsd4_encode_dirent32);
 	if (nfserr == nfs_ok &&
 	    readdir->common.err == nfserr_toosmall &&
 	    readdir->buffer == page) 

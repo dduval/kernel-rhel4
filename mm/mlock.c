@@ -213,8 +213,11 @@ int user_shm_lock(size_t size, struct user_struct *user)
 	spin_lock(&shmlock_user_lock);
 	locked = size >> PAGE_SHIFT;
 	lock_limit = current->rlim[RLIMIT_MEMLOCK].rlim_cur;
+	if (lock_limit == RLIM_INFINITY)
+		allowed = 1;
 	lock_limit >>= PAGE_SHIFT;
-	if (locked + user->locked_shm > lock_limit && !capable(CAP_IPC_LOCK))
+	if (!allowed &&
+	     locked + user->locked_shm > lock_limit && !capable(CAP_IPC_LOCK))
 		goto out;
 	get_uid(user);
 	user->locked_shm += locked;

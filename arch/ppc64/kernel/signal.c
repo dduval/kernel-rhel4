@@ -217,10 +217,11 @@ static long restore_sigcontext(struct pt_regs *regs, sigset_t *set, int sig,
 	if (v_regs != 0 && !access_ok(VERIFY_READ, v_regs, 34 * sizeof(*v_regs)))
 		return -EFAULT;
 	/* Copy 33 vec registers (vr0..31 and vscr) from the stack */
-	if (v_regs != 0 && (regs->msr & MSR_VEC) != 0)
-		err |= __copy_from_user(current->thread.vr, v_regs, 33 * sizeof(vector128));
+	if (v_regs != 0 && (msr & MSR_VEC) != 0)
+		err |= __copy_from_user(current->thread.vr, v_regs,
+					33 * sizeof(vector128));
 	else if (current->thread.used_vr)
-		memset(&current->thread.vr, 0, 33);
+		memset(current->thread.vr, 0, 33 * sizeof(vector128));
 	/* Always get VRSAVE back */
 	if (v_regs != 0)
 		err |= __get_user(current->thread.vrsave, (u32 __user *)&v_regs[33]);

@@ -1,10 +1,10 @@
 /*
  *  linux/drivers/message/fusion/mptspi.c
- *      For use with LSI Logic PCI chip/adapter(s)
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      For use with LSI PCI chip/adapter(s)
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2007 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -44,8 +44,10 @@
 */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 
-#include <linux/module.h>
+#include <linux/config.h>
+#include <linux/version.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/kdev_t.h>
@@ -103,9 +105,28 @@ static int mpt_pq_filter = 0;
 module_param(mpt_pq_filter, int, 0);
 MODULE_PARM_DESC(mpt_pq_filter, " Enable peripheral qualifier filter: enable=1  (default=0)");
 
+static int mptspi_device_queue_depth = MPT_SCSI_CMD_PER_DEV_HIGH;
+module_param(mptspi_device_queue_depth, int, 0);
+MODULE_PARM_DESC(mptspi_device_queue_depth, " Max Device Queue Depth (default=" __MODULE_STRING(MPT_SCSI_CMD_PER_DEV_HIGH) ")");
+
+static int mptspi_slave_configure(struct scsi_device *sdev);
+
 static int	mptspiDoneCtx = -1;
 static int	mptspiTaskCtx = -1;
 static int	mptspiInternalCtx = -1; /* Used only for internal commands */
+
+static struct device_attribute mptspi_queue_depth_attr = {
+	.attr = {
+		.name = 	"queue_depth",
+		.mode =		S_IWUSR,
+	},
+	.store = mptscsih_store_queue_depth,
+};
+
+static struct device_attribute *mptspi_dev_attrs[] = {
+	&mptspi_queue_depth_attr,
+	NULL,
+};
 
 /* Show the ioc state for this card */
 static ssize_t
@@ -140,13 +161,10 @@ static struct scsi_host_template mptspi_driver_template = {
 	.info				= mptscsih_info,
 	.queuecommand			= mptscsih_qcmd,
 	.slave_alloc			= mptscsih_slave_alloc,
-	.slave_configure		= mptscsih_slave_configure,
+	.slave_configure		= mptspi_slave_configure,
 	.slave_destroy			= mptscsih_slave_destroy,
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,11))
-	.change_queue_depth 		= mptscsih_change_queue_depth,
-#endif
 	.eh_abort_handler		= mptscsih_abort,
-        .eh_device_reset_handler        = mptscsih_dev_reset,
+	.eh_device_reset_handler	= mptscsih_dev_reset,
 	.eh_bus_reset_handler		= mptscsih_bus_reset,
 	.eh_host_reset_handler		= mptscsih_host_reset,
 	.bios_param			= mptscsih_bios_param,
@@ -157,6 +175,7 @@ static struct scsi_host_template mptspi_driver_template = {
 	.cmd_per_lun			= 7,
 	.use_clustering			= ENABLE_CLUSTERING,
 	.shost_attrs			= mptspi_host_attrs,
+	.sdev_attrs			= mptspi_dev_attrs,
 	.dump_sanity_check		= mptscsih_sanity_check,
 	.dump_poll			= mptscsih_poll,
 };
@@ -173,6 +192,35 @@ static struct pci_device_id mptspi_pci_table[] = {
 	{0}	/* Terminating entry */
 };
 MODULE_DEVICE_TABLE(pci, mptspi_pci_table);
+
+
+/**
+ * mptspi_slave_configure
+ *
+ *
+ * @sdev
+ *
+ **/
+static int
+mptspi_slave_configure(struct scsi_device *sdev)
+{
+#ifdef MPT_DEBUG_INIT
+	MPT_SCSI_HOST	*hd = (MPT_SCSI_HOST *)sdev->host->hostdata;
+	MPT_ADAPTER *ioc = hd->ioc;
+	int		channel;
+	int		id;
+
+	channel = sdev->channel;
+	id = sdev->id;
+
+	dinitprintk((MYIOC_s_INFO_FMT
+		"%s: id=%d channel=%d sdev->queue_depth=%d mptspi_device_queue_depth=%d\n",
+		ioc->name, __FUNCTION__, id, channel, sdev->queue_depth,
+		mptspi_device_queue_depth));
+#endif
+
+	return mptscsih_slave_configure(sdev, mptspi_device_queue_depth);
+}
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -280,11 +328,9 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	sh->unique_id = ioc->id;
 	sh->sg_tablesize = ioc->sg_tablesize;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	/* Set the pci device pointer in Scsi_Host structure.
 	 */
 	scsi_set_device(sh, &ioc->pcidev->dev);
-#endif
 
 	spin_unlock_irqrestore(&ioc->FreeQlock, flags);
 
@@ -302,10 +348,10 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	memset(mem, 0, sz);
-	hd->ScsiLookup = (struct scsi_cmnd **) mem;
+	ioc->ScsiLookup = (struct scsi_cmnd **) mem;
 
 	dprintk((MYIOC_s_INFO_FMT "ScsiLookup @ %p, sz=%d\n",
-		 ioc->name, hd->ScsiLookup, sz));
+		 ioc->name, ioc->ScsiLookup, sz));
 
 	for (ii=0; ii < ioc->NumberOfBuses; ii++) {
 		/* Allocate memory for the device structures.
@@ -339,21 +385,25 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 */
 	hd->cmdPtr = NULL;
 
-	/* Initialize this IOC's  timers
+	/* Initialize this IOC's timers
 	 * To use, set the timer expires field
-	 * and add_timer.Used for internally
-         * generated commands.
+	 * and add_timer.  Used for internally
+	 * generated commands.
 	 */
-       init_timer(&hd->InternalCmdTimer);
-       hd->InternalCmdTimer.data = (unsigned long) hd;
-       hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
+	init_timer(&hd->InternalCmdTimer);
+	hd->InternalCmdTimer.data = (unsigned long) hd;
+	hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
 
-       init_timer(&ioc->TMtimer);
-       ioc->TMtimer.data = (unsigned long) ioc;
-       ioc->TMtimer.function = mptscsih_TM_timeout;
+	init_timer(&hd->DVCmdTimer);
+	hd->DVCmdTimer.data = (unsigned long) hd;
+	hd->DVCmdTimer.function = mptscsih_DVCmdTimer_expired;
 
-       ioc->spi_data.Saf_Te = mpt_saf_te;
-       hd->mpt_pq_filter = mpt_pq_filter;
+	init_timer(&ioc->TMtimer);
+	ioc->TMtimer.data = (unsigned long) ioc;
+	ioc->TMtimer.function = mptscsih_TM_timeout;
+
+	ioc->spi_data.Saf_Te = mpt_saf_te;
+	hd->mpt_pq_filter = mpt_pq_filter;
 
 #ifdef MPTSCSIH_ENABLE_DOMAIN_VALIDATION
 	if (ioc->spi_data.maxBusWidth > mpt_width)
@@ -374,7 +424,6 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		mpt_saf_te,
 		mpt_pq_filter));
 #else
-
 	ddvprintk((MYIOC_s_INFO_FMT
 		"saf_te %x mpt_pq_filter %x\n",
 		ioc->name,
@@ -387,18 +436,18 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->spi_data.noQas |= MPT_TARGET_NO_NEGO_QAS;
 	else
 		ioc->spi_data.noQas = 0;
-/* enable domain validation flags */
 
+	/* enable domain validation flags */
 	for (ii=0; ii < MPT_MAX_SCSI_DEVICES; ii++)
-ioc->spi_data.dvStatus[ii] =
-
-(MPT_SCSICFG_NEGOTIATE | MPT_SCSICFG_DV_NOT_DONE);
+		ioc->spi_data.dvStatus[ii] =
+		  (MPT_SCSICFG_NEGOTIATE | MPT_SCSICFG_DV_NOT_DONE);
 
 	init_waitqueue_head(&hd->scandv_waitq);
 	hd->scandv_wait_done = 0;
 	hd->last_queue_full = 0;
-        init_waitqueue_head(&hd->TM_waitq);
-        hd->TM_wait_done = 0;
+
+	init_waitqueue_head(&hd->TM_waitq);
+	hd->TM_wait_done = 0;
 
 	error = scsi_add_host (sh, &ioc->pcidev->dev);
 	if(error) {
@@ -414,9 +463,9 @@ ioc->spi_data.dvStatus[ii] =
 		    0, 0, 0, 0, 5 /* 5 second timeout */);
 	}
 
-       dnegoprintk((MYIOC_s_WARN_FMT "%s: writeSDP1: ALL_IDS\n",
-               ioc->name, __FUNCTION__));
-       mpt_writeSDP1(ioc, 0, 0, MPT_SCSICFG_ALL_IDS);
+	dnegoprintk((MYIOC_s_WARN_FMT "%s: writeSDP1: ALL_IDS\n",
+		ioc->name, __FUNCTION__));
+	mpt_writeSDP1(ioc, 0, 0, MPT_SCSICFG_ALL_IDS);
 
 	scsi_scan_host(sh);
 	return 0;
@@ -432,13 +481,9 @@ static struct pci_driver mptspi_driver = {
 	.id_table	= mptspi_pci_table,
 	.probe		= mptspi_probe,
 	.remove		= __devexit_p(mptscsih_remove),
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	.driver         = {
 		.shutdown = mptscsih_shutdown,
         },
-#else
-	.shutdown       = mptscsih_shutdown,
-#endif
 #ifdef CONFIG_PM
 	.suspend	= mptscsih_suspend,
 	.resume		= mptscsih_resume,
@@ -464,7 +509,7 @@ mptspi_init(void)
 
 	if (mpt_event_register(mptspiDoneCtx, mptscsih_event_process) == 0) {
 		devtprintk((KERN_INFO MYNAM
-        ": Registered for IOC event notifications mptspiDoneCtx=%08x\n", mptspiDoneCtx));
+		   	": Registered for IOC event notifications mptspiDoneCtx=%08x\n", mptspiDoneCtx));
 	}
 
 	if (mpt_reset_register(mptspiDoneCtx, mptscsih_ioc_reset) == 0) {

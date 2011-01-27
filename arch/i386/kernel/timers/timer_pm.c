@@ -170,8 +170,8 @@ static void mark_offset_pmtmr(void)
 
 	/* convert to ticks */
 	delta += offset_delay;
-	lost = delta / (USEC_PER_SEC / HZ);
-	offset_delay = delta % (USEC_PER_SEC / HZ);
+	lost = delta / (USEC_PER_SEC / REAL_HZ);
+	offset_delay = delta % (USEC_PER_SEC / REAL_HZ);
 
 
 	/* compensate for lost ticks */

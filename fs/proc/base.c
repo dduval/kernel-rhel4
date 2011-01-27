@@ -67,6 +67,7 @@
 #include <linux/security.h>
 #include <linux/ptrace.h>
 #include <linux/audit.h>
+#include <linux/elf.h>
 
 /*
  * For hysterical raisins we keep the same inumbers as in the old procfs.
@@ -114,6 +115,12 @@ enum pid_directory_inos {
 	PROC_TGID_LOGINUID,
 #endif
 	PROC_TGID_FD_DIR,
+#ifdef USE_ELF_CORE_DUMP
+	PROC_TGID_COREDUMP_FILTER,
+#endif
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+	PROC_TGID_IO,
+#endif
 	PROC_TID_INO,
 	PROC_TID_STATUS,
 	PROC_TID_MEM,
@@ -147,8 +154,14 @@ enum pid_directory_inos {
 #ifdef CONFIG_AUDITSYSCALL
 	PROC_TID_LOGINUID,
 #endif
+	PROC_TID_LIMITS,
+	PROC_TGID_LIMITS,
+
 	PROC_TID_FD_DIR = 0x8000,	/* 0x8000-0xffff */
 };
+
+#define PROC_NUMBUF 10
+#define PROC_MAXPIDS 20
 
 struct pid_entry {
 	int type;
@@ -193,6 +206,14 @@ static struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_AUDITSYSCALL
 	E(PROC_TGID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
+	E(PROC_TGID_LIMITS, "limits", S_IFREG|S_IRUSR),
+#ifdef USE_ELF_CORE_DUMP
+	E(PROC_TGID_COREDUMP_FILTER, "coredump_filter",
+		S_IFREG|S_IRUGO|S_IWUSR),
+#endif
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+	E(PROC_TGID_IO,             "io",  S_IFREG|S_IRUGO),
+#endif
 	{0,0,NULL,0}
 };
 static struct pid_entry tid_base_stuff[] = {
@@ -227,6 +248,8 @@ static struct pid_entry tid_base_stuff[] = {
 #ifdef CONFIG_AUDITSYSCALL
 	E(PROC_TID_LOGINUID, "loginuid", S_IFREG|S_IWUSR|S_IRUGO),
 #endif
+	E(PROC_TID_LIMITS, "limits", S_IFREG|S_IRUSR),
+
 	{0,0,NULL,0}
 };
 
@@ -263,6 +286,7 @@ int proc_tid_stat(struct task_struct*,char*);
 int proc_tgid_stat(struct task_struct*,char*);
 int proc_pid_status(struct task_struct*,char*);
 int proc_pid_statm(struct task_struct*,char*);
+int proc_pid_limits(struct task_struct*,char*);
 
 static int proc_fd_link(struct inode *inode, struct dentry **dentry, struct vfsmount **mnt)
 {
@@ -395,22 +419,6 @@ static int may_ptrace_attach(struct task_struct *task)
 	return res;
 }
 
-static int proc_pid_environ(struct task_struct *task, char * buffer)
-{
-	int res = 0;
-	struct mm_struct *mm = get_task_mm(task);
-	if (mm) {
-		unsigned int len = mm->env_end - mm->env_start;
-		if (len > PAGE_SIZE)
-			len = PAGE_SIZE;
-		res = access_process_vm(task, mm->env_start, buffer, len, 0);
-		if (!may_ptrace_attach(task))
-			res = -ESRCH;
-		mmput(mm);
-	}
-	return res;
-}
-
 static int proc_pid_cmdline(struct task_struct *task, char * buffer)
 {
 	int res = 0;
@@ -498,6 +506,20 @@ static int proc_pid_schedstat(struct task_struct *task, char *buffer)
 			task->sched_info.cpu_time,
 			task->sched_info.run_delay,
 			task->sched_info.pcnt);
+}
+#endif
+
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+static int proc_pid_io_accounting(struct task_struct *task, char *buffer)
+{
+	struct task_io_accounting ioac = task_aux(task)->ioac;
+	return sprintf(buffer,
+			"read_bytes: %llu\n"
+			"write_bytes: %llu\n"
+			"cancelled_write_bytes: %llu\n",
+			(unsigned long long)ioac.read_bytes,
+			(unsigned long long)ioac.write_bytes,
+			(unsigned long long)ioac.cancelled_write_bytes);
 }
 #endif
 
@@ -875,6 +897,70 @@ static struct file_operations proc_mem_operations = {
 	.open		= mem_open,
 };
 
+static ssize_t environ_read(struct file *file, char __user *buf,
+			size_t count, loff_t *ppos)
+{
+	struct task_struct *task = proc_task(file->f_dentry->d_inode);
+	char *page;
+	unsigned long src = *ppos;
+	int ret = -ESRCH;
+	struct mm_struct *mm;
+
+	if (!may_ptrace_attach(task))
+		goto out;
+
+	ret = -ENOMEM;
+	page = (char *)__get_free_page(GFP_USER);
+	if (!page)
+		goto out;
+
+	ret = 0;
+ 
+	mm = get_task_mm(task);
+	if (!mm)
+		goto out_free;
+
+	while (count > 0) {
+		int this_len, retval, max_len;
+
+		this_len = mm->env_end - (mm->env_start + src);
+		
+		if (this_len <= 0)
+			break;
+
+		max_len = (count > PAGE_SIZE) ? PAGE_SIZE : count;
+		this_len = (this_len > max_len) ? max_len : this_len;
+		
+		retval = access_process_vm(task, (mm->env_start + src),
+					    page, this_len, 0);
+					    
+		if (retval <= 0) {
+			ret = retval;
+			break;
+		}
+
+		if (copy_to_user(buf, page, retval)) {
+			ret = -EFAULT;
+			break;
+		}
+ 
+		ret += retval;
+		src += retval;
+		buf += retval;
+		count -= retval;
+	}
+	*ppos = src;
+	mmput(mm);
+out_free:
+	free_page((unsigned long) page);
+out:
+	return ret;
+}
+
+static struct file_operations proc_environ_operations = {
+	.read		= environ_read,
+};
+
 static struct inode_operations proc_mem_inode_operations = {
 	.permission	= proc_permission,
 };
@@ -943,6 +1029,72 @@ static struct file_operations proc_loginuid_operations = {
 	.write		= proc_loginuid_write,
 };
 #endif
+
+#ifdef USE_ELF_CORE_DUMP
+static ssize_t proc_coredump_filter_read(struct file *file, char __user *buf,
+					 size_t count, loff_t *ppos)
+{
+	struct task_struct *task = proc_task(file->f_dentry->d_inode);
+	struct mm_struct *mm;
+	char buffer[PROC_NUMBUF];
+	size_t len;
+	int ret;
+
+	ret = 0;
+	mm = get_task_mm(task);
+	if (mm) {
+		len = snprintf(buffer, sizeof(buffer), "%08lx\n",
+			       get_mm_flags(mm));
+		mmput(mm);
+		ret = simple_read_from_buffer(buf, count, ppos, buffer, len);
+	}
+
+	return ret;
+}
+
+static ssize_t proc_coredump_filter_write(struct file *file,
+					  const char __user *buf,
+					  size_t count,
+					  loff_t *ppos)
+{
+	struct task_struct *task;
+	struct mm_struct *mm;
+	char buffer[PROC_NUMBUF], *end;
+	unsigned int val;
+	int ret;
+
+	ret = -EFAULT;
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count))
+		goto out;
+
+	ret = -EINVAL;
+	val = (unsigned int)simple_strtoul(buffer, &end, 0);
+	if (*end == '\n')
+		end++;
+	if (end - buffer == 0)
+		goto out;
+
+	task = proc_task(file->f_dentry->d_inode);
+
+	ret = 0;
+	mm = get_task_mm(task);
+	if (!mm)
+		goto out;
+	ret = set_mm_flags(mm, val, 1);
+	mmput(mm);
+
+out:
+	return (ret < 0) ? ret : end - buffer;
+}
+
+static const struct file_operations proc_coredump_filter_operations = {
+	.read		= proc_coredump_filter_read,
+	.write		= proc_coredump_filter_write,
+};
+#endif /* USE_ELF_CORE_DUMP */
 
 static int proc_pid_follow_link(struct dentry *dentry, struct nameidata *nd)
 {
@@ -1543,8 +1695,7 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 			break;
 		case PROC_TID_ENVIRON:
 		case PROC_TGID_ENVIRON:
-			inode->i_fop = &proc_info_file_operations;
-			ei->op.proc_read = proc_pid_environ;
+			inode->i_fop = &proc_environ_operations;
 			break;
 		case PROC_TID_AUXV:
 		case PROC_TGID_AUXV:
@@ -1555,6 +1706,11 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 		case PROC_TGID_STATUS:
 			inode->i_fop = &proc_info_file_operations;
 			ei->op.proc_read = proc_pid_status;
+			break;
+		case PROC_TID_LIMITS:
+		case PROC_TGID_LIMITS:
+			inode->i_fop = &proc_info_file_operations;
+			ei->op.proc_read = proc_pid_limits;
 			break;
 		case PROC_TID_STAT:
 			inode->i_fop = &proc_info_file_operations;
@@ -1587,7 +1743,6 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 		case PROC_TID_MEM:
 		case PROC_TGID_MEM:
 			inode->i_op = &proc_mem_inode_operations;
-			inode->i_fop = &proc_mem_operations;
 			break;
 		case PROC_TID_MOUNTS:
 		case PROC_TGID_MOUNTS:
@@ -1643,6 +1798,17 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 		case PROC_TID_LOGINUID:
 		case PROC_TGID_LOGINUID:
 			inode->i_fop = &proc_loginuid_operations;
+			break;
+#endif
+#ifdef USE_ELF_CORE_DUMP
+		case PROC_TGID_COREDUMP_FILTER:
+			inode->i_fop = &proc_coredump_filter_operations;
+			break;
+#endif
+#ifdef CONFIG_TASK_IO_ACCOUNTING
+		case PROC_TGID_IO:
+			inode->i_fop = &proc_info_file_operations;
+			ei->op.proc_read = proc_pid_io_accounting;
 			break;
 #endif
 		default:
@@ -1918,9 +2084,6 @@ out_drop_task:
 out:
 	return ERR_PTR(-ENOENT);
 }
-
-#define PROC_NUMBUF 10
-#define PROC_MAXPIDS 20
 
 /*
  * Get a few tgid's to return for filldir - we need to hold the

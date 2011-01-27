@@ -930,9 +930,9 @@ int cdrom_open(struct cdrom_device_info *cdi, struct inode *ip, struct file *fp)
 		if (fp->f_mode & FMODE_WRITE) {
 			ret = -EROFS;
 			if (cdrom_open_write(cdi))
-				goto err;
+				goto err_release;
 			if (!CDROM_CAN(CDC_RAM))
-				goto err;
+				goto err_release;
 			ret = 0;
 		}
 	}
@@ -946,6 +946,8 @@ int cdrom_open(struct cdrom_device_info *cdi, struct inode *ip, struct file *fp)
 	    not be mounting, but opening with O_NONBLOCK */
 	check_disk_change(ip->i_bdev);
 	return 0;
+err_release:
+	cdi->ops->release(cdi);
 err:
 	cdi->use_count--;
 	return ret;
@@ -1048,7 +1050,7 @@ int open_for_data(struct cdrom_device_info * cdi)
 	This ensures that the drive gets unlocked after a mount fails.  This 
 	is a goto to avoid bloating the driver with redundant code. */ 
 clean_up_and_return:
-	cdinfo(CD_WARNING, "open failed.\n"); 
+	cdinfo(CD_OPEN, "open failed.\n"); 
 	if (CDROM_CAN(CDC_LOCK) && cdi->options & CDO_LOCK) {
 			cdo->lock_door(cdi, 0);
 			cdinfo(CD_OPEN, "door unlocked.\n");

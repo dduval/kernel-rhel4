@@ -481,8 +481,8 @@ static void start_hnp(struct ohci_hcd *ohci);
 /* this timer value might be vendor-specific ... */
 #define	PORT_RESET_HW_MSEC	10
 
-/* wrap-aware logic stolen from <linux/jiffies.h> */
-#define tick_before(t1,t2) ((((s16)(t1))-((s16)(t2))) < 0)
+/* wrap-aware logic stolen from <linux/jiffies.h>, adjusted to shorts. */
+#define tick_before(t1,t2) ((s16)((t1)-(t2)) < 0)
 
 /* called from some task, normally khubd */
 static inline void root_port_reset (struct ohci_hcd *ohci, unsigned port)

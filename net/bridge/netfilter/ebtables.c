@@ -1482,7 +1482,7 @@ static int __init init(void)
 	down(&ebt_mutex);
 	list_named_insert(&ebt_targets, &ebt_standard_target);
 	up(&ebt_mutex);
-	if ((ret = nf_register_sockopt(&ebt_sockopts)) < 0)
+	if ((ret = nf_register_sockopt_owner(&ebt_sockopts, THIS_MODULE)) < 0)
 		return ret;
 
 	printk(KERN_NOTICE "Ebtables v2.0 registered\n");

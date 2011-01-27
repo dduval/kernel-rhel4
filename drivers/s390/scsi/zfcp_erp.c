@@ -123,8 +123,6 @@ static inline void zfcp_erp_action_to_ready(struct zfcp_erp_action *);
 static inline void zfcp_erp_action_to_running(struct zfcp_erp_action *);
 
 static void zfcp_erp_memwait_handler(unsigned long);
-static void zfcp_erp_timeout_handler(unsigned long);
-static inline void zfcp_erp_timeout_init(struct zfcp_erp_action *);
 
 /**
  * zfcp_fsf_request_timeout_handler - called if a request timed out
@@ -133,42 +131,23 @@ static inline void zfcp_erp_timeout_init(struct zfcp_erp_action *);
  * This function needs to be called if requests (ELS, Generic Service,
  * or SCSI commands) exceed a certain time limit. The assumption is
  * that after the time limit the adapter get stuck. So we trigger a reopen of
- * the adapter. This should not be used for error recovery, SCSI abort
- * commands and SCSI requests from SCSI mid-layer.
+ * the adapter.
  */
-void
-zfcp_fsf_request_timeout_handler(unsigned long data)
+static void zfcp_fsf_request_timeout_handler(unsigned long data)
 {
 	struct zfcp_adapter *adapter;
 
 	adapter = (struct zfcp_adapter *) data;
 
-	zfcp_erp_adapter_reopen(adapter, 0);
+	zfcp_erp_adapter_reopen(adapter, ZFCP_STATUS_COMMON_ERP_FAILED);
 }
 
-/*
- * function:	zfcp_fsf_scsi_er_timeout_handler
- *
- * purpose:     This function needs to be called whenever a SCSI error recovery
- *              action (abort/reset) does not return.
- *              Re-opening the adapter means that the command can be returned
- *              by zfcp (it is guarranteed that it does not return via the
- *              adapter anymore). The buffer can then be used again.
- *    
- * returns:     sod all
- */
-void
-zfcp_fsf_scsi_er_timeout_handler(unsigned long data)
+void zfcp_fsf_start_timer(struct zfcp_fsf_req *fsf_req, unsigned long timeout)
 {
-	struct zfcp_adapter *adapter = (struct zfcp_adapter *) data;
-
-	ZFCP_LOG_NORMAL("warning: SCSI error recovery timed out. "
-			"Restarting all operations on the adapter %s\n",
-			zfcp_get_busid_by_adapter(adapter));
-	debug_text_event(adapter->erp_dbf, 1, "eh_lmem_tout");
-	zfcp_erp_adapter_reopen(adapter, 0);
-
-	return;
+	fsf_req->timer.function = zfcp_fsf_request_timeout_handler;
+	fsf_req->timer.data = (unsigned long) fsf_req->adapter;
+	fsf_req->timer.expires = jiffies + timeout;
+	add_timer(&fsf_req->timer);
 }
 
 /*
@@ -1030,8 +1009,6 @@ zfcp_erp_async_handler_nolock(struct zfcp_erp_action *erp_action,
 		debug_text_event(adapter->erp_dbf, 2, "a_asyh_ex");
 		debug_event(adapter->erp_dbf, 2, &erp_action->action,
 			    sizeof (int));
-		if (!(set_mask & ZFCP_STATUS_ERP_TIMEDOUT))
-			del_timer(&erp_action->timer);
 		erp_action->status |= set_mask;
 		zfcp_erp_action_ready(erp_action);
 		retval = 0;
@@ -1095,8 +1072,7 @@ zfcp_erp_memwait_handler(unsigned long data)
  *		action gets an appropriate flag and will be processed
  *		accordingly
  */
-static void
-zfcp_erp_timeout_handler(unsigned long data)
+static void zfcp_erp_timeout_handler(unsigned long data)
 {
 	struct zfcp_erp_action *erp_action = (struct zfcp_erp_action *) data;
 	struct zfcp_adapter *adapter = erp_action->adapter;
@@ -1671,6 +1647,61 @@ zfcp_erp_strategy_statechange_detected(atomic_t * target_status, u32 erp_status)
 	     !(ZFCP_STATUS_ERP_CLOSE_ONLY & erp_status));
 }
 
+struct zfcp_erp_add_work {
+	struct zfcp_unit  *unit;
+	struct work_struct work;
+};
+
+/**
+ * zfcp_erp_scsi_scan
+ * @data: pointer to a struct zfcp_erp_add_work
+ *
+ * Registers a logical unit with the SCSI stack.
+ */
+static void
+zfcp_erp_scsi_scan(void *data)
+{
+	struct zfcp_erp_add_work *p;
+	p = data;
+	scsi_add_device(p->unit->port->adapter->scsi_host, 0,
+ 			p->unit->port->scsi_id, p->unit->scsi_lun);
+	atomic_clear_mask(ZFCP_STATUS_UNIT_SCSI_WORK_PENDING, &p->unit->status);
+	wake_up(&p->unit->scsi_scan_wq);
+	zfcp_unit_put(p->unit);
+	kfree(p);
+}
+
+/**
+ * zfcp_erp_schedule_work
+ * @unit: pointer to unit which should be registered with SCSI stack
+ *
+ * Schedules work which registers a unit with the SCSI stack
+ */
+static void
+zfcp_erp_schedule_work(struct zfcp_unit *unit)
+{
+	struct zfcp_erp_add_work *p;
+
+	p = kmalloc(sizeof(*p), GFP_KERNEL);
+	if (!p) {
+		ZFCP_LOG_NORMAL("error: Out of resources. Could not register "
+				"the FCP-LUN 0x%Lx connected to "
+				"the port with WWPN 0x%Lx connected to "
+				"the adapter %s with the SCSI stack.\n",
+				unit->fcp_lun,
+				unit->port->wwpn,
+				zfcp_get_busid_by_unit(unit));
+		return;
+	}
+
+	zfcp_unit_get(unit);
+	memset(p, 0, sizeof(*p));
+	atomic_set_mask(ZFCP_STATUS_UNIT_SCSI_WORK_PENDING, &unit->status);
+	INIT_WORK(&p->work, zfcp_erp_scsi_scan, p);
+	p->unit = unit;
+	schedule_work(&p->work);
+}
+
 /*
  * function:	
  *
@@ -2152,6 +2183,9 @@ zfcp_erp_adapter_strategy_generic(struct zfcp_erp_action *erp_action, int close)
 	zfcp_erp_adapter_strategy_close_qdio(erp_action);
 	zfcp_erp_adapter_strategy_close_fsf(erp_action);
  failed_qdio:
+	atomic_clear_mask(ZFCP_STATUS_ADAPTER_XCONFIG_OK |
+			  ZFCP_STATUS_ADAPTER_LINK_UNPLUGGED,
+			  &erp_action->adapter->status);
  out:
 	return retval;
 }
@@ -2363,10 +2397,9 @@ zfcp_erp_adapter_strategy_open_fsf_xconfig(struct zfcp_erp_action *erp_action)
 		atomic_clear_mask(ZFCP_STATUS_ADAPTER_HOST_CON_INIT,
 				  &adapter->status);
 		ZFCP_LOG_DEBUG("Doing exchange config data\n");
-		write_lock(&adapter->erp_lock);
+		write_lock_irq(&adapter->erp_lock);
 		zfcp_erp_action_to_running(erp_action);
-		write_unlock(&adapter->erp_lock);
-		zfcp_erp_timeout_init(erp_action);
+		write_unlock_irq(&adapter->erp_lock);
 		if (zfcp_fsf_exchange_config_data(erp_action)) {
 			retval = ZFCP_ERP_FAILED;
 			debug_text_event(adapter->erp_dbf, 5, "a_fstx_xf");
@@ -2410,6 +2443,9 @@ zfcp_erp_adapter_strategy_open_fsf_xconfig(struct zfcp_erp_action *erp_action)
 		msleep(jiffies_to_msecs(sleep));
 		sleep *= 2;
 	}
+
+	atomic_clear_mask(ZFCP_STATUS_ADAPTER_HOST_CON_INIT,
+			  &adapter->status);
 
 	if (!atomic_test_mask(ZFCP_STATUS_ADAPTER_XCONFIG_OK,
 			      &adapter->status)) {
@@ -2822,7 +2858,6 @@ zfcp_erp_port_forced_strategy_close(struct zfcp_erp_action *erp_action)
 	struct zfcp_adapter *adapter = erp_action->adapter;
 	struct zfcp_port *port = erp_action->port;
 
-	zfcp_erp_timeout_init(erp_action);
 	retval = zfcp_fsf_close_physical_port(erp_action);
 	if (retval == -ENOMEM) {
 		debug_text_event(adapter->erp_dbf, 5, "o_pfstc_nomem");
@@ -2886,7 +2921,6 @@ zfcp_erp_port_strategy_close(struct zfcp_erp_action *erp_action)
 	struct zfcp_adapter *adapter = erp_action->adapter;
 	struct zfcp_port *port = erp_action->port;
 
-	zfcp_erp_timeout_init(erp_action);
 	retval = zfcp_fsf_close_port(erp_action);
 	if (retval == -ENOMEM) {
 		debug_text_event(adapter->erp_dbf, 5, "p_pstc_nomem");
@@ -2924,7 +2958,6 @@ zfcp_erp_port_strategy_open_port(struct zfcp_erp_action *erp_action)
 	struct zfcp_adapter *adapter = erp_action->adapter;
 	struct zfcp_port *port = erp_action->port;
 
-	zfcp_erp_timeout_init(erp_action);
 	retval = zfcp_fsf_open_port(erp_action);
 	if (retval == -ENOMEM) {
 		debug_text_event(adapter->erp_dbf, 5, "p_psto_nomem");
@@ -2962,7 +2995,6 @@ zfcp_erp_port_strategy_open_common_lookup(struct zfcp_erp_action *erp_action)
 	struct zfcp_adapter *adapter = erp_action->adapter;
 	struct zfcp_port *port = erp_action->port;
 
-	zfcp_erp_timeout_init(erp_action);
 	retval = zfcp_ns_gid_pn_request(erp_action);
 	if (retval == -ENOMEM) {
 		debug_text_event(adapter->erp_dbf, 5, "p_pstn_nomem");
@@ -3095,7 +3127,6 @@ zfcp_erp_unit_strategy_close(struct zfcp_erp_action *erp_action)
 	struct zfcp_adapter *adapter = erp_action->adapter;
 	struct zfcp_unit *unit = erp_action->unit;
 
-	zfcp_erp_timeout_init(erp_action);
 	retval = zfcp_fsf_close_unit(erp_action);
 	if (retval == -ENOMEM) {
 		debug_text_event(adapter->erp_dbf, 5, "u_ustc_nomem");
@@ -3136,7 +3167,6 @@ zfcp_erp_unit_strategy_open(struct zfcp_erp_action *erp_action)
 	struct zfcp_adapter *adapter = erp_action->adapter;
 	struct zfcp_unit *unit = erp_action->unit;
 
-	zfcp_erp_timeout_init(erp_action);
 	retval = zfcp_fsf_open_unit(erp_action);
 	if (retval == -ENOMEM) {
 		debug_text_event(adapter->erp_dbf, 5, "u_usto_nomem");
@@ -3161,21 +3191,13 @@ zfcp_erp_unit_strategy_open(struct zfcp_erp_action *erp_action)
 	return retval;
 }
 
-/*
- * function:	
- *
- * purpose:	
- *
- * returns:
- */
-static inline void
-zfcp_erp_timeout_init(struct zfcp_erp_action *erp_action)
+void zfcp_erp_start_timer(struct zfcp_fsf_req *fsf_req)
 {
-	init_timer(&erp_action->timer);
-	erp_action->timer.function = zfcp_erp_timeout_handler;
-	erp_action->timer.data = (unsigned long) erp_action;
-	/* jiffies will be added in zfcp_fsf_req_send */
-	erp_action->timer.expires = ZFCP_ERP_FSFREQ_TIMEOUT;
+	BUG_ON(!fsf_req->erp_action);
+	fsf_req->timer.function = zfcp_erp_timeout_handler;
+	fsf_req->timer.data = (unsigned long) fsf_req->erp_action;
+	fsf_req->timer.expires = jiffies + ZFCP_ERP_FSFREQ_TIMEOUT;
+	add_timer(&fsf_req->timer);
 }
 
 /*
@@ -3422,9 +3444,10 @@ zfcp_erp_action_cleanup(int action, struct zfcp_adapter *adapter,
 		if ((result == ZFCP_ERP_SUCCEEDED)
 		    && (!atomic_test_mask(ZFCP_STATUS_UNIT_TEMPORARY,
 					  &unit->status))
-		    && (!unit->device))
- 			scsi_add_device(unit->port->adapter->scsi_host, 0,
- 					unit->port->scsi_id, unit->scsi_lun);
+		    && (!unit->device)
+		    && (atomic_test_mask(ZFCP_STATUS_UNIT_SCSI_WORK_PENDING,
+				&unit->status) == 0))
+			zfcp_erp_schedule_work(unit);
 		zfcp_unit_put(unit);
 		break;
 	case ZFCP_ERP_ACTION_REOPEN_PORT_FORCED:

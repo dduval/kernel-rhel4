@@ -71,18 +71,6 @@ config SND_AZT3328
 	help
 	  Say 'Y' or 'M' to include support for Aztech AZF3328 (PCI168) soundcards.
 
-config SND_AZX
-	tristate "Intel HD Audio"
-	depends on SND
-	select SND_PCM
-	help
-	  Say Y here to include support for Intel "High Definition
-	  Audio" (Azalia) motherboard devices.
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called snd-azx.
-
-
 config SND_BT87X
         tristate "Bt87x Audio Capture"
         depends on SND
@@ -170,6 +158,17 @@ config SND_RME9652
 	help
 	  Say 'Y' or 'M' to include support for RME Hammerfall (RME Digi9652 /
 	  Digi9636) soundcards.
+
+config SND_HDA_INTEL
+	tristate "Intel HD Audio"
+	depends on SND
+	select SND_PCM
+	help
+	  Say Y here to include support for Intel "High Definition
+	  Audio" (Azalia) motherboard devices.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called snd-hda-intel.
 
 config SND_HDSP
 	tristate "RME Hammerfall DSP Audio"

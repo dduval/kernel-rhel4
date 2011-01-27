@@ -113,6 +113,9 @@ int hfs_brec_find(struct hfs_find_data *fd)
 		bnode->parent = parent;
 
 		res = __hfs_brec_find(bnode, fd);
+		if (res)
+			goto release;
+
 		if (!height)
 			break;
 		if (fd->record < 0)

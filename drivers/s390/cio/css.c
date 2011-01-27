@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/list.h>
+#include <linux/reboot.h>
 
 #include "css.h"
 #include "cio.h"
@@ -279,7 +280,6 @@ css_evaluate_subchannel(int irq, int slow)
 			/* Reset intparm to zeroes. */
 			sch->schib.pmcw.intparm = 0;
 			cio_modify(sch);
-			ret = css_probe_device(irq);
 		} else {
 			/*
 			 * We can't immediately deregister the disconnected
@@ -304,6 +304,8 @@ css_evaluate_subchannel(int irq, int slow)
 		spin_unlock_irqrestore(&sch->lock, flags);
 		put_device(&sch->dev);
 	}
+	if ((event == CIO_REVALIDATE) && !disc)
+		ret = css_probe_device(irq);
 	return ret;
 }
 
@@ -494,6 +496,21 @@ css_cm_enable_store(struct device *dev, const char *buf, size_t count)
 
 static DEVICE_ATTR(cm_enable, 0644, css_cm_enable_show, css_cm_enable_store);
 
+static int css_reboot_event(struct notifier_block *this,
+			    unsigned long event,
+			    void *ptr)
+{
+	int ret;
+
+	ret = cm_enabled ? chsc_secm(0) : 0;
+
+	return ret ? NOTIFY_BAD : NOTIFY_DONE;
+}
+
+static struct notifier_block css_reboot_notifier = {
+	.notifier_call = css_reboot_event,
+};
+
 /*
  * Now that the driver core is running, we can setup our channel subsystem.
  * The struct subchannel's are created during probing (except for the
@@ -515,6 +532,9 @@ init_channel_subsystem (void)
 		goto out_bus;
 	if (css_characteristics_avail && css_chsc_characteristics.secm)
 		device_create_file(&css_bus_device, &dev_attr_cm_enable);
+	ret = register_reboot_notifier(&css_reboot_notifier);
+	if (ret)
+		goto out_file;
 
 	css_init_done = 1;
 
@@ -551,6 +571,10 @@ init_channel_subsystem (void)
 	}
 	return 0;
 
+out_file:
+	if (css_characteristics_avail && css_chsc_characteristics.secm)
+		device_remove_file(&css_bus_device, &dev_attr_cm_enable);
+	device_unregister(&css_bus_device);
 out_bus:
 	bus_unregister(&css_bus_type);
 out:

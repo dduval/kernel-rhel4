@@ -862,6 +862,11 @@ static LIST_HEAD(ide_pci_drivers);
 
 int ide_pci_register_driver(struct pci_driver *driver)
 {
+	if (disable_ide) {
+		printk(KERN_DEBUG "IDE disabled: ignore pci driver %s\n", driver->name);
+		return -EINVAL;
+	}
+
 	if(!pre_init)
 		return pci_module_init(driver);
 	list_add_tail(&driver->node, &ide_pci_drivers);

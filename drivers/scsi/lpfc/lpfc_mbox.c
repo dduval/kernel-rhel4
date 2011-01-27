@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mbox.c 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_mbox.c 3099 2007-11-29 15:38:19Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -344,7 +344,7 @@ lpfc_unreg_did(struct lpfc_hba * phba, uint32_t did, LPFC_MBOXQ_t * pmb)
 }
 
 /***********************************************/
-/*  lpfc_set_slim  Issue a SET_SLIM            */
+/*  lpfc_set_slim  Issue a SET_VARIABLE        */
 /*                 command to write slim       */
 /***********************************************/
 void
@@ -356,10 +356,10 @@ lpfc_set_slim(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint32_t addr,
 	mb = &pmb->mb;
 	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
 
-	mb->un.varSetSlim.varNumber = addr;
-	mb->un.varSetSlim.varValue = value;
+	mb->un.varSetVar.uniq_code = addr;
+	mb->un.varSetVar.un.varValue[0] = value;
 
-	mb->mbxCommand = MBX_SET_SLIM;
+	mb->mbxCommand = MBX_SET_VARIABLE;
 	mb->mbxOwner = OWN_HOST;
 	return;
 }
@@ -738,7 +738,7 @@ lpfc_mbox_tmo_val(struct lpfc_hba *phba, int cmd)
 	case MBX_DOWN_LOAD:	/* 0x1C */
 	case MBX_DEL_LD_ENTRY:	/* 0x1D */
 	case MBX_LOAD_AREA:	/* 0x81 */
-	case MBX_FLASH_WR_ULA:  /* 0x98 */
+	case MBX_WRITE_WWN:     /* 0x98 */
 	case MBX_LOAD_EXP_ROM:	/* 0x9C */
 		return LPFC_MBOX_TMO_FLASH_CMD;
 	}

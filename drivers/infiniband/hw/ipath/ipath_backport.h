@@ -34,37 +34,7 @@
  */
 
 #include <linux/version.h>
-#include <linux/fs.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
-#include <linux/pci.h> /* needed to avoid struct pci_dev warnings */
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,14)
-#include <linux/compiler.h>
-#endif
 #include <linux/mutex.h>
-
-#ifndef __nocast
-#define __nocast
-#endif
-
-#define IPATH_IDSTR	"QLogic kernel.org driver"
-
-/*
- * XXX - This is here for a short time only. See bug 8823.
- *
- * optimized word copy; good for rev C and later opterons.  Among the best
- * for short copies, and does as well or slightly better than the
- * optimizization guide copies 6 and 8 at 2KB.
- */
-void __iowrite32_copy(void __iomem * dst, const void *src, size_t count);
-
-/*
- * XXX - Another short-term tenant.  See bug 8809.
- */
-#ifndef BITS_PER_BYTE
-#define BITS_PER_BYTE 8
-#endif
 
 /*
  * Optimized word copy; good for rev C and later opterons.  Among the best

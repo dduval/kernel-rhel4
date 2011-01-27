@@ -109,22 +109,41 @@ static char *sctp_hmac_alg = SCTP_COOKIE_HMAC_ALG;
 
 extern kmem_cache_t *sctp_bucket_cachep;
 
+extern int sysctl_sctp_mem[3];
+extern int sysctl_sctp_rmem[3];
+extern int sysctl_sctp_wmem[3];
+
+int sctp_memory_pressure;
+atomic_t sctp_memory_allocated;
+atomic_t sctp_sockets_allocated;
+  
+static void sctp_enter_memory_pressure(void)
+{
+	sctp_memory_pressure = 1;
+}
+
 /* Get the sndbuf space available at the time on the association.  */
 static inline int sctp_wspace(struct sctp_association *asoc)
 {
+	int amt;
 	struct sock *sk = asoc->base.sk;
-	int amt = 0;
 
-	if(asoc->ep->sndbuf_policy) {
-		/* make sure that no association uses more than sk_sndbuf */
-		amt = sk->sk_sndbuf - asoc->sndbuf_used;
+	if (asoc->ep->sndbuf_policy)
+		amt = asoc->sndbuf_used;
+	else 
+		amt = atomic_read(&sk->sk_wmem_alloc);
+ 
+	if (amt >= sk->sk_sndbuf) {
+		if (sk->sk_userlocks & SOCK_SNDBUF_LOCK)
+			amt = 0;
+		else {
+			amt = sk_stream_wspace(sk);
+			if (amt < 0)
+				amt = 0;
+		}
 	} else {
-		/* do socket level accounting */
-		amt = sk->sk_sndbuf - atomic_read(&sk->sk_wmem_alloc);
+		amt = sk->sk_sndbuf - amt;
 	}
-
-	if (amt < 0)
-		amt = 0;
 
 	return amt;
 }
@@ -161,6 +180,7 @@ static inline void sctp_set_owner_w(struct sctp_chunk *chunk)
 				sizeof(struct sctp_chunk);
 
 	atomic_add(sizeof(struct sctp_chunk),&sk->sk_wmem_alloc);
+	sk_charge_skb(sk, chunk->skb);
 }
 
 /* Verify that this is a valid address. */
@@ -2566,6 +2586,7 @@ SCTP_STATIC int sctp_init_sock(struct sock *sk)
 	sp->hmac = NULL;
 
 	SCTP_DBG_OBJCNT_INC(sock);
+	atomic_inc(&sctp_sockets_allocated);
 	return 0;
 }
 
@@ -2579,7 +2600,7 @@ SCTP_STATIC int sctp_destroy_sock(struct sock *sk)
 	/* Release our hold on the endpoint. */
 	ep = sctp_sk(sk)->ep;
 	sctp_endpoint_free(ep);
-
+	atomic_dec(&sctp_sockets_allocated);
 	return 0;
 }
 
@@ -4314,11 +4335,37 @@ static void sctp_wfree(struct sk_buff *skb)
 
 	atomic_sub(sizeof(struct sctp_chunk),&sk->sk_wmem_alloc);
 
+	/*
+	 * This undoes what is done via sk_charge_skb
+	 */
+	sk->sk_wmem_queued   -= skb->truesize;
+	sk->sk_forward_alloc += skb->truesize;
+
 	sock_wfree(skb);
 	__sctp_write_space(asoc);
 
 	sctp_association_put(asoc);
 }
+
+/* Do accounting for the receive space on the socket.
+ * Accounting for the association is done in ulpevent.c
+ * We set this as a destructor for the cloned data skbs so that
+ * accounting is done at the correct time.
+ */
+void sctp_sock_rfree(struct sk_buff *skb)
+{
+	struct sock *sk = skb->sk;
+	struct sctp_ulpevent *event = sctp_skb2event(skb);
+
+	atomic_sub(event->rmem_len, &sk->sk_rmem_alloc);
+
+	/*
+	 * Mimic the behavior of sk_stream_rfree
+	 */
+	sk->sk_forward_alloc += event->rmem_len;
+
+}
+
 
 /* Helper function to wait for space in the sndbuf.  */
 static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
@@ -4539,6 +4586,36 @@ void sctp_wait_for_close(struct sock *sk, long timeout)
 	finish_wait(sk->sk_sleep, &wait);
 }
 
+static void sctp_sock_rfree_frag(struct sk_buff *skb)
+{
+	struct sk_buff *frag;
+
+	if (!skb->data_len)
+		goto done;
+
+	/* Don't forget the fragments. */
+	for (frag = skb_shinfo(skb)->frag_list; frag; frag = frag->next)
+		sctp_sock_rfree_frag(frag);
+
+done:
+	sctp_sock_rfree(skb);
+}
+
+static void sctp_skb_set_owner_r_frag(struct sk_buff *skb, struct sock *sk)
+{
+	struct sk_buff *frag;
+
+	if (!skb->data_len)
+		goto done;
+
+	/* Don't forget the fragments. */
+	for (frag = skb_shinfo(skb)->frag_list; frag; frag = frag->next)
+		sctp_skb_set_owner_r_frag(frag, sk);
+
+done:
+	sctp_skb_set_owner_r(skb, sk);
+}
+
 /* Populate the fields of the newsk from the oldsk and migrate the assoc
  * and its messages to the newsk.
  */
@@ -4591,10 +4668,10 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 	sctp_skb_for_each(skb, &oldsk->sk_receive_queue, tmp) {
 		event = sctp_skb2event(skb);
 		if (event->asoc == assoc) {
-			sock_rfree(skb);
+			sctp_sock_rfree_frag(skb);
 			__skb_unlink(skb, skb->list);
 			__skb_queue_tail(&newsk->sk_receive_queue, skb);
-			skb_set_owner_r(skb, newsk);
+			sctp_skb_set_owner_r_frag(skb, newsk);
 		}
 	}
 
@@ -4622,10 +4699,10 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 		sctp_skb_for_each(skb, &oldsp->pd_lobby, tmp) {
 			event = sctp_skb2event(skb);
 			if (event->asoc == assoc) {
-				sock_rfree(skb);
+				sctp_sock_rfree_frag(skb);
 				__skb_unlink(skb, skb->list);
 				__skb_queue_tail(queue, skb);
-				skb_set_owner_r(skb, newsk);
+				sctp_skb_set_owner_r_frag(skb, newsk);
 			}
 		}
 
@@ -4662,6 +4739,7 @@ static void sctp_sock_migrate(struct sock *oldsk, struct sock *newsk,
 	sctp_release_sock(newsk);
 }
 
+
 /* This proto struct describes the ULP interface for SCTP.  */
 struct proto sctp_prot = {
 	.name        =	"SCTP",
@@ -4683,6 +4761,12 @@ struct proto sctp_prot = {
 	.unhash      =	sctp_unhash,
 	.get_port    =	sctp_get_port,
 	.slab_obj_size = sizeof(struct sctp_sock),
+	.sysctl_mem  =  sysctl_sctp_mem,
+	.sysctl_rmem =  sysctl_sctp_rmem,
+	.sysctl_wmem =  sysctl_sctp_wmem,
+	.memory_pressure = &sctp_memory_pressure,
+	.enter_memory_pressure = sctp_enter_memory_pressure,
+	.memory_allocated = &sctp_memory_allocated,
 };
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
@@ -4706,5 +4790,11 @@ struct proto sctpv6_prot = {
 	.unhash		= sctp_unhash,
 	.get_port	= sctp_get_port,
 	.slab_obj_size	= sizeof(struct sctp6_sock),
+	.sysctl_mem     = sysctl_sctp_mem,
+	.sysctl_rmem    = sysctl_sctp_rmem,
+	.sysctl_wmem    = sysctl_sctp_wmem,
+	.memory_pressure = &sctp_memory_pressure,
+	.enter_memory_pressure = sctp_enter_memory_pressure,
+	.memory_allocated = &sctp_memory_allocated,
 };
 #endif /* defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE) */

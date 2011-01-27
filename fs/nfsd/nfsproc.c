@@ -472,8 +472,8 @@ nfsd_proc_readdir(struct svc_rqst *rqstp, struct nfsd_readdirargs *argp,
 	resp->common.err = nfs_ok;
 	/* Read directory and encode entries on the fly */
 	offset = argp->cookie;
-	nfserr = nfsd_readdir(rqstp, &argp->fh, &offset, 
-			      &resp->common, nfssvc_encode_entry);
+	nfserr = nfsd_readdir(rqstp, &argp->fh, &offset, &resp->common,
+				nfssvc_encode_entry, nfssvc_encode_entry32);
 
 	resp->count = resp->buffer - argp->buffer;
 	if (resp->offset)
@@ -540,7 +540,7 @@ static struct svc_procedure		nfsd_procedures2[18] = {
   PROC(symlink,	 symlinkargs,	void,		none,		RC_REPLSTAT, ST),
   PROC(mkdir,	 createargs,	diropres,	fhandle,	RC_REPLBUFF, ST+FH+AT),
   PROC(rmdir,	 diropargs,	void,		none,		RC_REPLSTAT, ST),
-  PROC(readdir,	 readdirargs,	readdirres,	none,		RC_REPLBUFF, 0),
+  PROC(readdir,	 readdirargs,	readdirres,	none,		RC_NOCACHE, 0),
   PROC(statfs,	 fhandle,	statfsres,	none,		RC_NOCACHE, ST+5),
 };
 

@@ -10,7 +10,7 @@
  *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: megaraid_sas.c 
- * Version	: v00.00.03.13
+ * Version	: v00.00.03.18-rh2
  *
  * Authors:
  *	(email-id : megaraidlinux@lsi.com)
@@ -78,6 +78,13 @@ static unsigned int cmd_per_lun = MEGASAS_DEFAULT_CMD_PER_LUN;
 module_param_named(cmd_per_lun, cmd_per_lun, int, 0);
 MODULE_PARM_DESC(cmd_per_lun,
 	"Maximum number of commands per logical unit (default=128)");
+/*
+ * poll_mode_io:1- schedule cmd completion from q cmd
+ */
+static unsigned int poll_mode_io;
+module_param_named(poll_mode_io, poll_mode_io, int, 0);
+MODULE_PARM_DESC(poll_mode_io,
+	"Complete cmds from IO path, (default=0)");
 
 MODULE_LICENSE("GPL");
 MODULE_VERSION(MEGASAS_VERSION);
@@ -104,6 +111,8 @@ static struct pci_device_id megasas_pci_table[] = {
  	/* xscale IOP */
  	{PCI_DEVICE(PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_SAS1078R)},
  	/* ppc IOP */
+	{PCI_DEVICE(PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_SAS1078DE)},
+	/* ppc IOP */
  	{PCI_DEVICE(PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_VERDE_ZCR)},
  	/* xscale IOP, vega */
  	{PCI_DEVICE(PCI_VENDOR_ID_DELL, PCI_DEVICE_ID_DELL_PERC5)},
@@ -571,7 +580,7 @@ megasas_make_sgl64(struct megasas_instance *instance, struct scsi_cmnd *scp,
  * Returns the number of frames required for numnber of sge's (sge_count)
  */
 
-u32 megasas_get_frame_count(u8 sge_count)
+static u32 megasas_get_frame_count(u8 sge_count, u8 frame_type)
 {
 	int num_cnt;
 	int sge_bytes;
@@ -582,13 +591,22 @@ u32 megasas_get_frame_count(u8 sge_count)
 	    sizeof(struct megasas_sge32);
 
 	/*
-	* Main frame can contain 2 SGEs for 64-bit SGLs and 
-	* 3 SGEs for 32-bit SGLs
-	*/
-	if (IS_DMA64)
-		num_cnt = sge_count - 2;
-	else
-		num_cnt = sge_count - 3;
+	 * Main frame can contain 2 SGEs for 64-bit SGLs and
+	 * 3 SGEs for 32-bit SGLs for ldio &
+	 * 1 SGEs for 64-bit SGLs and
+	 * 2 SGEs for 32-bit SGLs for pthru frame
+	 */
+	if (unlikely(frame_type == PTHRU_FRAME)) {
+		if (IS_DMA64)
+			num_cnt = sge_count - 1;
+		else
+			num_cnt = sge_count - 2;
+	} else {
+		if (IS_DMA64)
+			num_cnt = sge_count - 2;
+		else
+			num_cnt = sge_count - 3;
+	}
 
 	if(num_cnt>0){
 		sge_bytes = sge_sz * num_cnt;
@@ -670,7 +688,8 @@ megasas_build_dcdb(struct megasas_instance *instance, struct scsi_cmnd *scp,
 	 * Compute the total number of frames this command consumes. FW uses
 	 * this number to pull sufficient number of frames from host memory.
 	 */
-	cmd->frame_count = megasas_get_frame_count(pthru->sge_count);
+	cmd->frame_count = megasas_get_frame_count(pthru->sge_count,
+							PTHRU_FRAME);
 
 	return cmd->frame_count;
 }
@@ -787,7 +806,7 @@ megasas_build_ldio(struct megasas_instance *instance, struct scsi_cmnd *scp,
 	 * Compute the total number of frames this command consumes. FW uses
 	 * this number to pull sufficient number of frames from host memory.
 	 */
-	cmd->frame_count = megasas_get_frame_count(ldio->sge_count);
+	cmd->frame_count = megasas_get_frame_count(ldio->sge_count, IO_FRAME);
 
 	return cmd->frame_count;
 }
@@ -954,6 +973,11 @@ megasas_queue_command(struct scsi_cmnd *scmd, void (*done) (struct scsi_cmnd *))
 	instance->instancet->fire_cmd(cmd->frame_phys_addr ,
 			cmd->frame_count-1,instance->reg_set);
 
+	/*
+	 * Check if we have pend cmds to be completed
+	 */
+	if (poll_mode_io && atomic_read(&instance->fw_outstanding))
+		tasklet_schedule(&instance->isr_tasklet);
 	return 0;
 
  out_return_cmd:
@@ -1594,7 +1618,7 @@ megasas_deplete_reply_queue(struct megasas_instance *instance, u8 alt_status)
 	if (instance->instancet->clear_intr(instance->reg_set))
 		return IRQ_NONE;
 
-	if( instance->hw_crit_error)
+	if (instance->hw_crit_error)
 		goto out_done;
 	/* 
 	* Schedule the tasklet for cmd completion 
@@ -2043,6 +2067,48 @@ megasas_get_ctrl_info(struct megasas_instance *instance,
 }
 
 /**
+ * megasas_start_timer - Initializes a timer object
+ * @instance:		Adapter soft state
+ * @timer:		timer object to be initialized
+ * @fn:			timer function
+ * @interval:		time interval between timer function call
+ *
+ */
+static inline void
+megasas_start_timer(struct megasas_instance *instance,
+			struct timer_list *timer,
+			void *fn, unsigned long interval)
+{
+	init_timer(timer);
+	timer->expires = jiffies + interval;
+	timer->data = (unsigned long)instance;
+	timer->function = fn;
+	add_timer(timer);
+}
+
+/**
+ * megasas_io_completion_timer - Timer fn
+ * @instance_addr:	Address of adapter soft state
+ *
+ * Schedules tasklet for cmd completion
+ * if poll_mode_io is set
+ */
+static void
+megasas_io_completion_timer(unsigned long instance_addr)
+{
+	struct megasas_instance *instance =
+			(struct megasas_instance *)instance_addr;
+
+	if (atomic_read(&instance->fw_outstanding))
+		tasklet_schedule(&instance->isr_tasklet);
+
+	/* Restart timer */
+	if (poll_mode_io)
+		mod_timer(&instance->io_completion_timer,
+			jiffies + MEGASAS_COMPLETION_TIMER_INTERVAL);
+}
+
+/**
  * megasas_init_mfi -	Initializes the FW
  * @instance:		Adapter soft state
  *
@@ -2054,6 +2120,7 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	u32 reply_q_sz;
 	u32 max_sectors_1;
 	u32 max_sectors_2;
+	u32 tmp_sectors;
 	struct megasas_register_set __iomem *reg_set;
 
 	struct megasas_cmd *cmd;
@@ -2086,6 +2153,7 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	switch(instance->pdev->device)
 	{
 		case PCI_DEVICE_ID_LSI_SAS1078R:	
+		case PCI_DEVICE_ID_LSI_SAS1078DE:
 			instance->instancet = &megasas_instance_template_ppc;
 			break;
 		case PCI_DEVICE_ID_LSI_SAS1064R:
@@ -2198,17 +2266,21 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	 * Note that older firmwares ( < FW ver 30) didn't report information
 	 * to calculate max_sectors_1. So the number ended up as zero always.
 	 */
+	tmp_sectors = 0;
 	if (ctrl_info && !megasas_get_ctrl_info(instance, ctrl_info)) {
 
 		max_sectors_1 = (1 << ctrl_info->stripe_sz_ops.min) *
 		    ctrl_info->max_strips_per_io;
 		max_sectors_2 = ctrl_info->max_request_size;
 
-		instance->max_sectors_per_req = (max_sectors_1 < max_sectors_2)
+		tmp_sectors = (max_sectors_1 < max_sectors_2)
 		    ? max_sectors_1 : max_sectors_2;
-	} else
-		instance->max_sectors_per_req = instance->max_num_sge *
+	}
+
+	instance->max_sectors_per_req = instance->max_num_sge *
 		    PAGE_SIZE / 512;
+	if (tmp_sectors && (instance->max_sectors_per_req > tmp_sectors))
+		instance->max_sectors_per_req = tmp_sectors;
 
 	kfree(ctrl_info);
 
@@ -2219,6 +2291,11 @@ static int megasas_init_mfi(struct megasas_instance *instance)
         tasklet_init(&instance->isr_tasklet, megasas_complete_cmd_dpc,
                         (unsigned long)instance);
 
+	/* Initialize the cmd completion timer */
+	if (poll_mode_io)
+		megasas_start_timer(instance, &instance->io_completion_timer,
+				megasas_io_completion_timer,
+				MEGASAS_COMPLETION_TIMER_INTERVAL);
 	return 0;
 
       fail_fw_init:
@@ -2847,6 +2924,8 @@ static void megasas_detach_one(struct pci_dev *pdev)
 
 	instance = pci_get_drvdata(pdev);
 	host = instance->host;
+	if (poll_mode_io)
+		del_timer_sync(&instance->io_completion_timer);
 
 	sysfs_remove_bin_file(&host->shost_classdev.kobj, &sysfs_max_sectors_attr);
 	scsi_remove_host(instance->host);
@@ -2974,6 +3053,7 @@ megasas_mgmt_fw_ioctl(struct megasas_instance *instance,
 	void *sense = NULL;
 	dma_addr_t sense_handle;
 	u32 *sense_ptr;
+	unsigned long *sense_buff;
 
 	memset(kbuff_arr, 0, sizeof(kbuff_arr));
 
@@ -3081,11 +3161,19 @@ megasas_mgmt_fw_ioctl(struct megasas_instance *instance,
 		 * sense_ptr points to the location that has the user
 		 * sense buffer address
 		 */
+		sense_buff = (unsigned long *) ((unsigned long)ioc->frame.raw +
+				ioc->sense_off);
 		sense_ptr = (u32 *) ((unsigned long)ioc->frame.raw +
-				     ioc->sense_off);
-
+				ioc->sense_off);
+#if defined(__ia64__)
+		if (copy_to_user((void __user *)((unsigned long)(*sense_buff)),
+			sense, ioc->sense_len)) {
+#else
 		if (copy_to_user((void __user *)((unsigned long)(*sense_ptr)),
-				 sense, ioc->sense_len)) {
+			sense, ioc->sense_len)) {
+#endif
+			printk(KERN_ERR "megasas: Failed to copy out to user"
+					"sense data\n");
 			error = -EFAULT;
 			goto out;
 		}
@@ -3303,7 +3391,7 @@ static DRIVER_ATTR(release_date, S_IRUGO, megasas_sysfs_show_release_date,
 static ssize_t 
 megasas_sysfs_show_dbg_lvl(struct device_driver *dd, char *buf)
 {
-	return sprintf(buf,"%u",megasas_dbg_lvl);
+	return sprintf(buf, "%u\n", megasas_dbg_lvl);
 }
 
 static ssize_t 
@@ -3319,6 +3407,64 @@ megasas_sysfs_set_dbg_lvl(struct device_driver *dd, const char *buf, size_t coun
 
 static DRIVER_ATTR(dbg_lvl, S_IRUGO|S_IWUGO, megasas_sysfs_show_dbg_lvl,
 		   megasas_sysfs_set_dbg_lvl);
+
+static ssize_t
+megasas_sysfs_show_poll_mode_io(struct device_driver *dd, char *buf)
+{
+	return sprintf(buf, "%u\n", poll_mode_io);
+}
+
+static ssize_t
+megasas_sysfs_set_poll_mode_io(struct device_driver *dd,
+				const char *buf, size_t count)
+{
+	int retval = count;
+	int tmp = poll_mode_io;
+	int i;
+	struct megasas_instance *instance;
+
+	if (sscanf(buf, "%u", &poll_mode_io) < 1) {
+		printk(KERN_ERR "megasas: could not set poll_mode_io\n");
+		retval = -EINVAL;
+	}
+
+	/*
+	 * Check if poll_mode_io is already set or is same as previous value
+	 */
+	if ((tmp && poll_mode_io) || (tmp == poll_mode_io))
+		goto out;
+
+	if (poll_mode_io) {
+		/*
+		 * Start timers for all adapters
+		 */
+		for (i = 0; i < megasas_mgmt_info.max_index; i++) {
+			instance = megasas_mgmt_info.instance[i];
+			if (instance) {
+				megasas_start_timer(instance,
+					&instance->io_completion_timer,
+					megasas_io_completion_timer,
+					MEGASAS_COMPLETION_TIMER_INTERVAL);
+			}
+		}
+	} else {
+		/*
+		 * Delete timers for all adapters
+		 */
+		for (i = 0; i < megasas_mgmt_info.max_index; i++) {
+			instance = megasas_mgmt_info.instance[i];
+			if (instance)
+				del_timer_sync(&instance->io_completion_timer);
+		}
+	}
+
+out:
+	return retval;
+}
+
+static DRIVER_ATTR(poll_mode_io, S_IRUGO|S_IWUGO,
+			megasas_sysfs_show_poll_mode_io,
+			megasas_sysfs_set_poll_mode_io);
 
 /**
  * megasas_init - Driver load entry point
@@ -3370,6 +3516,11 @@ static int __init megasas_init(void)
 	if (rval)
 		goto err_dcf_dbg_lvl;
 
+	rval = driver_create_file(&megasas_pci_driver.driver,
+				  &driver_attr_poll_mode_io);
+	if (rval)
+		goto err_dcf_poll_mode_io;
+
 #ifdef CONFIG_COMPAT
 	register_ioctl32_conversion(MEGASAS_IOC_FIRMWARE32,
 				    megasas_mgmt_compat_ioctl);
@@ -3377,6 +3528,9 @@ static int __init megasas_init(void)
 				    megasas_mgmt_compat_ioctl);
 #endif
 	return rval;
+err_dcf_poll_mode_io:
+	driver_remove_file(&megasas_pci_driver.driver,
+			   &driver_attr_dbg_lvl);
 err_dcf_dbg_lvl:
 	driver_remove_file(&megasas_pci_driver.driver,
 			   &driver_attr_release_date);
@@ -3398,6 +3552,8 @@ static void __exit megasas_exit(void)
 	unregister_ioctl32_conversion(MEGASAS_IOC_FIRMWARE32);
 	unregister_ioctl32_conversion(MEGASAS_IOC_GET_AEN);
 #endif
+	driver_remove_file(&megasas_pci_driver.driver,
+			   &driver_attr_poll_mode_io);
 	driver_remove_file(&megasas_pci_driver.driver, &driver_attr_version);
 	driver_remove_file(&megasas_pci_driver.driver,
 			   &driver_attr_release_date);

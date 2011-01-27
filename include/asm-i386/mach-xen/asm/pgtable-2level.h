@@ -72,9 +72,12 @@ static inline pte_t ptep_get_and_clear(pte_t *ptep)
 	mm_track(ptep);
 	return __pte_ma(xchg(&(ptep)->pte_low, 0));
 }
-#define pte_mfn(_pte)		((_pte).pte_low >> PAGE_SHIFT)
-#define pte_pfn(_pte)		mfn_to_local_pfn(pte_mfn(_pte))
-#define pte_same(a, b)		((a).pte_low == (b).pte_low)
+#define __pte_mfn(_pte) ((_pte).pte_low >> PAGE_SHIFT)
+#define pte_mfn(_pte) ((_pte).pte_low & _PAGE_PRESENT ? \
+	__pte_mfn(_pte) : pfn_to_mfn(__pte_mfn(_pte)))
+#define pte_pfn(_pte) ((_pte).pte_low & _PAGE_PRESENT ? \
+	mfn_to_local_pfn(__pte_mfn(_pte)) : __pte_mfn(_pte))
+
 #define pte_page(x)		pfn_to_page(pte_pfn(x))
 #define pte_none(x)		(!(x).pte_low)
 #define pfn_pte(pfn, prot)	__pte(((pfn) << PAGE_SHIFT) | pgprot_val(prot))

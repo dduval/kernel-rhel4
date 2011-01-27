@@ -128,6 +128,7 @@ struct nfs_openres {
 	nfs4_stateid		delegation;
 	__u32			do_recall;
 	__u64			maxsize;
+	__u32			attrset[NFS4_BITMAP_SIZE];
 };
 
 /*
@@ -595,6 +596,7 @@ struct nfs4_readdir_arg {
 	u32				count;
 	struct page **			pages;	/* zero-copy data */
 	unsigned int			pgbase;	/* zero-copy data */
+	const u32 *			bitmask;
 };
 
 struct nfs4_readdir_res {
@@ -692,11 +694,12 @@ struct nfs_write_data {
 struct nfs_access_entry;
 
 /*
- * RPC procedure vector for NFSv2/NFSv3 demuxing
+ * RPC procedure vector for NFSv2/NFSv3/NFSv4 demuxing
  */
 struct nfs_rpc_ops {
 	int	version;		/* Protocol version */
 	struct dentry_operations *dentry_ops;
+	struct file_operations *dir_file_ops;
 	struct inode_operations *dir_inode_ops;
 	struct inode_operations *file_inode_ops;
 

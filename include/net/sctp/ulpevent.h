@@ -63,6 +63,7 @@ struct sctp_ulpevent {
 	__u32 cumtsn;
 	int msg_flags;
 	int iif;
+	unsigned int rmem_len;
 };
 
 /* Retrieve the skb this event sits inside of. */
@@ -78,7 +79,7 @@ static inline struct sctp_ulpevent *sctp_skb2event(struct sk_buff *skb)
 }
 
 struct sctp_ulpevent *sctp_ulpevent_new(int size, int flags, int gfp);
-void sctp_ulpevent_init(struct sctp_ulpevent *, int flags);
+void sctp_ulpevent_init(struct sctp_ulpevent *, int flags, unsigned int len);
 void sctp_ulpevent_free(struct sctp_ulpevent *);
 int sctp_ulpevent_is_notification(const struct sctp_ulpevent *);
 void sctp_queue_purge_ulpevents(struct sk_buff_head *list);

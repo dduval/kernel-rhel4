@@ -102,6 +102,7 @@ extern unsigned long nr_iowait(void);
 #include <linux/param.h>
 #include <linux/resource.h>
 #include <linux/timer.h>
+#include <linux/task_io_accounting.h>
 
 #include <asm/processor.h>
 
@@ -207,6 +208,22 @@ arch_get_unmapped_area_topdown(struct file *filp, unsigned long addr,
 extern void arch_unmap_area(struct vm_area_struct *area);
 extern void arch_unmap_area_topdown(struct vm_area_struct *area);
 
+/* coredump filter bits */
+#define MMF_DUMP_ANON_PRIVATE	0
+#define MMF_DUMP_ANON_SHARED	1
+#define MMF_DUMP_MAPPED_PRIVATE	2
+#define MMF_DUMP_MAPPED_SHARED	3
+#define MMF_DUMP_ELF_HEADERS	4
+#define MMF_DUMP_FILTER_BITS	5
+#define MMF_DUMP_FILTER_MASK ((1 << MMF_DUMP_FILTER_BITS) - 1)
+#define MMF_DUMP_FILTER_DEFAULT \
+	((1 << MMF_DUMP_ANON_PRIVATE) | (1 << MMF_DUMP_ANON_SHARED))
+
+struct mm_flags {
+	struct hlist_node hlist;
+	void *addr;
+	unsigned long flags;
+};
 
 struct mm_struct {
 	struct vm_area_struct * mmap;		/* list of VMAs */
@@ -332,6 +349,7 @@ struct signal_struct {
 	struct key *process_keyring;	/* keyring private to this process */
 #endif
 	atomic_t live;
+	unsigned long inblock, oublock, cinblock, coublock;
 #endif
 };
 
@@ -470,6 +488,7 @@ struct task_struct_aux {
 	unsigned char jit_keyring;	/* default keyring to attach requested keys to */
 #ifndef __GENKSYMS__
 	struct key *request_key_auth;   /* assumed request_key authority */
+	struct task_io_accounting ioac;
 #endif
 };
 
@@ -860,6 +879,9 @@ extern void mmput(struct mm_struct *);
 extern struct mm_struct *get_task_mm(struct task_struct *task);
 /* Remove the current tasks stale references to the old mm_struct */
 extern void mm_release(struct task_struct *, struct mm_struct *);
+
+extern unsigned long get_mm_flags(struct mm_struct *);
+extern int set_mm_flags(struct mm_struct *, unsigned long, int);
 
 extern int  copy_thread(int, unsigned long, unsigned long, unsigned long, struct task_struct *, struct pt_regs *);
 extern void flush_thread(void);

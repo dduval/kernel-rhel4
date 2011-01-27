@@ -26,6 +26,7 @@
 #include <linux/proc_fs.h>
 #include <linux/mempolicy.h>
 #include <linux/audit.h> /* for audit_free() */
+#include <linux/task_io_accounting_ops.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -413,6 +414,19 @@ void fastcall put_files_struct(struct files_struct *files)
 
 EXPORT_SYMBOL(put_files_struct);
 
+void reset_files_struct(struct task_struct *tsk, struct files_struct *files)
+{
+       struct files_struct *old;
+
+       old = tsk->files;
+       task_lock(tsk);
+       tsk->files = files;
+       task_unlock(tsk);
+       put_files_struct(old);
+}
+
+EXPORT_SYMBOL(reset_files_struct);
+
 static inline void __exit_files(struct task_struct *tsk)
 {
 	struct files_struct * files = tsk->files;
@@ -622,6 +636,11 @@ static inline void forget_original_parent(struct task_struct * father,
 		int ptrace;
 		p = list_entry(_p,struct task_struct,sibling);
 
+		/* Father is going to die, so it not needs available
+		 * first time slices from childs anymore */
+		if (p->first_time_slice == father->pid)
+			p->first_time_slice = 0;
+
 		ptrace = p->ptrace;
 
 		/* if father isn't the real parent, then ptrace must be enabled */
@@ -650,6 +669,10 @@ static inline void forget_original_parent(struct task_struct * father,
 	}
 	list_for_each_safe(_p, _n, &father->ptrace_children) {
 		p = list_entry(_p,struct task_struct,ptrace_list);
+
+		if (p->first_time_slice == father->pid)
+			p->first_time_slice = 0;
+
 		choose_new_parent(p, reaper, child_reaper);
 		reparent_thread(p, father, 1);
 	}
@@ -1078,6 +1101,12 @@ static int wait_task_zombie(task_t *p, int noreap,
 			p->nvcsw + p->signal->nvcsw + p->signal->cnvcsw;
 		p->parent->signal->cnivcsw +=
 			p->nivcsw + p->signal->nivcsw + p->signal->cnivcsw;
+		p->parent->signal->cinblock +=
+			task_io_get_inblock(p) +
+			p->signal->inblock + p->signal->cinblock;
+		p->parent->signal->coublock +=
+			task_io_get_oublock(p) +
+			p->signal->oublock + p->signal->coublock;
 		spin_unlock_irq(&p->parent->sighand->siglock);
 	}
 

@@ -28,6 +28,20 @@ static inline long register_vpa(unsigned long flags, unsigned long proc,
 	return plpar_hcall_norets(H_REGISTER_VPA, flags, proc, vpa);
 }
 
+static inline long vpa_call(unsigned long flags, unsigned long cpu,
+			    unsigned long vpa)
+{
+        /* flags are in bits 16-18 (counting from most significant bit) */
+        flags = flags << (63 - 18);
+
+        return plpar_hcall_norets(H_REGISTER_VPA, flags, cpu, vpa);
+}
+
+static inline long register_slb_shadow(unsigned long cpu, unsigned long vpa)
+{
+	return vpa_call(0x3, cpu, vpa);
+}
+
 void vpa_init(int cpu);
 
 static inline long plpar_pte_remove(unsigned long flags,

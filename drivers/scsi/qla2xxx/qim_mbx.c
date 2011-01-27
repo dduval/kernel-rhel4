@@ -66,9 +66,8 @@ qim_mailbox_command(struct scsi_qla_host *dr_ha, mbx_cmd_t *mcp)
 {
 	int		rval;
 	unsigned long	flags = 0;
-	device_reg_t __iomem *reg = NULL;
-	struct device_reg_24xx __iomem *reg24 = NULL;
-
+	struct device_reg_2xxx __iomem *reg = &dr_ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &dr_ha->iobase->isp24;
 	struct timer_list tmp_intr_timer;
 	uint8_t		abort_active;
 	uint8_t		io_lock_on = dr_ha->flags.init_done;
@@ -126,11 +125,11 @@ qim_mailbox_command(struct scsi_qla_host *dr_ha, mbx_cmd_t *mcp)
 	spin_lock_irqsave(&dr_ha->hardware_lock, flags);
 
 	/* Load mailbox registers. */
-	if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha)) {
-		reg24 = (struct device_reg_24xx __iomem *)dr_ha->iobase;
+	if (IS_FWI2_CAPABLE(dr_ha)) {
+		reg24 = &dr_ha->iobase->isp24;
 		optr = (uint16_t __iomem *)&reg24->mailbox0;
 	} else {
-		reg = dr_ha->iobase;
+		reg = &dr_ha->iobase->isp;
 		optr = (uint16_t __iomem *)MAILBOX_REG(dr_ha, reg, 0);
 	}
 
@@ -194,7 +193,7 @@ qim_mailbox_command(struct scsi_qla_host *dr_ha, mbx_cmd_t *mcp)
 
 	set_bit(MBX_INTR_WAIT, &dr_ha->mbx_cmd_flags);
 
-	if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha))
+	if (IS_FWI2_CAPABLE(dr_ha))
 		WRT_REG_DWORD(&reg24->hccr, HCCRX_SET_HOST_INT);
 	else
 		WRT_REG_WORD(&reg->hccr, HCCR_SET_HOST_INT);
@@ -254,7 +253,7 @@ qim_mailbox_command(struct scsi_qla_host *dr_ha, mbx_cmd_t *mcp)
 		uint16_t mb0;
 		uint32_t ictrl;
 
-		if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha)) {
+		if (IS_FWI2_CAPABLE(dr_ha)) {
 			mb0 = RD_REG_WORD(&reg24->mailbox0);
 			ictrl = RD_REG_DWORD(&reg24->ictrl);
 		} else {
@@ -345,7 +344,7 @@ qim_get_link_status(struct qla_host_ioctl *ioctlha, uint16_t loop_id,
 	mcp->out_mb = MBX_7|MBX_6|MBX_3|MBX_2|MBX_0;
 	mcp->in_mb = MBX_0;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		mcp->mb[1] = loop_id;
 		mcp->mb[4] = 0;
 		mcp->mb[10] = optbits;
@@ -479,27 +478,9 @@ qim_get_isp_stats(struct qla_host_ioctl *ioctlha, uint32_t *dwbuf,
 	return rval;
 }
 
-/*
- * qim_issue_iocb
- *	Issue IOCB using mailbox command
- *
- * Input:
- *	ha = adapter state pointer.
- *	buffer = buffer pointer.
- *	phys_addr = physical address of buffer.
- *	size = size of buffer.
- *	TARGET_QUEUE_LOCK must be released.
- *	ADAPTER_STATE_LOCK must be released.
- *
- * Returns:
- *	qla2x00 local function return status code.
- *
- * Context:
- *	Kernel context.
- */
 int
-qim_issue_iocb(scsi_qla_host_t *ha, void*  buffer, dma_addr_t phys_addr,
-    size_t size)
+qim_issue_iocb_timeout(scsi_qla_host_t *ha, void*  buffer, dma_addr_t phys_addr,
+    size_t size, uint32_t tov)
 {
 	int		rval;
 	mbx_cmd_t	mc;
@@ -513,7 +494,7 @@ qim_issue_iocb(scsi_qla_host_t *ha, void*  buffer, dma_addr_t phys_addr,
 	mcp->mb[7] = LSW(MSD(phys_addr));
 	mcp->out_mb = MBX_7|MBX_6|MBX_3|MBX_2|MBX_1|MBX_0;
 	mcp->in_mb = MBX_2|MBX_0;
-	mcp->tov = 30;
+	mcp->tov = tov;
 	mcp->flags = 0;
 	rval = qim_mailbox_command(ha, mcp);
 
@@ -525,13 +506,21 @@ qim_issue_iocb(scsi_qla_host_t *ha, void*  buffer, dma_addr_t phys_addr,
 		sts_entry_t *sts_entry = (sts_entry_t *) buffer;
 
 		/* Mask reserved bits. */
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		if (IS_FWI2_CAPABLE(ha))
 			sts_entry->entry_status &= RF_MASK_24XX;
 		else
 			sts_entry->entry_status &= RF_MASK;
 	}
 
 	return rval;
+}
+
+int
+qim_issue_iocb(scsi_qla_host_t *ha, void *buffer, dma_addr_t phys_addr,
+    size_t size)
+{
+	return qim_issue_iocb_timeout(ha, buffer, phys_addr, size,
+	    MBX_TOV_SECONDS);
 }
 
 int
@@ -654,7 +643,7 @@ qim_login_fabric(scsi_qla_host_t *ha, uint16_t loop_id, uint8_t domain,
 	mbx_cmd_t mc;
 	mbx_cmd_t *mcp = &mc;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+	if (IS_FWI2_CAPABLE(ha))
 		return qim24xx_login_fabric(ha, loop_id, domain, area, al_pa,
 		    mb, opt);
 
@@ -919,3 +908,33 @@ qim_get_rnid_params_mbx(scsi_qla_host_t *ha, dma_addr_t buf_phys_addr,
 	return (rval);
 }
 
+
+int
+qim84xx_reset_chip(struct scsi_qla_host *ha, uint16_t enable_diagnostic,
+    uint16_t *cmd_status)
+{
+	int rval;
+	mbx_cmd_t mc;
+	mbx_cmd_t *mcp = &mc;
+
+	DEBUG16(printk("%s(%ld): enable_diag=%d entered.\n", __func__,
+	    ha->host_no, enable_diagnostic));
+
+	mcp->mb[0] = MBC_ISP84XX_RESET;
+	mcp->mb[1] = enable_diagnostic;
+	mcp->out_mb = MBX_1|MBX_0;
+	mcp->in_mb = MBX_1|MBX_0;
+	mcp->tov = 30;
+	mcp->flags = 0;
+	rval = qim_mailbox_command(ha, mcp);
+
+	/* Return mailbox statuses. */
+	*cmd_status = mcp->mb[0];
+	if (rval != QLA_SUCCESS)
+		DEBUG16(printk("%s(%ld): failed=%x.\n", __func__, ha->host_no,
+		    rval));
+	else
+		DEBUG16(printk("%s(%ld): done.\n", __func__, ha->host_no));
+
+	return rval;
+}

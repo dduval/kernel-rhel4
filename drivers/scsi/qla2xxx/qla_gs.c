@@ -75,7 +75,7 @@ qla2x00_prep_ms_iocb(scsi_qla_host_t *ha, uint32_t req_size, uint32_t rsp_size)
 {
 	ms_iocb_entry_t *ms_pkt;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+	if (IS_FWI2_CAPABLE(ha))
 		return qla24xx_prep_ms_iocb(ha, req_size, rsp_size);
 
 	ms_pkt = ha->ms_iocb;
@@ -136,7 +136,7 @@ qla2x00_chk_ms_status(scsi_qla_host_t *ha, ms_iocb_entry_t *ms_pkt,
 		DEBUG2_3(printk("scsi(%ld): %s failed, error status (%x).\n",
 		    ha->host_no, routine, ms_pkt->entry_status));
 	} else {
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		if (IS_FWI2_CAPABLE(ha))
 			comp_status =
 			    ((struct ct_entry_24xx *)ms_pkt)->comp_status;
 		else
@@ -1183,7 +1183,7 @@ qla2x00_prep_ms_fdmi_iocb(scsi_qla_host_t *ha, uint32_t req_size,
 {
 	ms_iocb_entry_t *ms_pkt;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+	if (IS_FWI2_CAPABLE(ha))
 		return qla24xx_prep_ms_fdmi_iocb(ha, req_size, rsp_size);
 
 	ms_pkt = ha->ms_iocb;
@@ -1216,7 +1216,7 @@ qla2x00_update_ms_fdmi_iocb(scsi_qla_host_t *ha, uint32_t req_size)
 	ms_iocb_entry_t *ms_pkt = ha->ms_iocb;
 	struct ct_entry_24xx *ct_pkt = (struct ct_entry_24xx *)ha->ms_iocb;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		ct_pkt->cmd_byte_count = cpu_to_le32(req_size);
 		ct_pkt->dseg_0_len = ct_pkt->cmd_byte_count;
 	} else {
@@ -1546,12 +1546,20 @@ qla2x00_fdmi_rpa(scsi_qla_host_t *ha)
 	eiter = (struct ct_fdmi_port_attr *) (entries + size);
 	eiter->type = __constant_cpu_to_be16(FDMI_PORT_SUPPORT_SPEED);
 	eiter->len = __constant_cpu_to_be16(4 + 4);
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
-		eiter->a.sup_speed = __constant_cpu_to_be32(4);
+	if (IS_QLA25XX(ha))
+		eiter->a.sup_speed = __constant_cpu_to_be32(
+		    FDMI_PORT_SPEED_1GB|FDMI_PORT_SPEED_2GB|
+		    FDMI_PORT_SPEED_4GB|FDMI_PORT_SPEED_8GB);
+	else if (IS_QLA24XX_TYPE(ha))
+		eiter->a.sup_speed = __constant_cpu_to_be32(
+		    FDMI_PORT_SPEED_1GB|FDMI_PORT_SPEED_2GB|
+		    FDMI_PORT_SPEED_4GB);
 	else if (IS_QLA23XX(ha))
-		eiter->a.sup_speed = __constant_cpu_to_be32(2);
+		eiter->a.sup_speed =__constant_cpu_to_be32(
+		    FDMI_PORT_SPEED_1GB|FDMI_PORT_SPEED_2GB);
 	else
-		eiter->a.sup_speed = __constant_cpu_to_be32(1);
+		eiter->a.sup_speed = __constant_cpu_to_be32(
+		    FDMI_PORT_SPEED_1GB);
 	size += 4 + 4;
 
 	DEBUG13(printk("%s(%ld): SUPPORTED_SPEED=%x.\n", __func__, ha->host_no,
@@ -1581,7 +1589,7 @@ qla2x00_fdmi_rpa(scsi_qla_host_t *ha)
 	eiter = (struct ct_fdmi_port_attr *) (entries + size);
 	eiter->type = __constant_cpu_to_be16(FDMI_PORT_MAX_FRAME_SIZE);
 	eiter->len = __constant_cpu_to_be16(4 + 4);
-	max_frame_size = IS_QLA24XX(ha) || IS_QLA54XX(ha) ?
+	max_frame_size = IS_FWI2_CAPABLE(ha) ?
 		(uint32_t) icb24->frame_payload_size:
 		(uint32_t) ha->init_cb->frame_payload_size;
 	eiter->a.max_frame_size = cpu_to_be32(max_frame_size);

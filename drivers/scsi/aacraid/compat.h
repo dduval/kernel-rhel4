@@ -2,6 +2,8 @@
  *	Adaptec AAC series RAID controller driver
  *	(c) Copyright 2001 Red Hat Inc.	<alan@redhat.com>
  *
+ * Copyright (c) 2004-2007 Adaptec, Inc. (aacraid@adaptec.com)
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
@@ -21,30 +23,13 @@
  * This file is for backwards compatibility with older kernel versions
  */
 
-#ifndef BUG_ON
-#ifndef unlikely
-#ifndef __builtin_expect
-#define __builtin_expect(x, expected_value) (x)
-#endif
-#define unlikely(x) __builtin_expect((x),0)
-#endif
-#define BUG_ON(condition) do { if (unlikely((condition)!=0)) BUG(); } while (0)
-#endif
-#ifndef min
-#define min(a,b) (((a)<(b))?(a):(b))
-#endif
 
 
 #include <linux/dma-mapping.h>
-#ifndef DMA_64BIT_MASK
-#define DMA_64BIT_MASK ((dma_addr_t)0xffffffffffffffffULL)
-#endif
-#ifndef DMA_32BIT_MASK
-#define DMA_32BIT_MASK ((dma_addr_t)0xffffffffULL)
-#endif
 #ifndef DMA_31BIT_MASK
 #define DMA_31BIT_MASK ((dma_addr_t)0x7fffffffULL)
 #endif
+
 #ifndef spin_trylock_irqsave
 #define spin_trylock_irqsave(lock, flags) \
 ({ \
@@ -54,11 +39,11 @@
 })
 #endif
 
-
-
-
-
-
+#ifndef sdev_printk
+#define sdev_printk(prefix, sdev, fmt, a...) \
+	printk(prefix " %d:%d:%d:%d: " fmt, sdev->host->host_no, \
+		sdev_channel(sdev), sdev_id(sdev), sdev->lun, ##a)
+#endif
 
 #ifndef IRQF_SHARED
 # define IRQF_SHARED SA_SHIRQ

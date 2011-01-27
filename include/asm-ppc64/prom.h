@@ -280,6 +280,7 @@ extern void relocate_nodes(void);
 extern void finish_device_tree(void);
 extern int device_is_compatible(struct device_node *device, const char *);
 extern int machine_is_compatible(const char *compat);
+#define of_get_property(a, b, c) get_property((a), (b), (c))
 extern unsigned char *get_property(struct device_node *node, const char *name,
 				   int *lenp);
 extern void print_properties(struct device_node *node);

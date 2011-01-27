@@ -228,6 +228,8 @@ sysc_sigpending:
 	basr	%r14,%r1               # call do_signal
 	tm	__TI_flags+3(%r9),_TIF_RESTART_SVC
 	bo	BASED(sysc_restart)
+	tm	__TI_flags+3(%r9),_TIF_SINGLE_STEP
+	bo	BASED(sysc_singlestep)
 	b	BASED(sysc_leave)      # out of here, do NOT recheck
 
 #
@@ -569,6 +571,17 @@ mcck_int_handler:
 mcck_return:
         RESTORE_ALL 0
 
+/*
+ * Reset channel path machine check handler.
+ */
+	.globl rchp_mcck_int_handler
+rchp_mcck_int_handler:
+	SAVE_ALL_BASE __LC_SAVE_AREA+32
+	SAVE_ALL __LC_MCK_OLD_PSW,__LC_SAVE_AREA+32,0
+	l	%r1,BASED(.Ldo_rchp_mcck)
+	basr	%r14,%r1		# call machine check handler
+	RESTORE_ALL 0
+
 #ifdef CONFIG_SMP
 /*
  * Restart interruption handler, kick starter for additional CPUs
@@ -706,6 +719,7 @@ cleanup_sysc_leave_lpsw:
  * Symbol constants
  */
 .Ls390_mcck:   .long  s390_do_machine_check
+.Ldo_rchp_mcck:.long  do_rchp_mcck
 .Ldo_IRQ:      .long  do_IRQ
 .Ldo_extint:   .long  do_extint
 .Ldo_signal:   .long  do_signal

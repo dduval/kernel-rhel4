@@ -20,5 +20,6 @@
  * it is negated to the down_trylock() return values! Be careful  */
 #define mutex_trylock(foo) !down_trylock(foo)
 #define mutex_unlock(foo) up(foo)
+#define mutex_destroy(foo) do { } while (0)
 
 #endif /* __LINUX_MUTEX_H */

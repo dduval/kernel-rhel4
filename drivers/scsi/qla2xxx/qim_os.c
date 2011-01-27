@@ -59,7 +59,7 @@ qim_init_drvr_data(struct scsi_qla_host *drvr_ha,
 	int		status;
 	uint32_t	cnt;
 	unsigned long	flags;
-	device_reg_t __iomem *reg = drvr_ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &drvr_ha->iobase->isp;
 
 
 	host_ioctl->host_no = drvr_ha->host_no;
@@ -93,7 +93,7 @@ qim_init_drvr_data(struct scsi_qla_host *drvr_ha,
 	qim_disable_intrs(drvr_ha);
 
 	/* Pause RISC. */
-	if (!IS_QLA24XX(drvr_ha) && !IS_QLA54XX(drvr_ha)) {
+	if (!IS_FWI2_CAPABLE(drvr_ha)) {
 		spin_lock_irqsave(&drvr_ha->hardware_lock, flags);
 		WRT_REG_WORD(&reg->hccr, HCCR_PAUSE_RISC);
 		RD_REG_WORD(&reg->hccr);
@@ -114,7 +114,7 @@ qim_init_drvr_data(struct scsi_qla_host *drvr_ha,
 	qim_get_flash_version(host_ioctl, ptmp_mem);
 
 	/* Schedule DPC to restart the RISC */
-	if (!IS_QLA24XX(drvr_ha) && !IS_QLA54XX(drvr_ha)) {
+	if (!IS_FWI2_CAPABLE(drvr_ha)) {
 		set_bit(ISP_ABORT_NEEDED, &drvr_ha->dpc_flags);
 		up(drvr_ha->dpc_wait);
 		qim_wait_for_hba_online(drvr_ha);

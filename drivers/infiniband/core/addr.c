@@ -60,7 +60,7 @@ struct addr_req {
 	int status;
 };
 
-static void process_req(void *work);
+static void process_req(struct work_struct *work);
 
 static DEFINE_MUTEX(lock);
 static LIST_HEAD(req_list);
@@ -166,8 +166,7 @@ static void addr_send_arp(struct sockaddr_in *dst_in)
 	if (ip_route_output_key(&rt, &fl))
 		return;
 
-	arp_send(ARPOP_REQUEST, ETH_P_ARP, rt->rt_gateway, rt->idev->dev,
-		 rt->rt_src, NULL, rt->idev->dev->dev_addr, NULL);
+	neigh_event_send(rt->u.dst.neighbour, NULL);
 	ip_rt_put(rt);
 }
 
@@ -220,7 +219,7 @@ out:
 	return ret;
 }
 
-static void process_req(void *_work)
+static void process_req(struct work_struct *work)
 {
 	struct addr_req *req, *temp_req;
 	struct sockaddr_in *src_in, *dst_in;
@@ -300,10 +299,9 @@ int rdma_resolve_ip(struct rdma_addr_client *client,
 	struct addr_req *req;
 	int ret = 0;
 
-	req = kmalloc(sizeof *req, GFP_KERNEL);
+	req = kzalloc(sizeof *req, GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
-	memset(req, 0, sizeof *req);
 
 	if (src_addr)
 		memcpy(&req->src_addr, src_addr, ip_addr_size(src_addr));
@@ -382,7 +380,7 @@ static struct packet_type addr_arp = {
 
 static int addr_init(void)
 {
-	addr_wq = create_singlethread_workqueue("ib_addr_wq");
+	addr_wq = create_singlethread_workqueue("ib_addr");
 	if (!addr_wq)
 		return -ENOMEM;
 

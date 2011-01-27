@@ -1989,6 +1989,9 @@ static int addrconf_notify(struct notifier_block *this, unsigned long event,
 	switch(event) {
 	case NETDEV_UP:
 	case NETDEV_CHANGE:
+		if (dev->flags & IFF_SLAVE)
+			break;
+
 		if (event == NETDEV_UP) {
 			if (!netif_carrier_ok(dev)) {
 				/* device is not ready yet. */

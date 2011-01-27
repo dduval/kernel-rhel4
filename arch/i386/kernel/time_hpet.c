@@ -25,6 +25,7 @@
 
 unsigned long hpet_period = 0;	/* fsecs / HPET clock */
 unsigned long hpet_tick;	/* hpet clks count per tick */
+unsigned long hpet_tick_real;		/* hpet clocks per interrupt */
 unsigned long hpet_address;	/* hpet memory map physical address */
 int hpet_use_timer;
 
@@ -111,6 +112,8 @@ int __init hpet_enable(void)
 
 	hpet_use_timer = id & HPET_ID_LEGSUP;
 
+	hpet_tick_real = hpet_tick * tick_divider;
+
 	/*
 	 * Stop the timers and reset the main counter.
 	 */
@@ -133,8 +136,8 @@ int __init hpet_enable(void)
 		 * Some systems seems to need two writes to HPET_T0_CMP,
 		 * to get interrupts working
 		 */
-		hpet_writel(hpet_tick, HPET_T0_CMP);
-		hpet_writel(hpet_tick, HPET_T0_CMP);
+		hpet_writel(hpet_tick_real, HPET_T0_CMP);
+		hpet_writel(hpet_tick_real, HPET_T0_CMP);
 	}
 
 	/*

@@ -140,7 +140,8 @@ static int __ide_end_request(ide_drive_t *drive, struct request *rq,
 		if (blk_rq_tagged(rq))
 			blk_queue_end_tag(drive->queue, rq);
 
-		blkdev_dequeue_request(rq);
+		if (!list_empty(&rq->queuelist))
+			blkdev_dequeue_request(rq);
 		HWGROUP(drive)->rq = NULL;
 		end_that_request_last(rq);
 		ret = 0;

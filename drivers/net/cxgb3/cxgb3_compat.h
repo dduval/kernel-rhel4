@@ -25,6 +25,8 @@ static inline int rtnl_trylock(void)
 }
 
 
+#define IRQF_SHARED		SA_SHIRQ
+
 #define ADVERTISED_Pause		(1 << 13)
 #define ADVERTISED_Asym_Pause		(1 << 14)
 

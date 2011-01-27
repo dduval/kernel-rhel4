@@ -151,7 +151,7 @@ static void nfs4_setup_readdir(u64 cookie, u32 *verifier, struct dentry *dentry,
 		*p++ = xdr_one;                         /* bitmap length */
 		*p++ = htonl(FATTR4_WORD0_FILEID);             /* bitmap */
 		*p++ = htonl(8);              /* attribute buffer length */
-		p = xdr_encode_hyper(p, dentry->d_inode->i_ino);
+		p = xdr_encode_hyper(p, NFS_FILEID(dentry->d_inode));
 	}
 	
 	*p++ = xdr_one;                                  /* next */
@@ -163,7 +163,7 @@ static void nfs4_setup_readdir(u64 cookie, u32 *verifier, struct dentry *dentry,
 	*p++ = xdr_one;                         /* bitmap length */
 	*p++ = htonl(FATTR4_WORD0_FILEID);             /* bitmap */
 	*p++ = htonl(8);              /* attribute buffer length */
-	p = xdr_encode_hyper(p, dentry->d_parent->d_inode->i_ino);
+	p = xdr_encode_hyper(p, NFS_FILEID(dentry->d_parent->d_inode));
 
 	readdir->pgbase = (char *)p - (char *)start;
 	readdir->count -= readdir->pgbase;
@@ -478,6 +478,22 @@ static struct nfs4_state *nfs4_open_delegated(struct inode *inode, int flags, st
 }
 
 /*
+ * on an EXCLUSIVE create, the server should send back a bitmask with FATTR4-*
+ * fields corresponding to attributes that were used to store the verifier.
+ * Make sure we clobber those fields in the later setattr call
+ */
+static inline void nfs4_exclusive_attrset(struct nfs_openres *o_res, struct iattr *sattr)
+{
+	if ((o_res->attrset[1] & FATTR4_WORD1_TIME_ACCESS) &&
+	    !(sattr->ia_valid & ATTR_ATIME_SET))
+		sattr->ia_valid |= ATTR_ATIME;
+
+	if ((o_res->attrset[1] & FATTR4_WORD1_TIME_MODIFY) &&
+	    !(sattr->ia_valid & ATTR_MTIME_SET))
+		sattr->ia_valid |= ATTR_MTIME;
+}
+
+/*
  * Returns an nfs4_state + an referenced inode
  */
 static int _nfs4_do_open(struct inode *dir, struct qstr *name, int flags, struct iattr *sattr, struct rpc_cred *cred, struct nfs4_state **res)
@@ -546,6 +562,9 @@ static int _nfs4_do_open(struct inode *dir, struct qstr *name, int flags, struct
 		if (status < 0)
 			goto out_err;
 	}
+
+        if (o_arg.open_flags & O_EXCL)
+                nfs4_exclusive_attrset(&o_res, sattr);
 
 	inode = nfs_fhget(dir->i_sb, &o_res.fh, &f_attr);
 	if (IS_ERR(inode)) {
@@ -1421,10 +1440,11 @@ nfs4_proc_create(struct inode *dir, struct dentry *dentry, struct iattr *sattr,
 		struct nfs_fattr fattr;
 		status = nfs4_do_setattr(NFS_SERVER(dir), &fattr,
 							 NFS_FH(state->inode), sattr, state);
-		if (status == 0) {
+		if (status == 0)
 			nfs_setattr_update_inode(state->inode, sattr);
+		nfs_post_op_update_inode(state->inode, &fattr);
+		if (status == 0)
 			goto out;
-		}
 	} else if (flags != 0)
 		goto out;
 	nfs4_close_state(state, flags);
@@ -1697,6 +1717,7 @@ static int _nfs4_proc_readdir(struct dentry *dentry, struct rpc_cred *cred,
 		.pages = &page,
 		.pgbase = 0,
 		.count = count,
+		.bitmask = NFS_SERVER(dentry->d_inode)->attr_bitmask,
 	};
 	struct nfs4_readdir_res res;
 	struct rpc_message msg = {
@@ -2119,8 +2140,6 @@ nfs4_proc_file_open(struct inode *inode, struct file *filp)
 	ctx->mode = filp->f_mode;
 	nfs_file_set_open_context(filp, ctx);
 	put_nfs_open_context(ctx);
-	if (filp->f_mode & FMODE_WRITE)
-		nfs_begin_data_update(inode);
 	return 0;
 no_state:
 	printk(KERN_WARNING "NFS: v4 raced in function %s\n", __FUNCTION__);
@@ -2134,8 +2153,6 @@ no_state:
 static int
 nfs4_proc_file_release(struct inode *inode, struct file *filp)
 {
-	if (filp->f_mode & FMODE_WRITE)
-		nfs_end_data_update(inode);
 	nfs_file_clear_open_context(filp);
 	return 0;
 }
@@ -2678,8 +2695,9 @@ nfs4_proc_lock(struct file *filp, int cmd, struct file_lock *request)
 struct nfs_rpc_ops	nfs_v4_clientops = {
 	.version	= 4,			/* protocol version */
 	.dentry_ops	= &nfs4_dentry_operations,
-	.dir_inode_ops	= &nfs4_dir_inode_operations,
-	.file_inode_ops	= &nfs_file_inode_operations,
+	.dir_file_ops	= (struct file_operations *)&nfs4_dir_file_operations,
+	.dir_inode_ops	= (struct inode_operations *)&nfs4_dir_inode_operations,
+	.file_inode_ops	= (struct inode_operations *)&nfs4_file_inode_operations,
 	.getroot	= nfs4_proc_get_root,
 	.getattr	= nfs4_proc_getattr,
 	.setattr	= nfs4_proc_setattr,

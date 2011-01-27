@@ -49,6 +49,11 @@ extern int nfs_writeback_lowmem_only;
 #define NFSDBG_FACILITY		NFSDBG_VFS
 #define NFS_PARANOIA 1
 
+#define NFS_64_BIT_INODE_NUMBERS_ENABLED	1
+
+/* Default is to see 64-bit inode numbers */
+static int enable_ino64 = NFS_64_BIT_INODE_NUMBERS_ENABLED;
+
 /* Maximum number of readahead requests
  * FIXME: this should really be a sysctl so that users may tune it to suit
  *        their needs. People that do NFS over a slow network, might for
@@ -130,6 +135,25 @@ static inline unsigned long
 nfs_fattr_to_ino_t(struct nfs_fattr *fattr)
 {
 	return nfs_fileid_to_ino_t(fattr->fileid);
+}
+
+/**
+ * nfs_compat_user_ino64 - returns the user-visible inode number
+ * @fileid: 64-bit fileid
+ *
+ * This function returns a 32-bit inode number if the boot parameter
+ * nfs.enable_ino64 is zero.
+ */
+u64 nfs_compat_user_ino64(u64 fileid)
+{
+	int ino;
+
+	if (enable_ino64)
+		return fileid;
+	ino = fileid;
+	if (sizeof(ino) < sizeof(fileid))
+		ino ^= fileid >> (sizeof(fileid)-sizeof(ino)) * 8;
+	return ino;
 }
 
 static int
@@ -457,6 +481,7 @@ nfs_fill_super(struct super_block *sb, struct nfs_mount_data *data, int silent)
 			printk(KERN_NOTICE "NFS: NFSv3 not supported by mount program.\n");
 			return -EIO;
 		}
+		sb->s_flags |= MS_HAS_INO64;
 #else
 		printk(KERN_NOTICE "NFS: NFSv3 not supported.\n");
 		return -EIO;
@@ -566,7 +591,6 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss, 
 		{ NFS_MOUNT_SOFT, ",soft", ",hard" },
 		{ NFS_MOUNT_INTR, ",intr", "" },
 		{ NFS_MOUNT_POSIX, ",posix", "" },
-		{ NFS_MOUNT_TCP, ",tcp", ",udp" },
 		{ NFS_MOUNT_NOCTO, ",nocto", "" },
 		{ NFS_MOUNT_NOAC, ",noac", "" },
 		{ NFS_MOUNT_NONLM, ",nolock", ",lock" },
@@ -607,7 +631,7 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss, 
 			snprintf(buf, sizeof(buf), "%u", nfss->client->cl_xprt->prot);
 			proto = buf;
 	}
-	seq_printf(m, ",proto=%s", proto);
+	seq_printf(m, ",proto=%s,%s", proto, proto);
 	seq_printf(m, ",timeo=%lu", 10U * nfss->retrans_timeo / HZ);
 	seq_printf(m, ",retrans=%u", nfss->retrans_count);
 }
@@ -827,7 +851,7 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
 		inode->i_ino = hash;
 
 		/* We can't support update_atime(), since the server will reset it */
-		inode->i_flags |= S_NOATIME|S_NOCMTIME;
+		inode->i_flags |= S_NOATIME|S_NOCMTIME|S_NOATTRKILL;
 		inode->i_mode = fattr->mode;
 		/* Why so? Because we want revalidate for devices/FIFOs, and
 		 * that's precisely what we have in nfs_file_inode_operations.
@@ -850,12 +874,12 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
 #endif
 		} else if (S_ISDIR(inode->i_mode)) {
 			inode->i_op = NFS_SB(sb)->rpc_ops->dir_inode_ops;
-			inode->i_fop = &nfs_dir_operations;
+			inode->i_fop = NFS_SB(sb)->rpc_ops->dir_file_ops;
 			if (nfs_server_capable(inode, NFS_CAP_READDIRPLUS)
 			    && fattr->size <= NFS_LIMIT_READDIRPLUS)
 				NFS_FLAGS(inode) |= NFS_INO_ADVISE_RDPLUS;
 		} else if (S_ISLNK(inode->i_mode))
-			inode->i_op = &nfs_symlink_inode_operations;
+			inode->i_op = (struct inode_operations *)&nfs_symlink_inode_operations;
 		else
 			init_special_inode(inode, inode->i_mode, fattr->rdev);
 
@@ -1006,6 +1030,16 @@ int nfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 		err = nfs_revalidate_inode(NFS_SERVER(inode), inode);
 	if (!err)
 		generic_fillattr(inode, stat);
+	return err;
+}
+
+int nfs_getattr64(struct vfsmount *mnt, struct dentry *dentry, struct kstat64 *stat)
+{
+	int err;
+
+	err = nfs_getattr(mnt, dentry, (struct kstat *)stat);
+	if (!err)
+		stat->ino64 = nfs_compat_user_ino64(NFS_FILEID(dentry->d_inode));
 	return err;
 }
 
@@ -1879,6 +1913,8 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 			err = PTR_ERR(clnt);
 			goto out_fail;
 		}
+		clnt->cl_intr	  = (server->flags & NFS4_MOUNT_INTR) ? 1 : 0;
+		clnt->cl_softrtry = (server->flags & NFS4_MOUNT_SOFT) ? 1 : 0;
 		clnt->cl_chatty   = 1;
 		clp->cl_rpcclient = clnt;
 		clp->cl_cred = rpcauth_lookupcred(clnt->cl_auth, 0);
@@ -1904,8 +1940,6 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 		return PTR_ERR(clnt);
 	}
 
-	clnt->cl_intr     = (server->flags & NFS4_MOUNT_INTR) ? 1 : 0;
-	clnt->cl_softrtry = (server->flags & NFS4_MOUNT_SOFT) ? 1 : 0;
 	server->client    = clnt;
 
 	if (server->nfs4_state->cl_idmap == NULL) {
@@ -1921,6 +1955,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 	}
 
 	sb->s_op = &nfs4_sops;
+	sb->s_flags |= MS_HAS_INO64;
 	err = nfs_sb_init(sb, authflavour);
 	if (err == 0)
 		return 0;
@@ -2258,6 +2293,7 @@ static void __exit exit_nfs_fs(void)
 /* Not quite true; I just maintain it */
 MODULE_AUTHOR("Olaf Kirch <okir@monad.swb.de>");
 MODULE_LICENSE("GPL");
+module_param(enable_ino64, bool, 0644);
 
 module_init(init_nfs_fs)
 module_exit(exit_nfs_fs)

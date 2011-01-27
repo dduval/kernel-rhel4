@@ -937,7 +937,7 @@ int __init calibrate_APIC_clock(void)
 	long tt1, tt2;
 	long result;
 	int i;
-	const int LOOPS = HZ/10;
+	const int LOOPS = REAL_HZ/10;
 
 	apic_printk(APIC_VERBOSE, "calibrating APIC timer ...\n");
 
@@ -986,13 +986,13 @@ int __init calibrate_APIC_clock(void)
 	if (cpu_has_tsc)
 		apic_printk(APIC_VERBOSE, "..... CPU clock speed is "
 			"%ld.%04ld MHz.\n",
-			((long)(t2-t1)/LOOPS)/(1000000/HZ),
-			((long)(t2-t1)/LOOPS)%(1000000/HZ));
+			((long)(t2-t1)/LOOPS)/(1000000/REAL_HZ),
+			((long)(t2-t1)/LOOPS)%(1000000/REAL_HZ));
 
 	apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
 		"%ld.%04ld MHz.\n",
-		result/(1000000/HZ),
-		result%(1000000/HZ));
+		result/(1000000/REAL_HZ),
+		result%(1000000/REAL_HZ));
 
 	return result;
 }
@@ -1085,30 +1085,34 @@ int setup_profiling_timer(unsigned int multiplier)
 asmlinkage void smp_local_timer_interrupt(struct pt_regs * regs)
 {
 	int cpu = smp_processor_id();
+	int i;
 
-	profile_tick(CPU_PROFILING, regs);
-	if (--per_cpu(prof_counter, cpu) <= 0) {
-		/*
-		 * The multiplier may have changed since the last time we got
-		 * to this point as a result of the user writing to
-		 * /proc/profile. In this case we need to adjust the APIC
-		 * timer accordingly.
-		 *
-		 * Interrupts are already masked off at this point.
-		 */
-		per_cpu(prof_counter, cpu) = per_cpu(prof_multiplier, cpu);
-		if (per_cpu(prof_counter, cpu) !=
-					per_cpu(prof_old_multiplier, cpu)) {
-			__setup_APIC_LVTT(
+	for (i = 0; i < tick_divider; i++) {
+		profile_tick(CPU_PROFILING, regs);
+		if (--per_cpu(prof_counter, cpu) <= 0) {
+			/*
+			 * The multiplier may have changed since the last time
+			 * we got to this point as a result of the user writing
+			 * to /proc/profile. In this case we need to adjust the
+			 * APIC timer accordingly.
+			 *
+			 * Interrupts are already masked off at this point.
+			 */
+			per_cpu(prof_counter, cpu) = per_cpu(prof_multiplier,
+							     cpu);
+			if (per_cpu(prof_counter, cpu) !=
+			    per_cpu(prof_old_multiplier, cpu)) {
+				__setup_APIC_LVTT(
 					calibration_result/
 					per_cpu(prof_counter, cpu));
-			per_cpu(prof_old_multiplier, cpu) =
-						per_cpu(prof_counter, cpu);
-		}
+				per_cpu(prof_old_multiplier, cpu) =
+					per_cpu(prof_counter, cpu);
+			}
 
 #ifdef CONFIG_SMP
-		update_process_times(user_mode(regs));
+			update_process_times(user_mode(regs));
 #endif
+		}
 	}
 
 	/*

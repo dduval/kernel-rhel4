@@ -95,6 +95,7 @@
 #define	INT_CC_GET_VPD			EXT_CC_RESERVED0J_OS
 #define	INT_CC_UPDATE_VPD		EXT_CC_RESERVED0K_OS
 #define	INT_CC_PORT_PARAM		EXT_CC_RESERVED0N_OS
+#define INT_CC_A84_MGMT_COMMAND		EXT_CC_RESERVED0P_OS
 #define	INT_CC_LEGACY_LOOPBACK		EXT_CC_RESERVED0Z_OS
 
 
@@ -200,6 +201,11 @@ typedef struct _INT_LOOPBACK_RSP
 				 * BIOS w/pcihdr and FCODE
 				 * w/pcihdr and EFI w/pcihdr
 				 */
+#define INT_OPT_ROM_REGION_VPD_HBAPARAM         0x08
+				/* ISP2532: VPD and NVRAM (HBA parameters)
+				*/
+#define INT_OPT_ROM_REGION_FW_DATA              0x13
+				/* ISP2532: FW table */
 #define INT_OPT_ROM_REGION_ALL				0xFF
 				/* Region that includes all regions */
 #define INT_OPT_ROM_REGION_INVALID			0xFFFFFFFF
@@ -287,6 +293,7 @@ typedef struct _INT_OPT_ROM_LAYOUT
 #define INT_OPT_ROM_2322_VPD_ADR    0x40000     /* 256k */
 #define INT_OPT_ROM_2322_FW_ADR     0x80000     /* 512k */
 #define INT_OPT_ROM_2400_PH_ADR     0x100       /* 256  */
+#define INT_OPT_ROM_SIZE_25XX	    0x100000    /* 1 M  */
 
 typedef struct _OPT_ROM_TABLE
 {
@@ -299,8 +306,175 @@ typedef struct _INT_PORT_PARAM {
 	UINT16 Speed;
 } INT_PORT_PARAM, *PINT_PORT_PARAM;
 
+#define INT_SC_A84_RESET            1  /* Reset */
+#define INT_SC_A84_GET_FW_VERSION   2  /* Chip FW versions */
+#define INT_SC_A84_UPDATE_FW        3  /* Update (Diagnostic or * Operation) Firmware */
+#define INT_SC_A84_MANAGE_INFO      4  /* Manage Chip */
+
+typedef UINT16      USHORT;
+typedef UINT32      ULONG;
+
+typedef struct _A84_RESET {
+	USHORT Flags;
+	USHORT Reserved;
+#define A84_RESET_FLAG_ENABLE_DIAG_FW   1
+} __attribute__((packed)) A84_RESET, *PA84_RESET;
+
+typedef struct _A84_GET_FW_VERSION {
+	ULONG FwVersion;
+} __attribute__((packed)) A84_GET_FW_VERSION, *PA84_GET_FW_VERSION;
+
+typedef struct _A84_UPDATE_FW {
+        USHORT Flags;
+#define A84_UPDATE_FW_FLAG_DIAG_FW  0x0008  /* if flag is cleared then it
+					       * must be an operation fw */
+	USHORT Reserved;
+	ULONG  TotalByteCount;
+	UINT64 pFwDataBytes;
+} __attribute__((packed)) A84_UPDATE_FW, *PA84_UPDATE_FW;
+
+typedef struct _A84_ACCESS_PARAMETERS {
+	union {
+		struct {
+			ULONG StartingAddr;
+			ULONG Reserved2;
+			ULONG Reserved3;
+		} Memory;   /* For Read & Write Memory */
+
+		struct {
+			ULONG ConfigParamID;
+#define CONFIG_PARAM_ID_RESERVED    1
+#define CONFIG_PARAM_ID_UIF         2
+#define CONFIG_PARAM_ID_FCOE_COS    3
+#define CONFIG_PARAM_ID_PAUSE_TYPE  4
+#define CONFIG_PARAM_ID_TIMEOUTS    5
+			ULONG ConfigParamData0;
+			ULONG ConfigParamData1;
+		} Config;  /* For change Configuration */
+
+		struct {
+			ULONG InfoDataType;
+#define INFO_DATA_TYPE_CONFIG_LOG_DATA    1  /* Fetch Configuration Log Data */
+#define INFO_DATA_TYPE_LOG_DATA           2  /* Fetch Log Data */
+#define INFO_DATA_TYPE_PORT_STATISTICS    3  /* Fetch Port Statistics */
+#define INFO_DATA_TYPE_LIF_STATISTICS     4  /* Fetch LIF Statistics */
+#define INFO_DATA_TYPE_ASIC_STATISTICS    5  /* Fetch ASIC Statistics */
+#define INFO_DATA_TYPE_CONFIG_PARAMETERS  6  /* Fetch Config Parameters */
+#define INFO_DATA_TYPE_PANIC_LOG          7  /* Fetch Panic Log */
+			ULONG InfoContext;
+			/* InfoContext defines for INFO_DATA_TYPE_LOG_DATA */
+#define IC_LOG_DATA_LOG_ID_DEBUG_LOG                    0
+#define IC_LOG_DATA_LOG_ID_LEARN_LOG                    1
+#define IC_LOG_DATA_LOG_ID_FC_ACL_INGRESS_LOG           2
+#define IC_LOG_DATA_LOG_ID_FC_ACL_EGRESS_LOG            3
+#define IC_LOG_DATA_LOG_ID_ETHERNET_ACL_INGRESS_LOG     4
+#define IC_LOG_DATA_LOG_ID_ETHERNET_ACL_EGRESS_LOG      5
+#define IC_LOG_DATA_LOG_ID_MESSAGE_TRANSMIT_LOG         6
+#define IC_LOG_DATA_LOG_ID_MESSAGE_RECEIVE_LOG          7
+#define IC_LOG_DATA_LOG_ID_LINK_EVENT_LOG               8
+#define IC_LOG_DATA_LOG_ID_DCX_LOG                      9
+
+			/* InfoContext defines for
+			 * INFO_DATA_TYPE_PORT_STATISTICS */
+#define IC_PORT_STATISTICS_PORT_NUMBER_ETHERNET_PORT0   0
+#define IC_PORT_STATISTICS_PORT_NUMBER_ETHERNET_PORT1   1
+#define IC_PORT_STATISTICS_PORT_NUMBER_NSL_PORT0        2
+#define IC_PORT_STATISTICS_PORT_NUMBER_NSL_PORT1        3
+#define IC_PORT_STATISTICS_PORT_NUMBER_FC_PORT0         4
+#define IC_PORT_STATISTICS_PORT_NUMBER_FC_PORT1         5
+
+			/* InfoContext defines for
+			 * INFO_DATA_TYPE_LIF_STATISTICS */
+#define IC_LIF_STATISTICS_LIF_NUMBER_ETHERNET_PORT0     0
+#define IC_LIF_STATISTICS_LIF_NUMBER_ETHERNET_PORT1     1
+#define IC_LIF_STATISTICS_LIF_NUMBER_FC_PORT0           2
+#define IC_LIF_STATISTICS_LIF_NUMBER_FC_PORT1           3
+#define IC_LIF_STATISTICS_LIF_NUMBER_CPU                6
+			ULONG Reserved;
+		} Info; /* For fetch Info */
+	} ap;
+} __attribute__((packed)) A84_ACCESS_PARAMETERS, *PA84_ACCESS_PARAMETERS;
+
+typedef struct _A84_MANAGE_INFO {
+        USHORT Operation;
+#define A84_OP_READ_MEM         0  /* Read CS84XX Memory */
+#define A84_OP_WRITE_MEM        1  /* Write CS84XX Memory */
+#define A84_OP_CHANGE_CONFIG    2  /* Change Configuration */
+#define A84_OP_GET_INFO         3  /* Fetch CS84XX Info (Logs,
+				      & Statistics, Configuration) */
+	USHORT Reserved;
+	A84_ACCESS_PARAMETERS Parameters;
+	ULONG TotalByteCount;
+#define INFO_DATA_TYPE_LOG_CONFIG_TBC      ((10*7)+1)*4
+#define INFO_DATA_TYPE_PORT_STAT_ETH_TBC   0x194
+#define INFO_DATA_TYPE_PORT_STAT_FC_TBC    0xC0
+#define INFO_DATA_TYPE_LIF_STAT_TBC        0x40
+#define INFO_DATA_TYPE_ASIC_STAT_TBC       0x5F8
+#define INFO_DATA_TYPE_CONFIG_TBC          0x140
+
+	UINT64 pDataBytes;
+} __attribute__((packed)) A84_MANAGE_INFO, *PA84_MANAGE_INFO;
+
+#define A84_FC_CHECKSUM_FAILURE          0x01
+#define A84_FC_INVALID_LENGTH            0x02
+#define A84_FC_INVALID_ADDRESS           0x04
+#define A84_FC_INVALID_CONFIG_ID_TYPE    0x05
+#define A84_FC_INVALID_CONFIG_DATA       0x06
+#define A84_FC_INVALID_INFO_CONTEXT      0x07
+
+typedef struct _SD_A84_MGT{
+	union {
+		A84_RESET          Reset;
+		A84_GET_FW_VERSION GetFwVer;
+		A84_UPDATE_FW      UpdateFw;
+		A84_MANAGE_INFO    ManageInfo;
+	} sp;
+} __attribute__((packed)) SD_A84_MGT, *PSD_A84_MGT;
+
+struct a84_mgmt_request {
+	union {
+		struct verify_chip_entry_84xx request;
+		struct verify_chip_rsp_84xx response;
+		struct access_chip_84xx mgmt_request;
+		struct access_chip_rsp_84xx mgmt_response;
+	} p;
+};
+
+/* Management commands and data structures */
+
+#define A84_ISSUE_WRITE_TYPE_CMD        0
+#define A84_ISSUE_READ_TYPE_CMD         1
+#define A84_CLEANUP_CMD                 2
+#define A84_ISSUE_RESET_OP_FW           3
+#define A84_ISSUE_RESET_DIAG_FW         4
+#define A84_ISSUE_UPDATE_OPFW_CMD       5
+#define A84_ISSUE_UPDATE_DIAGFW_CMD     6
+
+struct qla_cs84xx_mgmt {
+	uint16_t options;
+#define	DUMP_A84_MEMORY		0
+#define	LOAD_A84_MEMORY		1
+#define	CHANGE_A84_CONFIG_PARAM	2
+#define	REQUEST_A84_INFO		3
+
+	uint32_t parameter1;
+	uint32_t parameter2;
+	uint32_t parameter3;
+
+	char     *data;
+	uint32_t data_size;
+	dma_addr_t dseg_dma;
+	uint8_t  current_state;
+#define A84_CMD_STATE_NONE              0
+#define A84_CMD_STATE_PROCESSING        1
+#define A84_CMD_STATE_DONE              2
+
+	uint8_t  cmd_valid;
+	uint8_t  flags;
+#define	A84_FLAGS_PAGE_ALLOC		1
+};
+
 #ifdef _MSC_VER
 #pragma pack()
 #endif
-
 #endif /* _INIOCT_H */

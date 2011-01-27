@@ -1244,7 +1244,7 @@ static void quirk_jmicron_ata(struct pci_dev *pdev)
 	case PCI_DEVICE_ID_JMICRON_JMB363:
 		/* Enable dual function mode, AHCI on fn 0, IDE fn1 */
 		/* Set the class codes correctly and then direct IDE 0 */
-		conf1 |= 0x00C2A102; /* Set 1, 8, 13, 15, 17, 22, 23 */
+		conf1 |= 0x00C2A1B3; /* Set 0, 1, 4, 5, 7, 8, 13, 15, 17, 22, 23 */
 		break;
 
 	case PCI_DEVICE_ID_JMICRON_JMB368:
@@ -1592,7 +1592,6 @@ static void __init quirk_svw_msi(struct pci_dev *dev)
 	printk(KERN_WARNING "PCI: MSI quirk detected. pci_msi_quirk set.\n");
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_GCNB_LE, quirk_svw_msi);
-DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_HT1000_PCIX, quirk_svw_msi);
 
 /*
  * Some settings of MMRBC can lead to data corruption so block changes.
@@ -1657,6 +1656,32 @@ static void __devinit quirk_msi_ht_cap(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_HT2000_PCIE,
 			quirk_msi_ht_cap);
+
+/*
+ * Force enable MSI mapping capability on HT bridges
+ */
+static void __devinit quirk_msi_ht_cap_enable(struct pci_dev *dev)
+{
+	u8 pos;
+	int ttl;
+	for (pos = pci_find_capability(dev, PCI_CAP_ID_HT), ttl = 48;
+	     pos && ttl;
+	     pos = pci_find_next_capability(dev, pos, PCI_CAP_ID_HT), ttl--) {
+		u32 cap_hdr;
+		/* MSI mapping section according to Hypertransport spec */
+		if (pci_read_config_dword(dev, pos, &cap_hdr) == 0
+		    && (cap_hdr & 0xf8000000) == 0xa8000000 /* MSI mapping */) {
+			printk(KERN_INFO "PCI: Enabling HT MSI Mapping on %s\n",
+			       pci_name(dev));
+
+			pci_write_config_dword(dev, pos, cap_hdr | 0x10000);
+
+		}
+	}
+}
+
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_HT1000_PXB,
+			quirk_msi_ht_cap_enable);
 
 /* The nVidia CK804 chipset may have 2 HT MSI mappings.
  * MSI are supported if the MSI capability set in any of these mappings.

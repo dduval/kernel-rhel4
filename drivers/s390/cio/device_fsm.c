@@ -68,7 +68,31 @@ device_set_waiting(struct subchannel *sch)
 		return;
 	cdev = sch->dev.driver_data;
 	ccw_device_set_timeout(cdev, 10*HZ);
+	cdev->private->flags.doverify = 1;
 	cdev->private->state = DEV_STATE_WAIT4IO;
+}
+
+void
+device_set_intretry(struct subchannel *sch)
+{
+	struct ccw_device *cdev;
+
+	cdev = sch->dev.driver_data;
+	if (!cdev)
+		return;
+	cdev->private->flags.intretry = 1;
+}
+
+int
+device_trigger_verify(struct subchannel *sch)
+{
+	struct ccw_device *cdev;
+
+	cdev = sch->dev.driver_data;
+	if (!cdev || !cdev->online)
+		return -EINVAL;
+	dev_fsm_event(cdev, DEV_EVENT_VERIFY);
+	return 0;
 }
 
 /*
@@ -826,6 +850,8 @@ ccw_device_irq(struct ccw_device *cdev, enum dev_event dev_event)
 call_handler_unsol:
 		if (cdev->handler)
 			cdev->handler (cdev, 0, irb);
+		if (cdev->private->flags.doverify)
+			ccw_device_online_verify(cdev, 0);
 		return;
 	}
 	/* Accumulate status and find out if a basic sense is needed. */
@@ -902,6 +928,12 @@ ccw_device_w4sense(struct ccw_device *cdev, enum dev_event dev_event)
 	 * had killed the original request.
 	 */
 	if (irb->scsw.fctl & (SCSW_FCTL_CLEAR_FUNC | SCSW_FCTL_HALT_FUNC)) {
+		/* Retry Basic Sense if requested. */
+		if (cdev->private->flags.intretry) {
+			cdev->private->flags.intretry = 0;
+			ccw_device_do_sense(cdev, irb);
+			return;
+		}
 		cdev->private->flags.dosense = 0;
 		memset(&cdev->private->irb, 0, sizeof(struct irb));
 		ccw_device_accumulate_irb(cdev, irb);
@@ -988,6 +1020,37 @@ ccw_device_killing_timeout(struct ccw_device *cdev, enum dev_event dev_event)
 			      ERR_PTR(-ETIMEDOUT));
 }
 
+void device_kill_io(struct subchannel *sch) {
+	int ret;
+	struct ccw_device *cdev = sch->dev.driver_data;
+
+	ret = ccw_device_cancel_halt_clear(cdev);
+	if (ret == -EBUSY) {
+		ccw_device_set_timeout(cdev, 3*HZ);
+		cdev->private->state = DEV_STATE_TIMEOUT_KILL;
+		return;
+	}
+	if (ret == -ENODEV) {
+		if (!sch->lpm) {
+			PREPARE_WORK(&cdev->private->kick_work,
+				ccw_device_nopath_notify, cdev);
+			queue_work(ccw_device_notify_work,
+				&cdev->private->kick_work);
+		} else
+			dev_fsm_event(cdev, DEV_EVENT_NOTOPER);
+		return;
+	}
+	if (cdev->handler)
+		cdev->handler(cdev, cdev->private->intparm, ERR_PTR(-EIO));
+	if (!sch->lpm) {
+		PREPARE_WORK(&cdev->private->kick_work,
+			ccw_device_nopath_notify, cdev);
+		queue_work(ccw_device_notify_work, &cdev->private->kick_work);
+	} else
+		/* Start delayed path verification. */
+		ccw_device_online_verify(cdev, 0);
+}
+
 static void
 ccw_device_wait4io_irq(struct ccw_device *cdev, enum dev_event dev_event)
 {
@@ -1018,7 +1081,7 @@ ccw_device_wait4io_irq(struct ccw_device *cdev, enum dev_event dev_event)
 		PREPARE_WORK(&cdev->private->kick_work,
 			     ccw_device_nopath_notify, (void *)cdev);
 		queue_work(ccw_device_notify_work, &cdev->private->kick_work);
-	} else if (cdev->private->flags.doverify)
+	} else
 		ccw_device_online_verify(cdev, 0);
 }
 

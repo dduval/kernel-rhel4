@@ -20,4 +20,11 @@ typedef int __bitwise pci_power_t;
 
 #define pci_choose_state(pdev, state)	(state)
 
+typedef _Bool bool;
+
+enum {
+	false = 0,
+	true = 1
+};
+
 #endif /* __E1000_COMPAT_H__ */

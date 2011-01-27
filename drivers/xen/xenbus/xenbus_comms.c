@@ -42,16 +42,15 @@
 
 static int xenbus_irq;
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 extern void xenbus_probe(void *);
 extern int xenstored_ready;
 static DECLARE_WORK(probe_work, xenbus_probe, NULL);
 
 DECLARE_WAIT_QUEUE_HEAD(xb_waitq);
-
-static inline struct xenstore_domain_interface *xenstore_domain_interface(void)
-{
-	return mfn_to_virt(xen_start_info->store_mfn);
-}
 
 static irqreturn_t wake_waiting(int irq, void *unused, struct pt_regs *regs)
 {
@@ -91,7 +90,7 @@ static const void *get_input_chunk(XENSTORE_RING_IDX cons,
 
 int xb_write(const void *data, unsigned len)
 {
-	struct xenstore_domain_interface *intf = xenstore_domain_interface();
+	struct xenstore_domain_interface *intf = xen_store_interface;
 	XENSTORE_RING_IDX cons, prod;
 	int rc;
 
@@ -130,7 +129,7 @@ int xb_write(const void *data, unsigned len)
 		intf->req_prod += avail;
 
 		/* This implies mb() before other side sees interrupt. */
-		notify_remote_via_evtchn(xen_start_info->store_evtchn);
+		notify_remote_via_evtchn(xen_store_evtchn);
 	}
 
 	return 0;
@@ -138,7 +137,7 @@ int xb_write(const void *data, unsigned len)
 
 int xb_read(void *data, unsigned len)
 {
-	struct xenstore_domain_interface *intf = xenstore_domain_interface();
+	struct xenstore_domain_interface *intf = xen_store_interface;
 	XENSTORE_RING_IDX cons, prod;
 	int rc;
 
@@ -181,7 +180,7 @@ int xb_read(void *data, unsigned len)
 		pr_debug("Finished read of %i bytes (%i to go)\n", avail, len);
 
 		/* Implies mb(): they will see new header. */
-		notify_remote_via_evtchn(xen_start_info->store_evtchn);
+		notify_remote_via_evtchn(xen_store_evtchn);
 	}
 
 	return 0;
@@ -196,7 +195,7 @@ int xb_init_comms(void)
 		unbind_from_irqhandler(xenbus_irq, &xb_waitq);
 
 	err = bind_evtchn_to_irqhandler(
-		xen_start_info->store_evtchn, wake_waiting,
+		xen_store_evtchn, wake_waiting,
 		0, "xenbus", &xb_waitq);
 	if (err <= 0) {
 		printk(KERN_ERR "XENBUS request irq failed %i\n", err);

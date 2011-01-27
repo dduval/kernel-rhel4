@@ -8,6 +8,16 @@
 #define PAGE_SIZE	(1UL << PAGE_SHIFT)
 #define PAGE_MASK	(~(PAGE_SIZE-1))
 
+#ifdef CONFIG_X86_PAE
+#define __PHYSICAL_MASK_SHIFT	36
+#define __PHYSICAL_MASK		((1ULL << __PHYSICAL_MASK_SHIFT) - 1)
+#define PHYSICAL_PAGE_MASK	(~((1ULL << PAGE_SHIFT) - 1) & __PHYSICAL_MASK)
+#else
+#define __PHYSICAL_MASK_SHIFT	32
+#define __PHYSICAL_MASK		(~0UL)
+#define PHYSICAL_PAGE_MASK	(PAGE_MASK & __PHYSICAL_MASK)
+#endif
+
 #define LARGE_PAGE_MASK (~(LARGE_PAGE_SIZE-1))
 #define LARGE_PAGE_SIZE (1UL << PMD_SHIFT)
 
@@ -22,6 +32,13 @@
 #include <xen/features.h>
 #include <xen/foreign_page.h>
 
+/*
+ * Need to repeat this here in order to not include pgtable.h (which in turn
+ * depends on definitions made here), but to be able to use the symbolic
+ * below. The preprocessor will warn if the two definitions aren't identical.
+ */
+#define _PAGE_PRESENT	0x001
+
 #define arch_free_page(_page,_order)			\
 ({	int foreign = PageForeign(_page);		\
 	if (foreign)					\
@@ -29,12 +46,6 @@
 	foreign;					\
 })
 #define HAVE_ARCH_FREE_PAGE
-
-#ifdef CONFIG_XEN_SCRUB_PAGES
-#define scrub_pages(_p,_n) memset((void *)(_p), 0, (_n) << PAGE_SHIFT)
-#else
-#define scrub_pages(_p,_n) ((void)0)
-#endif
 
 #ifdef CONFIG_X86_USE_3DNOW
 
@@ -70,42 +81,40 @@ typedef struct { unsigned long long pgprot; } pgprot_t;
 #define pgprot_val(x)	((x).pgprot)
 #include <asm/maddr.h>
 #define __pte(x) ({ unsigned long long _x = (x);        \
-    if (_x & 1) _x = phys_to_machine(_x);               \
+    if (_x & _PAGE_PRESENT) _x = pte_phys_to_machine(_x);               \
     ((pte_t) {(unsigned long)(_x), (unsigned long)(_x>>32)}); })
 #define __pgd(x) ({ unsigned long long _x = (x); \
-    (((_x)&1) ? ((pgd_t) {phys_to_machine(_x)}) : ((pgd_t) {(_x)})); })
+    (pgd_t) {((_x) & _PAGE_PRESENT) ? pte_phys_to_machine(_x) : (_x)}; })
 #define __pmd(x) ({ unsigned long long _x = (x); \
-    (((_x)&1) ? ((pmd_t) {phys_to_machine(_x)}) : ((pmd_t) {(_x)})); })
+    (pmd_t) {((_x) & _PAGE_PRESENT) ? pte_phys_to_machine(_x) : (_x)}; })
+static inline unsigned long long pte_val_ma(pte_t x)
+{
+	return ((unsigned long long)x.pte_high << 32) | x.pte_low;
+}
 static inline unsigned long long pte_val(pte_t x)
 {
-	unsigned long long ret;
-
-	if (x.pte_low) {
-		ret = x.pte_low | (unsigned long long)x.pte_high << 32;
-		ret = machine_to_phys(ret) | 1;
-	} else {
-		ret = 0;
-	}
+	unsigned long long ret = pte_val_ma(x);
+	if (x.pte_low & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
 	return ret;
 }
 static inline unsigned long long pmd_val(pmd_t x)
 {
 	unsigned long long ret = x.pmd;
-	if (ret) ret = machine_to_phys(ret) | 1;
+#ifdef CONFIG_XEN_COMPAT_030002
+	if (ret) ret = pte_machine_to_phys(ret) | _PAGE_PRESENT;
+#else
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
+#endif
 	return ret;
 }
 static inline unsigned long long pgd_val(pgd_t x)
 {
 	unsigned long long ret = x.pgd;
-	if (ret) ret = machine_to_phys(ret) | 1;
+	if (ret & _PAGE_PRESENT) ret = pte_machine_to_phys(ret);
 	return ret;
 }
-static inline unsigned long long pte_val_ma(pte_t x)
-{
-	return (unsigned long long)x.pte_high << 32 | x.pte_low;
-}
 #define HPAGE_SHIFT	21
-#else
+#else /* !CONFIG_X86_PAE */
 #define nx_enabled 0
 typedef struct { unsigned long pte_low; } pte_t;
 typedef struct { unsigned long pmd; } pmd_t;
@@ -114,21 +123,27 @@ typedef struct { unsigned long pgprot; } pgprot_t;
 #define pgprot_val(x)	((x).pgprot)
 #include <asm/maddr.h>
 #define boot_pte_t pte_t /* or would you rather have a typedef */
-#define pte_val(x)	(((x).pte_low & 1) ? machine_to_phys((x).pte_low) : \
+#define pte_val(x)	(((x).pte_low & _PAGE_PRESENT) ? \
+                         machine_to_phys((x).pte_low) : \
 			 (x).pte_low)
 #define pte_val_ma(x)	((x).pte_low)
 #define __pte(x) ({ unsigned long _x = (x); \
-    (((_x)&1) ? ((pte_t) {phys_to_machine(_x)}) : ((pte_t) {(_x)})); })
+    (pte_t) {((_x) & _PAGE_PRESENT) ? phys_to_machine(_x) : (_x)}; })
 #define __pgd(x) ({ unsigned long _x = (x); \
-    (((_x)&1) ? ((pgd_t) {phys_to_machine(_x)}) : ((pgd_t) {(_x)})); })
+    (pgd_t) {((_x) & _PAGE_PRESENT) ? phys_to_machine(_x) : (_x)}; })
 static inline unsigned long pgd_val(pgd_t x)
 {
 	unsigned long ret = x.pgd;
-	if (ret) ret = machine_to_phys(ret) | 1;
+#if CONFIG_XEN_COMPAT <= 0x030002
+	if (ret) ret = machine_to_phys(ret) | _PAGE_PRESENT;
+#else
+	if (ret & _PAGE_PRESENT) ret = machine_to_phys(ret);
+#endif
 	return ret;
 }
 #define HPAGE_SHIFT	22
 
+#ifdef CONFIG_XEN
 static inline unsigned long pmd_val(pmd_t x)
 {
 	unsigned long ret = x.pmd;
@@ -143,8 +158,9 @@ static inline unsigned long long pmd_val_ma(pmd_t x)
 
 #define __pmd(x) ({ unsigned long _x = (x); \
 	(((_x)&1) ? ((pmd_t) {phys_to_machine(_x)}) : ((pmd_t) {(_x)})); })
-#endif
-#define PTE_MASK	PAGE_MASK
+#endif /* CONFIG_XEN */
+#endif /* CONFIG_X86_PAE */
+#define PTE_MASK	PHYSICAL_PAGE_MASK
 
 #ifdef CONFIG_HUGETLB_PAGE
 #define HPAGE_SIZE	((1UL) << HPAGE_SHIFT)

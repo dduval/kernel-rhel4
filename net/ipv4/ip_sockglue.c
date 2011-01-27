@@ -593,6 +593,10 @@ int ip_setsockopt(struct sock *sk, int level, int optname, char __user *optval, 
 		case IP_DROP_MEMBERSHIP: 
 		{
 			struct ip_mreqn mreq;
+			
+			err = -EPROTO;
+			if (sk->sk_type == SOCK_STREAM)
+				break;
 
 			if (optlen < sizeof(struct ip_mreq))
 				goto e_inval;

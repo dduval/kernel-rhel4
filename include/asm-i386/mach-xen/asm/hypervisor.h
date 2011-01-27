@@ -46,6 +46,17 @@
 #include <xen/interface/nmi.h>
 #include <asm/ptrace.h>
 #include <asm/page.h>
+#if defined(CONFIG_XEN_PV_ON_HVM)
+#  if defined(__i386__)
+#    ifdef CONFIG_X86_PAE
+#      include <asm-generic/pgtable-nopud.h>
+#    else
+#      include <asm-generic/pgtable-nopmd.h>
+#    endif
+#  elif defined(__x86_64__) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)
+#    include <asm-generic/pgtable-nopud.h>
+#  endif
+#endif
 
 extern shared_info_t *HYPERVISOR_shared_info;
 
@@ -104,6 +115,12 @@ int xen_create_contiguous_region(
     unsigned long vstart, unsigned int order, unsigned int address_bits);
 void xen_destroy_contiguous_region(
     unsigned long vstart, unsigned int order);
+
+#ifdef CONFIG_XEN_SCRUB_PAGES
+#define scrub_pages(_p,_n) memset((void *)(_p), 0, (_n) << PAGE_SHIFT)
+#else
+#define scrub_pages(_p,_n) ((void)0)
+#endif
 
 #include <asm/hypercall.h>
 

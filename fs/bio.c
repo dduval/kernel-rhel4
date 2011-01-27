@@ -645,7 +645,8 @@ static void __bio_unmap_user(struct bio *bio)
 	 * make sure we dirty pages we wrote to
 	 */
 	__bio_for_each_segment(bvec, bio, i, 0) {
-		if (bio_data_dir(bio) == READ)
+		if ((bio_data_dir(bio) == READ) && 
+		    !PageCompound(bvec->bv_page))
 			set_page_dirty_lock(bvec->bv_page);
 
 		page_cache_release(bvec->bv_page);

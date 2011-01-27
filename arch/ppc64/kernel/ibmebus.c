@@ -291,8 +291,7 @@ void ibmebus_remove_devices_by_id(struct of_device_id *idt)
 {
 	struct ibmebus_dev *dev;
 	while (strlen(idt->name) > 0) {
-		dev = ebus_device_find(idt->name, ebus_cmp_name);
-		if (dev)
+		while ((dev = ebus_device_find(idt->name, ebus_cmp_name)))
 			ibmebus_unregister_device(dev);
 		idt++;
 	}
@@ -300,12 +299,8 @@ void ibmebus_remove_devices_by_id(struct of_device_id *idt)
 
 void ibmebus_add_devices_by_id(struct of_device_id *idt)
 {
-	struct ibmebus_dev *dev;
 	while (strlen(idt->name) > 0) {
-		dev = ebus_device_find(idt->name, ebus_cmp_name);
-		if (dev == NULL) {
-			probe_bus(idt->name);
-		}
+		probe_bus(idt->name);
 		idt++;
 	}
 }

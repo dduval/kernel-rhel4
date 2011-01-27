@@ -80,6 +80,15 @@ struct journal_head {
 	 * [j_list_lock]
 	 */
 	struct journal_head *b_cpnext, *b_cpprev;
+
+	/*
+	 * This flag signals the buffer has been modified by the currently
+	 * running transaction
+	 * [jbd_lock_bh_state()]
+	 */
+#ifndef __GENKSYMS__
+	unsigned b_modified;
+#endif
 };
 
 #endif		/* JOURNAL_HEAD_H_INCLUDED */

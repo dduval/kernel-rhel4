@@ -591,10 +591,6 @@ xprt_connect_status(struct rpc_task *task)
 		return;
 	}
 
-	/* if soft mounted, just cause this RPC to fail */
-	if (RPC_IS_SOFT(task))
-		task->tk_status = -EIO;
-
 	switch (task->tk_status) {
 	case -ECONNREFUSED:
 	case -ECONNRESET:
@@ -1386,6 +1382,7 @@ xprt_request_init(struct rpc_task *task, struct rpc_xprt *xprt)
 	req->rq_task	= task;
 	req->rq_xprt    = xprt;
 	req->rq_xid     = xprt_alloc_xid(xprt);
+	xprt_reset_majortimeo(req);
 	dprintk("RPC: %4d reserved req %p xid %08x\n", task->tk_pid,
 			req, req->rq_xid);
 }

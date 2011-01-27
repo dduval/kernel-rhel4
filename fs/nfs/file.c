@@ -70,16 +70,26 @@ struct inode_operations nfs_file_inode_operations = {
 };
 
 #ifdef CONFIG_NFS_V3
-struct inode_operations nfs3_file_inode_operations = {
-	.permission	= nfs_permission,
-	.getattr	= nfs_getattr,
-	.setattr	= nfs_setattr,
-	.listxattr	= nfs3_listxattr,
-	.getxattr	= nfs3_getxattr,
-	.setxattr	= nfs3_setxattr,
-	.removexattr	= nfs3_removexattr,
+struct inode_operations_ext nfs3_file_inode_operations = {
+	.i_op_orig.permission	= nfs_permission,
+	.i_op_orig.getattr	= nfs_getattr,
+	.i_op_orig.setattr	= nfs_setattr,
+	.i_op_orig.listxattr	= nfs3_listxattr,
+	.i_op_orig.getxattr	= nfs3_getxattr,
+	.i_op_orig.setxattr	= nfs3_setxattr,
+	.i_op_orig.removexattr	= nfs3_removexattr,
+	.getattr64		= nfs_getattr64,
 };
 #endif  /* CONFIG_NFS_v3 */
+
+#ifdef CONFIG_NFS_V4
+struct inode_operations_ext nfs4_file_inode_operations = {
+	.i_op_orig.permission	= nfs_permission,
+	.i_op_orig.getattr	= nfs_getattr,
+	.i_op_orig.setattr	= nfs_setattr,
+	.getattr64		= nfs_getattr64,
+};
+#endif	/* CONFIG_NFS_v4 */
 
 /* Hack for future NFS swap support */
 #ifndef IS_SWAPFILE

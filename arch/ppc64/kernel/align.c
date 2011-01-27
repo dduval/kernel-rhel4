@@ -34,12 +34,12 @@ struct aligninfo {
 
 #define LD	1	/* load */
 #define ST	2	/* store */
-#define	SE	4	/* sign-extend value */
+#define	SE	4	/* sign-extend value, or FP ld/st as word */
 #define F	8	/* to/from fp regs */
 #define U	0x10	/* update index register */
 #define M	0x20	/* multiple load/store */
 #define SW	0x40	/* byte swap */
-
+#define S	0x80	/* single-precision fp or... */
 #define DCBZ	0x5f	/* 8xx/82xx dcbz faults when cache not enabled */
 
 /*
@@ -57,9 +57,9 @@ static struct aligninfo aligninfo[128] = {
 	{ 2, LD+SE },		/* 00 0 0101: lha */
 	{ 2, ST },		/* 00 0 0110: sth */
 	{ 4, LD+M },		/* 00 0 0111: lmw */
-	{ 4, LD+F },		/* 00 0 1000: lfs */
+	{ 4, LD+F+S },		/* 00 0 1000: lfs */
 	{ 8, LD+F },		/* 00 0 1001: lfd */
-	{ 4, ST+F },		/* 00 0 1010: stfs */
+	{ 4, ST+F+S },		/* 00 0 1010: stfs */
 	{ 8, ST+F },		/* 00 0 1011: stfd */
 	INVALID,		/* 00 0 1100 */
 	{ 8, LD },		/* 00 0 1101: ld */
@@ -73,13 +73,13 @@ static struct aligninfo aligninfo[128] = {
 	{ 2, LD+SE+U },		/* 00 1 0101: lhau */
 	{ 2, ST+U },		/* 00 1 0110: sthu */
 	{ 4, ST+M },		/* 00 1 0111: stmw */
-	{ 4, LD+F+U },		/* 00 1 1000: lfsu */
+	{ 4, LD+F+S+U },	/* 00 1 1000: lfsu */
 	{ 8, LD+F+U },		/* 00 1 1001: lfdu */
-	{ 4, ST+F+U },		/* 00 1 1010: stfsu */
+	{ 4, ST+F+S+U },	/* 00 1 1010: stfsu */
 	{ 8, ST+F+U },		/* 00 1 1011: stfdu */
-	INVALID,		/* 00 1 1100 */
+	{ 16, LD+F },		/* 00 1 1100: lfdp*/
 	INVALID,		/* 00 1 1101 */
-	INVALID,		/* 00 1 1110 */
+	{ 16, ST+F },		/* 00 1 1110 * stfdp */
 	INVALID,		/* 00 1 1111 */
 	{ 8, LD },		/* 01 0 0000: ldx */
 	INVALID,		/* 01 0 0001 */
@@ -153,14 +153,14 @@ static struct aligninfo aligninfo[128] = {
 	{ 2, LD+SE },		/* 11 0 0101: lhax */
 	{ 2, ST },		/* 11 0 0110: sthx */
 	INVALID,		/* 11 0 0111 */
-	{ 4, LD+F },		/* 11 0 1000: lfsx */
+	{ 4, LD+F+S },		/* 11 0 1000: lfsx */
 	{ 8, LD+F },		/* 11 0 1001: lfdx */
-	{ 4, ST+F },		/* 11 0 1010: stfsx */
+	{ 4, ST+F+S },		/* 11 0 1010: stfsx */
 	{ 8, ST+F },		/* 11 0 1011: stfdx */
-	INVALID,		/* 11 0 1100 */
-	{ 8, LD+M },		/* 11 0 1101: lmd */
-	INVALID,		/* 11 0 1110 */
-	{ 8, ST+M },		/* 11 0 1111: stmd */
+	{ 16, LD+F },		/* 11 0 1100: lfdpx */
+	{ 4, LD+F+SE },		/* 11 0 1101: lfiwax */
+	{ 16, ST+F },		/* 11 0 1110: stfdpx */
+	{ 4, ST+F },		/* 11 0 1111: stfiwx */
 	{ 4, LD+U },		/* 11 1 0000: lwzux */
 	INVALID,		/* 11 1 0001 */
 	{ 4, ST+U },		/* 11 1 0010: stwux */
@@ -169,9 +169,9 @@ static struct aligninfo aligninfo[128] = {
 	{ 2, LD+SE+U },		/* 11 1 0101: lhaux */
 	{ 2, ST+U },		/* 11 1 0110: sthux */
 	INVALID,		/* 11 1 0111 */
-	{ 4, LD+F+U },		/* 11 1 1000: lfsux */
+	{ 4, LD+F+S+U },	/* 11 1 1000: lfsux */
 	{ 8, LD+F+U },		/* 11 1 1001: lfdux */
-	{ 4, ST+F+U },		/* 11 1 1010: stfsux */
+	{ 4, ST+F+S+U },	/* 11 1 1010: stfsux */
 	{ 8, ST+F+U },		/* 11 1 1011: stfdux */
 	INVALID,		/* 11 1 1100 */
 	INVALID,		/* 11 1 1101 */
@@ -202,6 +202,41 @@ static inline unsigned make_dsisr(unsigned instr)
 	}
 	
 	return dsisr;
+}
+
+ /* Emulate floating-point pair loads and stores.
+ * Only POWER6 has these instructions, and it does true little-endian,
+ * so we don't need the address swizzling.
+ */
+static int emulate_fp_pair(struct pt_regs *regs, unsigned char __user *addr,
+			   unsigned int reg, unsigned int flags)
+{
+	char *ptr = (char *) &current->thread.fpr[reg];
+	int i, ret;
+
+	if (!(flags & F))
+		return 0;
+	if (reg & 1)
+		return 0;	/* invalid form: FRS/FRT must be even */
+	if (!(flags & SW)) {
+		/* not byte-swapped - easy */
+		if (!(flags & ST))
+			ret = __copy_from_user(ptr, addr, 16);
+		else
+			ret = __copy_to_user(addr, ptr, 16);
+	} else {
+		/* each FPR value is byte-swapped separately */
+		ret = 0;
+		for (i = 0; i < 16; ++i) {
+			if (!(flags & ST))
+				ret |= __get_user(ptr[i^7], addr + i);
+			else
+				ret |= __put_user(ptr[i^7], addr + i);
+		}
+	}
+	if (ret)
+		return -EFAULT;
+	return 1;	/* exception handled and fixed up */
 }
 
 int
@@ -283,6 +318,7 @@ fix_alignment(struct pt_regs *regs)
 			return -EFAULT;	/* bad address */
 	}
 
+
 	/* Force the fprs into the save area so we can reference them */
 	if (flags & F) {
 		if (!user_mode(regs))
@@ -290,6 +326,11 @@ fix_alignment(struct pt_regs *regs)
 		flush_fp_to_thread(current);
 	}
 	
+	/* Special case for 16-byte FP loads and stores */
+	if (nb == 16)
+		return emulate_fp_pair(regs, addr, reg, flags);
+
+
 	/* If we are loading, get the data from user space */
 	if (flags & LD) {
 		data.ll = 0;
@@ -315,7 +356,7 @@ fix_alignment(struct pt_regs *regs)
 	/* If we are storing, get the data from the saved gpr or fpr */
 	if (flags & ST) {
 		if (flags & F) {
-			if (nb == 4) {
+			if (flags & S) {
 				/* Doing stfs, have to convert to single */
 				preempt_disable();
 				enable_kernel_fp();
@@ -360,7 +401,7 @@ fix_alignment(struct pt_regs *regs)
 	/* If we are loading, move the data to the gpr or fpr */
 	if (flags & LD) {
 		if (flags & F) {
-			if (nb == 4) {
+			if (flags & S) {
 				/* Doing lfs, have to convert to double */
 				preempt_disable();
 				enable_kernel_fp();

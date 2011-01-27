@@ -96,6 +96,29 @@ qh_update (struct ehci_hcd *ehci, struct ehci_qh *qh, struct ehci_qtd *qtd)
 	qh->hw_token &= __constant_cpu_to_le32 (QTD_TOGGLE | QTD_STS_PING);
 }
 
+/* if it weren't for a common silicon quirk (writing the dummy into the qh
+ * overlay, so qh->hw_token wrongly becomes inactive/halted), only fault
+ * recovery (including urb dequeue) would need software changes to a QH...
+ */
+static void
+qh_refresh (struct ehci_hcd *ehci, struct ehci_qh *qh)
+{
+	struct ehci_qtd *qtd;
+
+	if (list_empty (&qh->qtd_list))
+		qtd = qh->dummy;
+	else {
+		qtd = list_entry (qh->qtd_list.next,
+				struct ehci_qtd, qtd_list);
+		/* first qtd may already be partially processed */
+		if (cpu_to_le32 (qtd->qtd_dma) == qh->hw_current)
+			qtd = NULL;
+	}
+
+	if (qtd)
+		qh_update (ehci, qh, qtd);
+}
+
 /*-------------------------------------------------------------------------*/
 
 static void qtd_copy_status (
@@ -224,6 +247,11 @@ ehci_urb_done (struct ehci_hcd *ehci, struct urb *urb, struct pt_regs *regs)
 	spin_lock (&ehci->lock);
 }
 
+static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh);
+static void unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh);
+
+static void intr_deschedule (struct ehci_hcd *ehci, struct ehci_qh *qh, int wait);
+static int qh_schedule (struct ehci_hcd *ehci, struct ehci_qh *qh);
 
 /*
  * Process and free completed qtds for a qh, returning URBs to drivers.
@@ -368,17 +396,22 @@ halt:
 	if (unlikely (stopped != 0)
 			/* some EHCI 0.95 impls will overlay dummy qtds */ 
 			|| qh->hw_qtd_next == EHCI_LIST_END) {
-		if (list_empty (&qh->qtd_list))
-			end = qh->dummy;
-		else {
-			end = list_entry (qh->qtd_list.next,
-					struct ehci_qtd, qtd_list);
-			/* first qtd may already be partially processed */
-			if (cpu_to_le32 (end->qtd_dma) == qh->hw_current)
-				end = NULL;
+		switch (state) {
+		case QH_STATE_IDLE:
+			qh_refresh(ehci, qh);
+			break;
+		case QH_STATE_LINKED:
+			/* should be rare for periodic transfers,
+			 * except maybe high bandwidth ...
+			 */
+			if ((cpu_to_le32(0x00ff) & qh->hw_info2) != 0) {
+				intr_deschedule (ehci, qh, 1);
+				(void) qh_schedule (ehci, qh);
+			} else
+				unlink_async (ehci, qh);
+			break;
+		/* otherwise, unlink already started */
 		}
-		if (end)
-			qh_update (ehci, qh, end);
 	}
 
 	return count;
@@ -712,6 +745,7 @@ done:
 	qh->hw_info2 = cpu_to_le32 (info2);
 	qh_update (ehci, qh, qh->dummy);
 	usb_settoggle (urb->dev, usb_pipeendpoint (urb->pipe), !is_input, 1);
+	qh_refresh(ehci, qh);
 	return qh;
 }
 
@@ -739,7 +773,10 @@ static void qh_link_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			/* posted write need not be known to HC yet ... */
 		}
 	}
-
+	/* clear halt and/or toggle; and maybe recover from silicon quirk */
+	if (qh->qh_state == QH_STATE_IDLE)
+		qh_refresh (ehci, qh);
+		
 	qh->hw_token &= ~HALT_BIT;
 
 	/* splice right after start */
@@ -931,14 +968,15 @@ submit_async (
 
 /* the async qh for the qtds being reclaimed are now unlinked from the HC */
 
-static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh);
-
 static void end_unlink_async (struct ehci_hcd *ehci, struct pt_regs *regs)
 {
 	struct ehci_qh		*qh = ehci->reclaim;
 	struct ehci_qh		*next;
 
-	timer_action_done (ehci, TIMER_IAA_WATCHDOG);
+	iaa_watchdog_done(ehci);
+
+	if (!qh)
+		return;
 
 	// qh->hw_next = cpu_to_le32 (qh->qh_dma);
 	qh->qh_state = QH_STATE_IDLE;
@@ -948,7 +986,6 @@ static void end_unlink_async (struct ehci_hcd *ehci, struct pt_regs *regs)
 	/* other unlink(s) may be pending (in QH_STATE_UNLINK_WAIT) */
 	next = qh->reclaim;
 	ehci->reclaim = next;
-	ehci->reclaim_ready = 0;
 	qh->reclaim = NULL;
 
 	qh_completions (ehci, qh, regs);
@@ -985,10 +1022,6 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	if (ehci->reclaim
 			|| (qh->qh_state != QH_STATE_LINKED
 				&& qh->qh_state != QH_STATE_UNLINK_WAIT)
-#ifdef CONFIG_SMP
-// this macro lies except on SMP compiles
-			|| !spin_is_locked (&ehci->lock)
-#endif
 			)
 		BUG ();
 #endif
@@ -996,14 +1029,15 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	/* stop async schedule right now? */
 	if (unlikely (qh == ehci->async)) {
 		/* can't get here without STS_ASS set */
-		if (ehci->hcd.state != USB_STATE_HALT) {
+		if (ehci->hcd.state != USB_STATE_HALT
+				&& !ehci->reclaim) {
 			writel (cmd & ~CMD_ASE, &ehci->regs->command);
 			wmb ();
 			// handshake later, if we need to
+			timer_action_done (ehci, TIMER_ASYNC_OFF);
 		}
-		timer_action_done (ehci, TIMER_ASYNC_OFF);
 		return;
-	} 
+	}
 
 	qh->qh_state = QH_STATE_UNLINK;
 	ehci->reclaim = qh = qh_get (qh);
@@ -1024,11 +1058,10 @@ static void start_unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 		return;
 	}
 
-	ehci->reclaim_ready = 0;
 	cmd |= CMD_IAAD;
 	writel (cmd, &ehci->regs->command);
 	(void) readl (&ehci->regs->command);
-	timer_action (ehci, TIMER_IAA_WATCHDOG);
+	iaa_watchdog_start(ehci);
 }
 
 /*-------------------------------------------------------------------------*/

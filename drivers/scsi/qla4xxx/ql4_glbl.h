@@ -21,8 +21,8 @@ extern void qla4xxx_start_io(scsi_qla_host_t *ha);
 extern srb_t *del_from_active_array(scsi_qla_host_t *ha, uint32_t index);
 extern uint8_t qla4xxx_complete_request(scsi_qla_host_t *ha, srb_t *srb);
 extern uint8_t qla4xxx_reset_lun(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry, lun_entry_t *lun_entry);
-extern uint8_t qla4xxx_soft_reset(scsi_qla_host_t *);
 extern void qla4xxx_hw_reset(scsi_qla_host_t *);
+extern uint8_t qla4xxx_soft_reset(scsi_qla_host_t *);
 extern const char *host_sts_msg[];
 extern void qla4xxx_delete_timer_from_cmd(srb_t *srb);
 extern scsi_qla_host_t *qla4xxx_get_adapter_handle(uint16_t instance);
@@ -36,6 +36,8 @@ extern int qla4xxx_done(scsi_qla_host_t *old_ha);
 extern int qla4xxx_device_suspend( scsi_qla_host_t *, os_lun_t *, srb_t * );
 extern void qla4xxx_add_timer_to_cmd(srb_t *, int );
 extern int ql4xdontresethba;
+extern int ql4xqfullrampup;
+extern int ql4xmaxqdepth;
 extern int ql4_mod_unload;
 
 extern int extended_error_logging;
@@ -56,6 +58,7 @@ extern uint8_t qla4xxx_send_passthru0_iocb(scsi_qla_host_t *, uint16_t,
  * Defined in  ql4_isr.c
  */
 
+extern uint8_t qla4xxx_poll_and_ack_scsi_reset(scsi_qla_host_t *ha);
 extern irqreturn_t qla4xxx_intr_handler(int, void *, struct pt_regs *);
 extern void qla4xxx_interrupt_service_routine(scsi_qla_host_t *ha, uint32_t  intr_status);
 extern void __qla4xxx_suspend_lun(scsi_qla_host_t *ha, srb_t *srb, os_lun_t *lun_entry, uint16_t time,
@@ -85,6 +88,8 @@ extern os_lun_t *
 qla4xxx_fclun_bind(scsi_qla_host_t *ha, fc_port_t *fcport, fc_lun_t *fclun);
 extern void qla4xxx_flush_all_srbs(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry, os_lun_t *lun_entry);
 extern int qla4xxx_lock_drvr_wait(struct scsi_qla_host *a);
+extern uint8_t qla4xxx_reindex_ddb(scsi_qla_host_t *ha, uint32_t old_fw_ddb_index, uint32_t new_fw_ddb_index);
+void qla4xxx_add_ddb_to_list(scsi_qla_host_t *ha, uint32_t fw_ddb_index, uint32_t *next_fw_ddb_index);
 
 
 /*

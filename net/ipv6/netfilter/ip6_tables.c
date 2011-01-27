@@ -1935,7 +1935,7 @@ static int __init init(void)
 	up(&ip6t_mutex);
 
 	/* Register setsockopt */
-	ret = nf_register_sockopt(&ip6t_sockopts);
+	ret = nf_register_sockopt_owner(&ip6t_sockopts, THIS_MODULE);
 	if (ret < 0) {
 		duprintf("Unable to register sockopts.\n");
 		return ret;

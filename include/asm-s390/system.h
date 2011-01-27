@@ -16,6 +16,7 @@
 #include <asm/types.h>
 #include <asm/ptrace.h>
 #include <asm/setup.h>
+#include <asm/processor.h>
 
 #ifdef __KERNEL__
 
@@ -426,6 +427,20 @@ __cmpxchg(volatile void *ptr, unsigned long old, unsigned long new, int size)
 
 /* For spinlocks etc */
 #define local_irq_save(x)	((x) = local_irq_disable())
+
+/*
+ * Use to set psw mask except for the first byte which
+ * won't be changed by this function.
+ */
+static inline void
+__set_psw_mask(unsigned long mask)
+{
+	local_save_flags(mask);
+	__load_psw_mask(mask);
+}
+
+#define local_mcck_enable()  __set_psw_mask(PSW_KERNEL_BITS | PSW_MASK_MCHECK)
+#define local_mcck_disable() __set_psw_mask(PSW_KERNEL_BITS)
 
 #ifdef CONFIG_SMP
 

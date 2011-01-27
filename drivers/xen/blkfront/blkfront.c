@@ -48,6 +48,10 @@
 #include <asm/hypervisor.h>
 #include <asm/maddr.h>
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 #define BLKIF_STATE_DISCONNECTED 0
 #define BLKIF_STATE_CONNECTED    1
 #define BLKIF_STATE_SUSPENDED    2
@@ -208,7 +212,7 @@ static int setup_blkring(struct xenbus_device *dev,
 
 	info->ring_ref = GRANT_INVALID_REF;
 
-	sring = (blkif_sring_t *)__get_free_page(GFP_KERNEL);
+	sring = (blkif_sring_t *)__get_free_page(GFP_KERNEL | __GFP_HIGH);
 	if (!sring) {
 		xenbus_dev_fatal(dev, -ENOMEM, "allocating shared ring");
 		return -ENOMEM;
@@ -457,7 +461,7 @@ int blkif_release(struct inode *inode, struct file *filep)
 		struct xenbus_device * dev = info->xbdev;
 		enum xenbus_state state = xenbus_read_driver_state(dev->otherend);
 
-		if (state == XenbusStateClosing)
+		if (state == XenbusStateClosing && info->is_ready)
 			blkfront_closing(dev);
 	}
 	return 0;
@@ -473,10 +477,28 @@ int blkif_ioctl(struct inode *inode, struct file *filep,
 		      command, (long)argument, inode->i_rdev);
 
 	switch (command) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16)
 	case HDIO_GETGEO:
-		/* return ENOSYS to use defaults */
-		return -ENOSYS;
+	{
+		struct block_device *bd = inode->i_bdev;
+		struct hd_geometry geo;
+		int ret;
 
+                if (!argument)
+                        return -EINVAL;
+
+		geo.start = get_start_sect(bd);
+		ret = blkif_getgeo(bd, &geo);
+		if (ret)
+			return ret;
+
+		if (copy_to_user((struct hd_geometry __user *)argument, &geo,
+				 sizeof(geo)))
+                        return -EFAULT;
+
+                return 0;
+	}
+#endif
 	case CDROMMULTISESSION:
 		DPRINTK("FIXME: support multisession CDs later\n");
 		for (i = 0; i < sizeof(struct cdrom_multisession); i++)
@@ -760,7 +782,7 @@ static void blkif_recover(struct blkfront_info *info)
 	int j;
 
 	/* Stage 1: Make a safe copy of the shadow state. */
-	copy = kmalloc(sizeof(info->shadow), GFP_KERNEL | __GFP_NOFAIL);
+	copy = kmalloc(sizeof(info->shadow), GFP_KERNEL | __GFP_NOFAIL | __GFP_HIGH);
 	memcpy(copy, info->shadow, sizeof(info->shadow));
 
 	/* Stage 2: Set up free list. */
@@ -831,7 +853,7 @@ static struct xenbus_device_id blkfront_ids[] = {
 	{ "vbd" },
 	{ "" }
 };
-
+MODULE_ALIAS("xen:vbd");
 
 static struct xenbus_driver blkfront = {
 	.name = "vbd",

@@ -17,6 +17,7 @@
  */    
 
 #include	<linux/config.h>
+#include	<linux/cache.h>
 #include	<asm/types.h>
 #include	<asm/iSeries/ItLpPaca.h>
 #include	<asm/iSeries/ItLpRegSave.h>
@@ -110,5 +111,25 @@ struct paca_struct {
 	struct ItLpRegSave reg_save;
 #endif
 };
+
+/*
+ * SLB shadow buffer structure as defined in the PAPR.  The save_area
+ * contains adjacent ESID and VSID pairs for each shadowed SLB.  The
+ * ESID is stored in the lower 64bits, then the VSID.
+ * N.B. Code in entry_64.S assumes this array has a stride of L1_CACHE_BYTES.
+ */
+struct slb_shadow {
+	u32	persistent;		// Number of persistent SLBs	x00-x03
+	u32	buffer_length;		// Total shadow buffer length	x04-x07
+	u64	reserved;		// Alignment			x08-x0f
+	struct	{
+		u64     esid;
+		u64	vsid;
+	} save_area[SLB_NUM_BOLTED];	//				x10-x40
+} ____cacheline_aligned;
+
+extern struct slb_shadow slb_shadow[];
+
+#define get_slb_shadow()	(&slb_shadow[smp_processor_id()])
 
 #endif /* _PPC64_PACA_H */

@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsiport.c 3020 2007-02-28 21:23:36Z sf_support $
+ * $Id: lpfc_scsiport.c 3087 2007-10-31 18:01:26Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/spinlock.h>
@@ -226,6 +226,7 @@ lpfc_os_prep_io(struct lpfc_hba * phba, struct lpfc_scsi_buf * lpfc_cmd)
 	uint16_t use_sg;
 	int datadir;
 	int dma_error;
+	char tag[2];
 
 	bpl = lpfc_cmd->fcp_bpl;
 	fcp_cmnd = lpfc_cmd->fcp_cmnd;
@@ -245,8 +246,8 @@ lpfc_os_prep_io(struct lpfc_hba * phba, struct lpfc_scsi_buf * lpfc_cmd)
 	 */
 	memcpy(&fcp_cmnd->fcpCdb[0], cmnd->cmnd, 16);
 
-	if (cmnd->device->tagged_supported) {
-		switch (cmnd->tag) {
+	if (scsi_populate_tag_msg(cmnd, tag)) {
+		switch (tag[0]) {
 		case HEAD_OF_QUEUE_TAG:
 			fcp_cmnd->fcpCntl1 = HEAD_OF_Q;
 			break;

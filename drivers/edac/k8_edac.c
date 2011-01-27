@@ -556,6 +556,9 @@ static void do_rdmsr(int cpu, u32 reg, u32 *eax, u32 *edx)
 	*edx = cmd.data[1];
 }
 
+static int report_gart_errors;
+module_param(report_gart_errors, int, 0644);
+
 /*
  * FIXME - This is a large chunk of memory to suck up just to decode the
  * syndrome.  It would be nice to discover a pattern in the syndromes that
@@ -1720,8 +1723,22 @@ static int k8_process_error_info(struct mem_ctl_info *mci,
 		regs->nbeal, regs->nbsh, regs->nbsl);
 
 	if ((err_code & 0xfff0UL) == 0x0010UL) {
-		debugf1("GART TLB error\n");
+		/*
+		 * GART errors are intended to help graphics driver
+		 * developers to detect bad GART PTEs. It is recommended by
+		 * AMD to disable GART table walk error reporting by default[1]
+		 * (currently being disabled in mce_cpu_quirks()) and according
+		 * to the comment in mce_cpu_quirks(), such GART errors can be
+		 * incorrectly triggered. We may see these errors anyway and
+		 * unless requested by the user, they won't be reported.
+		 *
+		 * [1] section 13.10.1 on BIOS and Kernel Developers Guide for
+		 *     AMD NPT family 0Fh processors
+		 */
+		if (report_gart_errors == 0)
+			return 1;
 		gart_tlb_error = 1;
+		debugf1("GART TLB error\n");
 		decode_gart_tlb_error(mci, info);
 	} else if ((err_code & 0xff00UL) == 0x0100UL) {
 		debugf1("Cache error\n");
@@ -1744,11 +1761,12 @@ static int k8_process_error_info(struct mem_ctl_info *mci,
 		    "Error on hypertransport link: %s\n",
 		    htlink_msgs[(info->error_info.nbsh >> 4) & 0x07UL]);
 
-	/* GART errors are benign as per AMD, do not panic on them */
-	if (!gart_tlb_error && (regs->nbsh & BIT(29))) {
+	if (regs->nbsh & BIT(29)) {
 		k8_mc_printk(mci, KERN_CRIT, "uncorrected error\n");
-		edac_mc_handle_ue_no_info(mci, "UE bit is set\n");
-	}
+		/* don't panic in a GART TLB error */
+		if (!gart_tlb_error)
+			edac_mc_handle_ue_no_info(mci, "UE bit is set\n");
+  	}
 
 	if (regs->nbsh & BIT(25))
 		panic("MC%d: processor context corrupt", mci->mc_idx);

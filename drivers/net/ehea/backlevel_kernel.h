@@ -4,26 +4,27 @@
 #define NET_IP_ALIGN 0
 
 #include <linux/version.h>
-#include <linux/moduleparam.h>
-#include <linux/moduleparam.h>
-#include <linux/kernel.h>
-#include <linux/mm.h>
-#include <linux/slab.h>
-#include <linux/sched.h>
-#include <linux/err.h>
-#include <linux/list.h>
-#include <linux/netdevice.h>
 #include <linux/etherdevice.h>
-#include <linux/kthread.h>
-#include <asm/semaphore.h>
-#include <asm/current.h>
-#include <asm/of_device.h>
+
+#define ip_hdr(skb) (skb->nh.iph)
+
+#define ip_hdrlen(skb) (ip_hdr(skb)->ihl * 4)
+
+#define tcp_hdrlen(skb) (skb->h.th->doff * 4)
+
+#define skb_network_header(skb) (skb->nh.raw)
+
+#define skb_network_offset(skb) (u8)(((u64)ip_hdr(skb)) - ((u64)skb->data))
+
+#define skb_copy_to_linear_data(skb, src, size) memcpy(skb->data, src, size)
+
+#define skb_copy_from_linear_data(skb, dst, size) memcpy(dst, skb->data, size)
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
 #define vlan_group_set_device(vlan_group, vlan_id, net_device)  \
 {                                                               \
-        if (vlan_group)                                         \
-                vlan_group->vlan_devices[vlan_id] = net_device; \
+	if (vlan_group)                                         \
+		vlan_group->vlan_devices[vlan_id] = net_device; \
 }
 #endif
 
@@ -171,28 +172,12 @@ static inline void* kzalloc(size_t size, unsigned int flags)
 
 #endif
 
-/* Hcall defines for EHEA */
-#define H_ALLOC_HEA_RESOURCE   0x278
-#define H_MODIFY_HEA_QP        0x250
-#define H_QUERY_HEA_QP         0x254
-#define H_QUERY_HEA            0x258
-#define H_QUERY_HEA_PORT       0x25C
-#define H_MODIFY_HEA_PORT      0x260
-#define H_REG_BCMC             0x264
-#define H_DEREG_BCMC           0x268
-#define H_REGISTER_HEA_RPAGES  0x26C
-#define H_DISABLE_AND_GET_HEA  0x270
-#define H_GET_HEA_INFO         0x274
-#define H_ADD_CONN             0x284
-#define H_DEL_CONN             0x288
-
-
 #ifndef NETDEV_TX_BUSY
 #define NETDEV_TX_BUSY 1
 #endif
 
-#define  NETDEV_TX_LOCKED -1
-#define  NETDEV_TX_OK 0
+#define NETDEV_TX_LOCKED -1
+#define NETDEV_TX_OK 0
 
 struct hcall {
 	u64 regs[11];

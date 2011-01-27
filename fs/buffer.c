@@ -34,6 +34,7 @@
 #include <linux/hash.h>
 #include <linux/suspend.h>
 #include <linux/buffer_head.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/bio.h>
 #include <linux/notifier.h>
 #include <linux/cpu.h>
@@ -589,13 +590,18 @@ out:
    pass does the actual I/O. */
 void invalidate_bdev(struct block_device *bdev, int destroy_dirty_buffers)
 {
+	struct address_space *mapping = bdev->bd_inode->i_mapping;
+
+	if (mapping->nrpages == 0)
+		return;
+
 	invalidate_bh_lrus();
 	/*
 	 * FIXME: what about destroy_dirty_buffers?
 	 * We really want to use invalidate_inode_pages2() for
 	 * that, but not until that's cleaned up.
 	 */
-	invalidate_inode_pages(bdev->bd_inode->i_mapping);
+	invalidate_inode_pages(mapping);
 }
 
 /*
@@ -961,8 +967,10 @@ int __set_page_dirty_buffers(struct page *page)
 	if (!TestSetPageDirty(page)) {
 		spin_lock_irq(&mapping->tree_lock);
 		if (page->mapping) {	/* Race with truncate? */
-			if (!mapping->backing_dev_info->memory_backed)
+			if (!mapping->backing_dev_info->memory_backed) {
 				inc_page_state(nr_dirty);
+				task_io_account_write(PAGE_CACHE_SIZE);
+			}
 			radix_tree_tag_set(&mapping->page_tree,
 						page_index(page),
 						PAGECACHE_TAG_DIRTY);
@@ -3051,8 +3059,13 @@ int try_to_free_buffers(struct page *page)
 		 * could encounter a non-uptodate page, which is unresolvable.
 		 * This only applies in the rare case where try_to_free_buffers
 		 * succeeds but the page is not freed.
+		 *
+		 * Also, during truncate, discard_buffer will have marked all
+		 * the page's buffers clean.  We discover that here and clean
+		 * the page also.
 		 */
-		clear_page_dirty(page);
+		if (test_clear_page_dirty(page))
+			task_io_account_cancelled_write(PAGE_CACHE_SIZE);
 	}
 	spin_unlock(&mapping->private_lock);
 out:

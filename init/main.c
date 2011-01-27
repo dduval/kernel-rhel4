@@ -218,6 +218,7 @@ static unsigned long __devinit calibrate_delay_direct(void)
 	unsigned long tsc_rate_min, tsc_rate_max;
 	unsigned long good_tsc_sum = 0;
 	unsigned long good_tsc_count = 0;
+	unsigned long delay_calibration_ticks = ((REAL_HZ < 100) ? 1 : (REAL_HZ/100));
 	int i;
 
 	if (read_current_timer(&pre_start) < 0 )
@@ -246,7 +247,7 @@ static unsigned long __devinit calibrate_delay_direct(void)
 		pre_start = 0;
 		read_current_timer(&start);
 		start_jiffies = jiffies;
-		while (jiffies <= (start_jiffies + 1)) {
+		while (jiffies <= (start_jiffies + tick_divider)) {
 			pre_start = start;
 			read_current_timer(&start);
 		}
@@ -255,14 +256,18 @@ static unsigned long __devinit calibrate_delay_direct(void)
 		pre_end = 0;
 		end = post_start;
 		while (jiffies <=
-		       (start_jiffies + 1 + DELAY_CALIBRATION_TICKS)) {
+		       (start_jiffies + tick_divider *
+		       (1 + delay_calibration_ticks))) {
 			pre_end = end;
 			read_current_timer(&end);
 		}
 		read_current_timer(&post_end);
 
-		tsc_rate_max = (post_end - pre_start) / DELAY_CALIBRATION_TICKS;
-		tsc_rate_min = (pre_end - post_start) / DELAY_CALIBRATION_TICKS;
+		tsc_rate_max = (post_end - pre_start) / delay_calibration_ticks;
+		tsc_rate_min = (pre_end - post_start) / delay_calibration_ticks;
+
+		tsc_rate_max /= tick_divider;
+		tsc_rate_min /= tick_divider;
 
 		/*
 	 	 * If the upper limit and lower limit of the tsc_rate is

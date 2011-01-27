@@ -654,6 +654,10 @@ enum {
 	NET_SCTP_PRSCTP_ENABLE		 = 14,
 	NET_SCTP_SNDBUF_POLICY		 = 15,
 	NET_SCTP_RCVBUF_POLICY		 = 16,
+	NET_SCTP_BUF_MEM                 = 17,
+	NET_SCTP_BUF_RMEM                = 18,
+	NET_SCTP_BUF_WMEM                = 19,
+
 };
 
 /* /proc/sys/net/bridge */

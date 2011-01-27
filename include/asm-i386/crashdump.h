@@ -80,6 +80,7 @@ static inline void platform_start_crashdump(void *stackptr,
 		/* build the stack frame on the IRQ stack */
 		dsp = (u32*) ((char*)dumpctx + sizeof(*dumpctx));
 		dumpctx->tinfo.task = curctx->tinfo.task;
+		dumpctx->tinfo.cpu = curctx->tinfo.cpu;
 		dumpctx->tinfo.real_stack = curctx->tinfo.real_stack;
 		dumpctx->tinfo.virtual_stack = curctx->tinfo.virtual_stack;
 		dumpctx->tinfo.previous_esp = current_stack_pointer();

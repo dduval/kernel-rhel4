@@ -114,6 +114,11 @@ struct gendisk *dm_disk(struct mapped_device *md);
 int dm_suspended(struct mapped_device *md);
 int dm_noflush_suspending(struct dm_target *ti);
 
+/*
+ * To check the return value from dm_table_find_target().
+ */
+#define dm_target_is_valid(t) ((t)->table)
+
 /*-----------------------------------------------------------------
  * Functions for manipulating a table.  Tables are also reference
  * counted.

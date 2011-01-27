@@ -315,7 +315,7 @@ static int invalidate_list(struct list_head *head, struct super_block * sb, stru
 		if (inode->i_sb != sb)
 			continue;
 		if (pages)
-			invalidate_inode_pages(inode->i_mapping);
+			invalidate_all_mapping_pages(inode->i_mapping);
 		else {
 			invalidate_inode_buffers(inode);
 			if (!atomic_read(&inode->i_count)) {

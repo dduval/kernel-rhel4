@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc.h 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc.h 3122 2008-01-07 18:49:20Z sf_support $
  */
 
 #ifndef _H_LPFC
@@ -179,6 +179,11 @@ struct lpfc_sysfs_mbox {
 	enum sysfs_mbox_state state;
 	size_t                offset;
 	struct lpfcMboxq *    mbox;
+};
+
+enum hba_temp_state {
+	HBA_NORMAL_TEMP,
+	HBA_OVER_TEMP
 };
 
 struct lpfc_hba {
@@ -446,6 +451,9 @@ struct lpfc_hba {
 	uint8_t hb_outstanding;
 
 	uint8_t temp_sensor_support;
+
+	enum hba_temp_state over_temp_state;
+	uint8_t restart_pending;
 };
 
 /* event mask definitions */

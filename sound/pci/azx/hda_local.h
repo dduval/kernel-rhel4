@@ -136,6 +136,7 @@ struct hda_multi_out {
 	int num_dacs;		/* # of DACs, must be more than 1 */
 	hda_nid_t *dac_nids;	/* DAC list */
 	hda_nid_t hp_nid;	/* optional DAC for HP, 0 when not exists */
+	hda_nid_t extra_out_nid[3];	/* optional DACs, 0 when not exists */
 	hda_nid_t dig_out_nid;	/* digital out audio widget */
 	int max_channels;	/* currently supported analog channels */
 	int dig_out_used;	/* current usage of digital out (HDA_DIG_XXX) */
@@ -143,6 +144,11 @@ struct hda_multi_out {
 
 int snd_hda_multi_out_dig_open(struct hda_codec *codec, struct hda_multi_out *mout);
 int snd_hda_multi_out_dig_close(struct hda_codec *codec, struct hda_multi_out *mout);
+int snd_hda_multi_out_dig_prepare(struct hda_codec *codec,
+				  struct hda_multi_out *mout,
+				  unsigned int stream_tag,
+				  unsigned int format,
+				  snd_pcm_substream_t *substream);
 int snd_hda_multi_out_analog_open(struct hda_codec *codec, struct hda_multi_out *mout,
 				  snd_pcm_substream_t *substream);
 int snd_hda_multi_out_analog_prepare(struct hda_codec *codec, struct hda_multi_out *mout,
@@ -168,14 +174,9 @@ static inline int snd_hda_codec_proc_new(struct hda_codec *codec) { return 0; }
 /*
  * Misc
  */
-struct hda_board_config {
-	const char *modelname;
-	int config;
-	unsigned short pci_subvendor;
-	unsigned short pci_subdevice;
-};
-
-int snd_hda_check_board_config(struct hda_codec *codec, const struct hda_board_config *tbl);
+int snd_hda_check_board_config(struct hda_codec *codec, int num_configs,
+			       const char **modelnames,
+			       const struct snd_pci_quirk *pci_list);
 int snd_hda_add_new_ctls(struct hda_codec *codec, snd_kcontrol_new_t *knew);
 
 /*
@@ -201,6 +202,7 @@ struct hda_bus_unsolicited {
 	/* workqueue */
 	struct workqueue_struct *workq;
 	struct work_struct work;
+	struct hda_bus *bus;
 };
 
 /*
@@ -217,13 +219,22 @@ enum {
 	AUTO_PIN_LAST
 };
 
+enum {
+	AUTO_PIN_LINE_OUT,
+	AUTO_PIN_SPEAKER_OUT,
+	AUTO_PIN_HP_OUT
+};
+
 extern const char *auto_pin_cfg_labels[AUTO_PIN_LAST];
 
 struct auto_pin_cfg {
 	int line_outs;
 	hda_nid_t line_out_pins[5]; /* sorted in the order of Front/Surr/CLFE/Side */
-	hda_nid_t speaker_pin;
-	hda_nid_t hp_pin;
+	int speaker_outs;
+	hda_nid_t speaker_pins[5];
+	int hp_outs;
+	int line_out_type;	/* AUTO_PIN_XXX_OUT */
+	hda_nid_t hp_pins[5];
 	hda_nid_t input_pins[AUTO_PIN_LAST];
 	hda_nid_t dig_out_pin;
 	hda_nid_t dig_in_pin;
@@ -263,5 +274,7 @@ static inline u32 get_wcaps(struct hda_codec *codec, hda_nid_t nid)
 	return codec->wcaps[nid - codec->start_nid];
 }
 
+int snd_hda_override_amp_caps(struct hda_codec *codec, hda_nid_t nid, int dir,
+			      unsigned int caps);
 
 #endif /* __SOUND_HDA_LOCAL_H */

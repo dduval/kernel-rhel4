@@ -1291,9 +1291,18 @@ static int post_create(struct inode *dir,
 	if (!inode) {
 		/* Some file system types (e.g. NFS) may not instantiate
 		   a dentry for all create operations (e.g. symlink),
-		   so we have to check to see if the inode is non-NULL. */
-		printk(KERN_WARNING "post_create:  no inode, dir (dev=%s, "
-		       "ino=%ld)\n", dir->i_sb->s_id, dir->i_ino);
+		   so we have to check to see if the inode is non-NULL.
+		   If the filesystem isn't using inode-specific contexts,
+		   this should not be a security problem. */
+		if (sbsec->behavior == SECURITY_FS_USE_GENFS ||
+		    sbsec->behavior == SECURITY_FS_USE_NONE ||
+		    sbsec->behavior == SECURITY_FS_USE_MNTPOINT) {
+			printk(KERN_DEBUG "post_create:  no inode in dentry, dir (dev=%s, "
+			       "ino=%ld)\n", dir->i_sb->s_id, dir->i_ino);
+		} else {
+			printk(KERN_WARNING "post_create:  no inode, dir (dev=%s, "
+			       "ino=%ld)\n", dir->i_sb->s_id, dir->i_ino);
+		}
 		return 0;
 	}
 

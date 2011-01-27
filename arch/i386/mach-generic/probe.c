@@ -68,7 +68,7 @@ void __init generic_apic_probe(char *command_line)
 				genapic = apic_probe[i];
 			}
 		}
-		if (!changed)
+		if (!changed && (strcmp("verbose", s+5) != 0) && (strcmp("debug", s+5) != 0))
 			printk(KERN_ERR "Unknown genapic `%s' specified.\n", s);
 		*p = old;
 		cmdline_apic = changed;

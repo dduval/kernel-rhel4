@@ -17,12 +17,15 @@
 #include <linux/device.h>
 
 #include <asm/cio.h>
+#include <asm/lowcore.h>
+#include <asm/ptrace.h>
 
 #include "css.h"
 #include "cio.h"
 #include "cio_debug.h"
 #include "ioasm.h"
 #include "chsc.h"
+#include "../s390mach.h"
 
 static struct channel_path *chps[NR_CHPIDS];
 
@@ -215,6 +218,40 @@ css_get_ssd_info(struct subchannel *sch)
 	return ret;
 }
 
+static inline int
+check_for_io_on_path(struct subchannel *sch, int mask)
+{
+	int cc;
+
+	cc = stsch(sch->irq, &sch->schib);
+	if (cc)
+		return 0;
+	if (sch->schib.scsw.actl && sch->schib.pmcw.lpum == mask)
+		return 1;
+	return 0;
+}
+
+static void
+terminate_internal_io(struct subchannel *sch)
+{
+	if (cio_clear(sch)) {
+		/* Recheck device in case clear failed */
+		sch->lpm = 0;
+		if (device_trigger_verify(sch) != 0) {
+			if (css_enqueue_subchannel_slow(sch->irq)) {
+				css_clear_subchannel_slow_list();
+				need_rescan = 1;
+			}
+		}
+		return;
+	}
+	/* Request retry of internal operation. */
+	device_set_intretry(sch);
+	/* Call handler. */
+	if (sch->driver && sch->driver->termination)
+		sch->driver->termination(&sch->dev);
+}
+
 static int
 s390_subchannel_remove_chpid(struct device *dev, void *data)
 {
@@ -245,35 +282,33 @@ s390_subchannel_remove_chpid(struct device *dev, void *data)
 	if (sch->schib.pmcw.pim == 0x80)
 		goto out_unreg;
 
-	if ((sch->schib.scsw.actl & SCSW_ACTL_DEVACT) &&
-		(sch->schib.scsw.actl & SCSW_ACTL_SCHACT) &&
-		(sch->schib.pmcw.lpum == mask)) {
-		int cc;
-
-		cc = cio_clear(sch);
-		if (cc == -ENODEV)
+	if (check_for_io_on_path(sch, mask)) {
+		if (device_is_online(sch))
+			device_kill_io(sch);
+		else {
+			terminate_internal_io(sch);
+			/* Re-start path verification. */
+			if (sch->driver && sch->driver->verify)
+				sch->driver->verify(&sch->dev);
+		}
+	} else {
+		/* trigger path verification. */
+		if (sch->driver && sch->driver->verify)
+			sch->driver->verify(&sch->dev);
+		else if (sch->lpm == mask)
 			goto out_unreg;
-		/* Call handler. */
-		if (sch->driver && sch->driver->termination)
-			sch->driver->termination(&sch->dev);
-		goto out_unlock;
 	}
 
-	/* trigger path verification. */
-	if (sch->driver && sch->driver->verify)
-		sch->driver->verify(&sch->dev);
-	else if (sch->lpm == mask)
-		goto out_unreg;
-out_unlock:
 	spin_unlock_irq(&sch->lock);
 	return 0;
+
 out_unreg:
-	spin_unlock_irq(&sch->lock);
 	sch->lpm = 0;
 	if (css_enqueue_subchannel_slow(sch->irq)) {
 		css_clear_subchannel_slow_list();
 		need_rescan = 1;
 	}
+	spin_unlock_irq(&sch->lock);
 	return 0;
 }
 
@@ -680,24 +715,6 @@ chp_process_crw(int chpid, int on)
 	return chp_add(chpid);
 }
 
-static inline int
-__check_for_io_and_kill(struct subchannel *sch, int index)
-{
-	int cc;
-
-	if (!device_is_online(sch))
-		/* cio could be doing I/O. */
-		return 0;
-	cc = stsch(sch->irq, &sch->schib);
-	if (cc)
-		return 0;
-	if (sch->schib.scsw.actl && sch->schib.pmcw.lpum == (0x80 >> index)) {
-		device_set_waiting(sch);
-		return 1;
-	}
-	return 0;
-}
-
 static inline void
 __s390_subchannel_vary_chpid(struct subchannel *sch, __u8 chpid, int on)
 {
@@ -720,22 +737,35 @@ __s390_subchannel_vary_chpid(struct subchannel *sch, __u8 chpid, int on)
 				device_trigger_reprobe(sch);
 			else if (sch->driver && sch->driver->verify)
 				sch->driver->verify(&sch->dev);
-		} else {
-			sch->opm &= ~(0x80 >> chp);
-			sch->lpm &= ~(0x80 >> chp);
-			/*
-			 * Give running I/O a grace period in which it
-			 * can successfully terminate, even using the
-			 * just varied off path. Then kill it.
-			 */
-			if (!__check_for_io_and_kill(sch, chp) && !sch->lpm) {
+			break;
+		}
+		sch->opm &= ~(0x80 >> chp);
+		sch->lpm &= ~(0x80 >> chp);
+		/*
+		 * Give running I/O a grace period in which it
+		 * can successfully terminate, even using the
+		 * just varied off path. Then kill it.
+		 */
+		if (check_for_io_on_path(sch, (0x80 >> chp))) {
+			if (device_is_online(sch))
+				/* Wait for I/O to finish */
+				device_set_waiting(sch);
+			else {
+				/* Kill and retry internal I/O */
+				terminate_internal_io(sch);
+				/* Re-start path verification. */
+				if (sch->driver && sch->driver->verify)
+					sch->driver->verify(&sch->dev);
+			}
+		} else if (!sch->lpm) {
+			if (device_trigger_verify(sch) != 0) {
 				if (css_enqueue_subchannel_slow(sch->irq)) {
 					css_clear_subchannel_slow_list();
 					need_rescan = 1;
 				}
-			} else if (sch->driver && sch->driver->verify)
-				sch->driver->verify(&sch->dev);
-		}
+			}
+		} else if (sch->driver && sch->driver->verify)
+			sch->driver->verify(&sch->dev);
 		break;
 	}
 	spin_unlock_irqrestore(&sch->lock, flags);
@@ -988,13 +1018,58 @@ static int reset_channel_path(struct channel_path *chp)
 	}
 }
 
+static atomic_t chpid_count;
+
+void do_rchp_mcck(void)
+{
+	struct crw crw;
+	struct mci *mci;
+
+	/* Check for pending channel report word; */
+	mci = (struct mci *) &S390_lowcore.mcck_interruption_code;
+	if (!mci->cp)
+		return;
+	/* Process channel report words. */
+	while (stcrw(&crw) == 0) {
+		/* Count RCHP responses. */
+		if (crw.slct && crw.rsc == CRW_RSC_CPATH)
+			atomic_dec(&chpid_count);
+	}
+}
+
+#define RCHP_TIMEOUT   (30 * USEC_PER_SEC)
+
+extern void rchp_mcck_int_handler(void);
+
 void cio_reset_channel_paths(void)
 {
 	int i;
+	unsigned long long timeout;
+
+	/* Disable lowcore protection. */
+	__ctl_clear_bit(0,28);
+	/* Set local machine check handler. */
+	local_mcck_disable();
+	S390_lowcore.mcck_new_psw.mask = PSW_KERNEL_BITS;
+	S390_lowcore.mcck_new_psw.addr =
+		PSW_ADDR_AMODE | (unsigned long) &rchp_mcck_int_handler;
+	local_mcck_enable();
+	/* Reset known channel paths. */
+	atomic_set(&chpid_count, 0);
 
 	for (i = 0; i < NR_CHPIDS; i++) {
-		if (chps[i])
-			reset_channel_path(chps[i]);
+		if (chps[i]) {
+			if (reset_channel_path(chps[i]) == 0)
+				atomic_inc(&chpid_count);
+		}
+	}
+
+	/* Wait for reset acknowledgment. */
+	timeout = get_clock() + (RCHP_TIMEOUT << 12);
+	while (atomic_read(&chpid_count) != 0) {
+		if (get_clock() > timeout)
+			break;
+		cpu_relax();
 	}
 }
 
@@ -1102,7 +1177,7 @@ chsc_secm(int enable)
 		} else
 			chsc_remove_cmg_attr();
 	}
-	if (enable && !cm_enabled) {
+	if (!cm_enabled) {
 		free_page((unsigned long)cub_addr1);
 		free_page((unsigned long)cub_addr2);
 	}

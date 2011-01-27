@@ -65,7 +65,8 @@ static int notsc __initdata = 0;
 unsigned int cpu_khz;					/* TSC clocks / usec, not used here */
 unsigned int tsc_khz;
 unsigned long hpet_period = 0;		/* fsecs / HPET clock */
-unsigned long hpet_tick;				/* HPET clocks / interrupt */
+unsigned long hpet_tick;		/* HPET clocks / HZ */
+unsigned long hpet_tick_real;		/* HPET clocks / interrupt */
 static int hpet_use_timer;
 unsigned long vxtime_hz = PIT_TICK_RATE;
 int report_lost_ticks;				/* command line option */
@@ -110,7 +111,9 @@ static inline unsigned int do_gettimeoffset_hpet(void)
 {
 	/* cap counter read to one tick to avoid inconsistencies */
 	unsigned long counter = hpet_readl(HPET_COUNTER) - vxtime.last;
-	return (min(counter,hpet_tick) * vxtime.quot) >> 32;
+	/* The hpet counter runs at a fixed rate so we don't care about HZ
+	   scaling here. We do however care that the limit is in real ticks */
+	return (min(counter, hpet_tick_real) * vxtime.quot) >> 32;
 }
 
 unsigned int (*do_gettimeoffset)(void) = do_gettimeoffset_tsc;
@@ -310,7 +313,7 @@ unsigned long long monotonic_clock(void)
 
 		} while (read_seqretry(&xtime_lock, seq));
 		offset = (this_offset - last_offset);
-		offset *=(NSEC_PER_SEC/HZ)/hpet_tick;
+		offset *= (NSEC_PER_SEC/HZ)/hpet_tick_real;
 		return base + offset;
 	}else{
 		do {
@@ -348,7 +351,7 @@ static noinline void handle_lost_ticks(int lost, struct pt_regs *regs)
 	    print_symbol("rip %s\n", regs->rip);
 	    if (vxtime.mode == VXTIME_TSC && vxtime.hpet_address) {
 		    printk(KERN_WARNING "Falling back to HPET\n");
-		    vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick;
+		    vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick_real;
 		    vxtime.mode = VXTIME_HPET;
 		    do_gettimeoffset = do_gettimeoffset_hpet;
 	    }
@@ -371,7 +374,7 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
 	static unsigned long rtc_update = 0;
 	unsigned long tsc;
-	int delay, offset = 0, lost = 0;
+	int delay, offset = 0, lost = 0, i;
 
 /*
  * Here we are in the timer irq handler. We have irqs locally disabled (so we
@@ -389,8 +392,10 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		/* if we're using the hpet timer functionality,
 		 * we can more accurately know the counter value
 		 * when the timer interrupt occured.
+		 *
+		 * We are working in physical time here
 		 */
-		offset = hpet_readl(HPET_T0_CMP) - hpet_tick;
+		offset = hpet_readl(HPET_T0_CMP) - hpet_tick_real;
 		delay = hpet_readl(HPET_COUNTER) - offset;
 	} else {
 		spin_lock(&i8253_lock);
@@ -398,18 +403,23 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		delay = inb_p(0x40);
 		delay |= inb(0x40) << 8;
 		spin_unlock(&i8253_lock);
+		/* We are in physical not logical ticks */
 		delay = LATCH - 1 - delay;
+		/* True ticks of delay elapsed */
+		delay *= tick_divider;
 	}
 
 	rdtscll_sync(&tsc);
 
 	if (vxtime.mode == VXTIME_HPET) {
-		if (offset - vxtime.last > hpet_tick) {
-			lost = (offset - vxtime.last) / hpet_tick - 1;
+		if (offset - vxtime.last > hpet_tick_real) {
+			lost = (offset - vxtime.last) / hpet_tick_real - 1;
+			/* Lost is now in real ticks but we want logical */
+			lost *= tick_divider;
 		}
 
 		monotonic_base += 
-			(offset - vxtime.last)*(NSEC_PER_SEC/HZ) / hpet_tick;
+			(offset - vxtime.last)*(NSEC_PER_SEC/HZ) / hpet_tick_real;
 
 		vxtime.last = offset;
 #ifdef CONFIG_X86_PM_TIMER
@@ -418,14 +428,14 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 #endif
 	} else {
 		offset = (((tsc - vxtime.last_tsc) *
-			   vxtime.tsc_quot) >> 32) - (USEC_PER_SEC / HZ);
+			   vxtime.tsc_quot) >> 32) - (USEC_PER_SEC / REAL_HZ);
 
 		if (offset < 0)
 			offset = 0;
 
-		if (offset > (USEC_PER_SEC / HZ)) {
-			lost = offset / (USEC_PER_SEC / HZ);
-			offset %= (USEC_PER_SEC / HZ);
+		if (offset > (USEC_PER_SEC / REAL_HZ)) {
+			lost = offset / (USEC_PER_SEC / REAL_HZ);
+			offset %= (USEC_PER_SEC / REAL_HZ);
 		}
 
 		monotonic_base += (tsc - vxtime.last_tsc)*1000000/cpu_khz ;
@@ -437,30 +447,32 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 			vxtime.last_tsc = tsc -
 				(((long) offset << 32) / vxtime.tsc_quot) - 1;
 	}
-
-	if (lost > 0) {
+	/* SCALE: We expect tick_divider - 1 lost, ie 0 for normal behaviour */
+	if (lost > (int)tick_divider - 1)  {
 		handle_lost_ticks(lost, regs);
-		jiffies += lost;
+		jiffies += lost - (tick_divider - 1);
 	}
 
 /*
  * Do the timer stuff.
  */
 
-	do_timer(regs);
+	for (i = 0; i < tick_divider; i++) {
+		do_timer(regs);
 
-/*
- * In the SMP case we use the local APIC timer interrupt to do the profiling,
- * except when we simulate SMP mode on a uniprocessor system, in that case we
- * have to call the local interrupt handler.
- */
+	/*
+	 * In the SMP case we use the local APIC timer interrupt to do the
+	 * profiling, except when we simulate SMP mode on a uniprocessor
+	 * system, in that case we have to call the local interrupt handler.
+	 */
 
 #ifndef CONFIG_X86_LOCAL_APIC
-	profile_tick(CPU_PROFILING, regs);
+		profile_tick(CPU_PROFILING, regs);
 #else
-	if (!using_apic_timer)
-		smp_local_timer_interrupt(regs);
+		if (!using_apic_timer)
+			smp_local_timer_interrupt(regs);
 #endif
+	}
 
 /*
  * If we have an externally synchronized Linux clock, then update CMOS clock
@@ -801,8 +813,11 @@ static int hpet_init(void)
 	if (hpet_period < 100000 || hpet_period > 100000000)
 		return -1;
 
+	/* Logical ticks */
 	hpet_tick = (1000000000L * (USEC_PER_SEC / HZ) + hpet_period / 2) /
 		hpet_period;
+	/* Ticks per real interrupt */
+	hpet_tick_real = hpet_tick * tick_divider;
 
 	hpet_use_timer = (id & HPET_ID_LEGSUP);
 
@@ -824,8 +839,8 @@ static int hpet_init(void)
 	if (hpet_use_timer) {
 		hpet_writel(HPET_TN_ENABLE | HPET_TN_PERIODIC | HPET_TN_SETVAL |
  		    HPET_TN_32BIT, HPET_T0_CFG);
-		hpet_writel(hpet_tick, HPET_T0_CMP);
-		hpet_writel(hpet_tick, HPET_T0_CMP); /* AK: why twice? */
+		hpet_writel(hpet_tick_real, HPET_T0_CMP);
+		hpet_writel(hpet_tick_real, HPET_T0_CMP); /* AK: why twice? */
 		cfg |= HPET_CFG_LEGACY;
 	}
 
@@ -844,6 +859,7 @@ void __init pit_init(void)
 	unsigned long flags;
 
 	spin_lock_irqsave(&i8253_lock, flags);
+	/* LATCH is in actual interrupt ticks */
 	outb_p(0x34, 0x43);		/* binary, mode 2, LSB/MSB, ch 0 */
 	outb_p(LATCH & 0xff, 0x40);	/* LSB */
 	outb_p(LATCH >> 8, 0x40);	/* MSB */
@@ -907,6 +923,8 @@ void __init time_init(void)
 		vxtime.hpet_address = 0;
 
 	if (hpet_use_timer) {
+		/* set tick_nsec to use the proper rate for HPET */
+		tick_nsec = TICK_NSEC_HPET;
 		tsc_khz = hpet_calibrate_tsc();
 		timename = "HPET";
 #ifdef CONFIG_X86_PM_TIMER
@@ -988,7 +1006,7 @@ void __init time_init_gtod(void)
 
 	if (vxtime.hpet_address && notsc) {
 		timetype = hpet_use_timer ? "HPET" : "PIT/HPET";
-		vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick;
+		vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick_real;
 		vxtime.mode = VXTIME_HPET;
 		do_gettimeoffset = do_gettimeoffset_hpet;
 #ifdef CONFIG_X86_PM_TIMER
@@ -1308,3 +1326,42 @@ static int __init hpet_period_setup(char *str)
         return 0;
 }
 __setup("hpet_period=", hpet_period_setup);
+
+#ifdef CONFIG_TICK_DIVIDER
+
+
+unsigned int tick_divider = 1;
+
+static int __init divider_setup(char *s)
+{
+	unsigned int divider = 1;
+	get_option(&s, &divider);
+	if (divider >= 1 && HZ/divider >= 25)
+		tick_divider = divider;
+	else
+		printk(KERN_ERR "tick_divider: %d is out of range.\n", divider);
+	return 1;
+}
+
+static int __init hz_setup(char *s)
+{
+	unsigned int hz = 1000;
+
+	get_option(&s, &hz);
+	if ((hz >= HZ/25) && (hz <= HZ)) {
+		if (HZ%hz != 0 && hz != (HZ/(HZ/hz)))
+			printk(KERN_WARNING "hz: value %u does not divide "
+			       "HZ %d evenly; HZ will be rounded to %d\n",
+			       hz, HZ, HZ/(HZ/hz));
+		tick_divider = HZ/hz;
+	} else
+		printk(KERN_ERR "hz: %d is out of range.  Value must be "
+		       "between %d and %d\n", hz, HZ/25, HZ);
+
+	return 1;
+}
+
+__setup("divider=", divider_setup);
+__setup("hz=", hz_setup);
+
+#endif

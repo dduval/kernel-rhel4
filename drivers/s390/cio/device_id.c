@@ -176,14 +176,6 @@ __ccw_device_sense_id_start(struct ccw_device *cdev)
 	sch = to_subchannel(cdev->dev.parent);
 	/* Setup sense channel program. */
 	ccw = cdev->private->iccws;
-	if (sch->schib.pmcw.pim != 0x80) {
-		/* more than one path installed. */
-		ccw->cmd_code = CCW_CMD_SUSPEND_RECONN;
-		ccw->cda = 0;
-		ccw->count = 0;
-		ccw->flags = CCW_FLAG_SLI | CCW_FLAG_CC;
-		ccw++;
-	}
 	ccw->cmd_code = CCW_CMD_SENSE_ID;
 	ccw->cda = (__u32) __pa (&cdev->private->senseid);
 	ccw->count = sizeof (struct senseid);
@@ -198,6 +190,8 @@ __ccw_device_sense_id_start(struct ccw_device *cdev)
 		if ((sch->opm & cdev->private->imask) != 0 &&
 		    cdev->private->iretry > 0) {
 			cdev->private->iretry--;
+			/* Reset internal retry indication. */
+			cdev->private->flags.intretry = 0;
 			ret = cio_start (sch, cdev->private->iccws,
 					 cdev->private->imask);
 			/* ret is 0, -EBUSY, -EACCES or -ENODEV */
@@ -244,8 +238,14 @@ ccw_device_check_sense_id(struct ccw_device *cdev)
 		return 0; /* Success */
 	}
 	/* Check the error cases. */
-	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC))
-		return -ETIME;
+	if (irb->scsw.fctl & (SCSW_FCTL_HALT_FUNC | SCSW_FCTL_CLEAR_FUNC)) {
+		/* Retry Sense ID if requested. */
+		if (cdev->private->flags.intretry) {
+			cdev->private->flags.intretry = 0;
+			return -EAGAIN;
+		} else
+			return -ETIME;
+	}
 	if (irb->esw.esw0.erw.cons && (irb->ecw[0] & SNS0_CMD_REJECT)) {
 		/*
 		 * if the device doesn't support the SenseID

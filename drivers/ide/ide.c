@@ -174,6 +174,7 @@ static const u8 ide_hwif_to_major[] = { IDE0_MAJOR, IDE1_MAJOR,
 static int idebus_parameter;	/* holds the "idebus=" parameter */
 static int system_bus_speed;	/* holds what we think is VESA/PCI bus speed */
 static int initializing;	/* set while initializing built-in drivers */
+int disable_ide;
 
 DECLARE_MUTEX(ide_cfg_sem);
 EXPORT_SYMBOL_GPL(ide_cfg_sem);
@@ -668,7 +669,14 @@ ide_proc_entry_t generic_subdriver_entries[] = {
 static struct resource* hwif_request_region(ide_hwif_t *hwif,
 					    unsigned long addr, int num)
 {
-	struct resource *res = request_region(addr, num, hwif->name);
+	struct resource *res;
+
+	if (disable_ide) {
+		printk(KERN_DEBUG "IDE disabled: blocking 0x%lX-0x%lX for %s\n",
+		       addr, addr+num-1, hwif->name);
+		return NULL;
+	}
+	res = request_region(addr, num, hwif->name);
 
 	if (!res)
 		printk(KERN_ERR "%s: I/O resource 0x%lX-0x%lX not free.\n",
@@ -2128,6 +2136,12 @@ int __init ide_setup (char *s)
 	if (!strcmp(s, "ide=nodma")) {
 		printk("IDE: Prevented DMA\n");
 		noautodma = 1;
+		return 1;
+	}
+
+	if (!strcmp(s, "ide=disable")) {
+		printk(" : disable drivers/ide subsystem\n");
+		disable_ide = 1;
 		return 1;
 	}
 

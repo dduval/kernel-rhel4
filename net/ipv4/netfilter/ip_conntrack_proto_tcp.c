@@ -509,7 +509,8 @@ static int tcp_in_window(struct ip_ct_tcp *state,
 	struct ip_ct_tcp_state *receiver = &state->seen[!dir];
 	__u32 seq, ack, sack, end, win, swin;
 	int res;
-	
+	struct ip_conntrack *ip_ct = container_of(state,struct ip_conntrack, proto);
+
 	/*
 	 * Get the required data from the packet.
 	 */
@@ -663,12 +664,16 @@ static int tcp_in_window(struct ip_ct_tcp *state,
 		if (*index == TCP_ACK_SET) {
 			if (state->last_dir == dir
 			    && state->last_seq == seq
-			    && state->last_end == end)
+			    && state->last_end == end
+			    && ip_ct->last_ack == ack
+			    && ip_ct->last_win == win)
 				state->retrans++;
 			else {
 				state->last_dir = dir;
 				state->last_seq = seq;
 				state->last_end = end;
+				ip_ct->last_ack = ack;
+				ip_ct->last_win = win;
 				state->retrans = 0;
 			}
 		}

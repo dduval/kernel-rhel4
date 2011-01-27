@@ -89,6 +89,9 @@ static cpumask_t smp_commenced_mask;
 /* Per CPU bogomips and other parameters */
 struct cpuinfo_x86 cpu_data[NR_CPUS] __cacheline_aligned;
 
+/* For count booted cpu core number */
+u8 booted_cores[NR_CPUS] __cacheline_aligned;
+
 u8 x86_cpu_to_apicid[NR_CPUS] =
 			{ [0 ... NR_CPUS-1] = 0xff };
 EXPORT_SYMBOL(x86_cpu_to_apicid);
@@ -434,6 +437,7 @@ static inline void
 set_cpu_sibling_map(int cpu)
 {
 	int i;
+	struct cpuinfo_x86 *c = cpu_data;
 
 	cpu_set(cpu, cpu_sibling_setup_map);
 
@@ -457,6 +461,7 @@ set_cpu_sibling_map(int cpu)
 
 	if (smp_num_cores == 1) {
 		cpu_core_map[cpu] = cpu_sibling_map[cpu];
+		booted_cores[cpu] = 1;
 		return;
 	}
 
@@ -469,6 +474,24 @@ set_cpu_sibling_map(int cpu)
 		if (phys_proc_id[cpu] == phys_proc_id[i]) {
 			cpu_set(i, cpu_core_map[cpu]);
 			cpu_set(cpu, cpu_core_map[i]);
+			/*
+			 *  Does this new cpu bringup a new core?
+			 */
+			if (cpus_weight(cpu_sibling_map[cpu]) == 1) {
+				/*
+				 * for each core in package, increment
+				 * the booted_cores for this new cpu
+				 */
+				if (first_cpu(cpu_sibling_map[i]) == i)
+					booted_cores[cpu]++;
+				/*
+				 * increment the core count for all
+				 * the other cpus in this package
+				 */
+				if (i != cpu)
+					booted_cores[i]++;
+			} else if (i != cpu && !booted_cores[cpu])
+				booted_cores[cpu] = booted_cores[i];
 		}
 	}
 }

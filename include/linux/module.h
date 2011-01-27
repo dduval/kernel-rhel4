@@ -392,8 +392,10 @@ static inline int try_module_get(struct module *module)
 
 static inline void module_put(struct module *module)
 {
+	unsigned int cpu;
 	if (module) {
-		unsigned int cpu = get_cpu();
+		BUG_ON(module_refcount(module) == 0);
+		cpu = get_cpu();
 		local_dec(&module->ref[cpu].count);
 		/* Maybe they're waiting for us to drop reference? */
 		if (unlikely(!module_is_live(module)))

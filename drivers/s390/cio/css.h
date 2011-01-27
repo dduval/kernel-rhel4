@@ -88,6 +88,7 @@ struct ccw_device_private {
 		unsigned int recog_done:1;  /* dev. recog. complete */
 #ifndef __GENKSYMS__
 		unsigned int fake_irb:1;    /* deliver faked irb */
+		unsigned int intretry:1;    /* retry internal operation */
 #endif
 	} __attribute__((packed)) flags;
 	unsigned long intparm;	/* user interruption parameter */
@@ -142,7 +143,10 @@ void device_trigger_reprobe(struct subchannel *);
 
 /* Helper functions for vary on/off. */
 int device_is_online(struct subchannel *);
+void device_kill_io(struct subchannel *);
 void device_set_waiting(struct subchannel *);
+void device_set_intretry(struct subchannel *sch);
+int device_trigger_verify(struct subchannel *sch);
 
 /* Machine check helper function. */
 void device_kill_pending_timer(struct subchannel *);

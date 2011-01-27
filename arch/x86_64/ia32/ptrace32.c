@@ -43,11 +43,11 @@ static int putreg32(struct task_struct *child, unsigned regno, u32 val)
 	switch (regno) {
 	case offsetof(struct user32, regs.fs):
 		if (val && (val & 3) != 3) return -EIO; 
-		child->thread.fs = val & 0xffff; 
+		child->thread.fsindex = val & 0xffff;
 		break;
 	case offsetof(struct user32, regs.gs):
 		if (val && (val & 3) != 3) return -EIO; 
-		child->thread.gs = val & 0xffff;
+		child->thread.gsindex = val & 0xffff;
 		break;
 	case offsetof(struct user32, regs.ds):
 		if (val && (val & 3) != 3) return -EIO; 
@@ -72,9 +72,17 @@ static int putreg32(struct task_struct *child, unsigned regno, u32 val)
 	R32(esi, rsi);
 	R32(ebp, rbp);
 	R32(eax, rax);
-	R32(orig_eax, orig_rax);
 	R32(eip, rip);
 	R32(esp, rsp);
+
+	case offsetof(struct user32, regs.orig_eax): {
+		/*
+		 * Sign-extend the value so that orig_eax = -1
+		 * causes (long)orig_rax < 0 tests to fire correctly.
+		 */
+		stack[offsetof(struct pt_regs, orig_rax)/8] = (long) (s32) val;
+		break;
+	}
 
 	case offsetof(struct user32, regs.eflags): {
 		__u64 *flags = &stack[offsetof(struct pt_regs, eflags)/8];
@@ -137,10 +145,10 @@ static int getreg32(struct task_struct *child, unsigned regno, u32 *val)
 
 	switch (regno) {
 	case offsetof(struct user32, regs.fs):
-	        *val = child->thread.fs; 
+	        *val = child->thread.fsindex;
 		break;
 	case offsetof(struct user32, regs.gs):
-		*val = child->thread.gs;
+		*val = child->thread.gsindex;
 		break;
 	case offsetof(struct user32, regs.ds):
 		*val = child->thread.ds;

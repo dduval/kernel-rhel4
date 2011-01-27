@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_util_ioctl.h 2772 2005-12-16 23:12:39Z sf_support $
+ * $Id: lpfc_util_ioctl.h 3088 2007-11-02 13:51:08Z sf_support $
  */
 
 #ifndef  _H_LPFC_UTIL_IOCTL
@@ -55,6 +55,9 @@ int lpfc_ioctl_loopback_test(struct lpfc_hba *, LPFCCMDINPUT_t  *, void *);
 int dfc_rsp_data_copy(struct lpfc_hba *, uint8_t *, DMABUFEXT_t *, uint32_t);
 DMABUFEXT_t *dfc_cmd_data_alloc(struct lpfc_hba *, char *, struct ulp_bde64*,
 				uint32_t);
+DMABUFEXT_t *dfc_fcp_cmd_data_alloc(struct lpfc_hba *, char *, struct ulp_bde64*,
+				uint32_t, struct lpfc_dmabuf *);
+
 int dfc_cmd_data_free(struct lpfc_hba *, DMABUFEXT_t *);
 
 #endif

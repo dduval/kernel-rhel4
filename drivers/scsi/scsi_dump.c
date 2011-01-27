@@ -130,16 +130,6 @@ static void init_scsi_command(struct scsi_device *sdev, struct scsi_cmnd *scmd,
 	scmd->eh_timeout.function	= eh_timeout;
 }
 
-/* TEST UNIT READY */
-static void init_test_unit_ready_command(struct scsi_device *sdev,
-					 struct scsi_cmnd * scmd)
-{
-	memset(scmd, 0, sizeof(*scmd));
-	scmd->cmnd[0] = TEST_UNIT_READY;
-
-	init_scsi_command(sdev, scmd, NULL, 0, DMA_NONE, 1);
-}
-
 /* MODE SENSE */
 static void init_mode_sense_command(struct scsi_device *sdev,
 				    struct scsi_cmnd *scmd, void *buf)
@@ -150,7 +140,7 @@ static void init_mode_sense_command(struct scsi_device *sdev,
 	scmd->cmnd[2] = 0x08;		/* PCF=0 Page 8(Cache) */
 	scmd->cmnd[4] = 255;
 
-	init_scsi_command(sdev, scmd, buf, 256, DMA_FROM_DEVICE, 1);
+	init_scsi_command(sdev, scmd, buf, 255, DMA_FROM_DEVICE, 1);
 }
 
 /* MODE SELECT */
@@ -182,7 +172,7 @@ static void init_sense_command(struct scsi_device *sdev, struct scsi_cmnd *scmd,
 	scmd->cmnd[0] = REQUEST_SENSE;
 	scmd->cmnd[4] = 255;
 
-	init_scsi_command(sdev, scmd, buf, 256, DMA_FROM_DEVICE, 1);
+	init_scsi_command(sdev, scmd, buf, 255, DMA_FROM_DEVICE, 1);
 }
 
 /* READ/WRITE */
@@ -513,13 +503,10 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 {
 	struct Scsi_Host *host = sdev->host;
 	struct scsi_host_template *hostt = host->hostt;
-	int ret, i;
 	char *buf = cmnd_buf;
+	int ret, i;
 
-	if (!strncmp(hostt->proc_name, "mptspi", 6)) 
-		init_sense_command(sdev, &scsi_dump_cmnd, buf);
-	else
-		init_test_unit_ready_command(sdev, &scsi_dump_cmnd);
+	init_sense_command(sdev, &scsi_dump_cmnd, buf);
 
 	if (hostt->eh_host_reset_handler) {
 		spin_lock(host->host_lock);
@@ -542,7 +529,7 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 		diskdump_mdelay(1);
 	}
 
-	Dbg("request sense/test unit ready");
+	Dbg("request sense");
 	if ((ret = send_command(&scsi_dump_cmnd)) < 0) {
 		Err("sense failed");
 		return -EIO;

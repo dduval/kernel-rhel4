@@ -1073,16 +1073,20 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 
 	if (skb->len > cur_mss) {
 		int old_factor = tcp_skb_pcount(skb);
-		int new_factor;
+		int diff;
 
 		if (tcp_fragment(sk, skb, cur_mss))
 			return -ENOMEM; /* We'll try again later. */
 
 		/* New SKB created, account for it. */
-		new_factor = tcp_skb_pcount(skb);
-		tcp_dec_pcount_explicit(&tp->packets_out,
-					old_factor - new_factor);
-		tcp_inc_pcount(&tp->packets_out, skb->next);
+		diff = old_factor - tcp_skb_pcount(skb)
+			- tcp_skb_pcount(skb->next);
+		tcp_dec_pcount_explicit(&tp->packets_out, diff);
+		if (diff > 0) {
+			tcp_dec_pcount_explicit(&tp->fackets_out, diff);
+			if (tcp_get_pcount(&tp->fackets_out) < 0)
+				tcp_set_pcount(&tp->fackets_out, 0);
+		}
 	}
 
 	/* Collapse two adjacent packets if worthwhile and we can. */

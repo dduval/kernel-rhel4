@@ -45,27 +45,6 @@ static void *diag204_buf_vmalloc;	/* vmalloc pointer for diag204 data */
 static int diag204_buf_pages;		/* number of pages for diag204 data */
 
 /*
- * Function to strip leading and trailing whitespaces
- */
-
-char *strstrip(char *s)
-{
-	size_t size;
-	char *end;
-
-	size = strlen(s);
-	if (!size)
-		return s;
-	end = s + size - 1;
-	while (end != s && isspace(*end))
-		end--;
-	*(end + 1) = '\0';
-	while (*s && isspace(*s))
-		s++;
-	return s;
-}
-
-/*
  * DIAG 204 data structures and member access functions.
  *
  * Since we have two different diag 204 data formats for old and new s390 

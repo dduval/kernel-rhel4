@@ -1,7 +1,9 @@
 #ifndef __TG3_COMPAT_H__
 #define __TG3_COMPAT_H__
 
+#ifndef DMA_40BIT_MASK
 #define DMA_40BIT_MASK	0x000000ffffffffffULL
+#endif
 
 #define skb_header_cloned(skb) 0
 
@@ -22,19 +24,32 @@ typedef int __bitwise pci_power_t;
 #ifndef ADVERTISE_PAUSE
 #define ADVERTISE_PAUSE_CAP		0x0400
 #endif
+
 #ifndef ADVERTISE_PAUSE_ASYM
 #define ADVERTISE_PAUSE_ASYM		0x0800
 #endif
+
 #ifndef LPA_PAUSE
 #define LPA_PAUSE_CAP			0x0400
 #endif
+
 #ifndef LPA_PAUSE_ASYM
 #define LPA_PAUSE_ASYM			0x0800
 #endif
 
+#ifndef PCI_EXP_LNKCTL
 #define PCI_EXP_LNKCTL			16	/* Link Control */
-#define PCI_EXP_LNKCTL_CLKREQ_EN	0x100	/* Enable clkreq */
+#endif
 
+#ifndef PCI_EXP_LNKCTL_CLKREQ_EN
+#define PCI_EXP_LNKCTL_CLKREQ_EN	0x100	/* Enable clkreq */
+#endif
+
+#ifndef PCI_X_CMD_READ_2K
+#define PCI_X_CMD_READ_2K		0x0008  /* 1Kbyte maximum read byte count */
+#endif
+
+#define TG3_DIST_FLAG_IN_RESET_TASK	0x00000001
 
 /**
  * pci_dev_present - Returns 1 if device matching the device list is present, 0 if not.
@@ -74,5 +89,24 @@ static inline void netif_tx_unlock(struct net_device *dev)
 {
         spin_unlock(&dev->xmit_lock);
 }
+
+static inline void pci_intx(struct pci_dev *pdev, int enable)
+{
+	u16 pci_command, new;
+
+	pci_read_config_word(pdev, PCI_COMMAND, &pci_command);
+
+	if (enable) {
+		new = pci_command & ~PCI_COMMAND_INTX_DISABLE;
+	} else {
+		new = pci_command | PCI_COMMAND_INTX_DISABLE;
+	}
+
+	if (new != pci_command) {
+		pci_write_config_word(pdev, PCI_COMMAND, new);
+	}
+}
+
+
 
 #endif /* __TG3_COMPAT_H__ */

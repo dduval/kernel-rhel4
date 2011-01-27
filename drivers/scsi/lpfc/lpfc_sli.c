@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.c 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_sli.c 3122 2008-01-07 18:49:20Z sf_support $
  */
 
 #include <linux/version.h>
@@ -109,7 +109,7 @@ static uint8_t lpfc_sli_iocb_cmd_type[CMD_MAX_IOCB_CMD] = {
 	LPFC_SOL_IOCB,		/* CMD_FCP_TRSP_CX         0x23 */
 	/* 0x24 - 0x80 */
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
-	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
+	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, 
 	LPFC_SOL_IOCB,		/* CMD_FCP_AUTO_TRSP_CX    0x29 */
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
@@ -241,7 +241,7 @@ lpfc_toggle_host_control_register(struct lpfc_hba *phba)
 
 	writel(inverted_hc_copy, phba->HCregaddr);
 	readl(phba->HCregaddr);
-
+	
 	writel(hc_copy, phba->HCregaddr);
 	readl(phba->HCregaddr);
 }
@@ -256,16 +256,25 @@ lpfc_hatt_timeout(unsigned long ptr)
 {
 	struct lpfc_hba *phba = (struct lpfc_hba *)ptr;
 	unsigned long ha_copy = readl(phba->HAregaddr);
+	unsigned long iflag;
+
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if (phba->fc_flag & FC_OFFLINE_MODE) {
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
+		return;
+	}
 
 	mod_timer(&phba->hatt_tmo, jiffies + HZ/10);
 
 	if (!ha_copy) {
 		phba->hatt_jiffies = 0;
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		return;
 	}
 
 	if (!phba->hatt_jiffies) {
 		phba->hatt_jiffies = jiffies;
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		return;
 	}
 
@@ -274,6 +283,7 @@ lpfc_hatt_timeout(unsigned long ptr)
 			"%d:0314 Unprocessed Host attention x%lx.\n",
 			phba->brd_no, ha_copy);
 		lpfc_toggle_host_control_register(phba);
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	}
 }
 
@@ -678,7 +688,7 @@ lpfc_sli_chk_mbx_command(uint8_t mbxCommand)
 	case MBX_DEL_LD_ENTRY:
 	case MBX_RUN_PROGRAM:
 	case MBX_SET_MASK:
-	case MBX_SET_SLIM:
+	case MBX_SET_VARIABLE:
 	case MBX_UNREG_D_ID:
 	case MBX_KILL_BOARD:
 	case MBX_CONFIG_FARP:
@@ -690,11 +700,12 @@ lpfc_sli_chk_mbx_command(uint8_t mbxCommand)
 	case MBX_READ_RPI64:
 	case MBX_REG_LOGIN64:
 	case MBX_READ_LA64:
-	case MBX_FLASH_WR_ULA:
+	case MBX_WRITE_WWN:
 	case MBX_SET_DEBUG:
 	case MBX_LOAD_EXP_ROM:
 	case MBX_HEARTBEAT:
 	case MBX_ASYNCEVT_ENABLE:
+	case MBX_WRITE_VPARMS:
 		ret = mbxCommand;
 		break;
 	default:
@@ -944,7 +955,7 @@ lpfc_sli_process_unsol_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 			lpfc_printf_log(phba,
 					KERN_WARNING,
 					LOG_SLI,
-					"%d:0316 Ring %d handler: unexpected "
+					"%d:0330 Ring %d handler: unexpected "
 					"ASYNC_STATUS iocb received evt_code "
 					"0x%x\n", phba->brd_no,
 					pring->ringno,
@@ -2081,11 +2092,28 @@ lpfc_sli_hba_setup(struct lpfc_hba * phba)
 	LPFC_MBOXQ_t *pmb;
 	int read_rev_reset, i, rc;
 	uint32_t status;
+	uint32_t word0=0;
 
 	psli = &phba->sli;
 
+	spin_lock_irq(phba->host->host_lock);
+	phba->restart_pending = 1;
+	spin_unlock_irq(phba->host->host_lock);
+
 	/* Setep SLI interface for HBA register and HBA SLIM access */
 	lpfc_setup_slim_access(phba);
+
+	if (!(psli->sliinit.sli_flag & LPFC_SLI2_ACTIVE))
+		word0 = readl(phba->MBslimaddr);
+
+	/* Wait for last mailbox completion before issueing restart */
+	while ((word0 & OWN_CHIP) == OWN_CHIP) {
+		mdelay(100);
+		if (!(psli->sliinit.sli_flag & LPFC_SLI2_ACTIVE))
+			word0 = readl(phba->MBslimaddr);
+		else
+			word0 = 0;
+	}
 
 	read_rev_reset = 0;
 
@@ -2122,6 +2150,10 @@ top:
 					phba->brd_no,
 					status);
 			phba->hba_state = LPFC_HBA_ERROR;
+			spin_lock_irq(phba->host->host_lock);
+			phba->restart_pending = 0;
+			spin_unlock_irq(phba->host->host_lock);
+
 			return -ETIMEDOUT;
 		}
 
@@ -2138,6 +2170,9 @@ top:
 					phba->brd_no,
 					status);
 			phba->hba_state = LPFC_HBA_ERROR;
+			spin_lock_irq(phba->host->host_lock);
+			phba->restart_pending = 0;
+			spin_unlock_irq(phba->host->host_lock);
 			return -EIO;
 		}
 
@@ -2169,6 +2204,9 @@ top:
 				phba->brd_no,
 				status);
 		phba->hba_state = LPFC_HBA_ERROR;
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 		return -EIO;
 	}
 
@@ -2185,6 +2223,9 @@ top:
 	if ((pmb = (LPFC_MBOXQ_t *) mempool_alloc(phba->mbox_mem_pool,
 						  GFP_ATOMIC)) == 0) {
 		phba->hba_state = LPFC_HBA_ERROR;
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 		return -ENOMEM;
 	}
 
@@ -2204,6 +2245,9 @@ top:
 		}
 		phba->hba_state = LPFC_HBA_ERROR;
 		mempool_free( pmb, phba->mbox_mem_pool);
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 		return -ENXIO;
 	}
 
@@ -2233,6 +2277,9 @@ top:
 		psli->sliinit.sli_flag &= ~LPFC_SLI2_ACTIVE;
 		phba->hba_state = LPFC_HBA_ERROR;
 		mempool_free( pmb, phba->mbox_mem_pool);
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 		return -ENXIO;
 	}
 
@@ -2241,6 +2288,9 @@ top:
 	if ((rc = lpfc_sli_ring_map(phba))) {
 		phba->hba_state = LPFC_HBA_ERROR;
 		mempool_free( pmb, phba->mbox_mem_pool);
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 		return -ENXIO;
 	}
 	psli->sliinit.sli_flag |= LPFC_PROCESS_LA;
@@ -2249,9 +2299,15 @@ top:
 	if ((rc = lpfc_config_port_post(phba))) {
 		phba->hba_state = LPFC_HBA_ERROR;
 		mempool_free( pmb, phba->mbox_mem_pool);
+		spin_lock_irq(phba->host->host_lock);
+		phba->restart_pending = 0;
+		spin_unlock_irq(phba->host->host_lock);
 		return -ENXIO;
 	}
 	mempool_free( pmb, phba->mbox_mem_pool);
+	spin_lock_irq(phba->host->host_lock);
+	phba->restart_pending = 0;
+	spin_unlock_irq(phba->host->host_lock);
 	return 0;
 }
 
@@ -3825,3 +3881,55 @@ lpfc_intr_handler(int irq, void *dev_id, struct pt_regs * regs)
 	return IRQ_NONE;
 
 } /* lpfc_intr_handler */
+
+int
+lpfc_sli_brdready(struct lpfc_hba * phba, uint32_t mask)
+{
+	uint32_t status;
+	int i = 0;
+
+	/* Read the HBA Host Status Register */
+	status = readl(phba->HSregaddr);
+
+	/* Check status register to see what current state is */
+	while ((status & mask) != mask) {
+
+		/* Check every 100ms for 5 retries, then every 500ms for 5, then
+		 * every 2.5 sec for 5, then reset board and every 2.5 sec for
+		 * 4.
+		 */
+		if (i++ >= 20) {
+			phba->hba_state = LPFC_HBA_ERROR;
+			return ETIMEDOUT;
+		}
+
+		/* Check to see if any errors occurred during init */
+		if (status & HS_FFERM) {
+			phba->hba_state = LPFC_HBA_ERROR;
+			return EIO;
+		}
+
+		if (i <= 5) {
+			msleep(10);
+		} else if (i <= 10) {
+			msleep(500);
+		} else {
+			msleep(2500);
+		}
+
+		if (i == 15) {
+			phba->hba_state = LPFC_STATE_UNKNOWN; /* Do post */
+			lpfc_sli_brdrestart(phba);
+		}
+		/* Read the HBA Host Status Register */
+		status = readl(phba->HSregaddr);
+	}
+
+	/* Check to see if any errors occurred during init */
+	if (status & HS_FFERM) {
+		phba->hba_state = LPFC_HBA_ERROR;
+		return EIO;
+	}
+
+	return(0);
+}

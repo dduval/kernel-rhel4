@@ -59,7 +59,7 @@ void     qla4xxx_print_srb_info(uint32_t dbg_mask, srb_t *srb);
 /* #define QL_DEBUG_LEVEL_5  */	
 /* #define QL_DEBUG_LEVEL_9  */	
 
-/* #define QL_DEBUG_LEVEL_2  */ /* Output error msgs to COM1 */
+#define QL_DEBUG_LEVEL_2   /* Output error msgs to COM1 */
 
 #define DEBUG(x)	do {} while (0);
 

@@ -71,8 +71,14 @@ proc_file_read(struct file *file, char __user *buf, size_t nbytes,
 		nbytes = MAX_NON_LFS - pos;
 
 	dp = PDE(inode);
+
 	if (!(page = (char*) __get_free_page(GFP_KERNEL)))
 		return -ENOMEM;
+
+	if (!try_module_get(dp->owner)) {
+		free_page((unsigned long) page);	
+		return -EIO;
+	}
 
 	while ((nbytes > 0) && !eof) {
 		count = min_t(size_t, PROC_BLOCK_SIZE, nbytes);
@@ -193,6 +199,8 @@ proc_file_read(struct file *file, char __user *buf, size_t nbytes,
 		buf += n;
 		retval += n;
 	}
+
+	module_put(dp->owner);
 	free_page((unsigned long) page);
 	return retval;
 }
@@ -203,14 +211,19 @@ proc_file_write(struct file *file, const char __user *buffer,
 {
 	struct inode *inode = file->f_dentry->d_inode;
 	struct proc_dir_entry * dp;
-	
+	ssize_t ret;	
 	dp = PDE(inode);
 
 	if (!dp->write_proc)
 		return -EIO;
 
+	if (!try_module_get(dp->owner))
+		return -EIO;
+
 	/* FIXME: does this routine need ppos?  probably... */
-	return dp->write_proc(file, buffer, count, dp->data);
+	ret = dp->write_proc(file, buffer, count, dp->data);
+	module_put(dp->owner);
+	return ret;
 }
 
 

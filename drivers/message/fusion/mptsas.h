@@ -3,10 +3,10 @@
  *      High performance SCSI + LAN / Fibre Channel device drivers.
  *      For use with PCI chip/adapter(s):
  *          LSIFC9xx/LSI409xx Fibre Channel
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2007 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -131,10 +131,8 @@ struct mptsas_phyinfo {
 #if defined(MPT_WIDE_PORT_API)
 	u8	sas_port_add_phy;	/* flag to request sas_port_add_phy*/
 #endif
-#if defined(CPQ_CIM)
 	u8	change_count;		/* change count of the phy */
 	u8	port_flags;		/* info wrt host sas ports */
-#endif
 	u32	phy_info;		/* various info wrt the phy */
 	struct mptsas_devinfo identify;	/* point to phy device info */
 	struct mptsas_devinfo attached;	/* point to attached device info */
@@ -160,6 +158,11 @@ struct mptsas_enclosure {
 	u8	start_channel;		/* starting logical channel id */
 	u8	sep_id;			/* SEP device logical target id */
 	u8	sep_channel;		/* SEP channel logical channel id */
+};
+
+struct mptsas_broadcast_primative_event {
+	struct work_struct	work;
+	MPT_ADAPTER		*ioc;
 };
 
 /*}-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/

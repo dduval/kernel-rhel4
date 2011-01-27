@@ -34,19 +34,7 @@
 #include <asm/proto.h>
 #include <asm/kdebug.h>
 
-/*
- * lapic_nmi_owner tracks the ownership of the lapic NMI hardware:
- * - it may be reserved by some other driver, or not
- * - when not reserved by some other driver, it may be used for
- *   the NMI watchdog, or not
- *
- * This is maintained separately from nmi_active because the NMI
- * watchdog may also be driven from the I/O APIC timer.
- */
-static spinlock_t lapic_nmi_owner_lock = SPIN_LOCK_UNLOCKED;
-static unsigned int lapic_nmi_owner;
-#define LAPIC_NMI_WATCHDOG	(1<<0)
-#define LAPIC_NMI_RESERVED	(1<<1)
+static atomic_t lapic_nmi_reserved = ATOMIC_INIT(0);
 
 /* nmi_active:
  * +1: the lapic NMI watchdog is active, but can be disabled
@@ -55,28 +43,20 @@ static unsigned int lapic_nmi_owner;
  * -1: the lapic NMI watchdog is disabled, but can be enabled
  */
 int nmi_active;		/* oprofile uses this */
+
+/*
+ * the upstream variable 'nmi_active' is called 'nmi_watchdog_active' on
+ * RHEL-4 for kABI reasons.
+ */
+atomic_t nmi_watchdog_active = ATOMIC_INIT(0);
+
 int panic_on_timeout;
+
+static DEFINE_PER_CPU(short, wd_enabled);
 
 unsigned int nmi_watchdog = NMI_DEFAULT;
 static unsigned int nmi_hz = HZ;
 unsigned int nmi_perfctr_msr;	/* the MSR to reset in NMI handler */
-
-/* Note that these events don't tick when the CPU idles. This means
-   the frequency varies with CPU load. */
-
-#define K7_EVNTSEL_ENABLE	(1 << 22)
-#define K7_EVNTSEL_INT		(1 << 20)
-#define K7_EVNTSEL_OS		(1 << 17)
-#define K7_EVNTSEL_USR		(1 << 16)
-#define K7_EVENT_CYCLES_PROCESSOR_IS_RUNNING	0x76
-#define K7_NMI_EVENT		K7_EVENT_CYCLES_PROCESSOR_IS_RUNNING
-
-#define P6_EVNTSEL0_ENABLE	(1 << 22)
-#define P6_EVNTSEL_INT		(1 << 20)
-#define P6_EVNTSEL_OS		(1 << 17)
-#define P6_EVNTSEL_USR		(1 << 16)
-#define P6_EVENT_CPU_CLOCKS_NOT_HALTED	0x79
-#define P6_NMI_EVENT		P6_EVENT_CPU_CLOCKS_NOT_HALTED
 
 /* Run after command line and cpu_init init, but before all other checks */
 void __init nmi_watchdog_default(void)
@@ -84,32 +64,11 @@ void __init nmi_watchdog_default(void)
 	if (nmi_watchdog != NMI_DEFAULT)
 		return;
 
-	/* For some reason the IO APIC watchdog doesn't work on the AMD
-	   8111 chipset. For now switch to local APIC mode using
-	   perfctr0 there.  On Intel CPUs we don't have code to handle
-	   the perfctr and the IO-APIC seems to work, so use that.  */
-
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
-		nmi_watchdog = NMI_LOCAL_APIC; 
-		printk(KERN_INFO 
-              "Using local APIC NMI watchdog using perfctr0\n");
-	} else {
-		printk(KERN_INFO "Using IO APIC NMI watchdog\n");
+	/* if not specified, probe it */
+	if (lapic_watchdog_probe())
 		nmi_watchdog = NMI_IO_APIC;
-	}
-}
-
-/* Why is there no CPUID flag for this? */
-static __init int cpu_has_lapic(void)
-{
-	switch (boot_cpu_data.x86_vendor) { 
-	case X86_VENDOR_INTEL:
-	case X86_VENDOR_AMD: 
-		return boot_cpu_data.x86 >= 6; 
-	/* .... add more cpus here or find a different way to figure this out. */	
-	default:
-		return 0;
-	} 	
+	else
+		nmi_watchdog = NMI_LOCAL_APIC;
 }
 
 int __init check_nmi_watchdog (void)
@@ -117,10 +76,8 @@ int __init check_nmi_watchdog (void)
 	int counts[NR_CPUS];
 	int cpu;
 
-	if (nmi_watchdog == NMI_LOCAL_APIC && !cpu_has_lapic())  {
-		nmi_watchdog = NMI_NONE;
-		return -1; 
-	}	
+	if (!atomic_read(&nmi_watchdog_active))
+		return 0;
 
 	printk(KERN_INFO "testing NMI watchdog ... ");
 
@@ -132,21 +89,31 @@ int __init check_nmi_watchdog (void)
 	for (cpu = 0; cpu < NR_CPUS; cpu++) {
 		if (!cpu_online(cpu))
 			continue;
+		if (!per_cpu(wd_enabled, cpu))
+			continue;
+
 		if (cpu_pda[cpu].__nmi_count - counts[cpu] <= 5) {
 			printk("CPU#%d: NMI appears to be stuck (%d)!\n", 
 			       cpu,
 			       cpu_pda[cpu].__nmi_count);
-			nmi_active = 0;
-			lapic_nmi_owner &= ~LAPIC_NMI_WATCHDOG;
+			if (atomic_dec_and_test(&nmi_watchdog_active))
+				nmi_active = 0;
+			per_cpu(wd_enabled, cpu) = 0;
 			return -1;
 		}
 	}
+	if (!atomic_read(&nmi_watchdog_active)) {
+		atomic_set(&nmi_watchdog_active, -1);
+		nmi_active = -1;
+		return -1;
+	}
+
 	printk("OK.\n");
 
 	/* now that we know it works we can reduce NMI frequency to
 	   something more reasonable; makes a difference in some configs */
 	if (nmi_watchdog == NMI_LOCAL_APIC)
-		nmi_hz = 1;
+		nmi_hz = lapic_adjust_nmi_hz(1);
 
 	return 0;
 }
@@ -173,76 +140,48 @@ int __init setup_nmi_watchdog(char *str)
 
 __setup("nmi_watchdog=", setup_nmi_watchdog);
 
-static void disable_lapic_nmi_watchdog(void)
-{
-	if (nmi_active <= 0)
-		return;
-	switch (boot_cpu_data.x86_vendor) {
-	case X86_VENDOR_AMD:
-		wrmsr(MSR_K7_EVNTSEL0, 0, 0);
-		break;
-	case X86_VENDOR_INTEL:
-		wrmsr(MSR_IA32_EVNTSEL0, 0, 0);
-		break;
-	}
-	nmi_active = -1;
-	/* tell do_nmi() and others that we're not active any more */
-	nmi_watchdog = 0;
-}
-
-static void enable_lapic_nmi_watchdog(void)
-{
-	if (nmi_active < 0) {
-		nmi_watchdog = NMI_LOCAL_APIC;
-		setup_apic_nmi_watchdog();
-	}
-}
-
+void acpi_nmi_enable(void);
+void acpi_nmi_disable(void);
 int reserve_lapic_nmi(void)
 {
-	unsigned int old_owner;
+	if (!test_and_set_bit(1, &lapic_nmi_reserved)) {
+		if (nmi_watchdog == NMI_LOCAL_APIC)
+			disable_lapic_nmi_watchdog();
+		return 0;
+	}
 
-	spin_lock(&lapic_nmi_owner_lock);
-	old_owner = lapic_nmi_owner;
-	lapic_nmi_owner |= LAPIC_NMI_RESERVED;
-	spin_unlock(&lapic_nmi_owner_lock);
-	if (old_owner & LAPIC_NMI_RESERVED)
-		return -EBUSY;
-	if (old_owner & LAPIC_NMI_WATCHDOG)
-		disable_lapic_nmi_watchdog();
-	return 0;
+	return 1;
 }
 
 void release_lapic_nmi(void)
 {
-	unsigned int new_owner;
-
-	spin_lock(&lapic_nmi_owner_lock);
-	new_owner = lapic_nmi_owner & ~LAPIC_NMI_RESERVED;
-	lapic_nmi_owner = new_owner;
-	spin_unlock(&lapic_nmi_owner_lock);
-	if (new_owner & LAPIC_NMI_WATCHDOG)
+	if (nmi_watchdog == NMI_LOCAL_APIC) {
 		enable_lapic_nmi_watchdog();
+		touch_nmi_watchdog();
+	}
+	clear_bit(1, &lapic_nmi_reserved);
 }
 
+static int old_ioapic_count;
 void disable_timer_nmi_watchdog(void)
 {
-	if ((nmi_watchdog != NMI_IO_APIC) || (nmi_active <= 0))
+	if ((nmi_watchdog != NMI_IO_APIC) ||
+	    (atomic_read(&nmi_watchdog_active) <= 0))
 		return;
 
-	disable_irq(0);
 	unset_nmi_callback();
+	old_ioapic_count = atomic_read(&nmi_watchdog_active);
+	atomic_set(&nmi_watchdog_active, -1);
 	nmi_active = -1;
-	nmi_watchdog = NMI_NONE;
 }
 
 void enable_timer_nmi_watchdog(void)
 {
-	if (nmi_active < 0) {
-		nmi_watchdog = NMI_IO_APIC;
+	if (nmi_watchdog == NMI_IO_APIC &&
+	    atomic_read(&nmi_watchdog_active) < 0) {
 		touch_nmi_watchdog();
+		atomic_set(&nmi_watchdog_active, old_ioapic_count);
 		nmi_active = 1;
-		enable_irq(0);
 	}
 }
 
@@ -253,14 +192,16 @@ static int nmi_pm_active; /* nmi_active before suspend */
 static int lapic_nmi_suspend(struct sys_device *dev, u32 state)
 {
 	nmi_pm_active = nmi_active;
-	disable_lapic_nmi_watchdog();
+	stop_apic_nmi_watchdog();
 	return 0;
 }
 
 static int lapic_nmi_resume(struct sys_device *dev)
 {
-	if (nmi_pm_active > 0)
-	enable_lapic_nmi_watchdog();
+	if (nmi_pm_active > 0) {
+		setup_apic_nmi_watchdog();
+		touch_nmi_watchdog();
+	}
 	return 0;
 }
 
@@ -279,7 +220,7 @@ static int __init init_lapic_nmi_sysfs(void)
 {
 	int error;
 
-	if (nmi_active == 0 || nmi_watchdog != NMI_LOCAL_APIC)
+	if (atomic_read(&nmi_watchdog_active) == 0 || nmi_watchdog != NMI_LOCAL_APIC)
 		return 0;
 
 	error = sysdev_class_register(&nmi_sysclass);
@@ -292,58 +233,79 @@ late_initcall(init_lapic_nmi_sysfs);
 
 #endif	/* CONFIG_PM */
 
-/*
- * Activate the NMI watchdog via the local APIC.
- * Original code written by Keith Owens.
- */
-
-static void setup_k7_watchdog(void)
-{
-	int i;
-	unsigned int evntsel;
-
-	/* No check, so can start with slow frequency */
-	nmi_hz = 1; 
-
-	/* XXX should check these in EFER */
-
-	nmi_perfctr_msr = MSR_K7_PERFCTR0;
-
-	for(i = 0; i < 4; ++i) {
-		/* Simulator may not support it */
-		if (checking_wrmsrl(MSR_K7_EVNTSEL0+i, 0UL))
-			return;
-		wrmsrl(MSR_K7_PERFCTR0+i, 0UL);
-	}
-
-	evntsel = K7_EVNTSEL_INT
-		| K7_EVNTSEL_OS
-		| K7_EVNTSEL_USR
-		| K7_NMI_EVENT;
-
-	wrmsr(MSR_K7_EVNTSEL0, evntsel, 0);
-	wrmsrl(MSR_K7_PERFCTR0, -((u64)cpu_khz*1000) / nmi_hz);
-	apic_write(APIC_LVTPC, APIC_DM_NMI);
-	evntsel |= K7_EVNTSEL_ENABLE;
-	wrmsr(MSR_K7_EVNTSEL0, evntsel, 0);
-}
-
 void setup_apic_nmi_watchdog(void)
 {
-	switch (boot_cpu_data.x86_vendor) {
-	case X86_VENDOR_AMD:
-		if ((boot_cpu_data.x86 != 6) && (boot_cpu_data.x86 != 15) &&
-		    (boot_cpu_data.x86 != 16))
-			return;
-		if (strstr(boot_cpu_data.x86_model_id, "Screwdriver"))
-			return;
-		setup_k7_watchdog();
-		break;
-	default:
+	if (__get_cpu_var(wd_enabled) == 1)
 		return;
+
+	switch (nmi_watchdog) {
+	case NMI_LOCAL_APIC:
+		__get_cpu_var(wd_enabled) = 1;
+		if (lapic_watchdog_init(nmi_hz) < 0) {
+			__get_cpu_var(wd_enabled) = 0;
+			return;
+		}
+		/* FALL THROUGH */
+	case NMI_IO_APIC:
+		__get_cpu_var(wd_enabled) = 1;
+		if (atomic_inc_return(&nmi_watchdog_active) == 1)
+			nmi_active = 1;
 	}
-	lapic_nmi_owner = LAPIC_NMI_WATCHDOG;
-	nmi_active = 1;
+}
+
+void stop_apic_nmi_watchdog(void)
+{
+	/* only support LOCAL and IO APICs for now */
+	if ((nmi_watchdog != NMI_LOCAL_APIC) &&
+	    (nmi_watchdog != NMI_IO_APIC))
+		return;
+	if (__get_cpu_var(wd_enabled) == 0)
+		return;
+	if (nmi_watchdog == NMI_LOCAL_APIC)
+		lapic_watchdog_stop();
+	__get_cpu_var(wd_enabled) = 0;
+	if (atomic_dec_and_test(&nmi_watchdog_active))
+		nmi_active = 0;
+}
+
+static void __acpi_nmi_enable(void *__unused)
+{
+	if (__get_cpu_var(wd_enabled) == 1)
+		return;
+
+	__get_cpu_var(wd_enabled) = 1;
+	if (atomic_inc_return(&nmi_watchdog_active) == 1)
+		nmi_active = 1;
+	apic_write(APIC_LVT0, APIC_DM_NMI);
+}
+
+/*
+ * Enable timer based NMIs on all CPUs:
+ */
+void acpi_nmi_enable(void)
+{
+	if (atomic_read(&nmi_watchdog_active) == 0)
+		on_each_cpu(__acpi_nmi_enable, NULL, 0, 1);
+	touch_nmi_watchdog();
+}
+
+static void __acpi_nmi_disable(void *__unused)
+{
+	if (__get_cpu_var(wd_enabled) == 0)
+		return;
+	apic_write(APIC_LVT0, APIC_DM_NMI | APIC_LVT_MASKED);
+	__get_cpu_var(wd_enabled) = 0;
+	if (atomic_dec_and_test(&nmi_watchdog_active))
+		nmi_active = 0;
+}
+
+/*
+ * Disable timer based NMIs on all CPUs:
+ */
+void acpi_nmi_disable(void)
+{
+	if (atomic_read(&nmi_watchdog_active))
+		on_each_cpu(__acpi_nmi_disable, NULL, 0, 1);
 }
 
 /*
@@ -361,48 +323,71 @@ void setup_apic_nmi_watchdog(void)
  *  here too!]
  */
 
-static unsigned int
-	last_irq_sums [NR_CPUS],
-	alert_counter [NR_CPUS];
+static DEFINE_PER_CPU(unsigned, last_irq_sum);
+static DEFINE_PER_CPU(local_t, alert_counter);
+static DEFINE_PER_CPU(int, nmi_touch);
 
 void touch_nmi_watchdog (void)
 {
-	int i;
+	if (nmi_watchdog > 0) {
+		unsigned cpu;
 
-	/*
-	 * Just reset the alert counters, (other CPUs might be
-	 * spinning on locks we hold):
-	 */
-	for (i = 0; i < NR_CPUS; i++)
-		alert_counter[i] = 0;
+		for_each_cpu(cpu) {
+			if (per_cpu(nmi_touch, cpu) != 1)
+				per_cpu(nmi_touch, cpu) = 1;
+		}
+	}
 }
 
-void nmi_watchdog_tick (struct pt_regs * regs, unsigned reason)
+int nmi_watchdog_tick (struct pt_regs * regs, unsigned reason)
 {
-	int sum, cpu;
+	int sum, cpu, touched = 0, rc = 0;
 
 	cpu = safe_smp_processor_id();
+
+	/* check for other users first */
+	if (notify_die(DIE_NMI, "nmi", regs, reason, 2, SIGINT)
+			== NOTIFY_STOP) {
+		rc = 1;
+		touched = 1;
+	}
+
 	sum = read_pda(apic_timer_irqs);
-	if (last_irq_sums[cpu] == sum) {
+	if (__get_cpu_var(nmi_touch)) {
+		__get_cpu_var(nmi_touch) = 0;
+		touched = 1;
+	}
+
+	/* if the apic timer isn't firing, this cpu isn't doing much */
+	if (!touched && __get_cpu_var(last_irq_sum) == sum) {
 		/*
 		 * Ayiee, looks like this CPU is stuck ...
 		 * wait a few IRQs (30 seconds) before doing the oops ...
 		 */
-		alert_counter[cpu]++;
-		if (alert_counter[cpu] == 30*nmi_hz) {
-			if (notify_die(DIE_NMI, "nmi", regs, reason, 2, SIGINT)
-							== NOTIFY_STOP) {
-				alert_counter[cpu] = 0; 
-				return;
-			} 
+		local_inc(&__get_cpu_var(alert_counter));
+		if (local_read(&__get_cpu_var(alert_counter)) == 30 * nmi_hz)
 			die_nmi("NMI Watchdog detected LOCKUP", regs);
-		}
 	} else {
-		last_irq_sums[cpu] = sum;
-		alert_counter[cpu] = 0;
+		__get_cpu_var(last_irq_sum) = sum;
+		local_set(&__get_cpu_var(alert_counter), 0);
 	}
-	if (nmi_perfctr_msr)
-		wrmsr(nmi_perfctr_msr, -(cpu_khz/nmi_hz*1000), -1);
+
+	/* see if the nmi watchdog went off */
+	if (!__get_cpu_var(wd_enabled))
+		return rc;
+	switch (nmi_watchdog) {
+	case NMI_LOCAL_APIC:
+		rc |= lapic_wd_event(nmi_hz);
+		break;
+	case NMI_IO_APIC:
+		/* don't know how to accurately check for this.
+		 * just assume it was a watchdog timer interrupt
+		 * This matches the old behaviour.
+		 */
+		rc = 1;
+		break;
+	}
+	return rc;
 }
 
 static int dummy_nmi_callback(struct pt_regs * regs, int cpu)
@@ -433,6 +418,16 @@ void unset_nmi_callback(void)
 	nmi_callback = dummy_nmi_callback;
 }
 
+static int unknown_nmi_panic_callback(struct pt_regs *regs, int cpu);
+int do_nmi_callback(struct pt_regs *regs, int cpu)
+{
+#ifdef CONFIG_SYSCTL
+	if (unknown_nmi_panic)
+		unknown_nmi_panic_callback(regs, cpu);
+#endif
+	return 0;
+}
+
 #ifdef CONFIG_SYSCTL
 
 static int unknown_nmi_panic_callback(struct pt_regs *regs, int cpu)
@@ -440,10 +435,8 @@ static int unknown_nmi_panic_callback(struct pt_regs *regs, int cpu)
 	unsigned char reason = get_nmi_reason();
 	char buf[64];
 
-	if (!(reason & 0xc0)) {
-		sprintf(buf, "NMI received for unknown reason %02x", reason);
-		die_nmi(buf, regs);
-	}
+	sprintf(buf, "NMI received for unknown reason %02x", reason);
+	die_nmi(buf, regs);
 	return 0;
 }
 
@@ -461,15 +454,15 @@ int proc_unknown_nmi_panic(struct ctl_table *table, int write, struct file *file
 		return 0;
 
 	if (unknown_nmi_panic) {
-		if (reserve_lapic_nmi() < 0) {
-			unknown_nmi_panic = 0;
-			return -EBUSY;
-		} else {
-			set_nmi_callback(unknown_nmi_panic_callback);
-		}
+		if (nmi_watchdog == NMI_LOCAL_APIC)
+			disable_lapic_nmi_watchdog();
+		else if (nmi_watchdog == NMI_IO_APIC)
+			acpi_nmi_disable();
 	} else {
-		release_lapic_nmi();
-		unset_nmi_callback();
+		if (nmi_watchdog == NMI_LOCAL_APIC)
+			enable_lapic_nmi_watchdog();
+		else if (nmi_watchdog == NMI_IO_APIC)
+			acpi_nmi_enable();
 	}
 	return 0;
 }

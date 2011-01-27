@@ -2592,7 +2592,7 @@ smb_proc_getattr_ff(struct smb_sb_info *server, struct dentry *dentry,
 	fattr->f_mtime.tv_sec = date_dos2unix(server, date, time);
 	fattr->f_mtime.tv_nsec = 0;
 	VERBOSE("name=%s, date=%x, time=%x, mtime=%ld\n",
-		mask, date, time, fattr->f_mtime);
+		mask, date, time, fattr->f_mtime.tv_sec);
 	fattr->f_size = DVAL(req->rq_data, 12);
 	/* ULONG allocation size */
 	fattr->attr = WVAL(req->rq_data, 20);
@@ -3112,7 +3112,7 @@ smb_proc_setattr_unix(struct dentry *d, struct iattr *attr,
 	LSET(data, 32, SMB_TIME_NO_CHANGE);
 	LSET(data, 40, SMB_UID_NO_CHANGE);
 	LSET(data, 48, SMB_GID_NO_CHANGE);
-	LSET(data, 56, smb_filetype_from_mode(attr->ia_mode));
+	DSET(data, 56, smb_filetype_from_mode(attr->ia_mode));
 	LSET(data, 60, major);
 	LSET(data, 68, minor);
 	LSET(data, 76, 0);

@@ -55,7 +55,7 @@ __obsolete_setup("psmouse_smartscroll=");
 __obsolete_setup("psmouse_resetafter=");
 __obsolete_setup("psmouse_rate=");
 
-static char *psmouse_protocols[] = { "None", "PS/2", "PS2++", "PS2T++", "GenPS/2", "ImPS/2", "ImExPS/2", "SynPS/2"};
+static char *psmouse_protocols[] = { "None", "PS/2", "CortronPS2", "PS2++", "PS2T++", "GenPS/2", "ImPS/2", "ImExPS/2", "SynPS/2"};
 
 /*
  * psmouse_process_byte() analyzes the PS/2 data stream and reports
@@ -107,6 +107,15 @@ static psmouse_ret_t psmouse_process_byte(struct psmouse *psmouse, struct pt_reg
 	if (psmouse->type == PSMOUSE_GENPS) {
 		input_report_key(dev, BTN_SIDE, (packet[0] >> 6) & 1);
 		input_report_key(dev, BTN_EXTRA, (packet[0] >> 7) & 1);
+	}
+
+/*
+ * Cortron PS2 Trackball reports SIDE button on the 4th bit of the first
+ * byte.
+ */
+	if (psmouse->type == PSMOUSE_CORTRON) {
+		input_report_key(dev, BTN_SIDE, (packet[0] >> 3) & 1);
+		packet[0] |= 0x08;
 	}
 
 /*
@@ -537,6 +546,15 @@ static int psmouse_extensions(struct psmouse *psmouse,
 		return PSMOUSE_IMPS;
 	}
 
+	if (max_proto == PSMOUSE_CORTRON) {
+		if (set_properties) {
+			psmouse->vendor = "Cortron";
+			psmouse->name = "PS/2 Trackball";
+			set_bit(BTN_SIDE, psmouse->dev.keybit);
+		}
+		return PSMOUSE_CORTRON;
+	}
+
 /*
  * Okay, all failed, we have a standard mouse here. The number of the buttons
  * is still a question, though. We assume 3.
@@ -895,6 +913,8 @@ static inline void psmouse_parse_proto(void)
 			psmouse_max_proto = PSMOUSE_IMPS;
 		else if (!strcmp(psmouse_proto, "exps"))
 			psmouse_max_proto = PSMOUSE_IMEX;
+		else if (!strcmp(psmouse_proto, "cortps"))
+			psmouse_max_proto = PSMOUSE_CORTRON;
 		else
 			printk(KERN_ERR "psmouse: unknown protocol type '%s'\n", psmouse_proto);
 	}

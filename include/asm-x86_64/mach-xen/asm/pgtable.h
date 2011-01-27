@@ -285,17 +285,20 @@ static inline unsigned long pml4_bad(pml4_t pml4)
 
 #define pages_to_mb(x) ((x) >> (20-PAGE_SHIFT))	/* FIXME: is this
 						   right? */
-#define pte_mfn(_pte)	(((_pte).pte & PTE_MASK) >> PAGE_SHIFT)
-#define pte_pfn(_pte)	mfn_to_local_pfn(pte_mfn(_pte))
+#define __pte_mfn(_pte) (((_pte).pte & PTE_MASK) >> PAGE_SHIFT)
+#define pte_mfn(_pte) ((_pte).pte & _PAGE_PRESENT ? \
+	__pte_mfn(_pte) : pfn_to_mfn(__pte_mfn(_pte)))
+#define pte_pfn(_pte) ((_pte).pte & _PAGE_PRESENT ? \
+	mfn_to_local_pfn(__pte_mfn(_pte)) : __pte_mfn(_pte))
+
 #define pte_page(x)	pfn_to_page(pte_pfn(x))
 
 static inline pte_t pfn_pte(unsigned long page_nr, pgprot_t pgprot)
 {
-	pte_t pte;
-	(pte).pte = (pfn_to_mfn(page_nr) << PAGE_SHIFT);
-	(pte).pte |= pgprot_val(pgprot);
-	(pte).pte &= __supported_pte_mask;
-	return pte;
+	unsigned long pte = page_nr << PAGE_SHIFT;
+	pte |= pgprot_val(pgprot);
+	pte &= __supported_pte_mask;
+	return __pte(pte);
 }
 
 #define pfn_pte_ma(pfn, prot)  __pte_ma((((pfn) << PAGE_SHIFT) | pgprot_val(prot)) & __supported_pte_mask)
@@ -464,18 +467,25 @@ static inline pgd_t *current_pgd_offset_k(unsigned long address)
 /* physical address -> PTE */
 static inline pte_t mk_pte_phys(unsigned long physpage, pgprot_t pgprot)
 { 
-	pte_t pte;
-	(pte).pte = physpage | pgprot_val(pgprot); 
-	return pte; 
+	unsigned long pteval;
+	pteval = physpage | pgprot_val(pgprot);
+	return __pte(pteval);
 }
  
 /* Change flags of a PTE */
 extern inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 { 
-	(pte).pte &= _PAGE_CHG_MASK;
-	(pte).pte |= pgprot_val(newprot);
-	(pte).pte &= __supported_pte_mask;
-       return pte; 
+	/*
+	 * Since this might change the present bit (which controls whether
+	 * a pte_t object has undergone p2m translation), we must use
+	 * pte_val() on the input pte and __pte() for the return value.
+	 */
+	unsigned long pteval = pte_val(pte);
+
+	pteval &= _PAGE_CHG_MASK;
+	pteval |= pgprot_val(newprot);
+	pteval &= __supported_pte_mask;
+	return __pte(pteval);
 }
 
 #define pte_index(address) \

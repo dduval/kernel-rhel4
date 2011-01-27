@@ -12,8 +12,6 @@
 
 #define MMCONFIG_APER_SIZE (256*1024*1024)
 
-static DECLARE_BITMAP(fallback_slots, 32);
-
 /* Static virtual mapping of the MMCONFIG aperture */
 struct mmcfg_virt {
 	struct acpi_table_mcfg_config *cfg;
@@ -55,8 +53,6 @@ static char __iomem *pci_dev_base(unsigned int seg, unsigned int bus, unsigned i
 {
 	char __iomem *addr;
 
-	if (seg == 0 && bus == 0 && test_bit(PCI_SLOT(devfn), &fallback_slots))
-		return NULL;
 	addr = get_virt(seg, bus);
 	if (!addr)
 		return NULL;
@@ -68,12 +64,18 @@ static int pci_mmcfg_read(int seg, int bus, int devfn, int reg, int len, u32 *va
 	char __iomem *addr;
 
 	/* Why do we have this when nobody checks it. How about a BUG()!? -AK */
-	if (unlikely(!value || (bus > 255) || (devfn > 255) || (reg > 4095)))
+	if (unlikely(!value || (bus > 255) || (devfn > 255) || (reg > 4095))) {
+err:		if (value)
+			*value = -1;
 		return -EINVAL;
+	}
+
+	if (reg < 256)
+		return pci_conf1_read(seg,bus,devfn,reg,len,value);
 
 	addr = pci_dev_base(seg, bus, devfn);
 	if (!addr)
-		return pci_conf1_read(seg,bus,devfn,reg,len,value);
+		goto err;
 
 	switch (len) {
 	case 1:
@@ -98,9 +100,12 @@ static int pci_mmcfg_write(int seg, int bus, int devfn, int reg, int len, u32 va
 	if (unlikely((bus > 255) || (devfn > 255) || (reg > 4095)))
 		return -EINVAL;
 
+	if (reg < 256)
+		return pci_conf1_write(seg,bus,devfn,reg,len,value);
+
 	addr = pci_dev_base(seg, bus, devfn);
 	if (!addr)
-		return pci_conf1_write(seg,bus,devfn,reg,len,value);
+		return -EINVAL;
 
 	switch (len) {
 	case 1:
@@ -122,29 +127,6 @@ static struct pci_raw_ops pci_mmcfg = {
 	.write =	pci_mmcfg_write,
 };
 
-/* K8 systems have some devices (typically in the builtin northbridge)
-   that are only accessible using type1
-   Normally this can be expressed in the MCFG by not listing them
-   and assigning suitable _SEGs, but this isn't implemented in some BIOS.
-   Instead try to discover all devices on bus 0 that are unreachable using MM
-   and fallback for them.
-   We only do this for bus 0/seg 0 */
-static __init void unreachable_devices(void)
-{
-	int i;
-	for (i = 0; i < 32; i++) {
-		u32 val1;
-		char __iomem *addr;
-
-		pci_conf1_read(0, 0, PCI_DEVFN(i,0), 0, 4, &val1);
-		if (val1 == 0xffffffff)
-			continue;
-		addr = pci_dev_base(0, 0, PCI_DEVFN(i, 0));
-		if (addr == NULL|| readl(addr) != val1) {
-			set_bit(i, &fallback_slots);
-		}
-	}
-}
 static int __init pci_mmcfg_init(void)
 {
 	int i;
@@ -174,8 +156,6 @@ static int __init pci_mmcfg_init(void)
 		}
 		printk(KERN_INFO "PCI: Using MMCONFIG at %x\n", pci_mmcfg_config[i].base_address);
 	}
-
-	unreachable_devices();
 
 	raw_pci_ops = &pci_mmcfg;
 	pci_probe = (pci_probe & ~PCI_PROBE_MASK) | PCI_PROBE_MMCONF;

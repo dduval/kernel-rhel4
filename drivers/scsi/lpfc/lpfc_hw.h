@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hw.h 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_hw.h 3099 2007-11-29 15:38:19Z sf_support $
  */
 
 #ifndef  _H_LPFC_HW
@@ -1257,12 +1257,13 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_DEL_LD_ENTRY    0x1D
 #define MBX_RUN_PROGRAM     0x1E
 #define MBX_SET_MASK        0x20
-#define MBX_SET_SLIM        0x21
+#define MBX_SET_VARIABLE    0x21
 #define MBX_UNREG_D_ID      0x23
 #define MBX_KILL_BOARD      0x24
 #define MBX_CONFIG_FARP     0x25
 #define MBX_BEACON          0x2A	/* This is not yet part of the SLI spec.
 					   See beaconing spec in CR 12596 */
+#define MBX_WRITE_VPARMS    0x32
 #define MBX_HEARTBEAT       0x31
 #define MBX_ASYNCEVT_ENABLE 0x33
 
@@ -1274,7 +1275,7 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_REG_LOGIN64     0x93
 #define MBX_READ_LA64       0x95
 
-#define MBX_FLASH_WR_ULA    0x98
+#define MBX_WRITE_WWN       0x98
 #define MBX_SET_DEBUG       0x99
 #define MBX_LOAD_EXP_ROM    0x9C
 
@@ -2151,11 +2152,38 @@ typedef struct {
 	uint32_t rsvd1;
 } CLEAR_LA_VAR;
 
-/* Structure for MB Command SET_SLIM (33) */
+/* Structure for MB Command SET_VARIABLE (33) */
 typedef struct {
-	uint32_t varNumber;
-	uint32_t varValue;
-} SET_SLIM_VAR;
+	uint32_t uniq_code;
+	union {
+		uint32_t varValue[3];
+		struct temp_threshold {
+#ifdef __BIG_ENDIAN_BITFIELD
+			uint32_t read_enable:1;		 /* W2 B31    */
+			uint32_t write_select:3;	 /* W2 B30-28 */
+			uint32_t rsvd:18;		 /* W2 B27-10 */
+			uint32_t over_temp_warn_thsld:10;/* W2 B9-0   */
+			uint32_t rsvd1:22;		 /* W3 B31-10 */
+			uint32_t over_temp_crit_thsld:10;/* W3 B9-0   */
+			uint32_t rsvd2:6;		 /* W4 B31-26 */
+			uint32_t fan_off_temp_thsld:10;  /* W4 B25-16 */
+			uint32_t rsvd3:6;		 /* W4 B15-10 */
+			uint32_t fan_on_temp_thsld:10;	 /* W4 B9-0   */
+#else /*  __LITTLE_ENDIAN_BITFIELD */
+			uint32_t over_temp_warn_thsld:10;/* W2 B9-0   */
+			uint32_t rsvd:18;		 /* W2 B27-10 */
+			uint32_t write_select:3;	 /* W2 B30-28 */
+			uint32_t read_enable:1;		 /* W2 B31    */
+			uint32_t over_temp_crit_thsld:10;/* W3 B9-0   */
+			uint32_t rsvd1:22;		 /* W3 B31-10 */
+			uint32_t fan_on_temp_thsld:10;	 /* W4 B9-0   */
+			uint32_t rsvd3:6;		 /* W4 B15-10 */
+			uint32_t fan_off_temp_thsld:10;  /* W4 B25-16 */
+			uint32_t rsvd2:6;		 /* W4 B31-26 */
+#endif
+		} temp_val;
+	} un;
+} SET_VARIABLE_VAR;
 
 /* Values needed to set MAX_DMA_LENGTH parameter */
 #define SLIM_VAR_MAX_DMA_LENGTH 0x100506
@@ -2322,7 +2350,7 @@ typedef union {
 	UNREG_LOGIN_VAR varUnregLogin;	/* cmd = 20 (UNREG_LOGIN)    */
 	READ_LA_VAR varReadLA;	/* cmd = 21 (READ_LA(64))    */
 	CLEAR_LA_VAR varClearLA;	/* cmd = 22 (CLEAR_LA)       */
-	SET_SLIM_VAR varSetSlim;	/* cmd = 33 (SET_SLIM)       */
+	SET_VARIABLE_VAR varSetVar;	/* cmd = 33 (SET_VARIABLE)   */
 	DUMP_VAR varDmp;	/* Warm Start DUMP mbx cmd   */
 	UNREG_D_ID_VAR varUnregDID; /* cmd = 0x23 (UNREG_D_ID)   */
 	CONFIG_FARP_VAR varCfgFarp; /* cmd = 0x25 (CONFIG_FARP)  NEW_FEATURE */
@@ -2816,6 +2844,8 @@ lpfc_is_LC_HBA(unsigned short device)
 	    (device == PCI_DEVICE_ID_BSMB) ||
 	    (device == PCI_DEVICE_ID_ZMID) ||
 	    (device == PCI_DEVICE_ID_ZSMB) ||
+	    (device == PCI_DEVICE_ID_SAT_MID) ||
+	    (device == PCI_DEVICE_ID_SAT_SMB) ||
 	    (device == PCI_DEVICE_ID_RFLY))
 		return 1;
 	else

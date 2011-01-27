@@ -302,6 +302,7 @@ HYPERVISOR_physdev_op(
 	int cmd, void *arg)
 {
 	int rc = _hypercall2(int, physdev_op, cmd, arg);
+#if CONFIG_XEN_COMPAT <= 0x030002
 	if (unlikely(rc == -ENOSYS)) {
 		struct physdev_op op;
 		op.cmd = cmd;
@@ -309,6 +310,7 @@ HYPERVISOR_physdev_op(
 		rc = _hypercall1(int, physdev_op_compat, &op);
 		memcpy(arg, &op.u, sizeof(op.u));
 	}
+#endif
 	return rc;
 }
 

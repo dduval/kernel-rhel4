@@ -90,6 +90,13 @@ config X86_PM_TIMER
 config HPET_EMULATE_RTC
 	def_bool HPET_TIMER && RTC=y
 
+config TICK_DIVIDER
+	bool "Support clock division"
+	default n
+	help
+	  Supports the use of clock division allowing the real interrupt
+	  rate to be lower than the HZ setting.
+
 config GENERIC_ISA_DMA
 	bool
 	default y
@@ -510,5 +517,9 @@ source "security/Kconfig"
 source "crypto/Kconfig"
 
 source "drivers/xen/Kconfig"
+
+if !X86_64_XEN
+source "drivers/xenpv_hvm/Kconfig"
+endif
 
 source "lib/Kconfig"

@@ -26,6 +26,7 @@
 #define SECONDARY_PROCESSORS
 
 #include <linux/config.h>
+#include <linux/threads.h>
 #include <asm/processor.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
@@ -1201,6 +1202,10 @@ _GLOBAL(pseries_secondary_smp_init)
 	bl	.enable_64b_mode
 	isync
 
+	cmpwi	r3,NR_CPUS
+	bge	2f
+
+
 	/* Set up a paca value for this processor. */
 	LOADADDR(r24, paca) 		/* Get base vaddr of paca array	 */
 	mulli	r13,r3,PACA_SIZE	/* Calculate vaddr of right paca */
@@ -1226,6 +1231,10 @@ _GLOBAL(pseries_secondary_smp_init)
 #endif
 #endif
 	b 	1b			/* Loop until told to go	 */
+
+2:	HMT_LOW
+	b	2b
+
 #ifdef CONFIG_PPC_ISERIES
 _STATIC(__start_initialization_iSeries)
 	/* Clear out the BSS */

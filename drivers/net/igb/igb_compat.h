@@ -6,6 +6,9 @@
 
 typedef u32 pm_message_t;
 typedef unsigned int bool;
+#define true	1
+#define false	0
+
 typedef int __bitwise pci_power_t;
 
 
@@ -37,3 +40,4 @@ static inline void vlan_group_set_device(struct vlan_group *vg, int vlan_id,
 }
 
 #endif 
+

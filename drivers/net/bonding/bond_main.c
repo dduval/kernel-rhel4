@@ -557,6 +557,7 @@ static char *xmit_hash_policy = NULL;
 static int arp_interval = BOND_LINK_ARP_INTERV;
 static char *arp_ip_target[BOND_MAX_ARP_TARGETS] = { NULL, };
 static char *arp_validate = NULL;
+static int fail_over_mac = 0;
 
 MODULE_PARM(max_bonds, "i");
 MODULE_PARM_DESC(max_bonds, "Max number of bonded devices");
@@ -582,6 +583,8 @@ MODULE_PARM(arp_ip_target, "1-" __MODULE_STRING(BOND_MAX_ARP_TARGETS) "s");
 MODULE_PARM_DESC(arp_ip_target, "arp targets in n.n.n.n form");
 MODULE_PARM(arp_validate, "s");
 MODULE_PARM_DESC(arp_validate, "validate src/dst of ARP probes: none (default), active, backup or all");
+MODULE_PARM(fail_over_mac, "i");
+MODULE_PARM_DESC(fail_over_mac, "For active-backup, do not set all slaves to the same MAC.  0 for off (default), 1 for on.");
 
 /*----------------------------- Global variables ----------------------------*/
 
@@ -1594,7 +1597,20 @@ static void bond_change_active_slave(struct bonding *bond, struct slave *new_act
 		if (new_active) {
 			bond_set_slave_active_flags(new_active);
 		}
-		bond_send_gratuitous_arp(bond);
+		/* when bonding does not set the slave MAC address, the bond MAC
+		* address is the one of the active slave.
+		*/
+		if (new_active && bond->params.fail_over_mac)
+			memcpy(bond->dev->dev_addr,  new_active->dev->dev_addr,
+				new_active->dev->addr_len);
+		if (bond->curr_active_slave &&
+			test_bit(__LINK_STATE_LINKWATCH_PENDING,
+				&bond->curr_active_slave->dev->state)) {
+			dprintk("delaying gratuitous arp on %s\n",
+				bond->curr_active_slave->dev->name);
+			bond->send_grat_arp = 1;
+		} else
+			bond_send_gratuitous_arp(bond);
 	}
 }
 
@@ -1754,7 +1770,8 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 	int old_features = bond_dev->features;
 	int res = 0;
 
-	if (slave_dev->do_ioctl == NULL) {
+	if (!bond->params.use_carrier && slave_dev->ethtool_ops == NULL &&
+		slave_dev->do_ioctl == NULL) {
 		printk(KERN_WARNING DRV_NAME
 		       ": Warning : no link monitoring support for %s\n",
 		       slave_dev->name);
@@ -1862,23 +1879,32 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 	 */
 	new_slave->original_flags = slave_dev->flags;
 
+	res = netdev_set_master(slave_dev, bond_dev);
+	if (res) {
+		dprintk("Error %d calling netdev_set_master\n", res);
+		goto err_free;
+	}
+
 	if (app_abi_ver >= 1) {
 		/* save slave's original ("permanent") mac address for
 		 * modes that needs it, and for restoring it upon release,
 		 * and then set it to the master's address
 		 */
 		memcpy(new_slave->perm_hwaddr, slave_dev->dev_addr, ETH_ALEN);
-
-		/* set slave to master's mac address
-		 * The application already set the master's
-		 * mac address to that of the first slave
-		 */
-		memcpy(addr.sa_data, bond_dev->dev_addr, bond_dev->addr_len);
-		addr.sa_family = slave_dev->type;
-		res = slave_dev->set_mac_address(slave_dev, &addr);
-		if (res) {
-			dprintk("Error %d calling set_mac_address\n", res);
-			goto err_free;
+		if (!bond->params.fail_over_mac) {
+			/*
+			* Set slave to master's mac address.  The
+			* application already set the master's mac
+			* address to that of the first slave
+			*/
+			memcpy(addr.sa_data, bond_dev->dev_addr,
+				bond_dev->addr_len);
+			addr.sa_family = slave_dev->type;
+			res = slave_dev->set_mac_address(slave_dev, &addr);
+			if (res) {
+				dprintk("Error %d calling set_mac_address\n", res);
+				goto err_unset_master; 
+			}
 		}
 
 		/* open the slave since the application closed it */
@@ -1889,15 +1915,6 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 		}
 	}
 
-	res = netdev_set_master(slave_dev, bond_dev);
-	if (res) {
-		dprintk("Error %d calling netdev_set_master\n", res);
-		if (app_abi_ver < 1) {
-			goto err_free;
-		} else {
-			goto err_close;
-		}
-	}
 
 	new_slave->dev = slave_dev;
 	slave_dev->priv_flags |= IFF_BONDING;
@@ -1909,7 +1926,7 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 		 */
 		res = bond_alb_init_slave(bond, new_slave);
 		if (res) {
-			goto err_unset_master;
+			goto err_close;
 		}
 	}
 
@@ -2143,16 +2160,19 @@ static int bond_enslave(struct net_device *bond_dev, struct net_device *slave_de
 	return 0;
 
 /* Undo stages on error */
-err_unset_master:
-	netdev_set_master(slave_dev, NULL);
 
 err_close:
 	dev_close(slave_dev);
 
 err_restore_mac:
-	memcpy(addr.sa_data, new_slave->perm_hwaddr, ETH_ALEN);
-	addr.sa_family = slave_dev->type;
-	slave_dev->set_mac_address(slave_dev, &addr);
+	if (!bond->params.fail_over_mac) {
+		memcpy(addr.sa_data, new_slave->perm_hwaddr, ETH_ALEN);
+		addr.sa_family = slave_dev->type;
+		slave_dev->set_mac_address(slave_dev, &addr);
+	}
+
+err_unset_master:
+	netdev_set_master(slave_dev, NULL);
 
 err_free:
 	kfree(new_slave);
@@ -2323,7 +2343,7 @@ static int bond_release(struct net_device *bond_dev, struct net_device *slave_de
 	/* close slave before restoring its mac address */
 	dev_close(slave_dev);
 
-	if (app_abi_ver >= 1) {
+	if (!bond->params.fail_over_mac && app_abi_ver >= 1) {	
 		/* restore original ("permanent") mac address */
 		memcpy(addr.sa_data, slave->perm_hwaddr, ETH_ALEN);
 		addr.sa_family = slave_dev->type;
@@ -2417,7 +2437,7 @@ static int bond_release_all(struct net_device *bond_dev)
 		/* close slave before restoring its mac address */
 		dev_close(slave_dev);
 
-		if (app_abi_ver >= 1) {
+		if (!bond->params.fail_over_mac && app_abi_ver >= 1) {
 			/* restore original ("permanent") mac address*/
 			memcpy(addr.sa_data, slave->perm_hwaddr, ETH_ALEN);
 			addr.sa_family = slave_dev->type;
@@ -2642,6 +2662,17 @@ static void bond_mii_monitor(struct net_device *bond_dev)
 	 * supporting MII status, we won't do anything so that a user-space
 	 * program could monitor the link itself if needed.
 	 */
+	if (bond->send_grat_arp) {
+		if (bond->curr_active_slave && test_bit(__LINK_STATE_LINKWATCH_PENDING,
+				&bond->curr_active_slave->dev->state))
+			dprintk("Needs to send gratuitous arp but not yet\n");
+		else {
+			dprintk("sending delayed gratuitous arp on on %s\n",
+				bond->curr_active_slave->dev->name);
+			bond_send_gratuitous_arp(bond);
+			bond->send_grat_arp = 0;
+		}
+	}
 
 	read_lock(&bond->curr_slave_lock);
 	oldcurrent = bond->curr_active_slave;
@@ -3578,8 +3609,14 @@ static void bond_info_show_master(struct seq_file *seq)
 	curr = bond->curr_active_slave;
 	read_unlock(&bond->curr_slave_lock);
 
-	seq_printf(seq, "Bonding Mode: %s\n",
+	seq_printf(seq, "Bonding Mode: %s",
 		   bond_mode_name(bond->params.mode));
+
+	if (bond->params.mode == BOND_MODE_ACTIVEBACKUP &&
+		bond->params.fail_over_mac)
+			seq_printf(seq, " (fail_over_mac)");
+	
+	seq_printf(seq, "\n");
 
 	if (USES_PRIMARY(bond->params.mode)) {
 		seq_printf(seq, "Primary Slave: %s\n",
@@ -4178,42 +4215,45 @@ static struct net_device_stats *bond_get_stats(struct net_device *bond_dev)
 {
 	struct bonding *bond = bond_dev->priv;
 	struct net_device_stats *stats = &(bond->stats), *sstats;
+	struct net_device_stats local_stats;
 	struct slave *slave;
 	int i;
 
-	memset(stats, 0, sizeof(struct net_device_stats));
+	memset(&local_stats, 0, sizeof(struct net_device_stats));
 
 	read_lock_bh(&bond->lock);
 
 	bond_for_each_slave(bond, slave, i) {
 		sstats = slave->dev->get_stats(slave->dev);
 
-		stats->rx_packets += sstats->rx_packets;
-		stats->rx_bytes += sstats->rx_bytes;
-		stats->rx_errors += sstats->rx_errors;
-		stats->rx_dropped += sstats->rx_dropped;
+		local_stats.rx_packets += sstats->rx_packets;
+		local_stats.rx_bytes += sstats->rx_bytes;
+		local_stats.rx_errors += sstats->rx_errors;
+		local_stats.rx_dropped += sstats->rx_dropped;
 
-		stats->tx_packets += sstats->tx_packets;
-		stats->tx_bytes += sstats->tx_bytes;
-		stats->tx_errors += sstats->tx_errors;
-		stats->tx_dropped += sstats->tx_dropped;
+		local_stats.tx_packets += sstats->tx_packets;
+		local_stats.tx_bytes += sstats->tx_bytes;
+		local_stats.tx_errors += sstats->tx_errors;
+		local_stats.tx_dropped += sstats->tx_dropped;
 
-		stats->multicast += sstats->multicast;
-		stats->collisions += sstats->collisions;
+		local_stats.multicast += sstats->multicast;
+		local_stats.collisions += sstats->collisions;
 
-		stats->rx_length_errors += sstats->rx_length_errors;
-		stats->rx_over_errors += sstats->rx_over_errors;
-		stats->rx_crc_errors += sstats->rx_crc_errors;
-		stats->rx_frame_errors += sstats->rx_frame_errors;
-		stats->rx_fifo_errors += sstats->rx_fifo_errors;
-		stats->rx_missed_errors += sstats->rx_missed_errors;
+		local_stats.rx_length_errors += sstats->rx_length_errors;
+		local_stats.rx_over_errors += sstats->rx_over_errors;
+		local_stats.rx_crc_errors += sstats->rx_crc_errors;
+		local_stats.rx_frame_errors += sstats->rx_frame_errors;
+		local_stats.rx_fifo_errors += sstats->rx_fifo_errors;
+		local_stats.rx_missed_errors += sstats->rx_missed_errors;
 
-		stats->tx_aborted_errors += sstats->tx_aborted_errors;
-		stats->tx_carrier_errors += sstats->tx_carrier_errors;
-		stats->tx_fifo_errors += sstats->tx_fifo_errors;
-		stats->tx_heartbeat_errors += sstats->tx_heartbeat_errors;
-		stats->tx_window_errors += sstats->tx_window_errors;
+		local_stats.tx_aborted_errors += sstats->tx_aborted_errors;
+		local_stats.tx_carrier_errors += sstats->tx_carrier_errors;
+		local_stats.tx_fifo_errors += sstats->tx_fifo_errors;
+		local_stats.tx_heartbeat_errors += sstats->tx_heartbeat_errors;
+		local_stats.tx_window_errors += sstats->tx_window_errors;
 	}
+
+	memcpy(stats,&local_stats,sizeof(struct net_device_stats));
 
 	read_unlock_bh(&bond->lock);
 
@@ -4508,6 +4548,13 @@ static int bond_set_mac_address(struct net_device *bond_dev, void *addr)
 	int i;
 
 	dprintk("bond=%p, name=%s\n", bond, (bond_dev ? bond_dev->name : "None"));
+	
+	/*
+	* If fail_over_mac is enabled, do nothing and return success.
+	* Returning an error causes ifenslave to fail.
+	*/
+	if (bond->params.fail_over_mac)
+		return 0;
 
 	if (!is_valid_ether_addr(sa->sa_data)) {
 		return -EADDRNOTAVAIL;
@@ -5230,6 +5277,11 @@ static int bond_check_params(struct bond_params *params)
 		primary = NULL;
 	}
 
+	if (fail_over_mac && (bond_mode != BOND_MODE_ACTIVEBACKUP))
+		printk(KERN_WARNING DRV_NAME
+			": Warning: fail_over_mac only affects "
+			"active-backup mode.\n");
+
 	/* fill params struct with the proper values */
 	params->mode = bond_mode;
 	params->xmit_policy = xmit_hashtype;
@@ -5241,6 +5293,7 @@ static int bond_check_params(struct bond_params *params)
 	params->use_carrier = use_carrier;
 	params->lacp_fast = lacp_fast;
 	params->primary[0] = 0;
+	params->fail_over_mac = fail_over_mac;
 
 	if (primary) {
 		strncpy(params->primary, primary, IFNAMSIZ);

@@ -1166,7 +1166,7 @@ static int packet_getname(struct socket *sock, struct sockaddr *uaddr,
 		sll->sll_hatype = 0;	/* Bad: we have no ARPHRD_UNSPEC */
 		sll->sll_halen = 0;
 	}
-	*uaddr_len = sizeof(*sll);
+	*uaddr_len = offsetof(struct sockaddr_ll, sll_addr) + sll->sll_halen;
 
 	return 0;
 }

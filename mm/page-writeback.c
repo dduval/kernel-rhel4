@@ -21,6 +21,7 @@
 #include <linux/writeback.h>
 #include <linux/init.h>
 #include <linux/backing-dev.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/blkdev.h>
 #include <linux/mpage.h>
 #include <linux/percpu.h>
@@ -675,8 +676,10 @@ int __set_page_dirty_nobuffers(struct page *page)
 			mapping = page_mapping(page);
 			if (page_mapping(page)) { /* Race with truncate? */
 				BUG_ON(page_mapping(page) != mapping);
-				if (!mapping->backing_dev_info->memory_backed)
+				if (!mapping->backing_dev_info->memory_backed) {
 					inc_page_state(nr_dirty);
+					task_io_account_write(PAGE_CACHE_SIZE);
+				}
 				radix_tree_tag_set(&mapping->page_tree,
 					page_index(page), PAGECACHE_TAG_DIRTY);
 			}

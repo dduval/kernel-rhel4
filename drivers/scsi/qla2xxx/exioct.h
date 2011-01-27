@@ -744,7 +744,11 @@ typedef struct _EXT_HBA_PORT_STAT {
 	uint64_t  ControlRequestCount;		/* 8 */
 	uint64_t  InputMBytes;			/* 8 */
 	uint64_t  OutputMBytes;			/* 8 */
-	UINT32    Reserved[6];			/* 24 */
+	UINT32	  TxFrames;			/* 4 */
+	UINT32    RxFrames;			/* 4 */
+	UINT32    NosCount;			/* 4 */
+	UINT32    DumpedFrames;			/* 4 */
+	UINT32    Reserved[2];			/* 8 */
 } EXT_HBA_PORT_STAT, *PEXT_HBA_PORT_STAT;	/* 112 */
 
 

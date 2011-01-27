@@ -13,4 +13,7 @@ typedef int __bitwise pci_power_t;
 
 #define pci_choose_state(pdev, state)	(state)
 
+#define ADVERTISED_Pause	(1 << 13)
+#define ADVERTISED_Asym_Pause	(1 << 14)
+
 #endif /* __R8169_COMPAT_H__ */

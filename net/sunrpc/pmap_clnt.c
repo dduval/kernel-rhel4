@@ -73,9 +73,6 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 		task->tk_status = PTR_ERR(pmap_clnt);
 		goto bailout;
 	}
-	/* use the soft setting from the orignal clnt */
-	pmap_clnt->cl_softrtry = clnt->cl_softrtry;
-
 	/* Don't need reserved ports to get ports from portmappers */
 	pmap_clnt->cl_xprt->resvport = 0;
 	task->tk_status = 0;
@@ -224,6 +221,13 @@ pmap_create(char *hostname, struct sockaddr_in *srvaddr, int proto)
 	if (IS_ERR(clnt)) {
 		xprt_destroy(xprt);
 	} else {
+		/*
+		 * portmap calls must *always* be soft. The RPC engine will
+		 * spawn a new one whenever it notices that the client is
+		 * still unbound after the parent task has a major timeout.
+		 * If portmap calls are hard then many duplicates can stack
+		 * up in the RPC queue.
+		 */
 		clnt->cl_softrtry = 1;
 		clnt->cl_chatty   = 1;
 		clnt->cl_oneshot  = 1;

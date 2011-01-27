@@ -1,3 +1,48 @@
+/*
+ *  linux/drivers/message/fusion/csmi/csmisas.c
+ *      For use with LSI Logic PCI chip/adapter(s)
+ *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *
+ *  Copyright (c) 1999-2007 LSI Logic Corporation
+ *  (mailto:mpt_linux_developer@lsi.com)
+ */
+/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
+/*
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; version 2 of the License.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    NO WARRANTY
+    THE PROGRAM IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OR
+    CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED INCLUDING, WITHOUT
+    LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE, NON-INFRINGEMENT,
+    MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE. Each Recipient is
+    solely responsible for determining the appropriateness of using and
+    distributing the Program and assumes all risks associated with its
+    exercise of rights under this Agreement, including but not limited to
+    the risks and costs of program errors, damage to or loss of data,
+    programs or equipment, and unavailability or interruption of operations.
+
+    DISCLAIMER OF LIABILITY
+    NEITHER RECIPIENT NOR ANY CONTRIBUTORS SHALL HAVE ANY LIABILITY FOR ANY
+    DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING WITHOUT LIMITATION LOST PROFITS), HOWEVER CAUSED AND
+    ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+    TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+    USE OR DISTRIBUTION OF THE PROGRAM OR THE EXERCISE OF ANY RIGHTS GRANTED
+    HEREUNDER, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES
+
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+*/
+/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
+
 #define MPT_CSMI_DESCRIPTION "LSI Logic Corporation: Fusion MPT Driver "MPT_LINUX_VERSION_COMMON
 #define csmisas_is_this_sas_cntr(ioc) (ioc->bus_type == SAS) ? 1 : 0
 
@@ -231,16 +276,8 @@ csmisas_get_device_component_by_sas_addr(MPT_ADAPTER *ioc, u64 sas_address)
 
 	down(&ioc->sas_device_info_mutex);
 	list_for_each_entry(p, &ioc->sas_device_info_list, list) {
-		dcsmisasprintk((KERN_ERR
-		    ":%s()"
-		    " looking for SASAddress=%llX entry SASAddress=%llX\n",
-		    __FUNCTION__, sas_address, p->sas_address));
 		if (p->sas_address == sas_address) {
 			sas_info = p;
-			dcsmisasprintk((KERN_ERR
-				":%s()"
-				" found SASAddress=%llX\n",
-				__FUNCTION__, sas_address));
 			goto out;
 		}
 	}
@@ -263,41 +300,26 @@ csmisas_get_device_component_by_sas_addr(MPT_ADAPTER *ioc, u64 sas_address)
  *	non-zero, failure
  **/
 static int
-csmisas_send_command_wait(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, int timeout)
+csmisas_send_command_wait(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, unsigned long timeout)
 {
 	int rc;
-	int mf_timeout;
+	unsigned long timeleft;
 
-	mf_timeout = max_t(int, MPT_IOCTL_DEFAULT_TIMEOUT, timeout);
-	INITIALIZE_IOCTL_STATUS(ioc->ioctl->status)
-	ioc->ioctl->wait_done = 0;
+	timeout = max_t(unsigned long, MPT_IOCTL_DEFAULT_TIMEOUT, timeout);
 	rc = 0;
+	timeleft = 0;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
-	ioc->ioctl->timer.expires = jiffies + (MPT_JIFFY * mf_timeout);
-	ioc->ioctl->status |= MPT_IOCTL_STATUS_TIMER_ACTIVE;
-	ADD_TIMER(&ioc->ioctl->timer);
-#endif
-
+	INITIALIZE_IOCTL_STATUS(ioc->ioctl_cmds.status)
+	ioc->ioctl_cmds.wait_done = 0;
 	mpt_put_msg_frame(mptctl_id, ioc, mf);
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
-	WAIT_EVENT(mptctl_wait, ioc->ioctl->wait_done);
-#else
 	if ((wait_event_timeout(mptctl_wait,
-	    ioc->ioctl->wait_done == 1, HZ * mf_timeout) <=0) &&
-	    ioc->ioctl->wait_done != 1 ) {
+	    ioc->ioctl_cmds.wait_done == 1, HZ * timeout) <=0) &&
+	    ioc->ioctl_cmds.wait_done != 1 ) {
+		mptctl_timeout_expired(ioc,mf);
 		mpt_free_msg_frame(ioc, mf);
-		mptctl_timeout_expired(ioc->ioctl);
 		rc = -1;
 	}
-#endif
-
-	if (rc != 0)
-		dfailprintk((KERN_ERR "%s@%d::%s() - "
-		    "%s IOCTL timeout (%d)\n",
-		    __FILE__, __LINE__, __FUNCTION__,
-		    ioc->name, mf_timeout));
 
 	return rc;
 }
@@ -316,125 +338,28 @@ csmisas_send_command_wait(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, int timeout)
  *	non-zero, failure
  **/
 static int
-csmisas_send_handshake_wait(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, int timeout)
+csmisas_send_handshake_wait(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, unsigned long timeout)
 {
 	int rc;
-	int mf_timeout;
+	unsigned long timeleft;
 
-	mf_timeout = max_t(int, MPT_IOCTL_DEFAULT_TIMEOUT, timeout);
-	INITIALIZE_IOCTL_STATUS(ioc->ioctl->status)
-	ioc->ioctl->wait_done = 0;
+	timeout = max_t(unsigned long, MPT_IOCTL_DEFAULT_TIMEOUT, timeout);
 	rc = 0;
+	timeleft = 0;
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
-	ioc->ioctl->timer.expires = jiffies + (MPT_JIFFY * mf_timeout);
-	ioc->ioctl->status |= MPT_IOCTL_STATUS_TIMER_ACTIVE;
-	ADD_TIMER(&ioc->ioctl->timer);
-#endif
-
-	rc = mpt_send_handshake_request(mptctl_id, ioc,
-	    sizeof(SCSITaskMgmt_t), (u32*)mf,timeout, CAN_SLEEP);
+	INITIALIZE_IOCTL_STATUS(ioc->taskmgmt_cmds.status)
+	ioc->taskmgmt_cmds.wait_done = 0;
+	rc = mpt_send_handshake_request(mptctl_taskmgmt_id, ioc,
+	    sizeof(SCSITaskMgmt_t), (u32*)mf, timeout, CAN_SLEEP);
 	if (rc != 0)
 		return rc;
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
-	WAIT_EVENT(mptctl_wait, ioc->ioctl->wait_done);
-#else
-	if ((wait_event_timeout(mptctl_wait,
-	    ioc->ioctl->wait_done == 1, HZ * mf_timeout) <=0) &&
-	    ioc->ioctl->wait_done != 1 ) {
+	if ((wait_event_timeout(mptctl_taskmgmt_wait,
+	    ioc->taskmgmt_cmds.wait_done == 1, HZ * timeout) <=0) &&
+	    ioc->taskmgmt_cmds.wait_done != 1 ) {
+		mptctl_timeout_expired(ioc, mf);
 		mpt_free_msg_frame(ioc, mf);
-		mptctl_timeout_expired(ioc->ioctl);
 		rc = -1;
 	}
-#endif
-
-	if (rc != 0)
-		dfailprintk((KERN_ERR "%s@%d::%s() - "
-		    "%s IOCTL timeout (%d)\n", __FILE__, __LINE__,
-		    __FUNCTION__, ioc->name, mf_timeout));
-
-	return rc;
-}
-
-/**
- *	csmisas_get_manufacture_pg0 - Manufacturing Page 0.
- *	@ioc: Pointer to MPT_ADAPTER structure
- *	@mfgPage0: read only info set at manufacturing time
- *
- *	Return: 0 for success
- *	-ENOMEM if no memory available
- *		-EPERM if not allowed due to ISR context
- *		-EAGAIN if no msg frames currently available
- *		-EFAULT for non-successful reply or no reply (timeout)
- **/
-static int
-csmisas_get_manufacture_pg0(MPT_ADAPTER *ioc, ManufacturingPage0_t *mfgPage0)
-{
-
-	ConfigPageHeader_t	 hdr;
-	CONFIGPARMS		 cfg;
-	ManufacturingPage0_t	 *buffer = NULL;
-	dma_addr_t		 dma_handle;
-	int			 data_sz;
-	int			 rc;
-
-	/*
-	 * Get Manufacturing Page 0 header
-	 */
-	data_sz = 0;
-	hdr.PageVersion = MPI_MANUFACTURING0_PAGEVERSION;
-	hdr.PageLength = 0;
-	hdr.PageNumber = 0;
-	hdr.PageType = MPI_CONFIG_PAGETYPE_MANUFACTURING;
-	cfg.cfghdr.hdr = &hdr;
-	cfg.physAddr = -1;
-	cfg.action = MPI_CONFIG_ACTION_PAGE_HEADER;
-	cfg.dir = 0;
-	cfg.pageAddr = 0;
-	cfg.timeout = 0;
-
-	if ((rc = mpt_config(ioc, &cfg)) != 0)
-		goto get_manufacture_pg0_out;
-
-	if (hdr.PageLength == 0) {
-		rc = -EFAULT;
-		goto get_manufacture_pg0_out;
-	}
-
-	data_sz = hdr.PageLength * 4;
-	buffer = (ManufacturingPage0_t *) pci_alloc_consistent(ioc->pcidev,
-		data_sz, &dma_handle);
-	if (!buffer) {
-		rc = -ENOMEM;
-		goto get_manufacture_pg0_out;
-	}
-
-	memset((u8 *)buffer, 0, data_sz);
-	cfg.physAddr = dma_handle;
-	cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
-
-	if ((rc = mpt_config(ioc, &cfg)) != 0)
-		goto get_manufacture_pg0_out;
-
-	strncpy(mfgPage0->ChipName, buffer->ChipName, 16);
-	strncpy(mfgPage0->ChipRevision, buffer->ChipRevision, 8);
-	strncpy(mfgPage0->BoardName, buffer->BoardName, 16);
-	strncpy(mfgPage0->BoardAssembly, buffer->BoardAssembly, 16);
-	strncpy(mfgPage0->BoardTracerNumber, buffer->BoardTracerNumber, 16);
-
-	dcsmisasprintk(("ChipName=%s\n",buffer->ChipName));
-	dcsmisasprintk(("ChipRevision=%s\n",buffer->ChipRevision));
-	dcsmisasprintk(("BoardName=%s\n",buffer->BoardName));
-	dcsmisasprintk(("BoardAssembly=%s\n",buffer->BoardAssembly));
-	dcsmisasprintk(("BoardTracerNumber=%s\n",buffer->BoardTracerNumber));
-
- get_manufacture_pg0_out:
-
-	if (buffer)
-		pci_free_consistent(ioc->pcidev, data_sz,
-		    (u8 *) buffer, dma_handle);
-
 
 	return rc;
 }
@@ -667,8 +592,6 @@ csmisas_get_driver_info(unsigned long arg)
 	MPT_ADAPTER	*ioc = NULL;
 	int		iocnum;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_DRIVER_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 	      "Unable to read in csmi_sas_get_driver_info_buffer struct @ %p\n",
@@ -678,18 +601,18 @@ csmisas_get_driver_info(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Fill in the data and return the structure to the calling
 	 * program
@@ -719,7 +642,7 @@ csmisas_get_driver_info(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -739,12 +662,7 @@ csmisas_get_cntlr_config(unsigned long arg)
 	CSMI_SAS_CNTLR_CONFIG_BUFFER	karg;
 	MPT_ADAPTER	*ioc = NULL;
 	int		iocnum;
-	int		ii,msize,psize;
-	unsigned int 	reg;
-	u32      	l;
-	ManufacturingPage0_t mfgPage0;
-
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
+	u64		mem_phys;
 
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_CNTLR_CONFIG_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
@@ -755,19 +673,19 @@ csmisas_get_cntlr_config(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-	      "%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_INVALID_PARAMETER;
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Clear the struct before filling in data. */
 	memset( &karg.Configuration, 0, sizeof(CSMI_SAS_CNTLR_CONFIG));
@@ -776,38 +694,12 @@ csmisas_get_cntlr_config(unsigned long arg)
 	 * program
 	 */
 
-	/* Get Base IO and Mem Mapped Addresses. */
-msize = psize = 0;
-for(ii=0; ii < DEVICE_COUNT_RESOURCE; ii++) {
-		reg = PCI_BASE_ADDRESS_0 + (ii << 2);
-		pci_read_config_dword(ioc->pcidev, reg, &l);
-
-		if ((l & PCI_BASE_ADDRESS_SPACE) ==
-                       PCI_BASE_ADDRESS_SPACE_MEMORY) {
-		    if(msize)
-                         continue;
-	            msize=1;
-		karg.Configuration.BaseMemoryAddress.uLowPart =
-			    l & PCI_BASE_ADDRESS_MEM_MASK;
-
-		if ((l & (PCI_BASE_ADDRESS_SPACE |
-                   PCI_BASE_ADDRESS_MEM_TYPE_MASK))
-                   == (PCI_BASE_ADDRESS_SPACE_MEMORY |
-                   PCI_BASE_ADDRESS_MEM_TYPE_64)) {
-                     pci_read_config_dword(ioc->pcidev, reg+4, &l);
-                     karg.Configuration.BaseMemoryAddress.uHighPart = l;
-                  }
-               }
-
-
-                  else {
-		        if(psize)
-                       continue;
-                       psize=1;
-			karg.Configuration.uBaseIoAddress =
-			    l & PCI_BASE_ADDRESS_IO_MASK;
-		}
-
+	karg.Configuration.uBaseIoAddress = ioc->pio_mem_phys;
+	karg.Configuration.BaseMemoryAddress.uLowPart = ioc->mem_phys;
+	if (sizeof(ioc->mem_phys) == sizeof(u64)) {
+		mem_phys = ioc->mem_phys;
+		karg.Configuration.BaseMemoryAddress.uHighPart =
+		    (u32)(mem_phys >> 32);
 	}
 
 	karg.Configuration.uBoardID = (ioc->pcidev->subsystem_device << 16) |
@@ -825,9 +717,7 @@ for(ii=0; ii < DEVICE_COUNT_RESOURCE; ii++) {
 	karg.Configuration.BusAddress.PciAddress.bFunctionNumber =
 	    PCI_FUNC(ioc->pcidev->devfn);
 	karg.Configuration.BusAddress.PciAddress.bReserved = 0;
-	if (!csmisas_get_manufacture_pg0(ioc, &mfgPage0))
-		memcpy( &karg.Configuration.szSerialNumber,
-		    mfgPage0.BoardTracerNumber, 16 );
+	memcpy( &karg.Configuration.szSerialNumber, ioc->board_tracer, 16 );
 	karg.Configuration.usMajorRevision = ioc->facts.FWVersion.Struct.Major;
 	karg.Configuration.usMinorRevision = ioc->facts.FWVersion.Struct.Minor;
 	karg.Configuration.usBuildRevision = ioc->facts.FWVersion.Struct.Unit;
@@ -864,7 +754,7 @@ for(ii=0; ii < DEVICE_COUNT_RESOURCE; ii++) {
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -886,8 +776,6 @@ csmisas_get_cntlr_status(unsigned long arg)
 	int			iocnum;
 	int			rc;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_CNTLR_STATUS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 	     "Unable to read in csmi_sas_get_cntlr_status_buffer struct @ %p\n",
@@ -897,18 +785,18 @@ csmisas_get_cntlr_status(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Fill in the data and return the structure to the calling
 	 * program
@@ -949,7 +837,7 @@ csmisas_get_cntlr_status(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -965,7 +853,7 @@ static int
 csmisas_get_phy_info(unsigned long arg)
 {
 	CSMI_SAS_PHY_INFO_BUFFER __user *uarg = (void __user *) arg;
-	CSMI_SAS_PHY_INFO_BUFFER  karg;
+	CSMI_SAS_PHY_INFO_BUFFER  *karg;
 	MPT_ADAPTER		*ioc = NULL;
 	ConfigExtendedPageHeader_t  hdr;
 	CONFIGPARMS		cfg;
@@ -981,39 +869,55 @@ csmisas_get_phy_info(unsigned long arg)
 	int			ii;
 	u64			sas_address;
 	struct mptsas_devinfo	device_info;
+	int			memory_pages;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
 	sasIoUnitPg0=NULL;
 	sasPhyPg0=NULL;
 	sasIoUnitPg0_data_sz=0;
 	sasPhyPg0_data_sz=0;
 
-	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_PHY_INFO_BUFFER))) {
+	memory_pages = get_order(sizeof(CSMI_SAS_PHY_INFO_BUFFER));
+	karg = (CSMI_SAS_PHY_INFO_BUFFER *)__get_free_pages(
+		GFP_KERNEL, memory_pages);
+	if (!karg){
+		printk(KERN_ERR "%s@%d::%s() - "
+			"Unable to malloc CSMI_SAS_PHY_INFO_BUFFER "
+			"malloc_data_sz=%d memory_pages=%d\n",
+			__FILE__, __LINE__, __FUNCTION__,
+			(int)sizeof(CSMI_SAS_PHY_INFO_BUFFER), memory_pages);
+		return -ENOMEM;
+	}
+
+	memset(karg, 0, sizeof(*karg));
+
+	if (copy_from_user(karg, uarg, sizeof(CSMI_SAS_PHY_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 		"Unable to read in csmisas_get_phy_info_buffer struct @ %p\n",
 		    __FILE__, __LINE__, __FUNCTION__, uarg);
+		free_pages((unsigned long)karg, memory_pages);
 		return -EFAULT;
 	}
 
-	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
+	if (((iocnum = mpt_verify_adapter(karg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Fill in the data and return the structure to the calling
 	 * program
 	 */
-	memset(&karg.Information, 0, sizeof(CSMI_SAS_PHY_INFO));
 
 	/* Issue a config request to get the number of phys
 	 */
@@ -1036,10 +940,10 @@ csmisas_get_phy_info(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    ": FAILED: MPI_SASIOUNITPAGE0_PAGEVERSION: HEADER\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		dcsmisasprintk(ioc, printk(": rc=%x\n",rc));
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto sas_get_phy_info_exit;
 	}
 
@@ -1047,8 +951,8 @@ csmisas_get_phy_info(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": hdr.ExtPageLength == 0\n"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		dcsmisasprintk(ioc, printk(KERN_ERR ": hdr.ExtPageLength == 0\n"));
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto sas_get_phy_info_exit;
 	}
 
@@ -1059,8 +963,8 @@ csmisas_get_phy_info(unsigned long arg)
 	    sasIoUnitPg0_data_sz, &sasIoUnitPg0_dma);
 
 	if (!sasIoUnitPg0) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto sas_get_phy_info_exit;
 	}
 
@@ -1073,54 +977,54 @@ csmisas_get_phy_info(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    ": FAILED: MPI_SASIOUNITPAGE0_PAGEVERSION: PAGE\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto sas_get_phy_info_exit;
 	}
 
 	/* Number of Phys. */
-	karg.Information.bNumberOfPhys = sasIoUnitPg0->NumPhys;
+	karg->Information.bNumberOfPhys = sasIoUnitPg0->NumPhys;
 
 	/* Fill in information for each phy. */
-	for (ii = 0; ii < karg.Information.bNumberOfPhys; ii++) {
+	for (ii = 0; ii < karg->Information.bNumberOfPhys; ii++) {
 
 /* EDM : dump IO Unit Page 0 data*/
-		dcsmisasprintk(("---- IO UNIT PAGE 0 ------------\n"));
-		dcsmisasprintk(("Handle=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "---- IO UNIT PAGE 0 ------------\n"));
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Handle=0x%X\n",
 		    le16_to_cpu(sasIoUnitPg0->PhyData[ii].AttachedDeviceHandle)));
-		dcsmisasprintk(("Controller Handle=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Controller Handle=0x%X\n",
 		    le16_to_cpu(sasIoUnitPg0->PhyData[ii].ControllerDevHandle)));
-		dcsmisasprintk(("Port=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Port=0x%X\n",
 		    sasIoUnitPg0->PhyData[ii].Port));
-		dcsmisasprintk(("Port Flags=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Port Flags=0x%X\n",
 		    sasIoUnitPg0->PhyData[ii].PortFlags));
-		dcsmisasprintk(("PHY Flags=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "PHY Flags=0x%X\n",
 		    sasIoUnitPg0->PhyData[ii].PhyFlags));
-		dcsmisasprintk(("Negotiated Link Rate=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Negotiated Link Rate=0x%X\n",
 		    sasIoUnitPg0->PhyData[ii].NegotiatedLinkRate));
-		dcsmisasprintk(("Controller PHY Device Info=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Controller PHY Device Info=0x%X\n",
 		    le32_to_cpu(sasIoUnitPg0->PhyData[ii].ControllerPhyDeviceInfo)));
-		dcsmisasprintk(("DiscoveryStatus=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "DiscoveryStatus=0x%X\n",
 		    le32_to_cpu(sasIoUnitPg0->PhyData[ii].DiscoveryStatus)));
-		dcsmisasprintk(("\n"));
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "\n"));
 /* EDM : debug data */
 
 		/* PHY stuff. */
-		karg.Information.Phy[ii].bPortIdentifier =
+		karg->Information.Phy[ii].bPortIdentifier =
 		    sasIoUnitPg0->PhyData[ii].Port;
 
 		/* Get the negotiated link rate for the phy. */
 		switch (sasIoUnitPg0->PhyData[ii].NegotiatedLinkRate) {
 
 		case MPI_SAS_IOUNIT0_RATE_PHY_DISABLED:
-			karg.Information.Phy[ii].bNegotiatedLinkRate =
+			karg->Information.Phy[ii].bNegotiatedLinkRate =
 			    CSMI_SAS_PHY_DISABLED;
 			break;
 
 		case MPI_SAS_IOUNIT0_RATE_FAILED_SPEED_NEGOTIATION:
-			karg.Information.Phy[ii].bNegotiatedLinkRate =
+			karg->Information.Phy[ii].bNegotiatedLinkRate =
 			    CSMI_SAS_LINK_RATE_FAILED;
 			break;
 
@@ -1128,28 +1032,28 @@ csmisas_get_phy_info(unsigned long arg)
 			break;
 
 		case MPI_SAS_IOUNIT0_RATE_1_5:
-			karg.Information.Phy[ii].bNegotiatedLinkRate =
+			karg->Information.Phy[ii].bNegotiatedLinkRate =
 			    CSMI_SAS_LINK_RATE_1_5_GBPS;
 			break;
 
 		case MPI_SAS_IOUNIT0_RATE_3_0:
-			karg.Information.Phy[ii].bNegotiatedLinkRate =
+			karg->Information.Phy[ii].bNegotiatedLinkRate =
 			    CSMI_SAS_LINK_RATE_3_0_GBPS;
 			break;
 
 		case MPI_SAS_IOUNIT0_RATE_UNKNOWN:
 		default:
-			karg.Information.Phy[ii].bNegotiatedLinkRate =
+			karg->Information.Phy[ii].bNegotiatedLinkRate =
 			    CSMI_SAS_LINK_RATE_UNKNOWN;
 			break;
 		}
 
 		if (sasIoUnitPg0->PhyData[ii].PortFlags &
 		    MPI_SAS_IOUNIT0_PORT_FLAGS_DISCOVERY_IN_PROGRESS) {
-			karg.Information.Phy[ii].bAutoDiscover =
+			karg->Information.Phy[ii].bAutoDiscover =
 			    CSMI_SAS_DISCOVER_IN_PROGRESS;
 		} else {
-			karg.Information.Phy[ii].bAutoDiscover =
+			karg->Information.Phy[ii].bAutoDiscover =
 			    CSMI_SAS_DISCOVER_COMPLETE;
 		}
 
@@ -1172,16 +1076,16 @@ csmisas_get_phy_info(unsigned long arg)
 		cfg.timeout = MPT_IOCTL_DEFAULT_TIMEOUT;
 
 		if ((rc = mpt_config(ioc, &cfg)) != 0) {
-			dcsmisasprintk((
+			dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: MPI_SASPHY0_PAGEVERSION: HEADER\n"));
-			dcsmisasprintk((": rc=%x\n",rc));
-			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+			dcsmisasprintk(ioc, printk(": rc=%x\n",rc));
+			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto sas_get_phy_info_exit;
 		}
 
 		if (hdr.ExtPageLength == 0) {
-			dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
-			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+			dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
+			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto sas_get_phy_info_exit;
 		}
 
@@ -1192,8 +1096,8 @@ csmisas_get_phy_info(unsigned long arg)
 		    ioc->pcidev, sasPhyPg0_data_sz, &sasPhyPg0_dma);
 
 		if (! sasPhyPg0) {
-			dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
-			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+			dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
+			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto sas_get_phy_info_exit;
 		}
 
@@ -1202,10 +1106,10 @@ csmisas_get_phy_info(unsigned long arg)
 		cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
 
 		if ((rc = mpt_config(ioc, &cfg)) != 0) {
-			dcsmisasprintk((
+			dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: MPI_SASPHY0_PAGEVERSION: PAGE\n"));
-			dcsmisasprintk((": rc=%x\n",rc));
-			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+			dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
+			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			pci_free_consistent(ioc->pcidev, sasPhyPg0_data_sz,
 			    (u8 *) sasPhyPg0, sasPhyPg0_dma);
 			goto sas_get_phy_info_exit;
@@ -1213,24 +1117,24 @@ csmisas_get_phy_info(unsigned long arg)
 
 /* EDM : dump PHY Page 0 data*/
 		memcpy(&sas_address, &sasPhyPg0->SASAddress, sizeof(u64));
-		dcsmisasprintk(("---- SAS PHY PAGE 0 ------------\n"));
-		dcsmisasprintk(("Handle=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "---- SAS PHY PAGE 0 ------------\n"));
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Handle=0x%X\n",
 		    le16_to_cpu(sasPhyPg0->AttachedDevHandle)));
-		dcsmisasprintk(("SAS Address=0x%llX\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "SAS Address=0x%llX\n",
 		    (unsigned long long)sas_address));
-		dcsmisasprintk(("Attached PHY Identifier=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Attached PHY Identifier=0x%X\n",
 		    sasPhyPg0->AttachedPhyIdentifier));
-		dcsmisasprintk(("Attached Device Info=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Attached Device Info=0x%X\n",
 		    le32_to_cpu(sasPhyPg0->AttachedDeviceInfo)));
-		dcsmisasprintk(("Programmed Link Rate=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Programmed Link Rate=0x%X\n",
 		    sasPhyPg0->ProgrammedLinkRate));
-		dcsmisasprintk(("Hardware Link Rate=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Hardware Link Rate=0x%X\n",
 		    sasPhyPg0->HwLinkRate));
-		dcsmisasprintk(("Change Count=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "Change Count=0x%X\n",
 		    sasPhyPg0->ChangeCount));
-		dcsmisasprintk(("PHY Info=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "PHY Info=0x%X\n",
 		    le32_to_cpu(sasPhyPg0->PhyInfo)));
-		dcsmisasprintk(("\n"));
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "\n"));
 /* EDM : debug data */
 
 		/* save the data */
@@ -1247,12 +1151,12 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_PHY0_PRATE_MAX_RATE_MASK) {
 
 		case MPI_SAS_PHY0_HWRATE_MAX_RATE_1_5:
-			karg.Information.Phy[ii].bMaximumLinkRate =
+			karg->Information.Phy[ii].bMaximumLinkRate =
 			    CSMI_SAS_LINK_RATE_1_5_GBPS;
 			break;
 
 		case MPI_SAS_PHY0_PRATE_MAX_RATE_3_0:
-			karg.Information.Phy[ii].bMaximumLinkRate =
+			karg->Information.Phy[ii].bMaximumLinkRate =
 			    CSMI_SAS_LINK_RATE_3_0_GBPS;
 			break;
 		default:
@@ -1264,12 +1168,12 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_PHY0_PRATE_MAX_RATE_MASK) {
 
 		case MPI_SAS_PHY0_PRATE_MAX_RATE_1_5:
-			karg.Information.Phy[ii].bMaximumLinkRate |=
+			karg->Information.Phy[ii].bMaximumLinkRate |=
 			    (CSMI_SAS_PROGRAMMED_LINK_RATE_1_5_GBPS << 4);
 			break;
 
 		case MPI_SAS_PHY0_PRATE_MAX_RATE_3_0:
-			karg.Information.Phy[ii].bMaximumLinkRate |=
+			karg->Information.Phy[ii].bMaximumLinkRate |=
 			    (CSMI_SAS_PROGRAMMED_LINK_RATE_3_0_GBPS << 4);
 			break;
 		default:
@@ -1281,12 +1185,12 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_PHY0_HWRATE_MIN_RATE_MASK) {
 
 		case MPI_SAS_PHY0_HWRATE_MIN_RATE_1_5:
-			karg.Information.Phy[ii].bMinimumLinkRate =
+			karg->Information.Phy[ii].bMinimumLinkRate =
 			    CSMI_SAS_LINK_RATE_1_5_GBPS;
 			break;
 
 		case MPI_SAS_PHY0_PRATE_MIN_RATE_3_0:
-			karg.Information.Phy[ii].bMinimumLinkRate =
+			karg->Information.Phy[ii].bMinimumLinkRate =
 			    CSMI_SAS_LINK_RATE_3_0_GBPS;
 			break;
 		default:
@@ -1298,21 +1202,21 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_PHY0_PRATE_MIN_RATE_MASK) {
 
 		case MPI_SAS_PHY0_PRATE_MIN_RATE_1_5:
-			karg.Information.Phy[ii].bMinimumLinkRate |=
+			karg->Information.Phy[ii].bMinimumLinkRate |=
 			    (CSMI_SAS_PROGRAMMED_LINK_RATE_1_5_GBPS << 4);
 			break;
 
 		case MPI_SAS_PHY0_PRATE_MIN_RATE_3_0:
-			karg.Information.Phy[ii].bMinimumLinkRate |=
+			karg->Information.Phy[ii].bMinimumLinkRate |=
 			    (CSMI_SAS_PROGRAMMED_LINK_RATE_3_0_GBPS << 4);
 			break;
 		default:
 			break;
 		}
 
-		karg.Information.Phy[ii].bPhyChangeCount = sasPhyPg0->ChangeCount;
+		karg->Information.Phy[ii].bPhyChangeCount = sasPhyPg0->ChangeCount;
 		if( sasPhyPg0->PhyInfo & MPI_SAS_PHY0_PHYINFO_VIRTUAL_PHY )
-			karg.Information.Phy[ii].bPhyFeatures = CSMI_SAS_PHY_VIRTUAL_SMP;
+			karg->Information.Phy[ii].bPhyFeatures = CSMI_SAS_PHY_VIRTUAL_SMP;
 
 		/* Fill in Attached Device
 		 * Initiator Port Protocol.
@@ -1320,18 +1224,18 @@ csmisas_get_phy_info(unsigned long arg)
 		 * More than one bit can be set.
 		 */
 		protocol = le32_to_cpu(sasPhyPg0->AttachedDeviceInfo) & 0x78;
-		karg.Information.Phy[ii].Attached.bInitiatorPortProtocol = 0;
+		karg->Information.Phy[ii].Attached.bInitiatorPortProtocol = 0;
 		if (protocol & MPI_SAS_DEVICE_INFO_SSP_INITIATOR)
-		      karg.Information.Phy[ii].Attached.bInitiatorPortProtocol =
+		      karg->Information.Phy[ii].Attached.bInitiatorPortProtocol =
 			    CSMI_SAS_PROTOCOL_SSP;
 		if (protocol & MPI_SAS_DEVICE_INFO_STP_INITIATOR)
-		     karg.Information.Phy[ii].Attached.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Attached.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_STP;
 		if (protocol & MPI_SAS_DEVICE_INFO_SMP_INITIATOR)
-		     karg.Information.Phy[ii].Attached.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Attached.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SMP;
 		if (protocol & MPI_SAS_DEVICE_INFO_SATA_HOST)
-		     karg.Information.Phy[ii].Attached.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Attached.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SATA;
 
 		/* Fill in Phy Target Port
@@ -1339,18 +1243,18 @@ csmisas_get_phy_info(unsigned long arg)
 		 * More than one bit can be set.
 		 */
 		protocol = le32_to_cpu(sasPhyPg0->AttachedDeviceInfo) & 0x780;
-		karg.Information.Phy[ii].Attached.bTargetPortProtocol = 0;
+		karg->Information.Phy[ii].Attached.bTargetPortProtocol = 0;
 		if (protocol & MPI_SAS_DEVICE_INFO_SSP_TARGET)
-			karg.Information.Phy[ii].Attached.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Attached.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SSP;
 		if (protocol & MPI_SAS_DEVICE_INFO_STP_TARGET)
-			karg.Information.Phy[ii].Attached.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Attached.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_STP;
 		if (protocol & MPI_SAS_DEVICE_INFO_SMP_TARGET)
-			karg.Information.Phy[ii].Attached.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Attached.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SMP;
 		if (protocol & MPI_SAS_DEVICE_INFO_SATA_DEVICE)
-			karg.Information.Phy[ii].Attached.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Attached.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SATA;
 
 
@@ -1359,22 +1263,22 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_DEVICE_INFO_MASK_DEVICE_TYPE) {
 
 		case MPI_SAS_DEVICE_INFO_NO_DEVICE:
-			karg.Information.Phy[ii].Attached.bDeviceType =
+			karg->Information.Phy[ii].Attached.bDeviceType =
 			    CSMI_SAS_NO_DEVICE_ATTACHED;
 			break;
 
 		case MPI_SAS_DEVICE_INFO_END_DEVICE:
-			karg.Information.Phy[ii].Attached.bDeviceType =
+			karg->Information.Phy[ii].Attached.bDeviceType =
 			    CSMI_SAS_END_DEVICE;
 			break;
 
 		case MPI_SAS_DEVICE_INFO_EDGE_EXPANDER:
-			karg.Information.Phy[ii].Attached.bDeviceType =
+			karg->Information.Phy[ii].Attached.bDeviceType =
 			    CSMI_SAS_EDGE_EXPANDER_DEVICE;
 			break;
 
 		case MPI_SAS_DEVICE_INFO_FANOUT_EXPANDER:
-			karg.Information.Phy[ii].Attached.bDeviceType =
+			karg->Information.Phy[ii].Attached.bDeviceType =
 			    CSMI_SAS_FANOUT_EXPANDER_DEVICE;
 			break;
 		}
@@ -1384,22 +1288,22 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_DEVICE_INFO_MASK_DEVICE_TYPE) {
 
 		case MPI_SAS_DEVICE_INFO_NO_DEVICE:
-			karg.Information.Phy[ii].Identify.bDeviceType =
+			karg->Information.Phy[ii].Identify.bDeviceType =
 			    CSMI_SAS_NO_DEVICE_ATTACHED;
 			break;
 
 		case MPI_SAS_DEVICE_INFO_END_DEVICE:
-			karg.Information.Phy[ii].Identify.bDeviceType =
+			karg->Information.Phy[ii].Identify.bDeviceType =
 			    CSMI_SAS_END_DEVICE;
 			break;
 
 		case MPI_SAS_DEVICE_INFO_EDGE_EXPANDER:
-			karg.Information.Phy[ii].Identify.bDeviceType =
+			karg->Information.Phy[ii].Identify.bDeviceType =
 			    CSMI_SAS_EDGE_EXPANDER_DEVICE;
 			break;
 
 		case MPI_SAS_DEVICE_INFO_FANOUT_EXPANDER:
-			karg.Information.Phy[ii].Identify.bDeviceType =
+			karg->Information.Phy[ii].Identify.bDeviceType =
 			    CSMI_SAS_FANOUT_EXPANDER_DEVICE;
 			break;
 		}
@@ -1409,18 +1313,18 @@ csmisas_get_phy_info(unsigned long arg)
 		 */
 		protocol = le32_to_cpu(
 		    sasIoUnitPg0->PhyData[ii].ControllerPhyDeviceInfo) & 0x78;
-		karg.Information.Phy[ii].Identify.bInitiatorPortProtocol = 0;
+		karg->Information.Phy[ii].Identify.bInitiatorPortProtocol = 0;
 		if( protocol & MPI_SAS_DEVICE_INFO_SSP_INITIATOR )
-		     karg.Information.Phy[ii].Identify.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Identify.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SSP;
 		if( protocol & MPI_SAS_DEVICE_INFO_STP_INITIATOR )
-		     karg.Information.Phy[ii].Identify.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Identify.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_STP;
 		if( protocol & MPI_SAS_DEVICE_INFO_SMP_INITIATOR )
-		     karg.Information.Phy[ii].Identify.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Identify.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SMP;
 		if( protocol & MPI_SAS_DEVICE_INFO_SATA_HOST )
-		     karg.Information.Phy[ii].Identify.bInitiatorPortProtocol |=
+		     karg->Information.Phy[ii].Identify.bInitiatorPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SATA;
 
 		/* Fill in Phy Target Port Protocol. Bits 10:7
@@ -1428,26 +1332,26 @@ csmisas_get_phy_info(unsigned long arg)
 		 */
 		protocol = le32_to_cpu(
 		    sasIoUnitPg0->PhyData[ii].ControllerPhyDeviceInfo) & 0x780;
-		karg.Information.Phy[ii].Identify.bTargetPortProtocol = 0;
+		karg->Information.Phy[ii].Identify.bTargetPortProtocol = 0;
 		if( protocol & MPI_SAS_DEVICE_INFO_SSP_TARGET )
-			karg.Information.Phy[ii].Identify.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Identify.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SSP;
 		if( protocol & MPI_SAS_DEVICE_INFO_STP_TARGET )
-			karg.Information.Phy[ii].Identify.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Identify.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_STP;
 		if( protocol & MPI_SAS_DEVICE_INFO_SMP_TARGET )
-			karg.Information.Phy[ii].Identify.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Identify.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SMP;
 		if( protocol & MPI_SAS_DEVICE_INFO_SATA_DEVICE )
-			karg.Information.Phy[ii].Identify.bTargetPortProtocol |=
+			karg->Information.Phy[ii].Identify.bTargetPortProtocol |=
 			    CSMI_SAS_PROTOCOL_SATA;
 
 		/* Setup SAS Address for the attached device */
 		if (sasPhyPg0->AttachedDevHandle) {
 			sas_address = reverse_byte_order64(sas_address);
-			memcpy(karg.Information.Phy[ii].Attached.bSASAddress,
+			memcpy(karg->Information.Phy[ii].Attached.bSASAddress,
 			    &sas_address, sizeof(u64));
-			karg.Information.Phy[ii].Attached.bPhyIdentifier =
+			karg->Information.Phy[ii].Attached.bPhyIdentifier =
 			    sasPhyPg0->AttachedPhyIdentifier;
 		}
 
@@ -1457,9 +1361,9 @@ csmisas_get_phy_info(unsigned long arg)
 		    MPI_SAS_DEVICE_PGAD_FORM_SHIFT),
 		    sasIoUnitPg0->PhyData[ii].ControllerDevHandle);
 		sas_address = reverse_byte_order64(device_info.sas_address);
-		memcpy(karg.Information.Phy[ii].Identify.bSASAddress,
+		memcpy(karg->Information.Phy[ii].Identify.bSASAddress,
 		    &sas_address, sizeof(u64));
-		karg.Information.Phy[ii].Identify.bPhyIdentifier = ii;
+		karg->Information.Phy[ii].Identify.bPhyIdentifier = ii;
 
 		pci_free_consistent(ioc->pcidev, sasPhyPg0_data_sz,
 		    (u8 *) sasPhyPg0, sasPhyPg0_dma);
@@ -1473,15 +1377,17 @@ sas_get_phy_info_exit:
 
 	/* Copy the data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
+	if (copy_to_user((char *)arg, karg,
 	    sizeof(CSMI_SAS_PHY_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s - "
 		    "Unable to write out csmisas_get_phy_info_buffer @ %p\n",
 		    __FILE__, __LINE__, __FUNCTION__, uarg);
+		free_pages((unsigned long)karg, memory_pages);
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	free_pages((unsigned long)karg, memory_pages);
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -1501,8 +1407,6 @@ csmisas_set_phy_info(unsigned long arg)
 	MPT_ADAPTER			*ioc = NULL;
 	int				iocnum;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_SET_PHY_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_set_phy_info struct @ %p\n",
@@ -1512,22 +1416,22 @@ csmisas_set_phy_info(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
+
 /* TODO - implement IOCTL here */
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_BAD_CNTL_CODE;
-	dcsmisasprintk((": not implemented\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG ": not implemented\n"));
 
 // cim_set_phy_info_exit:
 
@@ -1541,7 +1445,7 @@ csmisas_set_phy_info(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 
 }
@@ -1564,8 +1468,6 @@ csmisas_get_scsi_address(unsigned long arg)
 	u64			sas_address;
 	struct sas_device_info	*sas_info;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg,
 	    sizeof(CSMI_SAS_GET_SCSI_ADDRESS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -1576,18 +1478,18 @@ csmisas_get_scsi_address(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-	      "%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* reverse byte order the sas address */
 	memcpy(&sas_address, karg.bSASAddress, sizeof(u64));
@@ -1619,7 +1521,7 @@ csmisas_get_scsi_address(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -1648,8 +1550,8 @@ csmisas_get_sata_signature(unsigned long arg)
 	dma_addr_t			sasDevicePg1_dma;
 	int				sasDevicePg1_data_sz;
 	u8				phyId;
+	u64				sas_address;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
 	sasPhyPg0=NULL;
 	sasPhyPg0_data_sz=0;
 	sasDevicePg1=NULL;
@@ -1665,23 +1567,22 @@ csmisas_get_sata_signature(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-	    "%s::%s() @%d - ioc%d not found!\n",
-		     __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		     __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 	phyId = karg.Signature.bPhyIdentifier;
 	if (phyId >= ioc->num_ports) {
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_PHY_DOES_NOT_EXIST;
-		dcsmisasprintk((": phyId >= ioc->num_ports\n"));
+		dcsmisasprintk(ioc, printk(KERN_WARNING ": phyId >= ioc->num_ports\n"));
 		goto cim_sata_signature_exit;
 	}
 
@@ -1711,8 +1612,9 @@ csmisas_get_sata_signature(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": FAILED: MPI_SASPHY0_PAGEVERSION: HEADER\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    ": FAILED: MPI_SASPHY0_PAGEVERSION: HEADER\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
@@ -1721,7 +1623,7 @@ csmisas_get_sata_signature(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": hdr.ExtPageLength == 0\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": hdr.ExtPageLength == 0\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
@@ -1734,7 +1636,7 @@ csmisas_get_sata_signature(unsigned long arg)
 	    sasPhyPg0_data_sz, &sasPhyPg0_dma);
 
 	if (! sasPhyPg0) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
@@ -1747,8 +1649,9 @@ csmisas_get_sata_signature(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": FAILED: MPI_SASPHY0_PAGEVERSION: PAGE\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    ": FAILED: MPI_SASPHY0_PAGEVERSION: PAGE\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
@@ -1756,7 +1659,7 @@ csmisas_get_sata_signature(unsigned long arg)
 	/* Make sure a SATA device is attached. */
 	if ((le32_to_cpu(sasPhyPg0->AttachedDeviceInfo) &
 	    MPI_SAS_DEVICE_INFO_SATA_DEVICE) == 0) {
-		dcsmisasprintk((": NOT A SATA DEVICE\n"));
+		dcsmisasprintk(ioc, printk(KERN_WARNING ": NOT A SATA DEVICE\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_NO_SATA_DEVICE;
 		goto cim_sata_signature_exit;
 	}
@@ -1781,14 +1684,15 @@ csmisas_get_sata_signature(unsigned long arg)
 	cfg.timeout = MPT_IOCTL_DEFAULT_TIMEOUT;
 
 	if ((rc = mpt_config(ioc, &cfg)) != 0) {
-		dcsmisasprintk((": FAILED: MPI_SASDEVICE1_PAGEVERSION: HEADER\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    ": FAILED: MPI_SASDEVICE1_PAGEVERSION: HEADER\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
 
 	if (hdr.ExtPageLength == 0) {
-		dcsmisasprintk((": hdr.ExtPageLength == 0\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": hdr.ExtPageLength == 0\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
@@ -1800,7 +1704,7 @@ csmisas_get_sata_signature(unsigned long arg)
 	    (ioc->pcidev, sasDevicePg1_data_sz, &sasDevicePg1_dma);
 
 	if (! sasDevicePg1) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
@@ -1810,27 +1714,27 @@ csmisas_get_sata_signature(unsigned long arg)
 	cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
 
 	if ((rc = mpt_config(ioc, &cfg)) != 0) {
-		dcsmisasprintk((": FAILED: MPI_SASDEVICE1_PAGEVERSION: PAGE\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    ": FAILED: MPI_SASDEVICE1_PAGEVERSION: PAGE\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sata_signature_exit;
 	}
 
 /* EDM : dump Device Page 1 data*/
-	dcsmisasprintk(("---- SAS DEVICE PAGE 1 ---------\n"));
-	dcsmisasprintk(("Handle=0x%x\n",sasDevicePg1->DevHandle));
-	dcsmisasprintk(("SAS Address="));
-	for(jj=0;jj<8;jj++)
-		dcsmisasprintk(("%02x ",
-		((u8 *)&sasDevicePg1->SASAddress)[jj]));
-	dcsmisasprintk(("\n"));
-	dcsmisasprintk(("Target ID=0x%x\n",sasDevicePg1->TargetID));
-	dcsmisasprintk(("Bus=0x%x\n",sasDevicePg1->Bus));
-	dcsmisasprintk(("Initial Reg Device FIS="));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "---- SAS DEVICE PAGE 1 ---------\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Handle=0x%x\n",sasDevicePg1->DevHandle));
+	memcpy(&sas_address, &sasDevicePg1->SASAddress, sizeof(u64));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "SAS Address=0x%llX\n",
+	    (unsigned long long)sas_address));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Target ID=0x%x\n",sasDevicePg1->TargetID));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Bus=0x%x\n",sasDevicePg1->Bus));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Initial Reg Device FIS="));
 	for(jj=0;jj<20;jj++)
-		dcsmisasprintk(("%02x ",
+		dcsmisasprintk(ioc, printk("%02x ",
 		((u8 *)&sasDevicePg1->InitialRegDeviceFIS)[jj]));
-	dcsmisasprintk(("\n\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\n\n"));
 /* EDM : debug data */
 
 	memcpy(karg.Signature.bSignatureFIS,
@@ -1856,7 +1760,7 @@ csmisas_get_sata_signature(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -1878,8 +1782,6 @@ csmisas_get_device_address(unsigned long arg)
 	struct sas_device_info	*sas_info;
 	u64			sas_address;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg,
 	    sizeof(CSMI_SAS_GET_DEVICE_ADDRESS_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -1890,18 +1792,18 @@ csmisas_get_device_address(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-	    "%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_NO_DEVICE_ADDRESS;
 	memset(karg.bSASAddress, 0, sizeof(u64));
@@ -1929,7 +1831,7 @@ csmisas_get_device_address(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -1961,7 +1863,6 @@ csmisas_get_link_errors(unsigned long arg)
 	u8				phyId;
 	u16				ioc_status;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
 	sasPhyPage1=NULL;
 	sasPhyPage1_data_sz=0;
 
@@ -1975,23 +1876,22 @@ csmisas_get_link_errors(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-	    "%s::%s() @%d - ioc%d not found!\n",
-		     __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		     __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 	phyId = karg.Information.bPhyIdentifier;
 	if (phyId >= ioc->num_ports) {
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_PHY_DOES_NOT_EXIST;
-		dcsmisasprintk((": phyId >= ioc->num_ports\n"));
+		dcsmisasprintk(ioc, printk(KERN_WARNING ": phyId >= ioc->num_ports\n"));
 		goto cim_get_link_errors_exit;
 	}
 
@@ -2021,8 +1921,9 @@ csmisas_get_link_errors(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": FAILED: MPI_SASPHY1_PAGEVERSION: HEADER\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    ": FAILED: MPI_SASPHY1_PAGEVERSION: HEADER\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_get_link_errors_exit;
 	}
@@ -2031,7 +1932,7 @@ csmisas_get_link_errors(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": hdr.ExtPageLength == 0\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": hdr.ExtPageLength == 0\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_get_link_errors_exit;
 	}
@@ -2044,7 +1945,7 @@ csmisas_get_link_errors(unsigned long arg)
 	    sasPhyPage1_data_sz, &sasPhyPage1_dma);
 
 	if (! sasPhyPage1) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_get_link_errors_exit;
 	}
@@ -2057,23 +1958,23 @@ csmisas_get_link_errors(unsigned long arg)
 		/* Don't check if this failed.  Already in a
 		 * failure case.
 		 */
-		dcsmisasprintk((": FAILED: MPI_SASPHY1_PAGEVERSION: PAGE\n"));
-		dcsmisasprintk((": rc=%x\n",rc));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": FAILED: MPI_SASPHY1_PAGEVERSION: PAGE\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": rc=%x\n",rc));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_get_link_errors_exit;
 	}
 
 /* EDM : dump PHY Page 1 data*/
-	dcsmisasprintk(("---- SAS PHY PAGE 1 ------------\n"));
-	dcsmisasprintk(("Invalid Dword Count=0x%x\n",
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "---- SAS PHY PAGE 1 ------------\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Invalid Dword Count=0x%x\n",
 	    sasPhyPage1->InvalidDwordCount));
-	dcsmisasprintk(("Running Disparity Error Count=0x%x\n",
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Running Disparity Error Count=0x%x\n",
 	    sasPhyPage1->RunningDisparityErrorCount));
-	dcsmisasprintk(("Loss Dword Synch Count=0x%x\n",
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "Loss Dword Synch Count=0x%x\n",
 	    sasPhyPage1->LossDwordSynchCount));
-	dcsmisasprintk(("PHY Reset Problem Count=0x%x\n",
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "PHY Reset Problem Count=0x%x\n",
 	    sasPhyPage1->PhyResetProblemCount));
-	dcsmisasprintk(("\n\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\n\n"));
 /* EDM : debug data */
 
 	karg.Information.uInvalidDwordCount =
@@ -2098,7 +1999,7 @@ csmisas_get_link_errors(unsigned long arg)
 	/* Get a MF for this command.
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_get_link_errors_exit;
         }
@@ -2117,16 +2018,16 @@ csmisas_get_link_errors(unsigned long arg)
 	}
 
 	/* process the completed Reply Message Frame */
-	if (ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) {
+	if (ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) {
 
 		sasIoUnitCntrReply =
-		    (SasIoUnitControlReply_t *)ioc->ioctl->ReplyFrame;
+		    (SasIoUnitControlReply_t *)ioc->ioctl_cmds.reply;
 		ioc_status = le16_to_cpu(sasIoUnitCntrReply->IOCStatus)
 		    & MPI_IOCSTATUS_MASK;
 
 		if (ioc_status != MPI_IOCSTATUS_SUCCESS) {
-			dcsmisasprintk((": SAS IO Unit Control: "));
-			dcsmisasprintk(("IOCStatus=0x%X IOCLogInfo=0x%X\n",
+			dcsmisasprintk(ioc, printk(KERN_DEBUG ": SAS IO Unit Control: "));
+			dcsmisasprintk(ioc, printk("IOCStatus=0x%X IOCLogInfo=0x%X\n",
 			    sasIoUnitCntrReply->IOCStatus,
 			    sasIoUnitCntrReply->IOCLogInfo));
 		}
@@ -2148,7 +2049,7 @@ csmisas_get_link_errors(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 
 }
@@ -2182,8 +2083,6 @@ csmisas_smp_passthru(unsigned long arg)
 	u16				ioc_status;
 	u64				sas_address;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_SMP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_smp_passthru struct @ %p\n",
@@ -2198,31 +2097,25 @@ csmisas_smp_passthru(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
-	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
-		return -ENODEV;
-	}
-
-	/* Make sure the adapter is not being reset. */
-	if (!ioc->ioctl) {
-		printk(KERN_ERR "%s@%d::%s - "
-		    "No memory available during driver init.\n",
-		    __FILE__, __LINE__,__FUNCTION__);
-		return -ENOMEM;
-	} else if (ioc->ioctl->status & MPT_IOCTL_STATUS_DID_IOCRESET) {
+	if (ioc->ioc_reset_in_progress) {
 		printk(KERN_ERR "%s@%d::%s - "
 		    "Busy with IOC Reset \n",
 		    __FILE__, __LINE__,__FUNCTION__);
 		return -EBUSY;
 	}
+
+	if (!csmisas_is_this_sas_cntr(ioc)) {
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		return -ENODEV;
+	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Default to success.*/
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
@@ -2241,7 +2134,7 @@ csmisas_smp_passthru(unsigned long arg)
 	/* Get a free request frame and save the message context.
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
         }
@@ -2289,13 +2182,13 @@ csmisas_smp_passthru(unsigned long arg)
 	    ioc->pcidev, request_data_sz, &request_data_dma);
 
 	if (!request_data) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		mpt_free_msg_frame(ioc, mf);
 		goto cim_smp_passthru_exit;
 	}
 
-	mpt_add_sge(psge, flagsLength, request_data_dma);
+	ioc->add_sge(psge, flagsLength, request_data_dma);
 	psge += (sizeof(u32) + sizeof(dma_addr_t));
 
 	memcpy(request_data,&karg.Parameters.Request,request_data_sz);
@@ -2305,7 +2198,7 @@ csmisas_smp_passthru(unsigned long arg)
 	    ioc->pcidev, response_data_sz, &response_data_dma);
 
 	if (!response_data) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		mpt_free_msg_frame(ioc, mf);
 		goto cim_smp_passthru_exit;
@@ -2324,28 +2217,28 @@ csmisas_smp_passthru(unsigned long arg)
 	flagsLength = flagsLength << MPI_SGE_FLAGS_SHIFT;
 	flagsLength |= response_data_sz;
 
-	mpt_add_sge(psge, flagsLength, response_data_dma);
+	ioc->add_sge(psge, flagsLength, response_data_dma);
 
 	if (csmisas_send_command_wait(ioc, mf, karg.IoctlHeader.Timeout) != 0) {
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
 	}
 
-	if ((ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) == 0) {
-		dcsmisasprintk((": SMP Passthru: oh no, there is no reply!!"));
+	if ((ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) == 0) {
+		dcsmisasprintk(ioc, printk(KERN_DEBUG ": SMP Passthru: oh no, there is no reply!!"));
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_smp_passthru_exit;
 	}
 
 	/* process the completed Reply Message Frame */
-	smpReply = (pSmpPassthroughReply_t )ioc->ioctl->ReplyFrame;
+	smpReply = (pSmpPassthroughReply_t )ioc->ioctl_cmds.reply;
 	ioc_status = le16_to_cpu(smpReply->IOCStatus) & MPI_IOCSTATUS_MASK;
 
 	if ((ioc_status != MPI_IOCSTATUS_SUCCESS) &&
 	    (ioc_status != MPI_IOCSTATUS_SCSI_DATA_UNDERRUN)) {
 		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
-		dcsmisasprintk((": SMP Passthru: "));
-		dcsmisasprintk(("IOCStatus=0x%X IOCLogInfo=0x%X SASStatus=0x%X\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG ": SMP Passthru: "));
+		dcsmisasprintk(ioc, printk("IOCStatus=0x%X IOCLogInfo=0x%X SASStatus=0x%X\n",
 		    le16_to_cpu(smpReply->IOCStatus),
 		    le32_to_cpu(smpReply->IOCLogInfo),
 		    smpReply->SASStatus));
@@ -2383,7 +2276,7 @@ csmisas_smp_passthru(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk((": %s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG ": %s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -2421,8 +2314,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	u8				channel;
 	u8				id;
 	struct sas_device_info		*sas_info;
-
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
+	u8				skey, asc, ascq;
 
 	if (copy_from_user(&karg_hdr, uarg, sizeof(CSMI_SAS_SSP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -2440,7 +2332,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	is_hidden_raid_component = 0;
 
 	malloc_data_sz = (request_data_sz +
-	    offsetof(CSMI_SAS_SSP_PASSTHRU_BUFFER,bDataBuffer));
+	    offsetof(CSMI_SAS_SSP_PASSTHRU_BUFFER, bDataBuffer));
 	memory_pages = get_order(malloc_data_sz);
 	karg = (CSMI_SAS_SSP_PASSTHRU_BUFFER *)__get_free_pages(
 		GFP_KERNEL, memory_pages);
@@ -2452,12 +2344,6 @@ static int csmisas_ssp_passthru(unsigned long arg)
 			malloc_data_sz, memory_pages);
 		return -ENOMEM;
 	}
-
-	dcsmisasprintk((KERN_ERR "%s@%d::%s() - "
-			"malloc'ed SAS_SSP_PASSTHRU_BUFFER "
-			"malloc_data_sz=%d memory_pages=%d\n",
-			__FILE__, __LINE__, __FUNCTION__,
-			malloc_data_sz, memory_pages));
 
 	memset(karg, 0, sizeof(*karg));
 
@@ -2477,7 +2363,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	    request_data_sz - sizeof(IOCTL_HEADER) >
 	    karg->IoctlHeader.Length ) {
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_INVALID_PARAMETER;
-		dcsmisasprintk((KERN_ERR
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    "%s::%s()"
 		    " @%d - expected datalen incorrect!\n",
 		    __FILE__, __FUNCTION__, __LINE__));
@@ -2487,20 +2373,26 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	if (((iocnum = mpt_verify_adapter(karg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_INVALID_PARAMETER;
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		goto cim_ssp_passthru_exit;
+	}
+
+	if (ioc->ioc_reset_in_progress) {
+		printk(KERN_ERR "%s@%d::%s - "
+		    "Busy with IOC Reset \n",
+		    __FILE__, __LINE__,__FUNCTION__);
+		return -EBUSY;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_INVALID_PARAMETER;
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s()"
-		    " @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s()@%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		goto cim_ssp_passthru_exit;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Default to success.
 	 */
@@ -2511,7 +2403,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	if ((karg->Parameters.bPhyIdentifier == CSMI_SAS_USE_PORT_IDENTIFIER) &&
 		(karg->Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT)) {
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_SELECT_PHY_OR_PORT;
-		dcsmisasprintk((KERN_ERR
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    "%s::%s()"
 		    " @%d - incorrect bPhyIdentifier and bPortIdentifier!\n",
 		    __FILE__, __FUNCTION__, __LINE__));
@@ -2524,7 +2416,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 
 		/* Is the phy in range? */
 		if (karg->Parameters.bPhyIdentifier >= ioc->num_ports) {
-			dcsmisasprintk((": phyId >= ioc->num_ports (%d %d)\n",
+			dcsmisasprintk(ioc, printk(KERN_WARNING ": phyId >= ioc->num_ports (%d %d)\n",
 			    karg->Parameters.bPhyIdentifier,
 			    ioc->num_ports));
 			karg->IoctlHeader.ReturnCode =
@@ -2536,9 +2428,10 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	if(karg->Parameters.bAdditionalCDBLength) {
 	/* TODO - SCSI IO (32) Request Message support
 	 */
-		dcsmisasprintk((": greater than 16-byte cdb is not supported!\n"));
-		karg->IoctlHeader.ReturnCode =
-		    CSMI_SAS_STATUS_INVALID_PARAMETER;
+		dcsmisasprintk(ioc, printk(KERN_DEBUG ": greater than 16-byte cdb "
+		    "is not supported!\n"));
+		    karg->IoctlHeader.ReturnCode =
+			CSMI_SAS_STATUS_INVALID_PARAMETER;
 		goto cim_ssp_passthru_exit;
 	}
 
@@ -2557,10 +2450,10 @@ static int csmisas_ssp_passthru(unsigned long arg)
 		 */
 		karg->IoctlHeader.ReturnCode =
 		    CSMI_SAS_STATUS_INVALID_PARAMETER;
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s()"
-		    " @%d - couldn't find associated SASAddress=%llX!\n",
-		    __FILE__, __FUNCTION__, __LINE__, sas_address));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    "%s::%s() @%d - couldn't find associated "
+		    "SASAddress=%llX!\n", __FILE__, __FUNCTION__, __LINE__,
+		    (unsigned long long)sas_address));
 		goto cim_ssp_passthru_exit;
 	}
 
@@ -2576,7 +2469,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	/* Get a free request frame and save the message context.
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_ssp_passthru_exit;
         }
@@ -2601,22 +2494,17 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	memcpy(pScsiRequest->CDB, karg->Parameters.bCDB,
 	    pScsiRequest->CDBLength);
 
-	#if defined(MPT_DEBUG_CSMISAS)
-	{
-	int k;
-		printk("\tchannel=%d id=%d ", sas_info->fw.channel,
-		    sas_info->fw.id);
-		if (is_hidden_raid_component)
-			printk("num_id=%d ", id);
-		printk("\n");
-		printk("\tcdb_len = %d data_len=%d\n",
-		    pScsiRequest->CDBLength, request_data_sz);
-		printk("\t");
-		for (k = 0; k < pScsiRequest->CDBLength; ++k)
-			printk(" %02x", pScsiRequest->CDB[k]);
-		printk("\n");
-	}
-	#endif
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\tchannel = %d id = %d ",
+	    sas_info->fw.channel, sas_info->fw.id));
+	dcsmisasprintk(ioc, if(is_hidden_raid_component)
+	    printk(KERN_DEBUG "num_id = %d ", id));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\tcdb_len = %d request_len = %d\n",
+	    pScsiRequest->CDBLength, request_data_sz));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\t"));
+	dcsmisasprintk(ioc, for (ii = 0; ii < pScsiRequest->CDBLength; ++ii)
+	    printk(" %02x", pScsiRequest->CDB[ii]));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "\n"));
 
 	/* direction
 	 */
@@ -2682,18 +2570,18 @@ static int csmisas_ssp_passthru(unsigned long arg)
 		    ioc->pcidev, request_data_sz, &request_data_dma);
 
 		if (request_data == NULL) {
-			dcsmisasprintk((": pci_alloc_consistent: FAILED "
+			dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED "
 			    "request_data_sz=%d\n", request_data_sz));
 			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			mpt_free_msg_frame(ioc, mf);
 			goto cim_ssp_passthru_exit;
 		}
 
-		mpt_add_sge(psge, flagsLength, request_data_dma);
+		ioc->add_sge(psge, flagsLength, request_data_dma);
 		if (karg->Parameters.uFlags & CSMI_SAS_SSP_WRITE)
 			memcpy(request_data, karg->bDataBuffer, request_data_sz);
 	} else {
-		mpt_add_sge(psge, flagsLength, (dma_addr_t) -1);
+		ioc->add_sge(psge, flagsLength, (dma_addr_t) -1);
 	}
 
 	if (csmisas_send_command_wait(ioc, mf, karg->IoctlHeader.Timeout) != 0) {
@@ -2710,9 +2598,9 @@ static int csmisas_ssp_passthru(unsigned long arg)
 	karg->Status.uDataBytes = request_data_sz;
 
 	/* process the completed Reply Message Frame */
-	if (ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) {
+	if (ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) {
 
-		pScsiReply = (pSCSIIOReply_t ) ioc->ioctl->ReplyFrame;
+		pScsiReply = (pSCSIIOReply_t ) ioc->ioctl_cmds.reply;
 		karg->Status.bStatus = pScsiReply->SCSIStatus;
 		karg->Status.uDataBytes = min(le32_to_cpu(pScsiReply->TransferCount),
 		    request_data_sz);
@@ -2725,7 +2613,16 @@ static int csmisas_ssp_passthru(unsigned long arg)
 			karg->Status.bResponseLength[0] =
 				(u8)le32_to_cpu(pScsiReply->SenseCount) & 0xFF;
 			memcpy(karg->Status.bResponse,
-			    ioc->ioctl->sense, le32_to_cpu(pScsiReply->SenseCount));
+			    ioc->ioctl_cmds.sense, le32_to_cpu(pScsiReply->SenseCount));
+
+			skey = ioc->ioctl_cmds.sense[2] & 0x0F;
+			asc = ioc->ioctl_cmds.sense[12];
+			ascq = ioc->ioctl_cmds.sense[13];
+
+			dcsmisasprintk(ioc, printk(KERN_DEBUG "\t [sense_key,asc,ascq]: "
+			    "[0x%02x,0x%02x,0x%02x]\n",
+			    skey, asc, ascq));
+
 		} else if(pScsiReply->SCSIState ==
 		    MPI_SCSI_STATE_RESPONSE_INFO_VALID) {
 			karg->Status.bDataPresent =
@@ -2741,8 +2638,8 @@ static int csmisas_ssp_passthru(unsigned long arg)
 		    (ioc_status !=  MPI_IOCSTATUS_SCSI_RECOVERED_ERROR) &&
 		    (ioc_status != MPI_IOCSTATUS_SCSI_DATA_UNDERRUN)) {
 			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
-			dcsmisasprintk((": SCSI IO : "));
-			dcsmisasprintk(("IOCStatus=0x%X IOCLogInfo=0x%X\n",
+			dcsmisasprintk(ioc, printk(KERN_DEBUG ": SCSI IO : "));
+			dcsmisasprintk(ioc, printk("IOCStatus=0x%X IOCLogInfo=0x%X\n",
 			    pScsiReply->IOCStatus,
 			    pScsiReply->IOCLogInfo));
 		}
@@ -2778,7 +2675,7 @@ static int csmisas_ssp_passthru(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	free_pages((unsigned long)karg, memory_pages);
 	return 0;
 }
@@ -2795,7 +2692,7 @@ static int
 csmisas_stp_passthru(unsigned long arg)
 {
 	CSMI_SAS_STP_PASSTHRU_BUFFER __user *uarg = (void __user *) arg;
-	CSMI_SAS_STP_PASSTHRU_BUFFER	 karg;
+	CSMI_SAS_STP_PASSTHRU_BUFFER	karg_hdr, *karg;
 	MPT_ADAPTER			*ioc = NULL;
 	pSataPassthroughRequest_t  	pSataRequest;
 	pSataPassthroughReply_t		pSataReply;
@@ -2810,6 +2707,8 @@ csmisas_stp_passthru(unsigned long arg)
 	void *				request_data;
 	dma_addr_t			request_data_dma;
 	u32				request_data_sz;
+	int				malloc_data_sz;
+	int				memory_pages;
 	u8				channel;
 	u8				id;
 	u8 				volume_id;
@@ -2817,9 +2716,7 @@ csmisas_stp_passthru(unsigned long arg)
 	struct sas_device_info		*sas_info;
 	u16				ioc_status;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
-	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_STP_PASSTHRU_BUFFER))) {
+	if (copy_from_user(&karg_hdr, uarg, sizeof(CSMI_SAS_STP_PASSTHRU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read struct @ %p\n",
 		    __FILE__, __LINE__, __FUNCTION__, uarg);
@@ -2827,37 +2724,71 @@ csmisas_stp_passthru(unsigned long arg)
 	}
 
 	request_data=NULL;
-	request_data_sz = karg.Parameters.uDataLength;
+	request_data_sz = karg_hdr.Parameters.uDataLength;
 	volume_id = 0;
 	volume_bus = 0;
 	channel = 0;
 	id = 0;
 
-	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
+	malloc_data_sz = (request_data_sz +
+	    offsetof(CSMI_SAS_STP_PASSTHRU_BUFFER, bDataBuffer));
+	memory_pages = get_order(malloc_data_sz);
+	karg = (CSMI_SAS_STP_PASSTHRU_BUFFER *)__get_free_pages(
+		GFP_KERNEL, memory_pages);
+	if (!karg){
+		printk(KERN_ERR "%s@%d::%s() - "
+			"Unable to malloc CSMI_SAS_STP_PASSTHRU_BUFFER "
+			"malloc_data_sz=%d memory_pages=%d\n",
+			__FILE__, __LINE__, __FUNCTION__, 
+			malloc_data_sz, memory_pages);
+		return -ENOMEM;
+	}
+
+	memset(karg, 0, sizeof(*karg));
+
+	if (copy_from_user(karg, uarg, malloc_data_sz)) {
+		printk(KERN_ERR "%s@%d::%s() - "
+		    "Unable to read in csmi_sas_ssp_passthru struct @ %p\n",
+		    __FILE__, __LINE__, __FUNCTION__, uarg);
+		free_pages((unsigned long)karg, memory_pages);
+		return -EFAULT;
+	}
+
+	if (((iocnum = mpt_verify_adapter(karg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
+	}
+
+	if (ioc->ioc_reset_in_progress) {
+		printk(KERN_ERR "%s@%d::%s - "
+		    "Busy with IOC Reset \n",
+		    __FILE__, __LINE__,__FUNCTION__);
+		free_pages((unsigned long)karg, memory_pages);
+		return -EBUSY;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
+		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
 
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
+
 	/* Default to success.
 	 */
-	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
+	karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
 
 	/* Neither a phy nor a port has been selected.
 	 */
-	if ((karg.Parameters.bPhyIdentifier == CSMI_SAS_USE_PORT_IDENTIFIER) &&
-		(karg.Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT)) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_SELECT_PHY_OR_PORT;
-		dcsmisasprintk((KERN_ERR
+	if ((karg->Parameters.bPhyIdentifier == CSMI_SAS_USE_PORT_IDENTIFIER) &&
+		(karg->Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT)) {
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_SELECT_PHY_OR_PORT;
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    "%s::%s() @%d - incorrect bPhyIdentifier and bPortIdentifier!\n",
 		    __FILE__,__FUNCTION__, __LINE__));
 		goto cim_stp_passthru_exit;
@@ -2865,34 +2796,24 @@ csmisas_stp_passthru(unsigned long arg)
 
 	/* A phy has been selected. Verify that it's valid.
 	 */
-	if (karg.Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT) {
+	if (karg->Parameters.bPortIdentifier == CSMI_SAS_IGNORE_PORT) {
 
 		/* Is the phy in range? */
-		if (karg.Parameters.bPhyIdentifier >= ioc->num_ports) {
-			karg.IoctlHeader.ReturnCode =
+		if (karg->Parameters.bPhyIdentifier >= ioc->num_ports) {
+			karg->IoctlHeader.ReturnCode =
 			    CSMI_SAS_PHY_DOES_NOT_EXIST;
 			goto cim_stp_passthru_exit;
 		}
-	}
-
-	/* some checks of the incoming frame
-	 */
-	if (request_data_sz > 0xFFFF) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - uDataLength > 0xFFFF!\n",
-		    __FILE__, __FUNCTION__, __LINE__));
-		goto cim_stp_passthru_exit;
 	}
 
 	data_sz = sizeof(CSMI_SAS_STP_PASSTHRU_BUFFER) -
 	    sizeof(IOCTL_HEADER) - sizeof(u8*) +
 	    request_data_sz;
 
-	if ( data_sz > karg.IoctlHeader.Length ) {
-		karg.IoctlHeader.ReturnCode =
+	if ( data_sz > karg->IoctlHeader.Length ) {
+		karg->IoctlHeader.ReturnCode =
 		    CSMI_SAS_STATUS_INVALID_PARAMETER;
-		dcsmisasprintk((KERN_ERR
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    "%s::%s() @%d - expected datalen incorrect!\n",
 		    __FILE__, __FUNCTION__,__LINE__));
 		goto cim_stp_passthru_exit;
@@ -2901,7 +2822,7 @@ csmisas_stp_passthru(unsigned long arg)
 
 	/* we will use SAS address to resolve the scsi adddressing
 	 */
-	memcpy(&sas_address, karg.Parameters.bDestinationSASAddress,
+	memcpy(&sas_address, karg->Parameters.bDestinationSASAddress,
 	    sizeof(u64));
 	sas_address = reverse_byte_order64(sas_address);
 
@@ -2912,12 +2833,12 @@ csmisas_stp_passthru(unsigned long arg)
 		/*
 		 *Invalid SAS address
 		 */
-		karg.IoctlHeader.ReturnCode =
+		karg->IoctlHeader.ReturnCode =
 		    CSMI_SAS_STATUS_INVALID_PARAMETER;
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s()"
-		    " @%d - couldn't find associated SASAddress=%llX!\n",
-		    __FILE__, __FUNCTION__, __LINE__, sas_address));
+		dcsmisasprintk(ioc, printk(KERN_ERR
+		    "%s::%s() @%d - couldn't find associated "
+		    "SASAddress=%llX!\n", __FILE__, __FUNCTION__, __LINE__,
+		    (unsigned long long)sas_address));
 		goto cim_stp_passthru_exit;
 	}
 
@@ -2928,7 +2849,7 @@ csmisas_stp_passthru(unsigned long arg)
 	 */
 	if ( !(sas_info->device_info & MPI_SAS_DEVICE_INFO_STP_TARGET ) &&
 	     !(sas_info->device_info & MPI_SAS_DEVICE_INFO_SATA_DEVICE )) {
-		karg.IoctlHeader.ReturnCode =
+		karg->IoctlHeader.ReturnCode =
 		    CSMI_SAS_STATUS_INVALID_PARAMETER;
 		goto cim_stp_passthru_exit;
 	}
@@ -2936,8 +2857,8 @@ csmisas_stp_passthru(unsigned long arg)
 	/* Get a free request frame and save the message context.
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_stp_passthru_exit;
         }
 
@@ -2950,17 +2871,17 @@ csmisas_stp_passthru(unsigned long arg)
 	pSataRequest->TargetID = id;
 	pSataRequest->Bus = channel;
 	pSataRequest->Function = MPI_FUNCTION_SATA_PASSTHROUGH;
-	pSataRequest->PassthroughFlags = cpu_to_le16(karg.Parameters.uFlags);
-	pSataRequest->ConnectionRate = karg.Parameters.bConnectionRate;
+	pSataRequest->PassthroughFlags = cpu_to_le16(karg->Parameters.uFlags);
+	pSataRequest->ConnectionRate = karg->Parameters.bConnectionRate;
 	pSataRequest->MsgContext = mpi_hdr->MsgContext;
 	pSataRequest->DataLength = cpu_to_le32(request_data_sz);
 	pSataRequest->MsgFlags = 0;
-	memcpy( pSataRequest->CommandFIS,karg.Parameters.bCommandFIS, 20);
+	memcpy( pSataRequest->CommandFIS,karg->Parameters.bCommandFIS, 20);
 
 	psge = (char *)&pSataRequest->SGL;
-	if (karg.Parameters.uFlags & CSMI_SAS_STP_WRITE) {
+	if (karg->Parameters.uFlags & CSMI_SAS_STP_WRITE) {
 		flagsLength = MPT_SGE_FLAGS_SSIMPLE_WRITE;
-	} else if (karg.Parameters.uFlags & CSMI_SAS_STP_READ) {
+	} else if (karg->Parameters.uFlags & CSMI_SAS_STP_READ) {
 		flagsLength = MPT_SGE_FLAGS_SSIMPLE_READ;
 	}else {
 		flagsLength = ( MPI_SGE_FLAGS_SIMPLE_ELEMENT |
@@ -2975,82 +2896,70 @@ csmisas_stp_passthru(unsigned long arg)
 		    ioc->pcidev, request_data_sz, &request_data_dma);
 
 		if (request_data == NULL) {
-			dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
-			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+			dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
+			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			mpt_free_msg_frame(ioc, mf);
 			goto cim_stp_passthru_exit;
 		}
 
-		mpt_add_sge(psge, flagsLength, request_data_dma);
-		if (karg.Parameters.uFlags & CSMI_SAS_STP_WRITE) {
-			if (copy_from_user(request_data,
-			    karg.bDataBuffer,
-			    request_data_sz)) {
-				printk(KERN_ERR
-				    "%s::%s() @%d - Unable to read user data "
-				    "struct @ %p\n",
-				    __FILE__, __FUNCTION__, __LINE__,
-				    (void*)karg.bDataBuffer);
-				karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
-				mpt_free_msg_frame(ioc, mf);
-				goto cim_stp_passthru_exit;
-			}
-		}
+		ioc->add_sge(psge, flagsLength, request_data_dma);
+		if (karg->Parameters.uFlags & CSMI_SAS_SSP_WRITE)
+			memcpy(request_data, karg->bDataBuffer, request_data_sz);
 	} else {
-		mpt_add_sge(psge, flagsLength, (dma_addr_t) -1);
+		ioc->add_sge(psge, flagsLength, (dma_addr_t) -1);
 	}
 
-	if (csmisas_send_command_wait(ioc, mf, karg.IoctlHeader.Timeout) != 0) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+	if (csmisas_send_command_wait(ioc, mf, karg->IoctlHeader.Timeout) != 0) {
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_stp_passthru_exit;
 	}
 
-	memset(&karg.Status,0,sizeof(CSMI_SAS_STP_PASSTHRU_STATUS));
+	memset(&karg->Status,0,sizeof(CSMI_SAS_STP_PASSTHRU_STATUS));
 
-	if ((ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) == 0) {
-		dcsmisasprintk((": STP Passthru: oh no, there is no reply!!"));
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+	if ((ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) == 0) {
+		dcsmisasprintk(ioc, printk(KERN_DEBUG  ": STP Passthru: oh no, there is no reply!!"));
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_stp_passthru_exit;
 	}
 
 	/* process the completed Reply Message Frame */
-	pSataReply = (pSataPassthroughReply_t ) ioc->ioctl->ReplyFrame;
+	pSataReply = (pSataPassthroughReply_t ) ioc->ioctl_cmds.reply;
 	ioc_status = le16_to_cpu(pSataReply->IOCStatus) & MPI_IOCSTATUS_MASK;
 
 	if (ioc_status != MPI_IOCSTATUS_SUCCESS &&
 	    ioc_status != MPI_IOCSTATUS_SCSI_DATA_UNDERRUN) {
-		karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
-		dcsmisasprintk((": STP Passthru: "));
-		dcsmisasprintk(("IOCStatus=0x%X IOCLogInfo=0x%X SASStatus=0x%X\n",
+		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+		dcsmisasprintk(ioc, printk(KERN_DEBUG ": STP Passthru: "));
+		dcsmisasprintk(ioc, printk("IOCStatus=0x%X IOCLogInfo=0x%X SASStatus=0x%X\n",
 		    le16_to_cpu(pSataReply->IOCStatus),
 		    le32_to_cpu(pSataReply->IOCLogInfo),
 		    pSataReply->SASStatus));
 	}
 
-	karg.Status.bConnectionStatus =
+	karg->Status.bConnectionStatus =
 	    map_sas_status_to_csmi(pSataReply->SASStatus);
 
-	memcpy(karg.Status.bStatusFIS,pSataReply->StatusFIS, 20);
+	memcpy(karg->Status.bStatusFIS,pSataReply->StatusFIS, 20);
 
 	/*
 	 * for now, just zero out uSCR array,
 	 * then copy the one dword returned
 	 * in the reply frame into uSCR[0]
 	 */
-	memset( karg.Status.uSCR, 0, 64);
-	karg.Status.uSCR[0] = le32_to_cpu(pSataReply->StatusControlRegisters);
+	memset( karg->Status.uSCR, 0, 64);
+	karg->Status.uSCR[0] = le32_to_cpu(pSataReply->StatusControlRegisters);
 
 	if((le32_to_cpu(pSataReply->TransferCount)) && (request_data) &&
-	    (karg.Parameters.uFlags & CSMI_SAS_STP_READ)) {
-		karg.Status.uDataBytes =
+	    (karg->Parameters.uFlags & CSMI_SAS_STP_READ)) {
+		karg->Status.uDataBytes =
 		    min(le32_to_cpu(pSataReply->TransferCount),request_data_sz);
 		if (copy_to_user((char *)uarg->bDataBuffer,
-		    request_data, karg.Status.uDataBytes)) {
+		    request_data, karg->Status.uDataBytes)) {
 			printk(KERN_ERR "%s::%s() @%d - "
 			    "Unable to write data to user %p\n",
 			    __FILE__, __FUNCTION__, __LINE__,
-			    (void*)karg.bDataBuffer);
-			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
+			    (void*)karg->bDataBuffer);
+			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		}
 	}
 
@@ -3062,15 +2971,17 @@ csmisas_stp_passthru(unsigned long arg)
 
 	/* Copy th data from kernel memory to user memory
 	 */
-	if (copy_to_user((char *)arg, &karg,
-	    offsetof(CSMI_SAS_STP_PASSTHRU_BUFFER,bDataBuffer))) {
+	if (copy_to_user((char *)arg, karg,
+	    offsetof(CSMI_SAS_STP_PASSTHRU_BUFFER, bDataBuffer))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to write out csmi_sas_ssp_passthru @ %p\n",
 				__FILE__, __LINE__, __FUNCTION__, uarg);
+		free_pages((unsigned long)karg, memory_pages);
 		return -EFAULT;
 	}
 
-	dcsmisasprintk((": %s exit.\n",__FUNCTION__));
+	free_pages((unsigned long)karg, memory_pages);
+	dcsmisasprintk(ioc, printk(KERN_DEBUG ": %s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -3091,8 +3002,6 @@ csmisas_firmware_download(unsigned long arg)
 	int				iocnum;
 	pMpiFwHeader_t			pFwHeader=NULL;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg,
 		sizeof(CSMI_SAS_FIRMWARE_DOWNLOAD_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -3103,18 +3012,18 @@ csmisas_firmware_download(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	/* Default to success.*/
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
@@ -3202,7 +3111,7 @@ csmisas_firmware_download(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -3225,8 +3134,6 @@ csmisas_get_raid_info(unsigned long arg)
 	u8				maxRaidTypes;
 	u8				maxDrivesPerSet;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_RAID_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_get_raid_info struct @ %p\n",
@@ -3236,18 +3143,18 @@ csmisas_get_raid_info(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 	if (!ioc->raid_data.pIocPg2)
@@ -3300,7 +3207,7 @@ csmisas_get_raid_info_out:
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -3327,7 +3234,7 @@ csmisas_do_raid(MPT_ADAPTER *ioc, u8 action, u8 PhysDiskNum, u8 VolumeBus, u8 Vo
 	/* Get and Populate a free Frame
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 		return -EAGAIN;
 	}
 	pReq = (MpiRaidActionRequest_t *)mf;
@@ -3343,15 +3250,15 @@ csmisas_do_raid(MPT_ADAPTER *ioc, u8 action, u8 PhysDiskNum, u8 VolumeBus, u8 Vo
 	pReq->ActionDataWord = 0; /* Reserved for this action */
 	//pReq->ActionDataSGE = 0;
 
-	mpt_add_sge((char *)&pReq->ActionDataSGE,
+	ioc->add_sge((char *)&pReq->ActionDataSGE,
 		MPT_SGE_FLAGS_SSIMPLE_READ | 0, (dma_addr_t) -1);
 
 	if (csmisas_send_command_wait(ioc, mf, MPT_IOCTL_DEFAULT_TIMEOUT) != 0)
 		return -ENODATA;
 
-	if ((ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) &&
+	if ((ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) &&
 	    (reply != NULL)){
-		pReply = (MpiRaidActionReply_t *)&(ioc->ioctl->ReplyFrame);
+		pReply = (MpiRaidActionReply_t *)&(ioc->ioctl_cmds.reply);
 		memcpy(reply, pReply,
 			min(ioc->reply_sz,
 			4*pReply->MsgLength));
@@ -3402,7 +3309,7 @@ csmisas_raid_inq(MPT_ADAPTER *ioc, u8 opcode, u8 bus, u8 id, u8 inq_vpd_page,
 	/* Get a free request frame and save the message context.
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 		goto csmisas_raid_inq_exit;
 	}
 
@@ -3439,7 +3346,7 @@ csmisas_raid_inq(MPT_ADAPTER *ioc, u8 opcode, u8 bus, u8 id, u8 inq_vpd_page,
 
 	memset(request_data,0,request_data_sz);
 	psge = (char *)&pScsiRequest->SGL;
-	mpt_add_sge(psge, (MPT_SGE_FLAGS_SSIMPLE_READ | 0xFC) ,
+	ioc->add_sge(psge, (MPT_SGE_FLAGS_SSIMPLE_READ | 0xFC) ,
 	    request_data_dma);
 
 	if (csmisas_send_command_wait(ioc, mf, MPT_IOCTL_DEFAULT_TIMEOUT) != 0) {
@@ -3494,8 +3401,6 @@ csmisas_get_raid_config(unsigned long arg)
 	u64				sas_address;
 	struct sas_device_info		*sas_info;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(IOCTL_HEADER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmisas_get_raid_config struct @ %p\n",
@@ -3511,7 +3416,7 @@ csmisas_get_raid_config(unsigned long arg)
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to malloc RAID_CONFIG_BUFFER "
 			"csmi_sas_raid_config_buffer_sz=%d memory_pages=%d\n",
-			__FILE__, __LINE__, __FUNCTION__,
+			__FILE__, __LINE__, __FUNCTION__, 
 			csmi_sas_raid_config_buffer_sz, memory_pages);
 		return -ENOMEM;
 	}
@@ -3527,20 +3432,20 @@ csmisas_get_raid_config(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(pKarg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	if (pKarg->Configuration.uChangeCount != 0 &&
 		pKarg->Configuration.uChangeCount != ioc->csmi_change_count ) {
@@ -3611,6 +3516,7 @@ csmisas_get_raid_config(unsigned long arg)
 	    ((u64)le32_to_cpu(pVolume0->MaxLBAHigh)) << 32;
 	tmpTotalMaxLBA = totalMaxLBA + 1;
 	do_div(tmpTotalMaxLBA, 2048);
+	pKarg->Configuration.bDriveCount = 0;
 	pKarg->Configuration.uCapacity = tmpTotalMaxLBA;
 	pKarg->Configuration.uStripeSize =
 		le32_to_cpu(pVolume0->StripeSize)/2;
@@ -3732,7 +3638,6 @@ csmisas_get_raid_config(unsigned long arg)
 		    (pKarg->Configuration.Data->uNumberOfHeads *
 		     pKarg->Configuration.Data->uSectorsPerTrack));
 		pKarg->Configuration.Data->uNumberOfTracks = tmpTotalMaxLBA;
-		pKarg->Configuration.bDriveCount = 1;
 	} else if ( pKarg->Configuration.bDataType ==
 	    CSMI_SAS_RAID_DATA_DEVICE_ID ) {
 		/* Send inquiry to get VPD Page 0x83 */
@@ -3746,19 +3651,13 @@ csmisas_get_raid_config(unsigned long arg)
 			pKarg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto cim_get_raid_config_exit;
 		}
-		pKarg->Configuration.bDriveCount = 1;
-	}
-
-	if (pKarg->Configuration.bDataType != CSMI_SAS_RAID_DATA_DRIVES) {
-		pKarg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
-		goto cim_get_raid_config_exit;
-	}
-
-	/* suppress drive information */
-	if (pKarg->Configuration.bDriveCount ==
-		CSMI_SAS_RAID_DRIVE_COUNT_SUPRESSED) {
-		pKarg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
-		goto cim_get_raid_config_exit;
+	} else {
+		/* suppress drive information */
+		if (pKarg->Configuration.bDriveCount ==
+			CSMI_SAS_RAID_DRIVE_COUNT_SUPRESSED) {
+			pKarg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
+			goto cim_get_raid_config_exit;
+		}
 	}
 
 	/* get hotspare info, used later in this function */
@@ -3826,20 +3725,18 @@ csmisas_get_raid_config(unsigned long arg)
 	    offsetof(CSMI_SAS_RAID_CONFIG,Drives))
 	    / sizeof(CSMI_SAS_RAID_DRIVES);
 
-	pKarg->Configuration.bDriveCount=0;
-
 	tmpTotalMaxLBA = totalMaxLBA;
 	if (pVolume0->VolumeType == MPI_RAID_VOL_TYPE_IS) {
 		do_div(tmpTotalMaxLBA, pVolume0->NumPhysDisks);
-		dcsmisasprintk(("IS Volume tmpTotalMaxLBA=%llX\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "IS Volume tmpTotalMaxLBA=%llX\n",
 		(unsigned long long)tmpTotalMaxLBA));
 	}
 	else if (pVolume0->VolumeType == MPI_RAID_VOL_TYPE_IME) {
 		do_div(tmpTotalMaxLBA, pVolume0->NumPhysDisks * 2);
-		dcsmisasprintk(("IME Volume tmpTotalMaxLBA=%llX\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "IME Volume tmpTotalMaxLBA=%llX\n",
 		(unsigned long long)tmpTotalMaxLBA));
 	} else {
-		dcsmisasprintk(("IM Volume tmpTotalMaxLBA=%llX\n",
+		dcsmisasprintk(ioc, printk(KERN_DEBUG "IM Volume tmpTotalMaxLBA=%llX\n",
 		(unsigned long long)tmpTotalMaxLBA));
 	}
 
@@ -3853,18 +3750,20 @@ csmisas_get_raid_config(unsigned long arg)
 			goto cim_get_raid_config_exit;
 		}
 
+	        pKarg->Configuration.bDriveCount++;
+		if (pKarg->Configuration.bDataType != CSMI_SAS_RAID_DATA_DRIVES)
+			continue;
+
 		/* Search the list for the matching SAS address. */
 		sas_info = csmisas_get_device_component_by_fw(ioc, pPhysDisk0->PhysDiskBus,
 		    pPhysDisk0->PhysDiskID);
-
-		if (!sas_info)
-			continue;
-
-		sas_address = reverse_byte_order64(sas_info->sas_address);
-		memcpy(pKarg->Configuration.Drives[i].bSASAddress,
-		   &sas_address,sizeof(u64));
-		if (!device_info)
-			device_info = sas_info->device_info;
+		if (sas_info) {
+			sas_address = reverse_byte_order64(sas_info->sas_address);
+			memcpy(pKarg->Configuration.Drives[i].bSASAddress,
+			   &sas_address,sizeof(u64));
+			if (!device_info)
+				device_info = sas_info->device_info;
+		}
 
 		memcpy(pKarg->Configuration.Drives[i].bModel,
 		    pPhysDisk0->InquiryData.VendorID,
@@ -3932,7 +3831,6 @@ csmisas_get_raid_config(unsigned long arg)
 		    (u32)tmpTotalMaxLBA;
 		pKarg->Configuration.Drives[i].ulTotalUserBlocks.uHighPart =
 		    (u32)(tmpTotalMaxLBA >> 32);
-	        pKarg->Configuration.bDriveCount++;
 	}
 
 	/* adding hot spare info at the end */
@@ -3953,17 +3851,6 @@ csmisas_get_raid_config(unsigned long arg)
 			cfg.pageAddr = physDiskNum;
 			if (mpt_config(ioc, &cfg) != 0)
 				continue;
-
-			/* Search the list for the matching SAS address. */
-			sas_info = csmisas_get_device_component_by_fw(ioc,
-			    pPhysDisk0->PhysDiskBus, pPhysDisk0->PhysDiskID);
-
-			if (!sas_info)
-				continue;
-
-			sas_address = reverse_byte_order64(sas_info->sas_address);
-			memcpy(pKarg->Configuration.Drives[i].bSASAddress,
-			   &sas_address,sizeof(u64));
 
 			/* don't mix SSP hot spare
 			 * in SATA volume
@@ -3993,20 +3880,28 @@ csmisas_get_raid_config(unsigned long arg)
 			do_div(tmpTotalMaxLBA, pVolume0->NumPhysDisks);
 			/* capacity check for IME volumes*/
 			if ((pVolume0->VolumeType ==
-				MPI_RAID_VOL_TYPE_IME) &&
-			    ((tmpTotalMaxLBA * 2) +
-			     (64*2*1024 ) /*metadata = 64MB*/ >
-			    le32_to_cpu(pPhysDisk0->MaxLBA)))
-				break;
-
-			/* capacity check for IME volumes*/
-			if ((pVolume0->VolumeType ==
 			    MPI_RAID_VOL_TYPE_IME) &&
 			    (((totalMaxLBA +
 			    pVolume0->NumPhysDisks) * 2) +
 			    (64*2*1024 ) /*metadata = 64MB*/ >
 			    le32_to_cpu(pPhysDisk0->MaxLBA)))
 				continue;
+
+		        pKarg->Configuration.bDriveCount++;
+			if (pKarg->Configuration.bDataType !=
+			    CSMI_SAS_RAID_DATA_DRIVES) {
+				i++;
+				continue;
+			}
+
+			/* Search the list for the matching SAS address. */
+			sas_info = csmisas_get_device_component_by_fw(ioc,
+			    pPhysDisk0->PhysDiskBus, pPhysDisk0->PhysDiskID);
+			if (sas_info) {
+				sas_address = reverse_byte_order64(sas_info->sas_address);
+				memcpy(pKarg->Configuration.Drives[i].bSASAddress,
+				   &sas_address,sizeof(u64));
+			}
 
 			memcpy(pKarg->Configuration.Drives[i].bModel,
 			    pPhysDisk0->InquiryData.VendorID,
@@ -4046,9 +3941,7 @@ csmisas_get_raid_config(unsigned long arg)
 				pKarg->Configuration.Drives[i].bDriveType =
 					CSMI_SAS_DRIVE_TYPE_SINGLE_PORT_SAS;
 			}
-
 			i++;
-			pKarg->Configuration.bDriveCount++;
 		}
 	}
 
@@ -4102,12 +3995,12 @@ csmisas_get_raid_config(unsigned long arg)
 	if (copy_to_user((char *)arg, pKarg, copy_buffer_sz)) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		       "Unable to write out csmi_sas_get_raid_config @ %p\n",
-			   __FILE__, __LINE__, __FUNCTION__, uarg);
+		   	   __FILE__, __LINE__, __FUNCTION__, uarg);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	free_pages((unsigned long)pKarg, memory_pages);
 	return 0;
 }
@@ -4129,8 +4022,6 @@ csmisas_get_raid_features(unsigned long arg)
 	int				memory_pages;
 	MPT_ADAPTER		*ioc = NULL;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(IOCTL_HEADER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_get_raid_features struct @ %p\n",
@@ -4146,7 +4037,7 @@ csmisas_get_raid_features(unsigned long arg)
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to malloc RAID_FEATURES_BUFFER "
 			"csmi_sas_raid_features_buffer_sz=%d memory_pages=%d\n",
-			__FILE__, __LINE__, __FUNCTION__,
+			__FILE__, __LINE__, __FUNCTION__, 
 			csmi_sas_raid_features_buffer_sz, memory_pages);
 		return -ENOMEM;
 	}
@@ -4162,20 +4053,20 @@ csmisas_get_raid_features(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(pKarg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	if (pKarg->Information.uChangeCount != 0 &&
 	    pKarg->Information.uChangeCount != ioc->csmi_change_count ) {
@@ -4230,7 +4121,7 @@ csmisas_get_raid_features(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	free_pages((unsigned long)pKarg, memory_pages);
 	return 0;
 }
@@ -4252,8 +4143,6 @@ csmisas_set_raid_control(unsigned long arg)
 	int				memory_pages;
 	MPT_ADAPTER	*ioc = NULL;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(IOCTL_HEADER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_set_raid_control struct @ %p\n",
@@ -4269,7 +4158,7 @@ csmisas_set_raid_control(unsigned long arg)
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to malloc RAID_CONTROL_BUFFER "
 			"csmi_sas_raid_control_buffer_sz=%d memory_pages=%d\n",
-			__FILE__, __LINE__, __FUNCTION__,
+			__FILE__, __LINE__, __FUNCTION__, 
 			csmi_sas_raid_control_buffer_sz, memory_pages);
 		return -ENOMEM;
 	}
@@ -4285,20 +4174,20 @@ csmisas_set_raid_control(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(pKarg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)pKarg, memory_pages);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	if (pKarg->Information.uChangeCount != 0 &&
 		pKarg->Information.uChangeCount != ioc->csmi_change_count ) {
@@ -4363,7 +4252,7 @@ csmisas_set_raid_control(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	free_pages((unsigned long)pKarg, memory_pages);
 	return 0;
 }
@@ -4384,8 +4273,6 @@ csmisas_get_raid_element(unsigned long arg)
 	MPT_ADAPTER			*ioc = NULL;
 	int				iocnum;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_RAID_ELEMENT_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmisas_get_raid_element struct @ %p\n",
@@ -4395,22 +4282,22 @@ csmisas_get_raid_element(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
+
 /* TODO - implement IOCTL here */
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_BAD_CNTL_CODE;
-	dcsmisasprintk((": not implemented\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG ": not implemented\n"));
 
 // csmisas_get_raid_element_exit:
 
@@ -4424,7 +4311,7 @@ csmisas_get_raid_element(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 
 }
@@ -4445,8 +4332,6 @@ csmisas_set_raid_operation(unsigned long arg)
 	MPT_ADAPTER			*ioc = NULL;
 	int				iocnum;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_RAID_SET_OPERATION_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_set_raid_operation struct @ %p\n",
@@ -4456,22 +4341,22 @@ csmisas_set_raid_operation(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
+
 /* TODO - implement IOCTL here */
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_BAD_CNTL_CODE;
-	dcsmisasprintk((": not implemented\n"));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG ": not implemented\n"));
 
 // cim_set_raid_operation:
 
@@ -4485,7 +4370,7 @@ csmisas_set_raid_operation(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 
 }
@@ -4521,8 +4406,6 @@ csmisas_task_managment(unsigned long arg)
 	struct sas_device_info		*sas_info;
 	u16				ioc_status;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg, sizeof(CSMI_SAS_SSP_TASK_IU_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in csmi_sas_task_managment struct @ %p\n",
@@ -4532,18 +4415,18 @@ csmisas_task_managment(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_INVALID_PARAMETER;
 
@@ -4590,16 +4473,16 @@ csmisas_task_managment(unsigned long arg)
 
 	switch (karg.Parameters.uInformation) {
 		case CSMI_SAS_SSP_TEST:
-			dcsmisasprintk(("TM request for test purposes\n"));
+			dcsmisasprintk(ioc, printk(KERN_DEBUG "TM request for test purposes\n"));
 			break;
 		case CSMI_SAS_SSP_EXCEEDED:
-			dcsmisasprintk(("TM request due to timeout\n"));
+			dcsmisasprintk(ioc, printk(KERN_DEBUG "TM request due to timeout\n"));
 			break;
 		case CSMI_SAS_SSP_DEMAND:
-			dcsmisasprintk(("TM request demanded by app\n"));
+			dcsmisasprintk(ioc, printk(KERN_DEBUG "TM request demanded by app\n"));
 			break;
 		case CSMI_SAS_SSP_TRIGGER:
-			dcsmisasprintk(("TM request sent to trigger event\n"));
+			dcsmisasprintk(ioc, printk(KERN_DEBUG "TM request sent to trigger event\n"));
 			break;
 	}
 
@@ -4610,13 +4493,8 @@ csmisas_task_managment(unsigned long arg)
 	 * look up qtag in the ScsiLookup[] table
 	 */
 		for (i = 0, found_qtag = 0; i < hd->ioc->req_depth; i++) {
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0))
-			if ((hd->ScsiLookup[i]) &&
-			    (hd->ScsiLookup[i]->tag == queueTag)) {
-#else
 			if ((ioc->ScsiLookup[i]) &&
 			    (ioc->ScsiLookup[i]->tag == queueTag)) {
-#endif
 				mf = MPT_INDEX_2_MFPTR(hd->ioc, i);
 				msgContext =
 				    mf->u.frame.hwhdr.msgctxu.MsgContext;
@@ -4637,21 +4515,16 @@ csmisas_task_managment(unsigned long arg)
 
 		/* Single threading ....
 		 */
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0))
 		if (mptctl_set_tm_flags(hd) != 0) {
 			karg.IoctlHeader.ReturnCode =
 			    CSMI_SAS_STATUS_FAILED;
 			goto cim_get_task_managment_exit;
 		}
-#endif
-
 		/* Send request
 		 */
-		if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-			dcsmisasprintk((": no msg frames!\n"));
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,0))
+		if ((mf = mpt_get_msg_frame(mptctl_taskmgmt_id, ioc)) == NULL) {
+			dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 			mptctl_free_tm_flags(ioc);
-#endif
 			karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto cim_get_task_managment_exit;
 		}
@@ -4663,12 +4536,7 @@ csmisas_task_managment(unsigned long arg)
 		pScsiTm->TaskType = taskType;
 		pScsiTm->Bus = channel;
 		pScsiTm->TargetID = id;
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,15))
-		int_to_scsilun(karg.Parameters.bLun,
-		    (struct scsi_lun *)pScsiTm->LUN);
-#else
 		pScsiTm->LUN[1] = karg.Parameters.bLun;
-#endif
 		pScsiTm->MsgContext = mpi_hdr->MsgContext;
 		pScsiTm->TaskMsgContext = msgContext;
 		pScsiTm->Function = MPI_FUNCTION_SCSI_TASK_MGMT;
@@ -4679,10 +4547,10 @@ csmisas_task_managment(unsigned long arg)
 			goto cim_get_task_managment_exit;
 		}
 
-		if (ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) {
+		if (ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) {
 
 			pScsiTmReply =
-			    (pSCSITaskMgmtReply_t ) ioc->ioctl->ReplyFrame;
+			    (pSCSITaskMgmtReply_t ) ioc->ioctl_cmds.reply;
 
 			ioc_status = le16_to_cpu(pScsiTmReply->IOCStatus)
 			    & MPI_IOCSTATUS_MASK;
@@ -4716,7 +4584,6 @@ csmisas_task_managment(unsigned long arg)
 		break;
 	}
 
-
  cim_get_task_managment_exit:
 
 	/* Copy the data from kernel memory to user memory
@@ -4729,7 +4596,7 @@ csmisas_task_managment(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -4833,7 +4700,7 @@ csmisas_phy_reset(MPT_ADAPTER *ioc, u8 PhyNum, u8 opcode)
 	/* Get a MF for this command.
 	 */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
-		dcsmisasprintk((": no msg frames!\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": no msg frames!\n"));
 		return -1;
         }
 
@@ -4848,15 +4715,15 @@ csmisas_phy_reset(MPT_ADAPTER *ioc, u8 PhyNum, u8 opcode)
 	if (csmisas_send_command_wait(ioc, mf, MPT_IOCTL_DEFAULT_TIMEOUT) != 0)
 		return -1;
 
-	if ((ioc->ioctl->status & MPT_IOCTL_STATUS_RF_VALID) == 0)
+	if ((ioc->ioctl_cmds.status & MPT_MGMT_STATUS_RF_VALID) == 0)
 		return -1;
 
 	/* process the completed Reply Message Frame */
-	sasIoUnitCntrReply = (SasIoUnitControlReply_t *)ioc->ioctl->ReplyFrame;
+	sasIoUnitCntrReply = (SasIoUnitControlReply_t *)ioc->ioctl_cmds.reply;
 	ioc_status = le16_to_cpu(sasIoUnitCntrReply->IOCStatus)
 	    & MPI_IOCSTATUS_MASK;
 	if (ioc_status != MPI_IOCSTATUS_SUCCESS) {
-		printk("%s: IOCStatus=0x%X IOCLogInfo=0x%X\n",
+		printk(KERN_DEBUG "%s: IOCStatus=0x%X IOCLogInfo=0x%X\n",
 		    __FUNCTION__,
 		    sasIoUnitCntrReply->IOCStatus,
 		    sasIoUnitCntrReply->IOCLogInfo);
@@ -4891,8 +4758,6 @@ csmisas_phy_control(unsigned long arg)
 	int 				csmi_sas_phy_control_buffer_sz;
 	int				memory_pages;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&ioctl_header, uarg, sizeof(IOCTL_HEADER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in IOCTL_HEADER"
@@ -4908,7 +4773,7 @@ csmisas_phy_control(unsigned long arg)
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to malloc SAS_PHY_CONTROL_BUFFER "
 			"csmi_sas_phy_control_buffer_sz=%d memory_pages=%d\n",
-			__FILE__, __LINE__, __FUNCTION__,
+			__FILE__, __LINE__, __FUNCTION__, 
 			csmi_sas_phy_control_buffer_sz, memory_pages);
 		return -ENOMEM;
 	}
@@ -4924,20 +4789,20 @@ csmisas_phy_control(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(ioctl_header.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	if (karg->bPhyIdentifier >= ioc->num_ports) {
 		karg->IoctlHeader.ReturnCode =
@@ -4965,14 +4830,14 @@ csmisas_phy_control(unsigned long arg)
 	cfg.timeout = MPT_IOCTL_DEFAULT_TIMEOUT;
 
 	if (mpt_config(ioc, &cfg) != 0) {
-		dcsmisasprintk((
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    ": FAILED: READ MPI_SASIOUNITPAGE0: HEADER\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
 	}
 
 	if (hdr.ExtPageLength == 0) {
-		dcsmisasprintk((": hdr.ExtPageLength == 0\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": hdr.ExtPageLength == 0\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
 	}
@@ -4982,7 +4847,7 @@ csmisas_phy_control(unsigned long arg)
 	    sasIoUnitPg0_data_sz, &sasIoUnitPg0_dma);
 
 	if (!sasIoUnitPg0) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
 	}
@@ -4992,7 +4857,7 @@ csmisas_phy_control(unsigned long arg)
 	cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
 
 	if (mpt_config(ioc, &cfg) != 0) {
-		dcsmisasprintk((
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    ": FAILED: READ MPI_SASIOUNITPAGE0: CURRENT\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
@@ -5018,14 +4883,14 @@ csmisas_phy_control(unsigned long arg)
 	cfg.timeout = MPT_IOCTL_DEFAULT_TIMEOUT;
 
 	if (mpt_config(ioc, &cfg) != 0) {
-		dcsmisasprintk((
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    ": FAILED: READ MPI_SASIOUNITPAGE1: HEADER\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
 	}
 
 	if (hdr.ExtPageLength == 0) {
-		dcsmisasprintk((": hdr.ExtPageLength == 0\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": hdr.ExtPageLength == 0\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
 	}
@@ -5035,7 +4900,7 @@ csmisas_phy_control(unsigned long arg)
 	    sasIoUnitPg1_data_sz, &sasIoUnitPg1_dma);
 
 	if (!sasIoUnitPg1) {
-		dcsmisasprintk((": pci_alloc_consistent: FAILED\n"));
+		dcsmisasprintk(ioc, printk(KERN_ERR ": pci_alloc_consistent: FAILED\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
 	}
@@ -5045,7 +4910,7 @@ csmisas_phy_control(unsigned long arg)
 	cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
 
 	if (mpt_config(ioc, &cfg) != 0) {
-		dcsmisasprintk((
+		dcsmisasprintk(ioc, printk(KERN_ERR
 		    ": FAILED:  READ MPI_SASIOUNITPAGE1: CURRENT\n"));
 		karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 		goto cim_sas_phy_control_exit;
@@ -5079,7 +4944,7 @@ csmisas_phy_control(unsigned long arg)
 			cfg.dir = 1;
 			cfg.action = MPI_CONFIG_ACTION_PAGE_WRITE_NVRAM;
 			if (mpt_config(ioc, &cfg) != 0) {
-				dcsmisasprintk((
+				dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: WRITE MPI_SASIOUNITPAGE1 NVRAM\n"));
 				karg->IoctlHeader.ReturnCode =
 				   CSMI_SAS_STATUS_FAILED;
@@ -5087,7 +4952,7 @@ csmisas_phy_control(unsigned long arg)
 			}
 			cfg.action = MPI_CONFIG_ACTION_PAGE_WRITE_CURRENT;
 			if (mpt_config(ioc, &cfg) != 0) {
-				dcsmisasprintk((
+				dcsmisasprintk(ioc, printk(KERN_ERR
 			 ": FAILED: WRITE MPI_SASIOUNITPAGE1 CURRENT\n"));
 				karg->IoctlHeader.ReturnCode =
 				   CSMI_SAS_STATUS_FAILED;
@@ -5096,7 +4961,7 @@ csmisas_phy_control(unsigned long arg)
 		}
 		if (csmisas_phy_reset(ioc,
 		    karg->bPhyIdentifier, opcode) != 0) {
-			dcsmisasprintk((
+			dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: csmisas_phy_reset\n"));
 			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto cim_sas_phy_control_exit;
@@ -5115,21 +4980,21 @@ csmisas_phy_control(unsigned long arg)
 		cfg.dir = 1;
 		cfg.action = MPI_CONFIG_ACTION_PAGE_WRITE_NVRAM;
 		if (mpt_config(ioc, &cfg) != 0) {
-			dcsmisasprintk((
+			dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: WRITE MPI_SASIOUNITPAGE1 NVRAM\n"));
 			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto cim_sas_phy_control_exit;
 		}
 		cfg.action = MPI_CONFIG_ACTION_PAGE_WRITE_CURRENT;
 		if (mpt_config(ioc, &cfg) != 0) {
-			dcsmisasprintk((
+			dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: WRITE MPI_SASIOUNITPAGE1 CURRENT\n"));
 			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto cim_sas_phy_control_exit;
 		}
 		if (csmisas_phy_reset(ioc,
 		    karg->bPhyIdentifier, MPI_SAS_OP_PHY_HARD_RESET) != 0) {
-			dcsmisasprintk((
+			dcsmisasprintk(ioc, printk(KERN_ERR
 			    ": FAILED: csmisas_phy_reset\n"));
 			karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_FAILED;
 			goto cim_sas_phy_control_exit;
@@ -5185,7 +5050,7 @@ csmisas_phy_control(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	free_pages((unsigned long)karg, memory_pages);
 	return 0;
 }
@@ -5278,8 +5143,6 @@ csmisas_get_connector_info(unsigned long arg)
 	int				iocnum;
 	int				i;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&karg, uarg,
 		sizeof(CSMI_SAS_CONNECTOR_INFO_BUFFER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
@@ -5291,18 +5154,18 @@ csmisas_get_connector_info(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg.IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	karg.IoctlHeader.ReturnCode = CSMI_SAS_STATUS_SUCCESS;
 
@@ -5349,7 +5212,7 @@ csmisas_get_connector_info(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return 0;
 }
 
@@ -5374,7 +5237,7 @@ csmisas_fill_location_data(MPT_ADAPTER *ioc, u8 bus, u8 id, u8 opcode,
 	int				sasEnclosurePg0_data_sz=0;
 	u64				sas_address;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 	memset (location_ident, 0, sizeof(*location_ident));
 
 	/* SAS Device Page 0 */
@@ -5415,7 +5278,7 @@ csmisas_fill_location_data(MPT_ADAPTER *ioc, u8 bus, u8 id, u8 opcode,
 	cfg.action = MPI_CONFIG_ACTION_PAGE_READ_CURRENT;
 	cfg.pageAddr = (bus << 8) + id
 	    + (MPI_SAS_DEVICE_PGAD_FORM_BUS_TARGET_ID <<
-			MPI_SAS_DEVICE_PGAD_FORM_SHIFT);
+	       	MPI_SAS_DEVICE_PGAD_FORM_SHIFT);
 
 	if ((rc = mpt_config(ioc, &cfg)) != 0) {
 		rc=-1;
@@ -5531,7 +5394,7 @@ fill_location_data_exit:
 		pci_free_consistent(ioc->pcidev, sasEnclosurePg0_data_sz,
 		    sasEnclosurePg0, sasEnclosurePg0_dma);
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	return rc;
 }
 
@@ -5780,8 +5643,6 @@ csmisas_get_location(unsigned long arg)
 	int				memory_pages;
 	struct sas_device_info		*sas_info;
 
-	dcsmisasprintk(("%s enter.\n",__FUNCTION__));
-
 	if (copy_from_user(&ioctl_header, uarg, sizeof(IOCTL_HEADER))) {
 		printk(KERN_ERR "%s@%d::%s() - "
 		    "Unable to read in IOCTL_HEADER"
@@ -5797,7 +5658,7 @@ csmisas_get_location(unsigned long arg)
 		printk(KERN_ERR "%s@%d::%s() - "
 			"Unable to malloc GET_LOCATION_BUFFER "
 			"csmi_sas_get_location_sz=%d memory_pages=%d\n",
-			__FILE__, __LINE__, __FUNCTION__,
+			__FILE__, __LINE__, __FUNCTION__, 
 			csmi_sas_get_location_sz, memory_pages);
 		return -ENOMEM;
 	}
@@ -5813,20 +5674,20 @@ csmisas_get_location(unsigned long arg)
 
 	if (((iocnum = mpt_verify_adapter(karg->IoctlHeader.IOControllerNumber,
 	    &ioc)) < 0) || (ioc == NULL)) {
-		dcsmisasprintk((KERN_ERR
-		"%s::%s() @%d - ioc%d not found!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not found!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
 
 	if (!csmisas_is_this_sas_cntr(ioc)) {
-		dcsmisasprintk((KERN_ERR
-		    "%s::%s() @%d - ioc%d not SAS controller!\n",
-		    __FILE__, __FUNCTION__, __LINE__, iocnum));
+		printk(KERN_ERR "%s::%s() @%d - ioc%d not SAS controller!\n",
+		    __FILE__, __FUNCTION__, __LINE__, iocnum);
 		free_pages((unsigned long)karg, memory_pages);
 		return -ENODEV;
 	}
+
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s enter.\n",__FUNCTION__));
 
 	karg->IoctlHeader.ReturnCode = CSMI_SAS_STATUS_INVALID_PARAMETER;
 	if(karg->bLengthOfLocationIdentifier !=
@@ -5888,7 +5749,7 @@ csmisas_get_location(unsigned long arg)
 		return -EFAULT;
 	}
 
-	dcsmisasprintk(("%s exit.\n",__FUNCTION__));
+	dcsmisasprintk(ioc, printk(KERN_DEBUG "%s exit.\n",__FUNCTION__));
 	free_pages((unsigned long)karg, memory_pages);
 	return 0;
 }

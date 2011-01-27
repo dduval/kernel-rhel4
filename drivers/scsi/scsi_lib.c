@@ -916,6 +916,13 @@ void scsi_io_completion(struct scsi_cmnd *cmd, unsigned int good_bytes,
 			return;
 			break;
 		case MEDIUM_ERROR:
+			printk("scsi%d: ERROR on channel %d, id %d, lun %d, CDB: ",
+			       cmd->device->host->host_no, (int) cmd->device->channel,
+			       (int) cmd->device->id, (int) cmd->device->lun);
+			__scsi_print_command(cmd->data_cmnd);
+			scsi_print_sense("", cmd);
+			cmd = scsi_end_request(cmd, 0, this_count, 1);
+			return;
 		case VOLUME_OVERFLOW:
 			printk("scsi%d: ERROR on channel %d, id %d, lun %d, CDB: ",
 			       cmd->device->host->host_no, (int) cmd->device->channel,

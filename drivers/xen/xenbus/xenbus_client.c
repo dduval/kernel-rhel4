@@ -35,8 +35,12 @@
 #include <xen/xenbus.h>
 #include <xen/driver_util.h>
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 /* xenbus_probe.c */
-extern char *kasprintf(const char *fmt, ...);
+extern char *kasprintf(gfp_t gfp, const char *fmt, ...);
 
 #define DPRINTK(fmt, args...) \
     pr_debug("xenbus_client (%s:%d) " fmt ".\n", __FUNCTION__, __LINE__, ##args)
@@ -84,7 +88,7 @@ int xenbus_watch_path2(struct xenbus_device *dev, const char *path,
 					const char **, unsigned int))
 {
 	int err;
-	char *state = kasprintf("%s/%s", path, path2);
+	char *state = kasprintf((GFP_KERNEL | __GFP_HIGH), "%s/%s", path, path2);
 	if (!state) {
 		xenbus_dev_fatal(dev, -ENOMEM, "allocating path for watch");
 		return -ENOMEM;
@@ -152,7 +156,7 @@ EXPORT_SYMBOL_GPL(xenbus_frontend_closed);
  */
 static char *error_path(struct xenbus_device *dev)
 {
-	return kasprintf("error/%s", dev->nodename);
+	return kasprintf((GFP_KERNEL | __GFP_HIGH), "error/%s", dev->nodename);
 }
 
 
@@ -289,6 +293,7 @@ int xenbus_free_evtchn(struct xenbus_device *dev, int port)
 	return err;
 }
 
+#ifdef CONFIG_XEN
 /* Based on Rusty Russell's skeleton driver's map_page */
 int xenbus_map_ring_valloc(struct xenbus_device *dev, int gnt_ref, void **vaddr)
 {
@@ -415,7 +420,7 @@ int xenbus_unmap_ring(struct xenbus_device *dev,
 	return op.status;
 }
 EXPORT_SYMBOL_GPL(xenbus_unmap_ring);
-
+#endif /* CONFIG_XEN */
 
 enum xenbus_state xenbus_read_driver_state(const char *path)
 {

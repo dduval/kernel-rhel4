@@ -279,6 +279,7 @@ static int skge_set_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
 	if (netif_running(dev)) {
 		skge_down(dev);
 		skge_up(dev);
+		dev->set_multicast_list(dev);
 	}
 	return (0);
 }
@@ -410,6 +411,7 @@ static int skge_set_ring_param(struct net_device *dev,
 	if (netif_running(dev)) {
 		skge_down(dev);
 		skge_up(dev);
+		dev->set_multicast_list(dev);
 	}
 
 	return 0;
@@ -519,6 +521,7 @@ static int skge_set_pauseparam(struct net_device *dev,
 	if (netif_running(dev)) {
 		skge_down(dev);
 		skge_up(dev);
+		dev->set_multicast_list(dev);
 	}
 	return 0;
 }
@@ -1898,8 +1901,6 @@ static void yukon_link_down(struct skge_port *skge)
 	int port = skge->port;
 	u16 ctrl;
 
-	gm_phy_write(hw, port, PHY_MARV_INT_MASK, 0);
-
 	ctrl = gma_read16(hw, port, GM_GP_CTRL);
 	ctrl &= ~(GM_GPCR_RX_ENA | GM_GPCR_TX_ENA);
 	gma_write16(hw, port, GM_GP_CTRL, ctrl);
@@ -1913,7 +1914,6 @@ static void yukon_link_down(struct skge_port *skge)
 
 	}
 
-	yukon_reset(hw, port);
 	skge_link_down(skge);
 
 	yukon_init(hw, port);
@@ -2356,9 +2356,10 @@ static int skge_change_mtu(struct net_device *dev, int new_mtu)
 	if (running)
 		skge_down(dev);
 	dev->mtu = new_mtu;
-	if (running)
+	if (running) {
 		skge_up(dev);
-
+		dev->set_multicast_list(dev);
+	}
 	return err;
 }
 

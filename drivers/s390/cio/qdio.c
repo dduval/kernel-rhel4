@@ -924,10 +924,6 @@ iqdio_is_inbound_q_done(struct qdio_q *q)
 	if (!no_used)
 		return 1;
 
-	if (!q->siga_sync)
-		/* we'll check for more primed buffers in qeth_stop_polling */
-		return 0;
-
 	if (q->slsb.acc.val[q->first_to_check]!=SLSB_P_INPUT_PRIMED)
 		/* 
 		 * nothing more to do, if next buffer is not PRIMED.

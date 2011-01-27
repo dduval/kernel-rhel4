@@ -204,7 +204,13 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 		ha->mailbox_timeout_count++;
 		mbx_sts[0] = (-1);
 
-		set_bit(DPC_RESET_HA, &ha->dpc_flags);
+		/*
+		 * If the mailbox timed out due to CSR_SCSI_RESET_INTR,
+		 * then the adapter will simply reinitialize, otherwise,
+		 * a full on adapter reset will be done.
+		 */
+		if (qla4xxx_poll_and_ack_scsi_reset(ha) == QLA_ERROR)
+			set_bit(DPC_RESET_HA, &ha->dpc_flags);
 		goto mbox_exit;
 	}
 
@@ -512,6 +518,7 @@ qla4xxx_get_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
 		if (init_fw_cb_dma == 0 &&
 		    mbox_sts[0] == MBOX_STS_COMMAND_PARAMETER_ERROR)
 		{
+			/* Other valid info returned in mailbox status registers */
 			LEAVE(__func__);
 			return (QLA_SUCCESS);
 		}
@@ -617,6 +624,10 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 
 		ha->ipv6_link_local_addr[0] = 0xFE;
 		ha->ipv6_link_local_addr[1] = 0x80;
+		ha->ipv6_link_local_state = init_fw_cb->IPv6LinkLocalAddrState;
+		ha->ipv6_addr0_state = init_fw_cb->IPv6Addr0State;
+		ha->ipv6_addr1_state = init_fw_cb->IPv6Addr1State;
+		ha->ipv6_default_router_state = init_fw_cb->IPv6DefaultRouterState;
 		memcpy(&ha->ipv6_link_local_addr[8], init_fw_cb->IPv6InterfaceID,
 		    MIN(sizeof(ha->ipv6_link_local_addr)/2, sizeof(init_fw_cb->IPv6InterfaceID)));
 		memcpy(ha->ipv6_addr0, init_fw_cb->IPv6Addr0,
@@ -629,23 +640,27 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 
 		IPv6Addr2Str(ha->ipv6_link_local_addr, &ip_addr_str[0]);
 		QL4PRINT(QLP7, printk("scsi%d: %s: "
-			"IPv6 Link Local       %s\n",
-			ha->host_no, __func__, &ip_addr_str[0]));
+			"IPv6 Link Local       %s (%d)\n",
+			ha->host_no, __func__, &ip_addr_str[0],
+			ha->ipv6_link_local_state));
 
 		IPv6Addr2Str(ha->ipv6_addr0, &ip_addr_str[0]);
 		QL4PRINT(QLP7, printk("scsi%d: %s: "
-			"IPv6 IP Address0      %s\n",
-			ha->host_no, __func__, &ip_addr_str[0]));
+			"IPv6 IP Address0      %s (%d)\n",
+			ha->host_no, __func__, &ip_addr_str[0],
+			ha->ipv6_addr0_state));
 
 		IPv6Addr2Str(ha->ipv6_addr1, &ip_addr_str[0]);
 		QL4PRINT(QLP7, printk("scsi%d: %s: "
-			"IPv6 IP Address1      %s\n",
-			ha->host_no, __func__, &ip_addr_str[0]));
+			"IPv6 IP Address1      %s (%d)\n",
+			ha->host_no, __func__, &ip_addr_str[0],
+			ha->ipv6_addr1_state));
 
 		IPv6Addr2Str(ha->ipv6_default_router_addr, &ip_addr_str[0]);
 		QL4PRINT(QLP7, printk("scsi%d: %s: "
-			"IPv6 Default Router   %s\n",
-			ha->host_no, __func__, &ip_addr_str[0]));
+			"IPv6 Default Router   %s (%d)\n",
+			ha->host_no, __func__, &ip_addr_str[0],
+			ha->ipv6_default_router_state));
 	}
 
 	pci_free_consistent(ha->pdev, ha->ifcb_size, init_fw_cb,

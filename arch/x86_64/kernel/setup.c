@@ -1077,10 +1077,10 @@ void __init early_identify_cpu(struct cpuinfo_x86 *c)
 		c->x86 = (tfms >> 8) & 0xf;
 		c->x86_model = (tfms >> 4) & 0xf;
 		c->x86_mask = tfms & 0xf;
-		if (c->x86 == 0xf) {
+		if (c->x86 == 0xf)
 			c->x86 += (tfms >> 20) & 0xff;
+		if (c->x86 >= 0x6)
 			c->x86_model += ((tfms >> 16) & 0xF) << 4;
-		} 
 		if (c->x86_capability[0] & (1<<19)) 
 			c->x86_clflush_size = ((misc >> 8) & 0xff) * 8;
 		c->x86_apicid = misc >> 24;
@@ -1293,7 +1293,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		seq_printf(m, "physical id\t: %d\n", phys_proc_id[c - cpu_data]);
 		seq_printf(m, "siblings\t: %d\n", cpus_weight(cpu_core_map[cpu]));
 		seq_printf(m, "core id\t\t: %d\n", cpu_core_id[c - cpu_data]);
-		seq_printf(m, "cpu cores\t: %d\n", c->x86_num_cores);
+		seq_printf(m, "cpu cores\t: %d\n", booted_cores[c - cpu_data]);
 	}
 #endif	
 

@@ -39,7 +39,7 @@
 
 #define DRV_NAME  	"qla3xxx"
 #define DRV_STRING 	"QLogic ISP3XXX Network Driver"
-#define DRV_VERSION	"v2.03.00-k4-RHEL4U6"
+#define DRV_VERSION	"v2.03.00-k4-rhel4.7-01"
 #define PFX		DRV_NAME " "
 
 static const char ql3xxx_driver_name[] = DRV_NAME;
@@ -2269,6 +2269,12 @@ static int ql_tx_rx_clean(struct ql3_adapter *qdev,
 
 		net_rsp = qdev->rsp_current;
 		rmb();
+		/*
+		 * Fix 4032 chip undocumented "feature" where bit-8 is set if the
+		 * inbound completion is for a VLAN.
+		 */
+		if (qdev->device_id == QL3032_DEVICE_ID)
+			net_rsp->opcode &= 0x7f;
 		switch (net_rsp->opcode) {
 
 		case OPCODE_OB_MAC_IOCB_FN0:

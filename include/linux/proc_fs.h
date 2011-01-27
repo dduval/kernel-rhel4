@@ -184,6 +184,30 @@ static inline struct proc_dir_entry *proc_net_create(const char *name,
 	return create_proc_info_entry(name,mode,proc_net,get_info);
 }
 
+static inline struct proc_dir_entry *proc_net_create_owner(const char *name,
+	mode_t mode, get_info_t *get_info, struct module *owner)
+{
+	struct proc_dir_entry *newf;
+	mode_t temp_mode = ((mode & (~S_IRWXUGO)) | S_ISVTX);
+
+	/*
+	 * temp_mode removes any accesibility from the created proc
+	 * file and acts as a lock, preventing file access until
+	 * we finish setting up the proc_dir_entry structure
+	 */
+	newf = create_proc_info_entry(name, temp_mode, proc_net, get_info);
+	if (newf) {
+		newf->owner = owner;
+		/*
+		 * Once we have the module owner set, we can enable file access
+		 */
+		if ((mode & S_IALLUGO) == 0)
+			mode |= S_IRUGO;
+		newf->mode |= mode;
+	}
+	return newf;
+}
+
 static inline struct proc_dir_entry *proc_net_fops_create(const char *name,
 	mode_t mode, struct file_operations *fops)
 {

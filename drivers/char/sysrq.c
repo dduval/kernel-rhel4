@@ -356,8 +356,9 @@ void __handle_sysrq(int key, struct pt_regs *pt_regs, struct tty_struct *tty)
 	struct sysrq_key_op *op_p;
 	int orig_log_level;
 	int i, j;
+	unsigned long flags;
 
-	__sysrq_lock_table();
+	spin_lock_irqsave(&sysrq_key_table_lock, flags);
 	orig_log_level = console_loglevel;
 	console_loglevel = 7;
 	printk(KERN_INFO "SysRq : ");
@@ -379,7 +380,7 @@ void __handle_sysrq(int key, struct pt_regs *pt_regs, struct tty_struct *tty)
 		printk ("\n");
 		console_loglevel = orig_log_level;
 	}
-	__sysrq_unlock_table();
+	spin_unlock_irqrestore(&sysrq_key_table_lock, flags);
 }
 
 /*

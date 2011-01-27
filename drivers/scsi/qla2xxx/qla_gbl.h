@@ -50,6 +50,8 @@ extern int qla2x00_abort_isp(scsi_qla_host_t *);
 
 extern void qla2x00_try_to_stop_firmware(scsi_qla_host_t *);
 
+extern void qla84xx_put_chip(struct scsi_qla_host *);
+
 /*
  * Global Data in qla_os.c source file.
  */
@@ -155,6 +157,10 @@ extern int
 qla2x00_issue_iocb(scsi_qla_host_t *, void *, dma_addr_t, size_t);
 
 extern int
+qla2x00_issue_iocb_timeout(scsi_qla_host_t *, void *, dma_addr_t, size_t,
+    uint32_t);
+
+extern int
 qla2x00_abort_command(scsi_qla_host_t *, srb_t *);
 
 #if USE_ABORT_TGT
@@ -224,10 +230,28 @@ extern int
 qla2x00_stop_firmware(scsi_qla_host_t *);
 
 extern int
+qla2x00_enable_eft_trace(scsi_qla_host_t *, dma_addr_t, uint16_t);
+extern int
+qla2x00_disable_eft_trace(scsi_qla_host_t *);
+
+extern int
+qla2x00_enable_fce_trace(scsi_qla_host_t *, dma_addr_t, uint16_t , uint16_t *,
+    uint32_t *);
+
+extern int
+qla2x00_disable_fce_trace(scsi_qla_host_t *, uint64_t *, uint64_t *);
+
+extern int
 qla2x00_get_idma_speed(scsi_qla_host_t *, uint16_t, uint16_t *, uint16_t *);
 
 extern int
 qla2x00_set_idma_speed(scsi_qla_host_t *, uint16_t, uint16_t, uint16_t *);
+
+extern int
+qla84xx_verify_chip(struct scsi_qla_host *, uint16_t *);
+
+extern int
+qla84xx_reset_chip(scsi_qla_host_t *, uint16_t, uint16_t *);
 
 /*
  * Global Function Prototypes in qla_isr.c source file.
@@ -252,15 +276,18 @@ extern uint8_t *qla2x00_read_nvram_data(scsi_qla_host_t *, uint8_t *, uint32_t,
 extern int qla2x00_write_nvram_data(scsi_qla_host_t *, uint8_t *, uint32_t,
     uint32_t);
 
+
 /*
  * Global Function Prototypes in qla_dbg.c source file.
  */
 extern void qla2100_fw_dump(scsi_qla_host_t *, int);
 extern void qla2300_fw_dump(scsi_qla_host_t *, int);
 extern void qla24xx_fw_dump(scsi_qla_host_t *, int);
+extern void qla25xx_fw_dump(scsi_qla_host_t *, int);
 extern void qla2100_ascii_fw_dump(scsi_qla_host_t *);
 extern void qla2300_ascii_fw_dump(scsi_qla_host_t *);
 extern void qla24xx_ascii_fw_dump(scsi_qla_host_t *);
+extern void qla25xx_ascii_fw_dump(scsi_qla_host_t *);
 extern void qla2x00_dump_regs(scsi_qla_host_t *);
 extern void qla2x00_dump_buffer(uint8_t *, uint32_t);
 extern void qla2x00_print_scsi_cmd(struct scsi_cmnd *);

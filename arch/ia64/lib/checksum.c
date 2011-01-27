@@ -61,6 +61,8 @@ csum_tcpudp_nofold (unsigned long saddr, unsigned long daddr, unsigned short len
 	return result;
 }
 
+EXPORT_SYMBOL(csum_tcpudp_nofold);
+
 extern unsigned long do_csum (const unsigned char *, long);
 
 /*

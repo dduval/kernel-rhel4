@@ -37,7 +37,7 @@
  */
 
 #define EHEA_PAGESHIFT  12
-#define EHEA_PAGESIZE   4096UL
+#define EHEA_PAGESIZE   (1UL << EHEA_PAGESHIFT)
 
 /* Some abbreviations used here:
  *

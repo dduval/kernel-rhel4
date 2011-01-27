@@ -2346,7 +2346,7 @@ int ip_vs_control_init(void)
 
 	EnterFunction(2);
 
-	ret = nf_register_sockopt(&ip_vs_sockopts);
+	ret = nf_register_sockopt_owner(&ip_vs_sockopts, THIS_MODULE);
 	if (ret) {
 		IP_VS_ERR("cannot register sockopt.\n");
 		return ret;

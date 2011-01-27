@@ -252,22 +252,13 @@ static __init int disable_acpi_pci(struct dmi_blacklist *d)
 	}
 	return 0;
 }  
-static __init int disable_pci_mmconf(struct dmi_blacklist *d)
+
+static __init int disable_pci_seg(struct dmi_blacklist *d)
 {
 	extern char * pcibios_setup(char * str);
 
-	printk(KERN_NOTICE "%s detected, forcing pci=nommconf\n", 
+	printk(KERN_NOTICE "%s detected, forcing pci=noseg\n", 
 		d->ident);
-	pcibios_setup("nommconf");
-}
-
-static __init int disable_pci_mmconf_seg(struct dmi_blacklist *d)
-{
-	extern char * pcibios_setup(char * str);
-
-	printk(KERN_NOTICE "%s detected, forcing pci=nommconf and pci=noseg\n", 
-		d->ident);
-	pcibios_setup("nommconf");
 	pcibios_setup("noseg");
 }
 
@@ -286,31 +277,13 @@ static __init int disable_pci_mmconf_seg(struct dmi_blacklist *d)
 static __initdata struct dmi_blacklist dmi_blacklist[]={
 
 #ifdef CONFIG_ACPI_PCI
-	{ disable_pci_mmconf_seg, "HP xw9300 Workstation", {
+	{ disable_pci_seg, "HP xw9300 Workstation", {
 		MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
-	{ disable_pci_mmconf_seg, "HP xw9400 Workstation", {
+	{ disable_pci_seg, "HP xw9400 Workstation", {
 		MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
 		NO_MATCH, NO_MATCH, NO_MATCH
-		} },
-	{ disable_pci_mmconf, "HP DL585 G2", {
-		MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
-		NO_MATCH, NO_MATCH, NO_MATCH
-		} },
-	{ disable_pci_mmconf, "Intel DG965MQ", {
-		MATCH(DMI_BOARD_VENDOR, "Intel Corporation"),
-		MATCH(DMI_BOARD_NAME, "DG965MQ"),
-		NO_MATCH, NO_MATCH
-		} },
-	{ disable_pci_mmconf, "Intel D26928", {
-		MATCH(DMI_BOARD_NAME, "D26928"),
-		NO_MATCH, NO_MATCH, NO_MATCH
-		} },
-	{ disable_pci_mmconf, "ASUS A8N-SLI Premium", {
-		MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
-		MATCH(DMI_BOARD_NAME, "A8N-SLI Premium"),
-		NO_MATCH, NO_MATCH
 		} },
 #endif
 	{ NULL, }

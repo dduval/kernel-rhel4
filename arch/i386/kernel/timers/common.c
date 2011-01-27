@@ -21,7 +21,7 @@
  * device.
  */
 
-#define CALIBRATE_TIME	(5 * 1000020/HZ)
+#define CALIBRATE_TIME	(5 * 1000020/REAL_HZ)
 
 unsigned long __init calibrate_tsc(void)
 {

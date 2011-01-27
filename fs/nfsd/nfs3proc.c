@@ -438,7 +438,7 @@ nfsd3_proc_readdir(struct svc_rqst *rqstp, struct nfsd3_readdirargs *argp,
 	resp->buffer = argp->buffer;
 	resp->rqstp = rqstp;
 	nfserr = nfsd_readdir(rqstp, &resp->fh, (loff_t*) &argp->cookie, 
-					&resp->common, nfs3svc_encode_entry);
+		&resp->common, nfs3svc_encode_entry, nfs3svc_encode_entry32);
 	memcpy(resp->verf, argp->verf, 8);
 	resp->count = resp->buffer - argp->buffer;
 	if (resp->offset)
@@ -479,7 +479,8 @@ nfsd3_proc_readdirplus(struct svc_rqst *rqstp, struct nfsd3_readdirargs *argp,
 	nfserr = nfsd_readdir(rqstp, &resp->fh,
 				     &offset,
 				     &resp->common,
-				     nfs3svc_encode_entry_plus);
+				     nfs3svc_encode_entry_plus,
+				     nfs3svc_encode_entry_plus32);
 	memcpy(resp->verf, argp->verf, 8);
 	for (i=1; i<rqstp->rq_resused ; i++) {
 		page_addr = page_address(rqstp->rq_respages[i]);

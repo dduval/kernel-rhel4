@@ -39,6 +39,10 @@
 #define BLKIF_MAJOR(dev) ((dev)>>8)
 #define BLKIF_MINOR(dev) ((dev) & 0xff)
 
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 /*
  * For convenience we distinguish between ide, scsi and 'other' (i.e.,
  * potentially combinations of the two) in the naming scheme and in a few other
@@ -131,6 +135,7 @@ xlbd_alloc_major_info(int major, int minor, int index)
 	}
 
 	devfs_mk_dir(ptr->type->devname);
+	printk("xen-vbd: registered block device major %i\n", ptr->major);
 	major_info[index] = ptr;
 	return ptr;
 }
@@ -217,6 +222,7 @@ xlvbd_alloc_gendisk(int minor, blkif_sector_t capacity, int vdevice,
 	struct xlbd_major_info *mi;
 	int nr_minors = 1;
 	int err = -ENODEV;
+	unsigned int offset;
 
 	BUG_ON(info->gd != NULL);
 	BUG_ON(info->mi != NULL);
@@ -234,15 +240,30 @@ xlvbd_alloc_gendisk(int minor, blkif_sector_t capacity, int vdevice,
 	if (gd == NULL)
 		goto out;
 
-	if (nr_minors > 1)
-		sprintf(gd->disk_name, "%s%c", mi->type->diskname,
-			'a' + mi->index * mi->type->disks_per_major +
-			(minor >> mi->type->partn_shift));
-	else
-		sprintf(gd->disk_name, "%s%c%d", mi->type->diskname,
-			'a' + mi->index * mi->type->disks_per_major +
-			(minor >> mi->type->partn_shift),
-			minor & ((1 << mi->type->partn_shift) - 1));
+	offset =  mi->index * mi->type->disks_per_major +
+			(minor >> mi->type->partn_shift);
+	if (nr_minors > 1) {
+		if (offset < 26) {
+			sprintf(gd->disk_name, "%s%c",
+				 mi->type->diskname, 'a' + offset );
+		} else {
+			sprintf(gd->disk_name, "%s%c%c",
+				mi->type->diskname,
+				'a' + ((offset/26)-1), 'a' + (offset%26) );
+		}
+	} else {
+		if (offset < 26) {
+			sprintf(gd->disk_name, "%s%c%d",
+				mi->type->diskname,
+				'a' + offset,
+				minor & ((1 << mi->type->partn_shift) - 1));
+		} else {
+			sprintf(gd->disk_name, "%s%c%c%d",
+				mi->type->diskname,
+				'a' + ((offset/26)-1), 'a' + (offset%26),
+				minor & ((1 << mi->type->partn_shift) - 1));
+		}
+	}
 
 	gd->major = mi->major;
 	gd->first_minor = minor;

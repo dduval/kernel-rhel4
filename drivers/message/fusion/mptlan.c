@@ -1,10 +1,10 @@
 /*
  *  linux/drivers/message/fusion/mptlan.c
  *      IP Over Fibre Channel device driver.
- *      For use with LSI Logic Fibre Channel PCI chip/adapters
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      For use with LSI Fibre Channel PCI chip/adapters
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 2000-2007 LSI Logic Corporation
+ *  Copyright (c) 2000-2007 LSI Corporation
  *
  *  $Id: mptlan.c,v 1.55 2003/05/07 14:08:32 Exp $
  */
@@ -321,15 +321,12 @@ mpt_lan_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 		priv = netdev_priv(dev);
 	
 	dlprintk((KERN_INFO MYNAM ": IOC %s_reset routed to LAN driver!\n",
-			reset_phase==MPT_IOC_SETUP_RESET ? "setup" : (
-			reset_phase==MPT_IOC_PRE_RESET ? "pre" : "post")));
+			reset_phase==MPT_IOC_PRE_RESET ? "pre" : "post"));
 
 	if (priv->mpt_rxfidx == NULL)
 		return (1);
 
-	if (reset_phase == MPT_IOC_SETUP_RESET) {
-		;
-	} else if (reset_phase == MPT_IOC_PRE_RESET) {
+	if (reset_phase == MPT_IOC_PRE_RESET) {
 		int i;
 		unsigned long flags;
 
@@ -357,7 +354,7 @@ mpt_lan_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 static int
 mpt_lan_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply)
 {
-	dlprintk((KERN_INFO MYNAM ": MPT event routed to LAN driver!\n"));
+//	dlprintk((KERN_INFO MYNAM ": MPT event routed to LAN driver!\n"));
 
 	switch (le32_to_cpu(pEvReply->Event)) {
 	case MPI_EVENT_NONE:				/* 00 */

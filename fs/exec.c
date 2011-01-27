@@ -496,7 +496,9 @@ struct file *open_exec(const char *name)
 			int err = permission(inode, MAY_EXEC, &nd);
 			file = ERR_PTR(err);
 			if (!err) {
-				file = dentry_open(nd.dentry, nd.mnt, O_RDONLY);
+				file = dentry_open(nd.dentry, nd.mnt, 
+					force_o_largefile() ? 
+					O_RDONLY|O_LARGEFILE : O_RDONLY);
 				if (!IS_ERR(file)) {
 					err = deny_write_access(file);
 					if (err) {
@@ -940,8 +942,7 @@ int flush_old_exec(struct linux_binprm * bprm)
 	return 0;
 
 mmap_failed:
-	put_files_struct(current->files);
-	current->files = files;
+        reset_files_struct(current, files);
 out:
 	return retval;
 }

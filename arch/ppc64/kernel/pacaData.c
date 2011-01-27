@@ -19,6 +19,7 @@
 #include <asm/iSeries/ItLpQueue.h>
 #include <asm/naca.h>
 #include <asm/paca.h>
+#include <asm/mmu.h>
 
 struct naca_struct *naca;
 struct systemcfg *systemcfg;
@@ -26,6 +27,17 @@ struct systemcfg *systemcfg;
 /* This symbol is provided by the linker - let it fill in the paca
  * field correctly */
 extern unsigned long __toc_start;
+
+/*
+ * 3 persistent SLBs are registered here.  The buffer will be zero
+ * initially, hence will all be invaild until we actually write them.
+ */
+struct slb_shadow slb_shadow[] __cacheline_aligned = {
+	[0 ... (NR_CPUS-1)] = {
+		.persistent = SLB_NUM_BOLTED,
+		.buffer_length = sizeof(struct slb_shadow),
+	},
+};
 
 /* The Paca is an array with one entry per processor.  Each contains an 
  * ItLpPaca, which contains the information shared between the 

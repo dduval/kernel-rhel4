@@ -341,6 +341,10 @@ done:
 	case IPV6_DROP_MEMBERSHIP:
 	{
 		struct ipv6_mreq mreq;
+		
+		retv = -EPROTO;
+		if (sk->sk_type == SOCK_STREAM)
+			break;
 
 		retv = -EFAULT;
 		if (copy_from_user(&mreq, optval, sizeof(struct ipv6_mreq)))

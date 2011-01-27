@@ -1336,9 +1336,9 @@ void fastcall sched_fork(task_t *p)
 	p->time_slice = (current->time_slice + 1) >> 1;
 	/*
 	 * The remainder of the first timeslice might be recovered by
-	 * the parent if the child exits early enough.
+	 * the creator if the child exits early enough.
 	 */
-	p->first_time_slice = 1;
+	p->first_time_slice = current->pid;
 	current->time_slice >>= 1;
 	p->timestamp = sched_clock();
 	if (unlikely(!current->time_slice)) {
@@ -1444,7 +1444,7 @@ void fastcall wake_up_new_task(task_t * p, unsigned long clone_flags)
 
 /*
  * Potentially available exiting-child timeslices are
- * retrieved here - this way the parent does not get
+ * retrieved here - this way the creator does not get
  * penalized for creating too many threads.
  *
  * (this cannot be used to 'generate' timeslices
@@ -1455,22 +1455,27 @@ void fastcall sched_exit(task_t * p)
 {
 	unsigned long flags;
 	runqueue_t *rq;
+	struct task_struct* creator = NULL;
 
 	/*
 	 * If the child was a (relative-) CPU hog then decrease
-	 * the sleep_avg of the parent as well.
+	 * the sleep_avg of the creator as well.
 	 */
-	rq = task_rq_lock(p->parent, &flags);
 	if (p->first_time_slice) {
-		p->parent->time_slice += p->time_slice;
-		if (unlikely(p->parent->time_slice > task_timeslice(p)))
-			p->parent->time_slice = task_timeslice(p);
-	}
-	if (p->sleep_avg < p->parent->sleep_avg)
-		p->parent->sleep_avg = p->parent->sleep_avg /
+		creator = find_task_by_pid((pid_t)p->first_time_slice);
+		if (creator && task_cpu(p) == task_cpu(creator)) {
+			rq = task_rq_lock(creator, &flags);
+			creator->time_slice += p->time_slice;
+			if (unlikely(creator->time_slice > task_timeslice(p)))
+				creator->time_slice = task_timeslice(p);
+
+			if (p->sleep_avg < creator->sleep_avg)
+				creator->sleep_avg = creator->sleep_avg /
 		(EXIT_WEIGHT + 1) * EXIT_WEIGHT + p->sleep_avg /
 		(EXIT_WEIGHT + 1);
 	task_rq_unlock(rq, &flags);
+		}
+	}
 }
 
 /**

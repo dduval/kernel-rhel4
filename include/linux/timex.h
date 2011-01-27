@@ -156,8 +156,21 @@
  */
 #include <asm/timex.h>
 
+#ifndef CONFIG_TICK_DIVIDER
+#define tick_divider 1
+#else
+extern unsigned int tick_divider;
+#endif
+
+#define REAL_HZ (HZ/tick_divider)
 /* LATCH is used in the interval timer and ftape setup. */
-#define LATCH  ((CLOCK_TICK_RATE + HZ/2) / HZ)	/* For divider */
+#define LATCH  ((CLOCK_TICK_RATE + REAL_HZ/2) / REAL_HZ)      /* For divider */
+
+#define LATCH_HPET ((HPET_TICK_RATE + REAL_HZ/2) / REAL_HZ)
+
+#define LOGICAL_LATCH  ((CLOCK_TICK_RATE + HZ/2) / HZ)	/* For divider */
+
+#define LOGICAL_LATCH_HPET ((HPET_TICK_RATE + HZ/2) / HZ)
 
 /* Suppose we want to devide two numbers NOM and DEN: NOM/DEN, the we can
  * improve accuracy by shifting LSH bits, hence calculating:
@@ -172,10 +185,14 @@
                              + (((NOM % DEN) << LSH) + DEN / 2) / DEN)
 
 /* HZ is the requested value. ACTHZ is actual HZ ("<< 8" is for accuracy) */
-#define ACTHZ (SH_DIV (CLOCK_TICK_RATE, LATCH, 8))
+#define ACTHZ (SH_DIV (CLOCK_TICK_RATE, LOGICAL_LATCH, 8))
+
+#define ACTHZ_HPET (SH_DIV (HPET_TICK_RATE, LOGICAL_LATCH_HPET, 8))
 
 /* TICK_NSEC is the time between ticks in nsec assuming real ACTHZ */
 #define TICK_NSEC (SH_DIV (1000000UL * 1000, ACTHZ, 8))
+
+#define TICK_NSEC_HPET (SH_DIV(1000000UL * 1000, ACTHZ_HPET, 8))
 
 /* TICK_USEC is the time between ticks in usec assuming fake USER_HZ */
 #define TICK_USEC ((1000000UL + USER_HZ/2) / USER_HZ)

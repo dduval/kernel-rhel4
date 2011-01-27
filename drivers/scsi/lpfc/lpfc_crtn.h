@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_crtn.h 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_crtn.h 3122 2008-01-07 18:49:20Z sf_support $
  */
 
 #ifndef _H_LPFC_CRTN
@@ -207,6 +207,7 @@ void lpfc_reset_barrier(struct lpfc_hba * phba);
 int lpfc_sli_brdkill(struct lpfc_hba *);
 int lpfc_sli_brdreset(struct lpfc_hba *);
 int lpfc_sli_brdrestart(struct lpfc_hba *);
+int lpfc_sli_brdready(struct lpfc_hba *, uint32_t);
 int lpfc_sli_hba_setup(struct lpfc_hba *);
 int lpfc_sli_hba_down(struct lpfc_hba *);
 int lpfc_sli_intr(struct lpfc_hba *);

@@ -345,5 +345,13 @@ config INET_TUNNEL
 	  
 	  If unsure, say Y.
 
+config INET_LRO
+        tristate "Large Receive Offload (ipv4/tcp)"
+
+        ---help---
+          Support for Large Receive Offload (ipv4/tcp).
+
+          If unsure, say Y.
+
 source "net/ipv4/ipvs/Kconfig"
 

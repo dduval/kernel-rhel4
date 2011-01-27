@@ -154,7 +154,7 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 	INIT_WORK(&sdp_sk(sk)->work, sdp_work);
 
 	cq = ib_create_cq(device, sdp_completion_handler, sdp_cq_event_handler,
-			  sk, SDP_TX_SIZE + SDP_RX_SIZE);
+			  sk, SDP_TX_SIZE + SDP_RX_SIZE, 0);
 
 	if (IS_ERR(cq)) {
 		rc = PTR_ERR(cq);
@@ -236,15 +236,19 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 		return rc;
 	}
 
-	sdp_sk(child)->bufs = ntohs(h->bsdh.bufs);
+	sdp_sk(child)->max_bufs = sdp_sk(child)->bufs = ntohs(h->bsdh.bufs);
+	sdp_sk(child)->min_bufs = sdp_sk(child)->bufs / 4;
 	sdp_sk(child)->xmit_size_goal = ntohl(h->localrcvsz) -
 		sizeof(struct sdp_bsdh);
 	sdp_sk(child)->send_frags = PAGE_ALIGN(sdp_sk(child)->xmit_size_goal) /
 		PAGE_SIZE;
+	sdp_resize_buffers(sdp_sk(child), ntohl(h->desremrcvsz));
 
-	sdp_dbg(child, "%s bufs %d xmit_size_goal %d\n", __func__,
+	sdp_dbg(child, "%s bufs %d xmit_size_goal %d send trigger %d\n",
+		__func__,
 		sdp_sk(child)->bufs,
-		sdp_sk(child)->xmit_size_goal);
+		sdp_sk(child)->xmit_size_goal,
+		sdp_sk(child)->min_bufs);
 
 	id->context = child;
 	sdp_sk(child)->id = id;
@@ -270,22 +274,25 @@ static int sdp_response_handler(struct sock *sk, struct rdma_cm_id *id,
 
 	sk->sk_state = TCP_ESTABLISHED;
 
-	/* TODO: If SOCK_KEEPOPEN set, need to reset and start
-	   keepalive timer here */
+	if (sock_flag(sk, SOCK_KEEPOPEN))
+		sdp_start_keepalive_timer(sk);
 
 	if (sock_flag(sk, SOCK_DEAD))
 		return 0;
 
 	h = event->param.conn.private_data;
-	sdp_sk(sk)->bufs = ntohs(h->bsdh.bufs);
+	sdp_sk(sk)->max_bufs = sdp_sk(sk)->bufs = ntohs(h->bsdh.bufs);
+	sdp_sk(sk)->min_bufs = sdp_sk(sk)->bufs / 4;
 	sdp_sk(sk)->xmit_size_goal = ntohl(h->actrcvsz) -
 		sizeof(struct sdp_bsdh);
 	sdp_sk(sk)->send_frags = PAGE_ALIGN(sdp_sk(sk)->xmit_size_goal) /
 		PAGE_SIZE;
 
-	sdp_dbg(sk, "%s bufs %d xmit_size_goal %d\n", __func__,
+	sdp_dbg(sk, "%s bufs %d xmit_size_goal %d send trigger %d\n",
+		__func__,
 		sdp_sk(sk)->bufs,
-		sdp_sk(sk)->xmit_size_goal);
+		sdp_sk(sk)->xmit_size_goal,
+		sdp_sk(sk)->min_bufs);
 
 	sdp_sk(sk)->poll_cq = 1;
 	ib_req_notify_cq(sdp_sk(sk)->cq, IB_CQ_NEXT_COMP);
@@ -311,8 +318,8 @@ int sdp_connected_handler(struct sock *sk, struct rdma_cm_event *event)
 
 	sk->sk_state = TCP_ESTABLISHED;
 
-	/* TODO: If SOCK_KEEPOPEN set, need to reset and start
-	   keepalive timer here */
+	if (sock_flag(sk, SOCK_KEEPOPEN))
+		sdp_start_keepalive_timer(sk);
 
 	if (sock_flag(sk, SOCK_DEAD))
 		return 0;

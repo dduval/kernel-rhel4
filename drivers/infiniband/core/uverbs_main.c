@@ -64,12 +64,6 @@ enum {
 
 #define IB_UVERBS_BASE_DEV	MKDEV(IB_UVERBS_MAJOR, IB_UVERBS_BASE_MINOR)
 
-#ifdef __ia64__
-/* workaround for a bug in hp chipset that would cause kernel
-   panic when dma resources are exhaused */
-int dma_map_sg_hp_wa = 0;
-#endif
-
 static struct class *uverbs_class;
 
 DEFINE_SPINLOCK(ib_uverbs_idr_lock);
@@ -131,6 +125,14 @@ static void ib_uverbs_release_dev(struct kref *ref)
 	complete(&dev->comp);
 }
 
+static void ib_uverbs_release_event_file(struct kref *ref)
+{
+	struct ib_uverbs_event_file *file =
+		container_of(ref, struct ib_uverbs_event_file, ref);
+
+	kfree(file);
+}
+
 void ib_uverbs_release_ucq(struct ib_uverbs_file *file,
 			  struct ib_uverbs_event_file *ev_file,
 			  struct ib_ucq_object *uobj)
@@ -189,6 +191,8 @@ static int ib_uverbs_cleanup_ucontext(struct ib_uverbs_file *file,
 	if (!context)
 		return 0;
 
+	context->closing = 1;
+
 	list_for_each_entry_safe(uobj, tmp, &context->ah_list, list) {
 		struct ib_ah *ah = uobj->object;
 
@@ -236,16 +240,10 @@ static int ib_uverbs_cleanup_ucontext(struct ib_uverbs_file *file,
 
 	list_for_each_entry_safe(uobj, tmp, &context->mr_list, list) {
 		struct ib_mr *mr = uobj->object;
-		struct ib_device *mrdev = mr->device;
-		struct ib_umem_object *memobj;
 
 		idr_remove_uobj(&ib_uverbs_mr_idr, uobj);
 		ib_dereg_mr(mr);
-
-		memobj = container_of(uobj, struct ib_umem_object, uobject);
-		ib_umem_release_on_close(mrdev, &memobj->umem);
-
-		kfree(memobj);
+		kfree(uobj);
 	}
 
 	list_for_each_entry_safe(uobj, tmp, &context->pd_list, list) {
@@ -339,14 +337,6 @@ static unsigned int ib_uverbs_event_poll(struct file *filp,
 	spin_unlock_irq(&file->lock);
 
 	return pollflags;
-}
-
-void ib_uverbs_release_event_file(struct kref *ref)
-{
-	struct ib_uverbs_event_file *file =
-		container_of(ref, struct ib_uverbs_event_file, ref);
-
-	kfree(file);
 }
 
 static int ib_uverbs_event_fasync(int fd, struct file *filp, int on)
@@ -769,7 +759,7 @@ static void ib_uverbs_add_one(struct ib_device *device)
 	spin_unlock(&map_lock);
 
 	uverbs_dev->ib_dev           = device;
-	uverbs_dev->num_comp_vectors = 1;
+	uverbs_dev->num_comp_vectors = device->num_comp_vectors;
 
 	uverbs_dev->dev = cdev_alloc();
 	if (!uverbs_dev->dev)
@@ -860,11 +850,6 @@ static int __init ib_uverbs_init(void)
 
 	spin_lock_init(&map_lock);
 
-#ifdef __ia64__
-	if (ia64_platform_is("hpzx1"))
-		dma_map_sg_hp_wa = 1;
-#endif
-
 	ret = register_chrdev_region(IB_UVERBS_BASE_DEV, IB_UVERBS_MAX_DEVICES,
 				     "infiniband_verbs");
 	if (ret) {
@@ -929,7 +914,6 @@ static void __exit ib_uverbs_cleanup(void)
 	unregister_filesystem(&uverbs_event_fs);
 	class_destroy(uverbs_class);
 	unregister_chrdev_region(IB_UVERBS_BASE_DEV, IB_UVERBS_MAX_DEVICES);
-	flush_scheduled_work();
 	idr_destroy(&ib_uverbs_pd_idr);
 	idr_destroy(&ib_uverbs_mr_idr);
 	idr_destroy(&ib_uverbs_mw_idr);

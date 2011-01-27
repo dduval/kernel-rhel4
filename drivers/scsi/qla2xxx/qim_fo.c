@@ -544,7 +544,7 @@ qim_fo_get_lun_data(EXT_IOCTL *pext, FO_LUN_DATA_INPUT *bp, int mode)
 
 		DEBUG9(printk("%s: got lun_mask for tgt %d\n",
 		    __func__, cnt);)
-		DEBUG9(qla2x00_dump_buffer((char *)&(fcport->lun_mask),
+		DEBUG9(qim_dump_buffer((char *)&(fcport->lun_mask),
 		    sizeof(lun_bit_mask_t));)
 
 		ret = copy_to_user(u_entry, entry,

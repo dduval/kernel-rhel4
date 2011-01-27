@@ -71,6 +71,21 @@ extern __inline__ int generic_fls(int x)
 	return r;
 }
 
+static inline int fls64(__u64 x)
+{
+	__u32 h = x >> 32;
+	if (h)
+		return fls(h) + 32;
+	return fls(x);
+}
+
+static inline unsigned fls_long(unsigned long l)
+{
+	if (sizeof(l) == 4)
+		return fls(l);
+	return fls64(l);
+}
+
 extern __inline__ int get_bitmask_order(unsigned int count)
 {
 	int order;

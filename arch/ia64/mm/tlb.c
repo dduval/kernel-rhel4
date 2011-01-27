@@ -94,9 +94,16 @@ ia64_global_tlb_purge_new (struct mm_struct *mm, unsigned long start, unsigned l
 {
 	static spinlock_t ptcg_lock = SPIN_LOCK_UNLOCKED;
 
-	if (mm != current->active_mm) {
-		flush_tlb_all();
-		return;
+	struct mm_struct *active_mm = current->active_mm;
+
+	if (mm != active_mm) {
+		/* Restore region IDs for mm */
+		if (mm && active_mm) {
+			activate_context(mm);
+		} else {
+			flush_tlb_all();
+			return;
+		}
 	}
 
 	/* HW requires global serialization of ptc.ga.  */
@@ -112,6 +119,10 @@ ia64_global_tlb_purge_new (struct mm_struct *mm, unsigned long start, unsigned l
 		} while (start < end);
 	}
 	spin_unlock(&ptcg_lock);
+
+	if (mm != active_mm) {
+		activate_context(active_mm);
+	}
 }
 
 void

@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/pagemap.h>
 #include <linux/pagevec.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/buffer_head.h>	/* grr. try_to_release_page,
 				   block_invalidatepage */
 
@@ -51,7 +52,8 @@ truncate_complete_page(struct address_space *mapping, struct page *page)
 	if (PagePrivate(page))
 		do_invalidatepage(page, 0);
 
-	clear_page_dirty(page);
+	if (test_clear_page_dirty(page))
+		task_io_account_cancelled_write(PAGE_CACHE_SIZE);
 	ClearPageUptodate(page);
 	ClearPageMappedToDisk(page);
 	remove_from_page_cache(page);
@@ -181,6 +183,38 @@ void truncate_inode_pages(struct address_space *mapping, loff_t lstart)
 }
 
 EXPORT_SYMBOL(truncate_inode_pages);
+
+void invalidate_all_mapping_pages(struct address_space *mapping)
+{
+	struct pagevec pvec;
+	pgoff_t next = 0;
+	int i;
+
+	pagevec_init(&pvec, 0);
+	while (next <= ~0UL &&
+		pagevec_lookup(&pvec, mapping, next, PAGEVEC_SIZE)) {
+		for (i = 0; i < pagevec_count(&pvec); i++) {
+			struct page *page = pvec.pages[i];
+
+			if (TestSetPageLocked(page)) {
+				next++;
+				continue;
+			}
+			if (page->index > next)
+				next = page->index;
+			next++;
+			if (!PageDirty(page) && !PageWriteback(page) &&
+			    !page_mapped(page))
+				invalidate_complete_page(mapping, page);
+			unlock_page(page);
+			if (next > ~0UL)
+			break;
+		}
+		pagevec_release(&pvec);
+	}
+	return;
+}
+
 
 /**
  * invalidate_mapping_pages - Invalidate all the unlocked pages of one inode

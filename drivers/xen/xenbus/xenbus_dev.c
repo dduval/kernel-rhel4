@@ -49,6 +49,11 @@
 #include <xen/xen_proc.h>
 #include <asm/hypervisor.h>
 
+
+#ifdef HAVE_XEN_PLATFORM_COMPAT_H
+#include <xen/platform-compat.h>
+#endif
+
 struct xenbus_dev_transaction {
 	struct list_head list;
 	struct xenbus_transaction handle;
@@ -285,7 +290,7 @@ static int xenbus_dev_open(struct inode *inode, struct file *filp)
 {
 	struct xenbus_dev_data *u;
 
-	if (xen_start_info->store_evtchn == 0)
+	if (xen_store_evtchn == 0)
 		return -ENOENT;
 
 	nonseekable_open(inode, filp);
@@ -346,8 +351,7 @@ static struct file_operations xenbus_dev_file_ops = {
 	.poll = xenbus_dev_poll,
 };
 
-int __init
-xenbus_dev_init(void)
+int xenbus_dev_init(void)
 {
 	xenbus_dev_intf = create_xen_proc_entry("xenbus", 0400);
 	if (xenbus_dev_intf)

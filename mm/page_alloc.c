@@ -683,6 +683,8 @@ __alloc_pages(unsigned int gfp_mask, unsigned int order,
 
 rebalance:
 	/* We now go into synchronous reclaim */
+	if (p->flags & PF_MEMDIE)
+		goto nopage;
 	p->flags |= PF_MEMALLOC;
 	reclaim_state.reclaimed_slab = 0;
 	p->reclaim_state = &reclaim_state;
@@ -1139,6 +1141,8 @@ void show_free_areas(void)
 		}
 		printk("= %lukB\n", K(total));
 	}
+
+	printk("%d pagecache pages\n", get_page_cache_size());
 
 	show_swap_cache_info();
 

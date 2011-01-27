@@ -886,6 +886,8 @@ zfcp_unit_enqueue(struct zfcp_port *port, fcp_lun_t fcp_lun)
 	unit->sysfs_device.release = zfcp_sysfs_unit_release;
 	dev_set_drvdata(&unit->sysfs_device, unit);
 
+	init_waitqueue_head(&unit->scsi_scan_wq);
+
 	/* mark unit unusable as long as sysfs registration is not complete */
 	atomic_set_mask(ZFCP_STATUS_COMMON_REMOVE, &unit->status);
 
@@ -1175,9 +1177,6 @@ zfcp_adapter_enqueue(struct ccw_device *ccw_device)
 	/* initialize lock of associated request queue */
 	rwlock_init(&adapter->request_queue.queue_lock);
 
-	/* intitialise SCSI ER timer */
-	init_timer(&adapter->scsi_er_timer);
-
 	/* set FC service class used per default */
 	adapter->fc_service_class = ZFCP_FC_SERVICE_CLASS_DEFAULT;
 
@@ -1243,6 +1242,7 @@ zfcp_adapter_dequeue(struct zfcp_adapter *adapter)
 	int retval = 0;
 	unsigned long flags;
 
+	zfcp_adapter_scsi_unregister(adapter);
 	device_unregister(&adapter->generic_services);
 	zfcp_sysfs_adapter_remove_files(&adapter->ccw_device->dev);
 	dev_set_drvdata(&adapter->ccw_device->dev, NULL);
@@ -1735,7 +1735,6 @@ zfcp_ns_gid_pn_request(struct zfcp_erp_action *erp_action)
 	gid_pn->ct.handler = zfcp_ns_gid_pn_handler;
 	gid_pn->ct.handler_data = (unsigned long) gid_pn;
         gid_pn->ct.timeout = ZFCP_NS_GID_PN_TIMEOUT;
-        gid_pn->ct.timer = &erp_action->timer;
 	gid_pn->port = erp_action->port;
 
 	ret = zfcp_fsf_send_ct(&gid_pn->ct, adapter->pool.fsf_req_erp,

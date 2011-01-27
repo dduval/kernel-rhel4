@@ -510,10 +510,14 @@ int do_signal(struct pt_regs *regs, sigset_t *oldset)
 						    sigset_t *oldset,
 						    struct pt_regs *regs);
 			handle_signal32(signr, &ka, &info, oldset, regs);
+			if (current->thread.per_info.single_step)
+				set_thread_flag(TIF_SINGLE_STEP);
 			return 1;
 	        }
 #endif
 		handle_signal(signr, &ka, &info, oldset, regs);
+		if (current->thread.per_info.single_step)
+			set_thread_flag(TIF_SINGLE_STEP);
 		return 1;
 	}
 

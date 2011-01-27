@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2008 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_init.c 3039 2007-05-22 14:40:23Z sf_support $
+ * $Id: lpfc_init.c 3125 2008-01-08 21:11:52Z sf_support $
  */
 
 #include <linux/version.h>
@@ -243,6 +243,13 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	int rc;
 
 
+	/*
+	 * If the Config port completed correctly the HBA is not
+	 * over heated any more.
+	 */
+	if (phba->over_temp_state == HBA_OVER_TEMP)
+		phba->over_temp_state = HBA_NORMAL_TEMP;
+
 	/* Get a Mailbox buffer to setup mailbox commands for HBA
 	   initialization */
 	pmb = mempool_alloc(phba->mbox_mem_pool, GFP_ATOMIC);
@@ -430,14 +437,15 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	clk_cnt = jiffies;
 
 	pmb->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
-	if (lpfc_sli_issue_mbox(phba, pmb, MBX_NOWAIT) != MBX_SUCCESS) {
+	rc = lpfc_sli_issue_mbox(phba, pmb, MBX_NOWAIT);
+	if ((rc != MBX_SUCCESS) && (rc != MBX_BUSY)) {
 		lpfc_printf_log(phba,
 				KERN_ERR,
 				LOG_INIT,
 				"%d:0454 Adapter failed to init, mbxCmd x%x "
-				"INIT_LINK, mbxStatus x%x\n",
+				"INIT_LINK, mbxStatus x%x ret x%x\n",
 				phba->brd_no,
-				mb->mbxCommand, mb->mbxStatus);
+				mb->mbxCommand, mb->mbxStatus, rc);
 
 		/* Clear all interrupt enable conditions */
 		writel(0, phba->HCregaddr);
@@ -456,6 +464,7 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	pmb = mempool_alloc(phba->mbox_mem_pool, GFP_KERNEL);
 	lpfc_config_async(phba, pmb, LPFC_ELS_RING);
 	pmb->mbox_cmpl = lpfc_config_async_cmpl;
+	spin_lock_irq(phba->host->host_lock);
 	rc = lpfc_sli_issue_mbox(phba, pmb, MBX_NOWAIT);
 
 	if ((rc != MBX_BUSY) && (rc != MBX_SUCCESS)) {
@@ -479,6 +488,7 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 
 	mod_timer(&phba->hb_tmofunc, jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
 	phba->hb_outstanding = 0;
+	spin_unlock_irq(phba->host->host_lock);
 	phba->last_completion_time = jiffies;
 
 	phba->fc_prevDID = Mask_DID;
@@ -614,7 +624,8 @@ lpfc_hb_timeout(unsigned long ptr)
 static void
 lpfc_hb_mbox_cmpl(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq)
 {
-	phba->hb_outstanding = 0;
+	if (pmboxq->mb.mbxStatus != MBX_NOT_FINISHED)
+		phba->hb_outstanding = 0;
 
 	mempool_free(pmboxq, phba->mbox_mem_pool);
 	if (!(phba->fc_flag & FC_OFFLINE_MODE) &&
@@ -632,38 +643,41 @@ lpfc_hb_timeout_handler(struct lpfc_hba *phba)
 	struct lpfc_sli *psli = &phba->sli;
 
 	if ((phba->hba_state == LPFC_HBA_ERROR) ||
-		(phba->fc_flag & FC_OFFLINE_MODE))
+		(phba->fc_flag & FC_OFFLINE_MODE) ||
+		(phba->over_temp_state == HBA_OVER_TEMP))
 		return;
 
 	spin_lock_irq(phba->host->host_lock);
 
 	if (time_after(phba->last_completion_time + LPFC_HB_MBOX_INTERVAL * HZ,
 		jiffies)) {
-		spin_unlock_irq(phba->host->host_lock);
 		if (!phba->hb_outstanding)
 			mod_timer(&phba->hb_tmofunc,
 				jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
 		else
 			mod_timer(&phba->hb_tmofunc,
 				jiffies + HZ * LPFC_HB_MBOX_TIMEOUT);
+		spin_unlock_irq(phba->host->host_lock);
 		return;
 	}
-	spin_unlock_irq(phba->host->host_lock);
 
 	/* If there is no heart beat outstanding, issue a heartbeat command */
 	if (!phba->hb_outstanding) {
+		spin_unlock_irq(phba->host->host_lock);
 		pmboxq = mempool_alloc(phba->mbox_mem_pool,GFP_KERNEL);
 		if (!pmboxq) {
 			mod_timer(&phba->hb_tmofunc,
 				jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
 			return;
 		}
+		spin_lock_irq(phba->host->host_lock);
 
 		lpfc_heart_beat(phba, pmboxq);
 		pmboxq->mbox_cmpl = lpfc_hb_mbox_cmpl;
 		retval = lpfc_sli_issue_mbox(phba, pmboxq, MBX_NOWAIT);
 
 		if (retval != MBX_BUSY && retval != MBX_SUCCESS) {
+			spin_unlock_irq(phba->host->host_lock);
 			mempool_free(pmboxq, phba->mbox_mem_pool);
 			mod_timer(&phba->hb_tmofunc,
 				jiffies + HZ * LPFC_HB_MBOX_INTERVAL);
@@ -672,6 +686,7 @@ lpfc_hb_timeout_handler(struct lpfc_hba *phba)
 		mod_timer(&phba->hb_tmofunc,
 			jiffies + HZ * LPFC_HB_MBOX_TIMEOUT);
 		phba->hb_outstanding = 1;
+		spin_unlock_irq(phba->host->host_lock);
 		return;
 	} else {
 		/*
@@ -679,10 +694,11 @@ lpfc_hb_timeout_handler(struct lpfc_hba *phba)
 		 * need to take the HBA offline.
 		 */
 		lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
-			"%d:0459 Adapter heartbeat failure, taking "
+			"%d:0464 Adapter heartbeat failure, taking "
 			"this port offline.\n", phba->brd_no);
 
 		psli->sliinit.sli_flag &= ~LPFC_SLI2_ACTIVE;
+		spin_unlock_irq(phba->host->host_lock);
 
 		lpfc_offline(phba);
 		phba->hba_state = LPFC_HBA_ERROR;
@@ -811,9 +827,10 @@ lpfc_handle_eratt(struct lpfc_hba * phba, uint32_t status)
 		lpfc_offline(phba);
 		phba->hba_state = LPFC_HBA_ERROR;
 		spin_lock_irqsave(phba->host->host_lock, iflag);
+		phba->over_temp_state = HBA_OVER_TEMP;
 		lpfc_hba_down_post(phba);
 		spin_unlock_irqrestore(phba->host->host_lock, iflag);
-
+	
 		/*
 		 * Restart all traffic to this host.  Since the fc_transport
 		 * block functions (future) were not called in lpfc_offline,
@@ -1823,6 +1840,7 @@ lpfc_stop_timer(struct lpfc_hba * phba)
 			kfree(mp);
 		}
 	}
+	phba->hb_outstanding = 0;
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
 	del_timer_sync(&phba->fc_estabtmo);
@@ -1833,7 +1851,6 @@ lpfc_stop_timer(struct lpfc_hba * phba)
 	del_timer_sync(&phba->els_tmofunc);
 	del_timer_sync(&phba->sli.mbox_tmo);
 	del_timer_sync(&phba->hatt_tmo);
-	phba->hb_outstanding = 0;
 	del_timer_sync(&phba->hb_tmofunc);
 	return(1);
 }

@@ -41,6 +41,8 @@
 #define HPET_TN_SETVAL		0x040
 #define HPET_TN_32BIT		0x100
 
+#define HPET_TICK_RATE  (HZ * 100000UL)
+
 extern int is_hpet_enabled(void);
 extern int hpet_rtc_timer_init(void);
 

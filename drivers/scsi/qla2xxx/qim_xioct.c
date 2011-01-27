@@ -71,6 +71,7 @@ extern int qim_get_option_rom_layout(struct qla_host_ioctl *, EXT_IOCTL *, int);
 extern int qim_get_vpd(struct qla_host_ioctl *, EXT_IOCTL *, int);
 extern int qim_update_vpd(struct qla_host_ioctl *, EXT_IOCTL *, int);
 extern int qim2x00_update_port_param(struct qla_host_ioctl *, EXT_IOCTL *, int);
+extern int qim84xx_mgmt_command(struct qla_host_ioctl *, EXT_IOCTL *, int);
 
 /*
  * Local prototypes
@@ -797,6 +798,10 @@ qim_send_ioctl(struct scsi_device *dev, int cmd, void *arg)
 	case INT_CC_UPDATE_VPD:
 		ret = qim_update_vpd(ha, pext, mode);
 		break; 
+
+	case INT_CC_A84_MGMT_COMMAND:
+		ret = qim84xx_mgmt_command(ha, pext, mode);
+		break;
 
 	case INT_CC_PORT_PARAM:
 		ret = qim2x00_update_port_param(ha, pext, mode);
@@ -1626,7 +1631,7 @@ qim_query_hba_node(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	memset(ptmp_hba_node->BIFCodeVersion, 0,
 	    sizeof(ptmp_hba_node->BIFCodeVersion));
 	if (test_bit(ROM_CODE_TYPE_FCODE, &ha->code_types)) {
-		if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha)) {
+		if (IS_FWI2_CAPABLE(dr_ha)) {
 			ptmp_hba_node->BIValid |= EXT_HN_BI_FCODE_VALID;
 			ptmp_hba_node->BIFCodeVersion[0] = ha->fcode_revision[1];
 			ptmp_hba_node->BIFCodeVersion[1] = ha->fcode_revision[0];
@@ -1659,7 +1664,7 @@ qim_query_hba_node(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 		    ptmp_hba_node->BIEfiVersion[0],
 		    ptmp_hba_node->BIEfiVersion[1]);)
 	}
-	if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha)) {
+	if (IS_FWI2_CAPABLE(dr_ha) || IS_QLA2322(dr_ha)) {
 		ptmp_hba_node->BIValid |= EXT_HN_BI_FW_VALID;
 		ptmp_hba_node->BIFwVersion[0] = ha->fw_revision[0];
 		ptmp_hba_node->BIFwVersion[1] = ha->fw_revision[1];
@@ -1851,8 +1856,16 @@ qim_query_hba_port(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	/* Return supported speed depending on adapter type */
 	if (IS_QLA2100(dr_ha) || IS_QLA2200(dr_ha))
 		ptmp_hba_port->PortSupportedSpeed = EXT_DEF_PORTSPEED_1GBIT;
-	else
+
+	else if (IS_QLA23XX(dr_ha))
 		ptmp_hba_port->PortSupportedSpeed = EXT_DEF_PORTSPEED_2GBIT;
+
+	else if (IS_QLA24XX_TYPE(dr_ha))
+		ptmp_hba_port->PortSupportedSpeed = EXT_DEF_PORTSPEED_4GBIT;
+
+	else if (IS_QLA25XX(dr_ha))
+		ptmp_hba_port->PortSupportedSpeed = EXT_DEF_PORTSPEED_8GBIT;
+
 
 	switch (dr_ha->link_data_rate) {
 	case 0:
@@ -1865,7 +1878,7 @@ qim_query_hba_port(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 		ptmp_hba_port->PortSpeed = EXT_DEF_PORTSPEED_4GBIT;
 		break;
 	case 4:
-		ptmp_hba_port->PortSpeed = EXT_DEF_PORTSPEED_10GBIT;
+		ptmp_hba_port->PortSpeed = EXT_DEF_PORTSPEED_8GBIT;
 		break;
 	default:
 		/* unknown */
@@ -2412,7 +2425,7 @@ qim_get_statistics(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	    __func__, ha->host_no, ha->instance);)
 
 	/* check on loop down */
-	if ((!IS_QLA24XX(ha->dr_data) && !IS_QLA54XX(ha->dr_data) &&
+	if ((!IS_FWI2_CAPABLE(ha->dr_data) &&
 	    atomic_read(&ha->dr_data->loop_state) != LOOP_READY) ||
 	    test_bit(CFG_ACTIVE, &ha->dr_data->cfg_flags) ||
 	    test_bit(ABORT_ISP_ACTIVE, &ha->dr_data->dpc_flags) ||
@@ -2429,7 +2442,7 @@ qim_get_statistics(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	}
 
 	/* Send mailbox cmd to get additional link stats. */
-	if (IS_QLA24XX(ha->dr_data) || IS_QLA54XX(ha->dr_data))
+	if (IS_FWI2_CAPABLE(ha->dr_data))
 		rval = qim_get_isp_stats(ha, (uint32_t *)&stat_buf,
 		    sizeof(stat_buf) / 4, 0, mb_stat);
 	else
@@ -2482,6 +2495,12 @@ qim_get_statistics(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	ptmp_stat->PrimitiveSeqProtocolErrorCount  = stat_buf.prim_seq_err_cnt;
 	ptmp_stat->InvalidTransmissionWordCount    = stat_buf.inval_xmit_word_cnt;
 	ptmp_stat->InvalidCRCCount                 = stat_buf.inval_crc_cnt;
+	if (IS_FWI2_CAPABLE(dr_ha)) {
+		ptmp_stat->TxFrames    = stat_buf.tx_frames;
+		ptmp_stat->RxFrames    = stat_buf.rx_frames;
+		ptmp_stat->NosCount    = stat_buf.nos_rcvd;
+		ptmp_stat->DumpedFrames = stat_buf.dumped_frames;
+	}
 
 	/* now copy up the STATISTICS to user */
 	if (pext->ResponseLen < sizeof(EXT_HBA_PORT_STAT))
@@ -3976,7 +3995,7 @@ qim_start_ms_cmd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, srb_t *sp,
 	usr_req_len = pext->RequestLen;
 	usr_resp_len = pext->ResponseLen;
 
-	if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha)) {
+	if (IS_FWI2_CAPABLE(dr_ha)) {
 		struct ct_entry_24xx *ct_pkt;
 		struct els_entry_24xx *els_pkt;
 
@@ -4475,9 +4494,8 @@ qim_get_new_sp(scsi_qla_host_t *dr_ha)
 static request_t *
 qim_req_pkt(scsi_qla_host_t *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
-	struct device_reg_24xx __iomem *reg24 =
-	    (struct device_reg_24xx __iomem *) ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
 	request_t	*pkt = NULL;
 	uint16_t	cnt;
 	uint32_t	*dword_ptr;
@@ -4486,7 +4504,7 @@ qim_req_pkt(scsi_qla_host_t *ha)
 
 	if ((req_cnt + 2) >= ha->req_q_cnt) {
 		/* Calculate number of free request entries. */
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		if (IS_FWI2_CAPABLE(ha))
 			cnt = (uint16_t)RD_REG_DWORD(&reg24->req_q_out);
 		else
 			cnt = qla2x00_debounce_register(
@@ -4531,7 +4549,8 @@ qim_req_pkt(scsi_qla_host_t *ha)
 void
 qim_isp_cmd(scsi_qla_host_t *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
 
 #if 0
 	DEBUG5(printk("%s(): IOCB data:\n", __func__));
@@ -4548,9 +4567,7 @@ qim_isp_cmd(scsi_qla_host_t *ha)
 		ha->request_ring_ptr++;
 
 	/* Set chip new ring index. */
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
-		struct device_reg_24xx __iomem *reg24 =
-		    (struct device_reg_24xx __iomem *) ha->iobase;
+	if (IS_FWI2_CAPABLE(ha)) {
 		WRT_REG_DWORD(&reg24->req_q_in, ha->req_ring_index);
 		RD_REG_DWORD_RELAXED(&reg24->req_q_in);	/* PCI Posting. */
 	} else {
@@ -4590,7 +4607,7 @@ __qim_marker(scsi_qla_host_t *ha, uint16_t loop_id, uint16_t lun,
 	mrk->entry_type = MARKER_TYPE;
 	mrk->modifier = type;
 	if (type != MK_SYNC_ALL) {
-		if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+		if (IS_FWI2_CAPABLE(ha)) {
 			mrk24 = (struct mrk_entry_24xx *) mrk;
 			mrk24->nport_handle = cpu_to_le16(loop_id);
 			mrk24->lun[1] = LSB(lun);
@@ -4951,7 +4968,7 @@ qim_start_scsi(srb_t *sp)
 	uint16_t	cnt;
 	uint16_t	req_cnt;
 	uint16_t	tot_dsds;
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg;
 	char		tag[2];
 
 
@@ -4960,14 +4977,14 @@ qim_start_scsi(srb_t *sp)
 	fclun = sp->lun_queue->fclun;
 	ha = fclun->fcport->ha;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		DEBUG9(printk("%s(%ld): inst=%ld calling qim24xx_start_scsi.\n",
 		    __func__, ha->host_no, ha->instance);)
 		return qim24xx_start_scsi(sp);
 	}
 
 	tot_dsds = 0;
-	reg = ha->iobase;
+	reg = &ha->iobase->isp;
 	cmd = sp->cmd;
 
 	/* Send marker if required */
@@ -7264,7 +7281,7 @@ qim_set_led_state(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 	if (IS_QLA23XX(ha)) {
 		ret = qim_set_led_23xx(ha, &tmp_led_state, &tmp_ext_stat,
 		    &tmp_ext_dstat);
-	} else if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	} else if (IS_FWI2_CAPABLE(ha)) {
 		ret = qim_set_led_24xx(ha, &tmp_led_state, &tmp_ext_stat,
 		    &tmp_ext_dstat);
 	} else {

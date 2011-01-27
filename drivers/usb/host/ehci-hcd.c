@@ -119,7 +119,7 @@ static const char	hcd_name [] = "ehci_hcd";
 #define	EHCI_TUNE_MULT_TT	1
 #define	EHCI_TUNE_FLS		2	/* (small) 256 frame schedule */
 
-#define EHCI_IAA_JIFFIES	(HZ/100)	/* arbitrary; ~10 msec */
+#define EHCI_IAA_MSECS		10		/* arbitrary */
 #define EHCI_IO_JIFFIES		(HZ/10)		/* io watchdog > irq_thresh */
 #define EHCI_ASYNC_JIFFIES	(HZ/20)		/* async idle timeout */
 #define EHCI_SHRINK_JIFFIES	(HZ/200)	/* async qh unlink delay */
@@ -246,6 +246,7 @@ static void ehci_ready (struct ehci_hcd *ehci)
 
 /*-------------------------------------------------------------------------*/
 
+static void end_unlink_async(struct ehci_hcd *ehci, struct pt_regs *regs);
 static void ehci_work(struct ehci_hcd *ehci, struct pt_regs *regs);
 
 #include "ehci-hub.c"
@@ -255,26 +256,62 @@ static void ehci_work(struct ehci_hcd *ehci, struct pt_regs *regs);
 
 /*-------------------------------------------------------------------------*/
 
-static void ehci_watchdog (unsigned long param)
+static void ehci_iaa_watchdog(unsigned long param)
 {
 	struct ehci_hcd		*ehci = (struct ehci_hcd *) param;
 	unsigned long		flags;
 
 	spin_lock_irqsave (&ehci->lock, flags);
 
-	/* lost IAA irqs wedge things badly; seen with a vt8235 */
-	if (ehci->reclaim) {
-		u32		status = readl (&ehci->regs->status);
+	/* Lost IAA irqs wedge things badly; seen first with a vt8235.
+	 * So we need this watchdog, but must protect it against both
+	 * (a) SMP races against real IAA firing and retriggering, and
+	 * (b) clean HC shutdown, when IAA watchdog was pending.
+	 */
+	if (ehci->reclaim
+			&& !timer_pending(&ehci->iaa_watchdog)
+			&& HCD_IS_RUNNING(ehci->hcd.state)) {
+		u32 cmd, status;
 
-		if (status & STS_IAA) {
-			ehci_vdbg (ehci, "lost IAA\n");
+		/* If we get here, IAA is *REALLY* late.  It's barely
+		 * conceivable that the system is so busy that CMD_IAAD
+		 * is still legitimately set, so let's be sure it's
+		 * clear before we read STS_IAA.  (The HC should clear
+		 * CMD_IAAD when it sets STS_IAA.)
+		 */
+		cmd = readl(&ehci->regs->command);
+		if (cmd & CMD_IAAD)
+			writel(cmd & ~CMD_IAAD,
+					&ehci->regs->command);
+
+		/* If IAA is set here it either legitimately triggered
+		 * before we cleared IAAD above (but _way_ late, so we'll
+		 * still count it as lost) ... or a silicon erratum:
+		 * - VIA seems to set IAA without triggering the IRQ;
+		 * - IAAD potentially cleared without setting IAA.
+		 */
+		status = readl(&ehci->regs->status);
+		if ((status & STS_IAA) || !(cmd & CMD_IAAD)) {
 			COUNT (ehci->stats.lost_iaa);
 			writel (STS_IAA, &ehci->regs->status);
-			ehci->reclaim_ready = 1;
 		}
+
+		ehci_vdbg(ehci, "IAA watchdog: status %x cmd %x\n",
+				status, cmd);
+		end_unlink_async(ehci, NULL);
 	}
 
- 	/* stop async processing after it's idled a bit */
+	spin_unlock_irqrestore(&ehci->lock, flags);
+}
+
+static void ehci_watchdog(unsigned long param)
+{
+	struct ehci_hcd         *ehci = (struct ehci_hcd *) param;
+	unsigned long           flags;
+
+	spin_lock_irqsave(&ehci->lock, flags);
+
+	/* stop async processing after it's idled a bit */
 	if (test_bit (TIMER_ASYNC_OFF, &ehci->actions))
  		start_unlink_async (ehci, ehci->async);
 
@@ -411,6 +448,10 @@ static int ehci_start (struct usb_hcd *hcd)
 	init_timer (&ehci->watchdog);
 	ehci->watchdog.function = ehci_watchdog;
 	ehci->watchdog.data = (unsigned long) ehci;
+
+	init_timer(&ehci->iaa_watchdog);
+	ehci->iaa_watchdog.function = ehci_iaa_watchdog;
+	ehci->iaa_watchdog.data = (unsigned long) ehci;
 
 #ifdef	CONFIG_PCI
 	/*
@@ -630,6 +671,7 @@ static void ehci_stop (struct usb_hcd *hcd)
 		return;
 	}
 	del_timer_sync (&ehci->watchdog);
+	del_timer_sync(&ehci->iaa_watchdog);
 
 	/* Turn off port power on all root hub ports. */
 	rh_ports = HCS_N_PORTS (ehci->hcs_params);
@@ -733,8 +775,6 @@ static int ehci_resume (struct usb_hcd *hcd)
 static void ehci_work (struct ehci_hcd *ehci, struct pt_regs *regs)
 {
 	timer_action_done (ehci, TIMER_IO_WATCHDOG);
-	if (ehci->reclaim_ready)
-		end_unlink_async (ehci, regs);
 
 	/* another CPU may drop ehci->lock during a schedule scan while
 	 * it reports urb completions.  this flag guards against bogus
@@ -761,7 +801,7 @@ static void ehci_work (struct ehci_hcd *ehci, struct pt_regs *regs)
 static irqreturn_t ehci_irq (struct usb_hcd *hcd, struct pt_regs *regs)
 {
 	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
-	u32			status;
+	u32			status, cmd;
 	int			bh;
 
 	spin_lock (&ehci->lock);
@@ -782,7 +822,7 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd, struct pt_regs *regs)
 
 	/* clear (just) interrupts */
 	writel (status, &ehci->regs->status);
-	readl (&ehci->regs->command);	/* unblock posted write */
+	cmd = readl(&ehci->regs->command);
 	bh = 0;
 
 #ifdef	EHCI_VERBOSE_DEBUG
@@ -803,9 +843,17 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd, struct pt_regs *regs)
 
 	/* complete the unlinking of some qh [4.15.2.3] */
 	if (status & STS_IAA) {
-		COUNT (ehci->stats.reclaim);
-		ehci->reclaim_ready = 1;
-		bh = 1;
+		/* guard against (alleged) silicon errata */
+		if (cmd & CMD_IAAD) {
+			writel(cmd & ~CMD_IAAD,
+					&ehci->regs->command);
+			ehci_dbg(ehci, "IAA with IAAD still set?\n");
+		}
+		if (ehci->reclaim) {
+			COUNT(ehci->stats.reclaim);
+			end_unlink_async(ehci, NULL);
+		} else
+			ehci_dbg(ehci, "IAA with nothing to reclaim?\n");
 	}
 
 	/* remote wakeup [4.3.1] */
@@ -898,6 +946,32 @@ static int ehci_urb_enqueue (
 	}
 }
 
+static void unlink_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
+{
+	/* failfast */
+	if (!HCD_IS_RUNNING(ehci->hcd.state) && ehci->reclaim)
+		end_unlink_async(ehci, NULL);
+
+	/* if it's not linked then there's nothing to do */
+	if (qh->qh_state != QH_STATE_LINKED)
+		;
+
+	/* defer till later if busy */
+	else if (ehci->reclaim) {
+		struct ehci_qh		*last;
+
+		for (last = ehci->reclaim;
+				last->reclaim;
+				last = last->reclaim)
+			continue;
+		qh->qh_state = QH_STATE_UNLINK_WAIT;
+		last->reclaim = qh;
+
+	/* start IAA cycle */
+	} else
+		start_unlink_async (ehci, qh);
+}
+
 /* remove from hardware lists
  * completions normally happen asynchronously
  */
@@ -916,28 +990,19 @@ static int ehci_urb_dequeue (struct usb_hcd *hcd, struct urb *urb)
 		qh = (struct ehci_qh *) urb->hcpriv;
 		if (!qh)
 			break;
-
-		/* if we need to use IAA and it's busy, defer */
-		if (qh->qh_state == QH_STATE_LINKED
-				&& ehci->reclaim
-				&& HCD_IS_RUNNING (ehci->hcd.state)
-				) {
-			struct ehci_qh		*last;
-
-			for (last = ehci->reclaim;
-					last->reclaim;
-					last = last->reclaim)
-				continue;
-			qh->qh_state = QH_STATE_UNLINK_WAIT;
-			last->reclaim = qh;
-
-		/* bypass IAA if the hc can't care */
-		} else if (!HCD_IS_RUNNING (ehci->hcd.state) && ehci->reclaim)
-			end_unlink_async (ehci, NULL);
-
-		/* something else might have unlinked the qh by now */
-		if (qh->qh_state == QH_STATE_LINKED)
-			start_unlink_async (ehci, qh);
+		switch (qh->qh_state) {
+		case QH_STATE_LINKED:
+		case QH_STATE_COMPLETING:
+			unlink_async(ehci, qh);
+			break;
+		case QH_STATE_UNLINK:
+		case QH_STATE_UNLINK_WAIT:
+			/* already started */
+			break;
+		case QH_STATE_IDLE:
+			WARN_ON(1);
+			break;
+		}
 		break;
 
 	case PIPE_INTERRUPT:
@@ -990,7 +1055,7 @@ ehci_endpoint_disable (struct usb_hcd *hcd, struct hcd_dev *dev, int ep)
 	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
 	int			epnum;
 	unsigned long		flags;
-	struct ehci_qh		*qh;
+	struct ehci_qh		*qh, *tmp;
 
 	/* ASSERT:  any requests/urbs are being unlinked */
 	/* ASSERT:  nobody can be submitting urbs for this any more */
@@ -1016,7 +1081,18 @@ rescan:
 	if (!HCD_IS_RUNNING (ehci->hcd.state))
 		qh->qh_state = QH_STATE_IDLE;
 	switch (qh->qh_state) {
+	case QH_STATE_LINKED:
+		for (tmp = ehci->async->qh_next.qh;
+				tmp && tmp != qh;
+				tmp = tmp->qh_next.qh)
+			continue;
+		/* periodic qh self-unlinks on empty */
+		if (!tmp)
+			goto nogood;
+		unlink_async (ehci, qh);
+		/* FALL THROUGH */
 	case QH_STATE_UNLINK:		/* wait for hw to finish? */
+	case QH_STATE_UNLINK_WAIT:
 idle_timeout:
 		spin_unlock_irqrestore (&ehci->lock, flags);
 		set_current_state (TASK_UNINTERRUPTIBLE);
@@ -1029,6 +1105,7 @@ idle_timeout:
 		}
 		/* else FALL THROUGH */
 	default:
+nogood:
 		/* caller was supposed to have unlinked any requests;
 		 * that's not our job.  just leak this memory.
 		 */

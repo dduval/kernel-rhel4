@@ -156,6 +156,9 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define S_NOCMTIME	128	/* Do not update file c/mtime */
 #define S_SWAPFILE	256	/* Do not truncate: swapon got its bmaps */
 
+/* RHEL only flags -- These are not upstream! */
+#define S_NOATTRKILL	65536	/* don't convert ATTR_KILL_* to mode change */
+
 /*
  * Note that nosuid etc flags are inode-specific: setting some file-system
  * flags just means all the inodes inherit those flags by default. It might be
@@ -1377,6 +1380,7 @@ extern int invalidate_partition(struct gendisk *, int);
 unsigned long invalidate_mapping_pages(struct address_space *mapping,
 					pgoff_t start, pgoff_t end);
 unsigned long invalidate_inode_pages(struct address_space *mapping);
+void  invalidate_all_mapping_pages(struct address_space *mapping);
 static inline void invalidate_remote_inode(struct inode *inode)
 {
 	if (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode) ||

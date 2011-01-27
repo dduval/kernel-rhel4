@@ -1161,6 +1161,7 @@ do_replace(void __user *user, unsigned int len)
 	    (newinfo->number <= oldinfo->initial_entries))
 		module_put(t->me);
 
+
 	/* Get the old counters. */
 	get_counters(oldinfo, counters);
 	/* Decrease module usage counts and free resource */
@@ -1867,7 +1868,7 @@ static int __init init(void)
 	up(&ipt_mutex);
 
 	/* Register setsockopt */
-	ret = nf_register_sockopt(&ipt_sockopts);
+	ret = nf_register_sockopt_owner(&ipt_sockopts, THIS_MODULE);
 	if (ret < 0) {
 		duprintf("Unable to register sockopts.\n");
 		return ret;
@@ -1879,15 +1880,19 @@ static int __init init(void)
 	int i;
 
 	for (i = 0; ipt_proc_entry[i].name; i++) {
-		proc = proc_net_create(ipt_proc_entry[i].name, 0,
-				       ipt_proc_entry[i].get_info);
+		/*
+		 * The use of the owner varaint of proc_net_create here
+		 * lets us set file to module ownership without opening
+		 * us to module decrement underflow
+		 */
+		proc = proc_net_create_owner(ipt_proc_entry[i].name, 0,
+				       ipt_proc_entry[i].get_info, THIS_MODULE);
 		if (!proc) {
 			while (--i >= 0)
 				proc_net_remove(ipt_proc_entry[i].name);
 			nf_unregister_sockopt(&ipt_sockopts);
 			return -ENOMEM;
 		}
-		proc->owner = THIS_MODULE;
 	}
 	}
 #endif

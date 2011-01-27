@@ -59,3 +59,12 @@ config SCSI_QLA24XX
 	---help---
 	This driver supports the QLogic 24xx (ISP2422 and ISP2432) host
 	adapter family.
+
+config SCSI_QLA25XX
+	tristate "QLogic ISP25xx host adapter family support"
+	depends on SCSI_QLA2XXX
+        select SCSI_FC_ATTRS
+	select QLA_IOCTLMOD
+	---help---
+	This driver supports the QLogic 25xx (ISP2522 and ISP2532) host
+	adapter family.

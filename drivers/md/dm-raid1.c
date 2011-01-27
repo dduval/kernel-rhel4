@@ -29,6 +29,7 @@ static int dm_mirror_error_on_log_failure = 1;
 
 struct mirror_set;
 static inline void wake(struct mirror_set *ms);
+static void delayed_wake(struct mirror_set *ms);
 /*-----------------------------------------------------------------
  * Region hash
  *
@@ -144,6 +145,8 @@ struct mirror_set {
 	struct mirror *default_mirror;	/* Default mirror. */
 	struct workqueue_struct *kmirrord_wq;
 	struct work_struct kmirrord_work;
+	struct timer_list timer;
+	unsigned long timer_pending;
  	struct mirror mirror[0];
 };
 
@@ -679,6 +682,23 @@ static inline void wake(struct mirror_set *ms)
 	queue_work(ms->kmirrord_wq, &ms->kmirrord_work);
 }
 
+static void delayed_wake_fn(unsigned long data)
+{
+	struct mirror_set *ms = (struct mirror_set *)data;
+	clear_bit(0, &ms->timer_pending);
+	wake(ms);
+}
+
+static void delayed_wake(struct mirror_set *ms)
+{
+	if (!test_and_set_bit(0, &ms->timer_pending)) {
+		ms->timer.expires = jiffies + HZ / 5;
+		ms->timer.data = (unsigned long)ms;
+		ms->timer.function = delayed_wake_fn;
+		add_timer(&ms->timer);
+	}
+}
+
 /*
  * Every mirror should look like this one.
  */
@@ -1083,6 +1103,7 @@ static void write_callback(unsigned long error, void *context)
 	struct mirror_set *ms;
 	int uptodate = 0;
 	int should_wake = 0;
+	unsigned long flags;
  
 	ms = (bio_get_m(bio))->ms;
 	bio_set_m(bio, NULL);
@@ -1107,11 +1128,11 @@ static void write_callback(unsigned long error, void *context)
 			 * events can block, we need to do it in
 			 * the main thread.
 			 */
-			spin_lock(&ms->lock);
+			spin_lock_irqsave(&ms->lock, flags);
 			if (!ms->failures.head)
 				should_wake = 1;
 			bio_list_add(&ms->failures, bio);
-			spin_unlock(&ms->lock);
+			spin_unlock_irqrestore(&ms->lock, flags);
 			if (should_wake)
 				wake(ms);
 			return;
@@ -1203,9 +1224,12 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	 * Add bios that are delayed due to remote recovery
 	 * back on to the write queue
 	 */
-	spin_lock_irq(&ms->lock);
-	bio_list_merge(&ms->writes, &requeue);
-	spin_unlock_irq(&ms->lock);
+	if (requeue.head) {
+		spin_lock_irq(&ms->lock);
+		bio_list_merge(&ms->writes, &requeue);
+		spin_unlock_irq(&ms->lock);
+		delayed_wake(ms);
+	}
 
 	/*
 	 * Increment the pending counts for any regions that will
@@ -1225,6 +1249,7 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 		spin_lock_irq(&ms->lock);
 		bio_list_merge(&ms->failures, &sync);
 		spin_unlock_irq(&ms->lock);
+		wake(ms);
 	} else {
 		while ((bio = bio_list_pop(&sync)))
 			do_write(ms, bio);
@@ -1275,7 +1300,7 @@ static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 			spin_lock_irq(&ms->lock);
 			bio_list_merge(&ms->failures, failures);
 			spin_unlock_irq(&ms->lock);
-			wake(ms);
+			delayed_wake(ms);
 		}
 		return;
 	}
@@ -1290,7 +1315,7 @@ static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 /*-----------------------------------------------------------------
  * kmirrord
  *---------------------------------------------------------------*/
-static int do_mirror(struct mirror_set *ms)
+static void do_mirror(struct mirror_set *ms)
 {
 	struct bio_list reads, writes, failures;
 
@@ -1308,14 +1333,11 @@ static int do_mirror(struct mirror_set *ms)
 	do_reads(ms, &reads);
 	do_writes(ms, &writes);
 	do_failures(ms, &failures);
-
-	return (ms->writes.head || ms->failures.head) ? 1 : 0;
 }
 
 static void do_work(void *data)
 {
-	while (do_mirror(data))
-		schedule();
+	do_mirror(data);
 }
 
 /*-----------------------------------------------------------------
@@ -1520,6 +1542,8 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -ENOMEM;
 	}
 	INIT_WORK(&ms->kmirrord_work, do_work, ms);
+	init_timer(&ms->timer);
+	ms->timer_pending = 0;
 
 	r = kcopyd_client_create(DM_IO_PAGES, &ms->kcopyd_client);
 	if (r) {
@@ -1536,6 +1560,7 @@ static void mirror_dtr(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 
+	del_timer_sync(&ms->timer);
 	flush_workqueue(ms->kmirrord_wq);
 	kcopyd_client_destroy(ms->kcopyd_client);
 	destroy_workqueue(ms->kmirrord_wq);

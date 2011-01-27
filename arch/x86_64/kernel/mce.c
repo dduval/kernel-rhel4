@@ -22,7 +22,7 @@
 #include <asm/uaccess.h>
 
 #define MISC_MCELOG_MINOR 227
-#define NR_BANKS 6
+#define NR_SYSFS_BANKS 6
 
 static int mce_dont_init;
 
@@ -30,7 +30,7 @@ static int mce_dont_init;
    3: never panic or exit (for testing only) */
 static int tolerant = 1;
 static int banks;
-static unsigned long bank[NR_BANKS] = { [0 ... NR_BANKS-1] = ~0UL };
+static unsigned long bank[NR_SYSFS_BANKS] = { [0 ... NR_SYSFS_BANKS-1] = ~0UL };
 
 /*
  * Lockless MCE logging infrastructure.
@@ -150,7 +150,7 @@ void do_machine_check(struct pt_regs * regs, long error_code)
 	barrier();
 
 	for (i = 0; i < banks; i++) {
-		if (!bank[i])
+		if (i < NR_SYSFS_BANKS && !bank[i])
 			continue;
 		
 		m.misc = 0; 
@@ -277,10 +277,11 @@ static void mce_init(void *dummy)
 
 	rdmsrl(MSR_IA32_MCG_CAP, cap);
 	banks = cap & 0xff;
-	if (banks > NR_BANKS) { 
+
+	if (banks > MCE_EXTENDED_BANK) {
 		printk(KERN_INFO "MCE: warning: using only %d of %d banks\n",
-			NR_BANKS, banks);
-		banks = NR_BANKS; 
+		       MCE_EXTENDED_BANK, banks);
+		banks = MCE_EXTENDED_BANK;
 	}
 
 	/* Log the machine checks left over from the previous reset.
@@ -293,7 +294,7 @@ static void mce_init(void *dummy)
 		wrmsr(MSR_IA32_MCG_CTL, 0xffffffff, 0xffffffff);
 
 	for (i = 0; i < banks; i++) {
-		wrmsrl(MSR_IA32_MC0_CTL+4*i, bank[i]);
+		wrmsrl(MSR_IA32_MC0_CTL+4*i, ~0UL);
 		wrmsrl(MSR_IA32_MC0_STATUS+4*i, 0);
 	}	
 }
@@ -510,7 +511,7 @@ ACCESSOR(bank3ctl,bank[3],mce_restart())
 ACCESSOR(bank4ctl,bank[4],mce_restart())
 ACCESSOR(bank5ctl,bank[5],mce_restart())
 
-static struct sysdev_attribute * bank_attributes[NR_BANKS] = {
+static struct sysdev_attribute * bank_attributes[NR_SYSFS_BANKS] = {
 	&attr_bank0ctl, &attr_bank1ctl, &attr_bank2ctl,
 	&attr_bank3ctl, &attr_bank4ctl, &attr_bank5ctl};
 
@@ -530,7 +531,7 @@ static __init int mce_create_device(unsigned int cpu)
         err = sysdev_register(&per_cpu(device_mce,cpu));
 
         if (!err) {
-                for (i = 0; i < banks; i++)
+                for (i = 0; i < NR_SYSFS_BANKS; i++)
                         sysdev_create_file(&per_cpu(device_mce,cpu),
                                 bank_attributes[i]);
                 sysdev_create_file(&per_cpu(device_mce,cpu), &attr_tolerant);

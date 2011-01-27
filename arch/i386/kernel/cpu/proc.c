@@ -107,14 +107,18 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	if (smp_num_cores * smp_num_siblings > 1) {
 		extern int phys_proc_id[NR_CPUS];
 		seq_printf(m, "physical id\t: %d\n", phys_proc_id[n]);
-		seq_printf(m, "siblings\t: %d\n", smp_num_cores * smp_num_siblings);
+		seq_printf(m, "siblings\t: %d\n", cpus_weight(cpu_core_map[n]));
 	}
 #endif
 #ifdef CONFIG_SMP
 	if (smp_num_siblings > 1 || smp_num_cores > 1) {
 		extern int cpu_core_id[NR_CPUS];
 		seq_printf(m, "core id\t\t: %d\n", cpu_core_id[n]);
+#ifdef CONFIG_XEN
 		seq_printf(m, "cpu cores\t: %d\n", smp_num_cores);
+#else
+		seq_printf(m, "cpu cores\t: %d\n", booted_cores[n]);
+#endif
 	}
 #endif
 	

@@ -123,9 +123,11 @@ void __init setup_node_zones(int nodeid)
 { 
 	unsigned long start_pfn, end_pfn, memmapsize, limit;
 	unsigned long zones[MAX_NR_ZONES];
+	unsigned long holes[MAX_NR_ZONES];
 	unsigned long dma_end_pfn;
 
 	memset(zones, 0, sizeof(unsigned long) * MAX_NR_ZONES); 
+	memset(holes, 0, sizeof(unsigned long) * MAX_NR_ZONES);
 
 	start_pfn = node_start_pfn(nodeid);
 	end_pfn = node_end_pfn(nodeid);
@@ -136,10 +138,14 @@ void __init setup_node_zones(int nodeid)
 	dma_end_pfn = __pa(MAX_DMA_ADDRESS) >> PAGE_SHIFT; 
 	if (start_pfn < dma_end_pfn) { 
 		zones[ZONE_DMA] = dma_end_pfn - start_pfn;
-		zones[ZONE_NORMAL] = end_pfn - dma_end_pfn; 
+		holes[ZONE_DMA] = e820_hole_size(start_pfn, dma_end_pfn);
+		zones[ZONE_NORMAL] = end_pfn - dma_end_pfn;
+		holes[ZONE_NORMAL] = e820_hole_size(dma_end_pfn, end_pfn);
+		
 	} else { 
 		zones[ZONE_NORMAL] = end_pfn - start_pfn; 
-	} 
+		holes[ZONE_NORMAL] = e820_hole_size(start_pfn, end_pfn);
+	}
 
 	/* Try to allocate mem_map at end to not fill up precious <4GB
 	   memory. */
@@ -152,7 +158,7 @@ void __init setup_node_zones(int nodeid)
 				limit);
 
 	free_area_init_node(nodeid, NODE_DATA(nodeid), zones,
-			    start_pfn, NULL); 
+			    start_pfn, holes); 
 } 
 
 void __init numa_init_array(void)

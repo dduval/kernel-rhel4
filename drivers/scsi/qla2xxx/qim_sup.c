@@ -20,12 +20,10 @@
 #include "qim_def.h"
 #include <linux/delay.h>
 
-#if 0
-void
-qim24xx_ascii_fw_dump(scsi_qla_host_t *);
-
-static int qla_uprintf(char **, char *, ...);
-#endif
+int qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
+			     uint32_t dwords);
+uint32_t *qim24xx_read_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr,
+				  uint32_t faddr, uint32_t dwords);
 
 /*
  * The ISP2312 v2 chip cannot access the FLASH/GPIO registers via MMIO in an
@@ -44,11 +42,11 @@ inline void
 qim_enable_intrs(scsi_qla_host_t *ha)
 {
 	unsigned long flags = 0;
-	device_reg_t __iomem *reg = ha->iobase;
-	struct device_reg_24xx __iomem *reg24;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
 		WRT_REG_DWORD(&reg24->ictrl, ICRX_EN_RISC_INT);
 		RD_REG_DWORD(&reg24->ictrl);
@@ -65,12 +63,12 @@ inline void
 qim_disable_intrs(scsi_qla_host_t *ha)
 {
 	unsigned long flags = 0;
-	device_reg_t __iomem *reg = ha->iobase;
-	struct device_reg_24xx __iomem *reg24;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
+	struct device_reg_24xx __iomem *reg24 = &ha->iobase->isp24;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	ha->interrupts_on = 0;
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_FWI2_CAPABLE(ha)) {
 		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
 		WRT_REG_DWORD(&reg24->ictrl, 0);
 		RD_REG_DWORD(&reg24->ictrl);
@@ -213,7 +211,7 @@ nvram_data_to_access_addr(uint32_t naddr)
 static void
 qim_nv_deselect(scsi_qla_host_t *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	WRT_REG_WORD(&reg->nvram, NVR_DESELECT);
 	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
@@ -300,7 +298,7 @@ qim24xx_write_flash_dword(scsi_qla_host_t *ha, uint32_t addr, uint32_t data)
 static void
 qim_nv_write(scsi_qla_host_t *ha, uint16_t data)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	WRT_REG_WORD(&reg->nvram, data | NVR_SELECT | NVR_WRT_ENABLE);
 	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
@@ -333,7 +331,7 @@ static uint16_t
 qim_nvram_request(scsi_qla_host_t *ha, uint32_t nv_cmd)
 {
 	uint8_t		cnt;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint16_t	data = 0;
 	uint16_t	reg_data;
 
@@ -398,7 +396,7 @@ void
 qim_lock_nvram_access(scsi_qla_host_t *ha)
 {
 	uint16_t data;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	if (!IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA2300(ha)) {
 		data = RD_REG_WORD(&reg->nvram);
@@ -430,7 +428,7 @@ qim_lock_nvram_access(scsi_qla_host_t *ha)
 void
 qim_unlock_nvram_access(scsi_qla_host_t *ha)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	if (!IS_QLA2100(ha) && !IS_QLA2200(ha) && !IS_QLA2300(ha)) {
 		WRT_REG_WORD(&reg->u.isp2300.host_semaphore, 0);
@@ -445,7 +443,7 @@ qim_write_nvram_word_tmo(scsi_qla_host_t *ha, uint32_t addr, uint16_t data,
 	int ret, count;
 	uint16_t word;
 	uint32_t nv_cmd;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	ret = QLA_SUCCESS;
 
@@ -508,7 +506,7 @@ qim_write_nvram_word(scsi_qla_host_t *ha, uint32_t addr, uint16_t data)
 	int count;
 	uint16_t word;
 	uint32_t nv_cmd;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	qim_nv_write(ha, NVR_DATA_OUT);
 	qim_nv_write(ha, 0);
@@ -559,11 +557,10 @@ static int
 qim_clear_nvram_protection(scsi_qla_host_t *ha)
 {
 	int ret, stat;
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t word;
 	uint16_t wprot, wprot_old;
 
-	reg = ha->iobase;
 
 	/* Clear NVRAM write protection. */
 	ret = QLA_FUNCTION_FAILED;
@@ -616,9 +613,8 @@ qim_clear_nvram_protection(scsi_qla_host_t *ha)
 static void
 qim_set_nvram_protection(scsi_qla_host_t *ha, int stat)
 {
-	device_reg_t __iomem *reg;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t word;
-	reg = ha->iobase;
 
 	if (stat != QLA_SUCCESS)
 		return;
@@ -659,6 +655,15 @@ qim_set_nvram_protection(scsi_qla_host_t *ha, int stat)
 	} while ((word & NVR_DATA_IN) == 0);
 }
 
+static void
+qim2xxx_read_flash_data(struct scsi_qla_host *ha, uint8_t *buf,
+    uint32_t offset, uint32_t length)
+{
+	/* XXX, Marcus slow path code for now */
+	qim24xx_read_flash_data(ha, (uint32_t *)buf, offset >> 2,
+			length >> 2);
+}
+
 uint8_t *
 qim_read_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
     uint32_t bytes)
@@ -667,7 +672,10 @@ qim_read_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 	uint16_t *wptr;
 	uint32_t *dwptr;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_QLA25XX(ha)) {
+		qim2xxx_read_flash_data(ha, buf,
+		    ((FA_VPD_NVRAM_ADDR << 2) | (naddr << 2)), bytes);
+	} else if (IS_QLA24XX_TYPE(ha)) {
 		/* Dword reads to flash. */
 		dwptr = (uint32_t *)buf;
 		for (i = 0; i < bytes >> 2; i++, naddr++)
@@ -698,7 +706,10 @@ qim_write_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 
 	ret = QLA_SUCCESS;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
+	if (IS_QLA25XX(ha)) {
+		ret = qim24xx_write_flash_data(ha, (uint32_t *)buf,
+		    FA_VPD_NVRAM_ADDR | naddr, bytes >> 2);
+        } else if (IS_QLA24XX_TYPE(ha)) {
 		/* Enable flash write. */
 		WRT_REG_DWORD(&reg->ctrl_status,
 		    RD_REG_DWORD(&reg->ctrl_status) | CSRX_FLASH_ENABLE);
@@ -806,7 +817,7 @@ void
 qim_flash_enable(scsi_qla_host_t *ha)
 {
 	uint16_t	data;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	data = RD_REG_WORD(&reg->ctrl_status);
 	data |= CSR_FLASH_ENABLE;
@@ -822,7 +833,7 @@ void
 qim_flash_disable(scsi_qla_host_t *ha)
 {
 	uint16_t	data;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	data = RD_REG_WORD(&reg->ctrl_status);
 	data &= ~(CSR_FLASH_ENABLE);
@@ -844,7 +855,7 @@ qim_read_flash_byte(scsi_qla_host_t *ha, uint32_t addr)
 {
 	uint16_t	data;
 	uint16_t	bank_select;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	bank_select = RD_REG_WORD(&reg->ctrl_status);
 
@@ -879,7 +890,7 @@ qim_read_flash_byte(scsi_qla_host_t *ha, uint32_t addr)
 	if (ha->pio_address) {
 		uint16_t data2;
 
-		reg = (device_reg_t *)ha->pio_address;
+		reg = (struct device_reg_2xxx __iomem *)ha->pio_address;
 		WRT_REG_WORD_PIO(&reg->flash_address, (uint16_t)addr);
 		do {
 			data = RD_REG_WORD_PIO(&reg->flash_data);
@@ -905,7 +916,7 @@ static void
 qim_write_flash_byte(scsi_qla_host_t *ha, uint32_t addr, uint8_t data)
 {
 	uint16_t	bank_select;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	bank_select = RD_REG_WORD(&reg->ctrl_status);
 	if (IS_QLA2322(ha) || IS_QLA6322(ha)) {
@@ -939,7 +950,7 @@ qim_write_flash_byte(scsi_qla_host_t *ha, uint32_t addr, uint8_t data)
 
 	/* Always perform IO mapped accesses to the FLASH registers. */
 	if (ha->pio_address) {
-		reg = (device_reg_t *)ha->pio_address;
+		reg = (struct device_reg_2xxx __iomem *)ha->pio_address;
 		WRT_REG_WORD_PIO(&reg->flash_address, (uint16_t)addr);
 		WRT_REG_WORD_PIO(&reg->flash_data, (uint16_t)data);
 	} else {
@@ -1148,7 +1159,7 @@ qim_set_flash_image(scsi_qla_host_t *ha, uint8_t *image, uint32_t saddr,
 	uint8_t		man_id, flash_id;
 	uint8_t		sec_number;
 	uint8_t		data;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
 	status = 0;
 	sec_number = 0;
@@ -1461,7 +1472,7 @@ uint16_t
 qim_read_flash_image(scsi_qla_host_t *ha, uint8_t *kern_tmp, uint32_t saddr,
     uint32_t length)
 {
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 	uint32_t	midpoint;
 	uint8_t		data;
 	uint32_t	ilength;
@@ -1507,10 +1518,9 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	int ret;
 	uint32_t liter;
 	uint32_t sec_mask, rest_addr, conf_addr;
-	uint32_t fdata;
+	uint32_t fdata, findex;
 	uint8_t	man_id, flash_id;
-	struct device_reg_24xx __iomem *reg =
-	    (struct device_reg_24xx __iomem *)ha->iobase;
+	struct device_reg_24xx __iomem *reg = &ha->iobase->isp24;
 
 	ret = QLA_SUCCESS;
 
@@ -1530,6 +1540,11 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 		rest_addr = 0x3fff;
 		sec_mask = 0x3c000;
 		break;
+	case 0x1f: // Atmel 26DF081A
+		rest_addr = 0x3fff;
+		sec_mask = 0x7c000;
+		conf_addr = flash_conf_to_access_addr(0x0320);
+		break;
 	default:
 		// Default to 64 kb sector size
 		rest_addr = 0x3fff;
@@ -1544,22 +1559,41 @@ qim24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 
 	/* Disable flash write-protection. */
 	qim24xx_write_flash_dword(ha, flash_conf_to_access_addr(0x101), 0);
+	/* Some flash parts need an additional zero-write to clear bits.*/
+	qim24xx_write_flash_dword(ha, flash_conf_to_access_addr(0x101), 0);
 
 	do {    /* Loop once to provide quick error exit. */
+
 		for (liter = 0; liter < dwords; liter++, faddr++, dwptr++) {
+			if (man_id == 0x1f) {
+				findex = faddr << 2;
+				fdata = findex & sec_mask;
+			} else {
+				findex = faddr;
+				fdata = (findex & sec_mask) << 2;
+			}
+
 			/* Are we at the beginning of a sector? */
-			if ((faddr & rest_addr) == 0) {
-				fdata = (faddr & sec_mask) << 2;
+			if ((findex & rest_addr) == 0) {
+			/* Do sector unprotect at 4K boundry for Atmel part. */
+				if (man_id == 0x1f)
+					qim24xx_write_flash_dword(ha,
+					    flash_conf_to_access_addr(0x0339),
+					    (fdata & 0xff00) | ((fdata << 16) &
+					   0xff0000) | ((fdata >> 16) & 0xff));
 				ret = qim24xx_write_flash_dword(ha, conf_addr,
 				    (fdata & 0xff00) |((fdata << 16) &
 				    0xff0000) | ((fdata >> 16) & 0xff));
 				if (ret != QLA_SUCCESS) {
-					DEBUG9(printk("%s(%ld) Unable to flash "
-					    "sector: address=%x.\n", __func__,
+					DEBUG9(printk("%s(%ld) Unable to flash"
+					    " sector: address=%x.\n", __func__,
 					    ha->host_no, faddr));
 					break;
 				}
 			}
+
+			/* XXX, Marcus skipping burst write for now */
+
 			ret = qim24xx_write_flash_dword(ha,
 			    flash_data_to_access_addr(faddr),
 			    cpu_to_le32(*dwptr));
@@ -1808,9 +1842,9 @@ qim_update_or_read_flash(scsi_qla_host_t *ha, uint8_t *image,
 	uint16_t    status;	
 	unsigned long flags;
 	uint32_t	cnt;
-	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_2xxx __iomem *reg = &ha->iobase->isp;
 
-	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+	if (IS_FWI2_CAPABLE(ha))
 		return qim24xx_update_or_read_flash(ha, image, saddr, length,
 		    direction);
 
@@ -1986,7 +2020,7 @@ qim_get_flash_version(struct qla_host_ioctl *ha, uint8_t *ptmp_mem)
 	struct scsi_qla_host	*dr_ha = ha->dr_data;
 
 
-	if (IS_QLA24XX(dr_ha) || IS_QLA54XX(dr_ha))
+	if (IS_FWI2_CAPABLE(dr_ha))
 		return qim24xx_get_flash_version(ha, ptmp_mem);
 
 	if (!dr_ha->pio_address)
@@ -2083,287 +2117,4 @@ qim_get_flash_version(struct qla_host_ioctl *ha, uint8_t *ptmp_mem)
 	return ret;
 }
 
-
-#if 0
-static int
-qla_uprintf(char **uiter, char *fmt, ...)
-{
-	int	iter, len;
-	char	buf[128];
-	va_list	args;
- 
-	va_start(args, fmt);
-	len = vsprintf(buf, fmt, args);
-	va_end(args);
-
-	for (iter = 0; iter < len; iter++, *uiter += 1)
-		*uiter[0] = buf[iter];
-
-	return (len);
-}
-
-void
-qim24xx_ascii_fw_dump(scsi_qla_host_t *ha)
-{
-	uint32_t cnt;
-	char *uiter;
-	struct qla24xx_fw_dump *fw;
-	uint32_t ext_mem_cnt;
-/* RLU
-	uint32_t dump_size;
-
-			dump_size = FW_DUMP_SIZE_24XX;
-			ha->fw_dump_buffer = (char *)vmalloc(dump_size);
-			if (ha->fw_dump_buffer == NULL) {
-				printk("%s: fw dump malloc failed.\n",
-				    __func__);
-				return;
-			}
-*/
-			if (ha->fw_dump_buffer == NULL) {
-				printk("%s: fw dump buffer invalid.\n",
-				    __func__);
-				return;
-			}
-
-	uiter = ha->fw_dump_buffer;
-	fw = ha->fw_dump24;
-
-	qla_uprintf(&uiter, "\n[BEGIN==>] ISP Debug Dump:\n");
-	qla_uprintf(&uiter, "ISP FW Version %d.%02d.%02d Attributes %04x\n",
-	    ha->fw_major_version, ha->fw_minor_version,
-	    ha->fw_subminor_version, ha->fw_attributes);
-
-	qla_uprintf(&uiter, "\nHCCR Register\n%04x\n", fw->hccr);
-
-	qla_uprintf(&uiter, "\nHost Interface Registers");
-	for (cnt = 0; cnt < sizeof(fw->host_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->host_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nMailbox Registers");
-	for (cnt = 0; cnt < sizeof(fw->mailbox_reg) / 2; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->mailbox_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXSEQ GP Registers");
-	for (cnt = 0; cnt < sizeof(fw->xseq_gp_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xseq_gp_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXSEQ-0 Registers");
-	for (cnt = 0; cnt < sizeof(fw->xseq_0_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xseq_0_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXSEQ-1 Registers");
-	for (cnt = 0; cnt < sizeof(fw->xseq_1_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xseq_1_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRSEQ GP Registers");
-	for (cnt = 0; cnt < sizeof(fw->rseq_gp_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->rseq_gp_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRSEQ-0 Registers");
-	for (cnt = 0; cnt < sizeof(fw->rseq_0_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->rseq_0_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRSEQ-1 Registers");
-	for (cnt = 0; cnt < sizeof(fw->rseq_1_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->rseq_1_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRSEQ-2 Registers");
-	for (cnt = 0; cnt < sizeof(fw->rseq_2_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->rseq_2_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nCommand DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->cmd_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->cmd_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRequest0 Queue DMA Channel Registers");
-	for (cnt = 0; cnt < sizeof(fw->req0_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->req0_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nResponse0 Queue DMA Channel Registers");
-	for (cnt = 0; cnt < sizeof(fw->resp0_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->resp0_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRequest1 Queue DMA Channel Registers");
-	for (cnt = 0; cnt < sizeof(fw->req1_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->req1_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXMT0 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->xmt0_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xmt0_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXMT1 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->xmt1_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xmt1_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXMT2 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->xmt2_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xmt2_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXMT3 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->xmt3_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xmt3_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXMT4 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->xmt4_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xmt4_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nXMT Data DMA Common Registers");
-	for (cnt = 0; cnt < sizeof(fw->xmt_data_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->xmt_data_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRCV Thread 0 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->rcvt0_data_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->rcvt0_data_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRCV Thread 1 Data DMA Registers");
-	for (cnt = 0; cnt < sizeof(fw->rcvt1_data_dma_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->rcvt1_data_dma_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nRISC GP Registers");
-	for (cnt = 0; cnt < sizeof(fw->risc_gp_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->risc_gp_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nShadow Registers");
-	for (cnt = 0; cnt < sizeof(fw->shadow_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->shadow_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nLMC Registers");
-	for (cnt = 0; cnt < sizeof(fw->lmc_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->lmc_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nFPM Hardware Registers");
-	for (cnt = 0; cnt < sizeof(fw->fpm_hdw_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->fpm_hdw_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nFB Hardware Registers");
-	for (cnt = 0; cnt < sizeof(fw->fb_hdw_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->fb_hdw_reg[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nCode RAM");
-	for (cnt = 0; cnt < sizeof (fw->code_ram) / 4; cnt++) {
-		if (cnt % 8 == 0) {
-			qla_uprintf(&uiter, "\n%08x: ", cnt + 0x20000);
-		}
-		qla_uprintf(&uiter, "%08x ", fw->code_ram[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n\nExternal Memory");
-	ext_mem_cnt = ha->fw_memory_size - 0x100000 + 1;
-	for (cnt = 0; cnt < ext_mem_cnt; cnt++) {
-		if (cnt % 8 == 0) {
-			qla_uprintf(&uiter, "\n%08x: ", cnt + 0x100000);
-		}
-		qla_uprintf(&uiter, "%08x ", fw->ext_mem[cnt]);
-	}
-
-	qla_uprintf(&uiter, "\n[<==END] ISP Debug Dump\n");
-
-//printk(KERN_INFO "%s\n", ha->fw_dump_buffer);
-}
-#endif
 

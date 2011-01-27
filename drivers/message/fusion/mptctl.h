@@ -3,10 +3,10 @@
  *      Fusion MPT misc device (ioctl) driver.
  *      For use with PCI chip/adapter(s):
  *          LSIFC9xx/LSI409xx Fibre Channel
- *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
+ *      running LSI Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2007 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsi.com)
+ *  Copyright (c) 1999-2007 LSI Corporation
+ *  (mailto:DL-MPTFusionLinux@lsi.com)
  *
  *  $Id: mptctl.h,v 1.14 2003/03/18 22:49:51 Exp $
  */
@@ -93,16 +93,15 @@
 #define MPTDIAGUNREGISTER	_IOWR(MPT_MAGIC_NUMBER,28,mpt_diag_unregister_t)
 #define MPTDIAGQUERY		_IOWR(MPT_MAGIC_NUMBER,29,mpt_diag_query_t)
 #define MPTDIAGREADBUFFER	_IOWR(MPT_MAGIC_NUMBER,30,mpt_diag_read_buffer_t)
-
 #ifdef MPT_SUPPORT_FWDLB_IOCTL
 #define MPTHBAPCIINFO		_IOWR(MPT_MAGIC_NUMBER,31,struct mpt_ioctl_hbapciinfo)
 #endif
-
 
 #define INITIALIZE_IOCTL_STATUS(status) \
 	status &= ~( MPT_IOCTL_STATUS_COMMAND_GOOD \
 	| MPT_IOCTL_STATUS_SENSE_VALID \
 	| MPT_IOCTL_STATUS_RF_VALID);
+
 
 /*
  * SPARC PLATFORM REMARKS:
@@ -320,7 +319,7 @@ struct mpt_ioctl_mptpciinfo {
     U8  iocState;
     U8  revisionID;
     U8  reserved1;
-    U16 vendorID;
+    U16 vendorID; 
     U16 deviceID;
     U16 subSystemVendorID;
     U16 subSystemID;

@@ -5,7 +5,7 @@
  * based on the old aacraid driver that is..
  * Adaptec aacraid device driver for Linux.
  *
- * Copyright (c) 2000 Adaptec, Inc. (aacraid@adaptec.com)
+ * Copyright (c) 2000-2007 Adaptec, Inc. (aacraid@adaptec.com)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,7 +32,6 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/types.h>
-#include <linux/sched.h>
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
@@ -55,7 +54,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	const unsigned long fibsize = 4096;
 	const unsigned long printfbufsiz = 256;
 	struct aac_init *init;
-	dma_addr_t phys = 0;
+	dma_addr_t phys;
 
 	size = fibsize + sizeof(struct aac_init) + commsize + commalign + printfbufsiz;
 
@@ -132,7 +131,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	/*
 	 *	Align the beginning of Headers to commalign
 	 */
-	align = (commalign - ((unsigned long)(base) & (commalign - 1)));
+	align = (commalign - ((ptrdiff_t)(base) & (commalign - 1)));
 	base = base + align;
 	phys = phys + align;
 	/*
@@ -323,10 +322,10 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	if ((!aac_adapter_sync_cmd(dev, GET_ADAPTER_PROPERTIES,
 		0, 0, 0, 0, 0, 0, status+0, status+1, status+2, NULL, NULL)) &&
 	 		(status[0] == 0x00000001)) {
-		if (status[1] & AAC_OPT_NEW_COMM_64)
+		if (status[1] & le32_to_cpu(AAC_OPT_NEW_COMM_64))
 			dev->raw_io_64 = 1;
 		if (dev->a_ops.adapter_comm &&
-		    (status[1] & AAC_OPT_NEW_COMM))
+		    (status[1] & le32_to_cpu(AAC_OPT_NEW_COMM)))
 			dev->comm_interface = AAC_COMM_MESSAGE;
 		if ((dev->comm_interface == AAC_COMM_MESSAGE) &&
 		    (status[2] > dev->base_size)) {
@@ -409,12 +408,11 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	 *	Ok now init the communication subsystem
 	 */
 
-	dev->queues = (struct aac_queue_block *) kmalloc(sizeof(struct aac_queue_block), GFP_KERNEL);
+	dev->queues = kzalloc(sizeof(struct aac_queue_block), GFP_KERNEL);
 	if (dev->queues == NULL) {
 		printk(KERN_ERR "Error could not allocate comm region.\n");
 		return NULL;
 	}
-	memset(dev->queues, 0, sizeof(struct aac_queue_block));
 
 	if (aac_comm_init(dev)<0){
 		kfree(dev->queues);

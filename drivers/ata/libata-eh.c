@@ -1523,9 +1523,14 @@ static int ata_eh_reset(struct ata_port *ap, int classify,
 	int verbose = !(ehc->i.flags & ATA_EHI_QUIET);
 	unsigned int action;
 	ata_reset_fn_t reset;
+	unsigned long flags;
 	int i, did_followup_srst, rc;
 
 	/* about to reset */
+	spin_lock_irqsave(ap->lock, flags);
+	ap->pflags |= ATA_PFLAG_RESETTING;
+	spin_unlock_irqrestore(ap->lock, flags);
+
 	ata_eh_about_to_do(ap, NULL, ehc->i.action & ATA_EH_RESET_MASK);
 
 	/* Determine which reset to use and record in ehc->i.action.
@@ -1548,7 +1553,7 @@ static int ata_eh_reset(struct ata_port *ap, int classify,
 			} else
 				ata_port_printk(ap, KERN_ERR,
 					"prereset failed (errno=%d)\n", rc);
-			return rc;
+			goto out;
 		}
 	}
 
@@ -1561,7 +1566,8 @@ static int ata_eh_reset(struct ata_port *ap, int classify,
 		/* prereset told us not to reset, bang classes and return */
 		for (i = 0; i < ATA_MAX_DEVICES; i++)
 			classes[i] = ATA_DEV_NONE;
-		return 0;
+		rc = 0;
+		goto out;
 	}
 
 	/* did prereset() screw up?  if so, fix up to avoid oopsing */
@@ -1596,7 +1602,8 @@ static int ata_eh_reset(struct ata_port *ap, int classify,
 			ata_port_printk(ap, KERN_ERR,
 					"follow-up softreset required "
 					"but no softreset avaliable\n");
-			return -EINVAL;
+			rc = -EINVAL;
+			goto out;
 		}
 
 		ata_eh_about_to_do(ap, NULL, ATA_EH_RESET_MASK);
@@ -1606,7 +1613,8 @@ static int ata_eh_reset(struct ata_port *ap, int classify,
 		    classes[0] == ATA_DEV_UNKNOWN) {
 			ata_port_printk(ap, KERN_ERR,
 					"classification failed\n");
-			return -EINVAL;
+			rc = -EINVAL;
+			goto out;
 		}
 	}
 
@@ -1646,6 +1654,12 @@ static int ata_eh_reset(struct ata_port *ap, int classify,
 		ata_eh_done(ap, NULL, ehc->i.action & ATA_EH_RESET_MASK);
 		ehc->i.action |= ATA_EH_REVALIDATE;
 	}
+
+ out:
+
+	spin_lock_irqsave(ap->lock, flags);
+	ap->pflags &= ~ATA_PFLAG_RESETTING;
+	spin_unlock_irqrestore(ap->lock, flags);
 
 	return rc;
 }

@@ -34,11 +34,13 @@
 #include <linux/syscalls.h>
 #include <linux/jiffies.h>
 #include <linux/futex.h>
+#include <linux/task_io_accounting_ops.h>
 #include <linux/ptrace.h>
 #include <linux/mount.h>
 #include <linux/audit.h>
 #include <linux/profile.h>
 #include <linux/rmap.h>
+#include <linux/hash.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -60,6 +62,17 @@ DEFINE_PER_CPU(unsigned long, process_counts) = 0;
 rwlock_t tasklist_lock __cacheline_aligned = RW_LOCK_UNLOCKED;  /* outer */
 
 EXPORT_SYMBOL(tasklist_lock);
+
+#define MM_FLAGS_HASH_BITS 10
+#define MM_FLAGS_HASH_SIZE (1 << MM_FLAGS_HASH_BITS)
+struct hlist_head mm_flags_hash[MM_FLAGS_HASH_SIZE] =
+	{ [ 0 ... MM_FLAGS_HASH_SIZE - 1 ] = HLIST_HEAD_INIT };
+DEFINE_SPINLOCK(mm_flags_lock);
+#define MM_HASH_SHIFT ((sizeof(struct mm_struct) >= 1024) ? 10	\
+		       : (sizeof(struct mm_struct) >= 512) ? 9	\
+		       : 8)
+#define mm_flags_hash_fn(mm) \
+	hash_long((unsigned long)(mm) >> MM_HASH_SHIFT, MM_FLAGS_HASH_BITS)
 
 int nr_processes(void)
 {
@@ -293,6 +306,89 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	return tsk;
 }
 
+/* Must be called with the mm_flags_lock held.  */
+static struct mm_flags *__find_mm_flags(struct mm_struct *addr)
+{
+	struct hlist_head *head;
+	struct hlist_node *node;
+	struct mm_flags *p;
+
+	head = &mm_flags_hash[mm_flags_hash_fn(addr)];
+	hlist_for_each_entry(p, node, head, hlist) {
+                if (p->addr == addr)
+			return p;
+	}
+	return NULL;
+}
+
+unsigned long get_mm_flags(struct mm_struct *mm)
+{
+	struct mm_flags *p;
+	unsigned long flags = MMF_DUMP_FILTER_DEFAULT;
+
+	spin_lock(&mm_flags_lock);
+	p = __find_mm_flags(mm);
+	if (p)
+		flags = p->flags;
+	spin_unlock(&mm_flags_lock);
+
+	return flags;
+}
+
+int set_mm_flags(struct mm_struct *mm, unsigned long flags, int check_dup)
+{
+	struct mm_flags *p, *new_p;
+
+	flags &= MMF_DUMP_FILTER_MASK;
+
+	if (check_dup) {
+		/* Check if the entry has already existed.  */
+		spin_lock(&mm_flags_lock);
+		p = __find_mm_flags(mm);
+		if (p) {
+			p->flags = flags;
+			spin_unlock(&mm_flags_lock);
+			return 0;
+		}
+		spin_unlock(&mm_flags_lock);
+
+		/* Do nothing if the `flags' is equal to the default.  */
+		if (flags == MMF_DUMP_FILTER_DEFAULT)
+			return 0;
+	}
+
+	/* Try to add a new entry.  */
+	new_p = kmalloc(sizeof(*new_p), GFP_KERNEL);
+	if (!new_p)
+		return -ENOMEM;
+
+	spin_lock(&mm_flags_lock);
+	if (!check_dup || !(p = __find_mm_flags(mm))) {
+		struct hlist_head *head;
+		head = &mm_flags_hash[mm_flags_hash_fn(mm)];
+		p = new_p;
+		p->addr = mm;
+		hlist_add_head(&p->hlist, head);
+	} else
+		kfree(new_p);
+	p->flags = flags;
+	spin_unlock(&mm_flags_lock);
+
+	return 0;
+}
+
+static void free_mm_flags(struct mm_struct *mm) {
+	struct mm_flags *p;
+
+	spin_lock(&mm_flags_lock);
+	p = __find_mm_flags(mm);
+	if (p) {
+		hlist_del(&p->hlist);
+		kfree(p);
+	}
+	spin_unlock(&mm_flags_lock);
+}
+
 #ifdef CONFIG_MMU
 static inline int dup_mmap(struct mm_struct * mm, struct mm_struct * oldmm)
 {
@@ -436,6 +532,8 @@ int mmlist_nr;
 
 static struct mm_struct * mm_init(struct mm_struct * mm)
 {
+	unsigned long mm_flags;
+
 	atomic_set(&mm->mm_users, 1);
 	atomic_set(&mm->mm_count, 1);
 	init_rwsem(&mm->mmap_sem);
@@ -446,10 +544,20 @@ static struct mm_struct * mm_init(struct mm_struct * mm)
 	mm->default_kioctx = (struct kioctx)INIT_KIOCTX(mm->default_kioctx, *mm);
 	mm->free_area_cache = TASK_UNMAPPED_BASE;
 
+	mm_flags = get_mm_flags(current->mm);
+	if (mm_flags != MMF_DUMP_FILTER_DEFAULT) {
+		if (unlikely(set_mm_flags(mm, mm_flags, 0) < 0))
+			goto fail_nomem;
+	}
+
 	if (likely(!mm_alloc_pgd(mm))) {
 		mm->def_flags = 0;
 		return mm;
 	}
+
+	if (mm_flags != MMF_DUMP_FILTER_DEFAULT)
+		free_mm_flags(mm);
+fail_nomem:
 	free_mm(mm);
 	return NULL;
 }
@@ -477,6 +585,7 @@ struct mm_struct * mm_alloc(void)
 void fastcall __mmdrop(struct mm_struct *mm)
 {
 	BUG_ON(mm == &init_mm);
+	free_mm_flags(mm);
 	mm_free_pgd(mm);
 	destroy_context(mm);
 	free_mm(mm);
@@ -643,6 +752,7 @@ fail_nocontext:
 	 * If init_new_context() failed, we cannot use mmput() to free the mm
 	 * because it calls destroy_context()
 	 */
+	free_mm_flags(mm);
 	mm_free_pgd(mm);
 	free_mm(mm);
 	return retval;
@@ -914,6 +1024,7 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
 	sig->utime = sig->stime = sig->cutime = sig->cstime = 0;
 	sig->nvcsw = sig->nivcsw = sig->cnvcsw = sig->cnivcsw = 0;
 	sig->min_flt = sig->maj_flt = sig->cmin_flt = sig->cmaj_flt = 0;
+	sig->inblock = sig->oublock = sig->cinblock = sig->coublock = 0;
 
 	return 0;
 }
@@ -1028,6 +1139,8 @@ static task_t *copy_process(unsigned long clone_flags,
 
 	clear_tsk_thread_flag(p, TIF_SIGPENDING);
 	init_sigpending(&p->pending);
+
+	task_io_accounting_init(p);
 
 	p->it_real_value = p->it_virt_value = p->it_prof_value = 0;
 	p->it_real_incr = p->it_virt_incr = p->it_prof_incr = 0;

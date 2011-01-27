@@ -33,13 +33,20 @@
 #include <linux/ethtool.h>
 #include <linux/vmalloc.h>
 #include <linux/if_vlan.h>
+#include <linux/inet_lro.h>
 
 #include <asm/ibmebus.h>
 #include <asm/abs_addr.h>
 #include <asm/io.h>
 
 #define DRV_NAME	"ehea"
-#define DRV_VERSION	"EHEA_0058-07"
+#define DRV_VERSION	"EHEA_0078-03"
+
+/* eHEA capability flags */
+#define DLPAR_PORT_ADD_REM 1
+#define DLPAR_MEM_ADD      2
+#define DLPAR_MEM_REM      4
+#define EHEA_CAPABILITIES  (DLPAR_PORT_ADD_REM)
 
 #define EHEA_MSG_DEFAULT (NETIF_MSG_LINK | NETIF_MSG_TIMER \
 	| NETIF_MSG_RX_ERR | NETIF_MSG_TX_ERR)
@@ -52,6 +59,7 @@
 
 #define EHEA_SMALL_QUEUES
 #define EHEA_NUM_TX_QP 1
+#define EHEA_LRO_MAX_AGGR 64
 
 #ifdef EHEA_SMALL_QUEUES
 #define EHEA_MAX_CQE_COUNT      1023
@@ -77,6 +85,8 @@
 #define EHEA_MAX_PACKET_SIZE    9022	/* for jumbo frames */
 #define EHEA_RQ2_PKT_SIZE       1522
 #define EHEA_L_PKT_SIZE         256	/* low latency */
+
+#define MAX_LRO_DESCRIPTORS 8
 
 /* Send completion signaling */
 
@@ -136,10 +146,10 @@ void ehea_dump(void *adr, int len, char *msg);
 	(0xffffffffffffffffULL >> ((64 - (mask)) & 0xffff))
 
 #define EHEA_BMASK_SET(mask, value) \
-        ((EHEA_BMASK_MASK(mask) & ((u64)(value))) << EHEA_BMASK_SHIFTPOS(mask))
+	((EHEA_BMASK_MASK(mask) & ((u64)(value))) << EHEA_BMASK_SHIFTPOS(mask))
 
 #define EHEA_BMASK_GET(mask, value) \
-        (EHEA_BMASK_MASK(mask) & (((u64)(value)) >> EHEA_BMASK_SHIFTPOS(mask)))
+	(EHEA_BMASK_MASK(mask) & (((u64)(value)) >> EHEA_BMASK_SHIFTPOS(mask)))
 
 /*
  * Generic ehea page
@@ -190,7 +200,7 @@ struct ehea_av;
  * Queue attributes passed to ehea_create_qp()
  */
 struct ehea_qp_init_attr {
-        /* input parameter */
+	/* input parameter */
 	u32 qp_token;           /* queue token */
 	u8 low_lat_rq1;
 	u8 signalingtype;       /* cqe generation flag */
@@ -212,7 +222,7 @@ struct ehea_qp_init_attr {
 	u64 recv_cq_handle;
 	u64 aff_eq_handle;
 
-        /* output parameter */
+	/* output parameter */
 	u32 qp_nr;
 	u16 act_nr_send_wqes;
 	u16 act_nr_rwqes_rq1;
@@ -279,12 +289,12 @@ struct ehea_qp {
  * Completion Queue attributes
  */
 struct ehea_cq_attr {
-        /* input parameter */
+	/* input parameter */
 	u32 max_nr_of_cqes;
 	u32 cq_token;
 	u64 eq_handle;
 
-        /* output parameter */
+	/* output parameter */
 	u32 act_nr_of_cqes;
 	u32 nr_pages;
 };
@@ -362,6 +372,8 @@ struct ehea_port_res {
 	u64 tx_packets;
 	u64 rx_packets;
 	u32 poll_counter;
+	struct net_lro_mgr lro_mgr;
+	struct net_lro_desc lro_desc[MAX_LRO_DESCRIPTORS];
 };
 
 
@@ -371,11 +383,11 @@ struct ehea_adapter {
 	struct ibmebus_dev *ebus_dev;
 	struct ehea_port *port[EHEA_MAX_PORTS];
 	struct ehea_eq *neq;       /* notification event queue */
-	struct workqueue_struct *ehea_wq;
 	struct tasklet_struct neq_tasklet;
 	struct ehea_mr mr;
 	u32 pd;                    /* protection domain */
 	u64 max_mc_mac;            /* max number of multicast mac addresses */
+	int active_ports;
 };
 
 
@@ -386,6 +398,8 @@ struct ehea_mc_list {
 
 #define EHEA_PORT_UP 1
 #define EHEA_PORT_DOWN 0
+#define EHEA_PHY_LINK_UP 1
+#define EHEA_PHY_LINK_DOWN 0
 #define EHEA_MAX_PORT_RES 16
 struct ehea_port {
 	struct ehea_adapter *adapter;	 /* adapter that owns this port */
@@ -411,6 +425,8 @@ struct ehea_port {
 	u32 msg_enable;
 	u32 sig_comp_iv;
 	u32 state;
+	u32 lro_max_aggr;
+	u8 phy_link;
 	u8 full_duplex;
 	u8 autoneg;
 	u8 num_def_qps;

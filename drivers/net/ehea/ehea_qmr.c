@@ -211,7 +211,7 @@ u64 ehea_destroy_cq_res(struct ehea_cq *cq, u64 force)
 	u64 hret;
 	u64 adapter_handle = cq->adapter->handle;
 
-        /* deregister all previous registered pages */
+	/* deregister all previous registered pages */
 	hret = ehea_h_free_resource(adapter_handle, cq->fw_handle, force);
 	if (hret != H_SUCCESS)
 		return hret;
@@ -227,6 +227,8 @@ int ehea_destroy_cq(struct ehea_cq *cq)
 	u64 hret;
 	if (!cq)
 		return 0;
+
+	hcp_epas_dtor(&cq->epas);
 
 	if ((hret = ehea_destroy_cq_res(cq, NORMAL_FREE)) == H_R_STATE) {
 		ehea_error_data(cq->adapter, cq->fw_handle);
@@ -354,6 +356,8 @@ int ehea_destroy_eq(struct ehea_eq *eq)
 	if (!eq)
 		return 0;
 
+	hcp_epas_dtor(&eq->epas);
+
 	if ((hret = ehea_destroy_eq_res(eq, NORMAL_FREE)) == H_R_STATE) {
 		ehea_error_data(eq->adapter, eq->fw_handle);
 		hret = ehea_destroy_eq_res(eq, FORCE_FREE);
@@ -362,7 +366,7 @@ int ehea_destroy_eq(struct ehea_eq *eq)
 	if (hret != H_SUCCESS) {
 		ehea_error("destroy EQ failed");
 		return -EIO;
-        }
+	}
 
 	return 0;
 }
@@ -507,44 +511,46 @@ out_freemem:
 
 u64 ehea_destroy_qp_res(struct ehea_qp *qp, u64 force)
 {
-        u64 hret;
-        struct ehea_qp_init_attr *qp_attr = &qp->init_attr;
+	u64 hret;
+	struct ehea_qp_init_attr *qp_attr = &qp->init_attr;
 
 
-        ehea_h_disable_and_get_hea(qp->adapter->handle, qp->fw_handle);
-        hret = ehea_h_free_resource(qp->adapter->handle, qp->fw_handle, force);
-        if (hret != H_SUCCESS)
-                return hret;
+	ehea_h_disable_and_get_hea(qp->adapter->handle, qp->fw_handle);
+	hret = ehea_h_free_resource(qp->adapter->handle, qp->fw_handle, force);
+	if (hret != H_SUCCESS)
+		return hret;
 
-        hw_queue_dtor(&qp->hw_squeue);
-        hw_queue_dtor(&qp->hw_rqueue1);
+	hw_queue_dtor(&qp->hw_squeue);
+	hw_queue_dtor(&qp->hw_rqueue1);
 
-        if (qp_attr->rq_count > 1)
-                hw_queue_dtor(&qp->hw_rqueue2);
-        if (qp_attr->rq_count > 2)
-                hw_queue_dtor(&qp->hw_rqueue3);
-        kfree(qp);
+	if (qp_attr->rq_count > 1)
+		hw_queue_dtor(&qp->hw_rqueue2);
+	if (qp_attr->rq_count > 2)
+		hw_queue_dtor(&qp->hw_rqueue3);
+	kfree(qp);
 
-        return hret;
+	return hret;
 }
 
 int ehea_destroy_qp(struct ehea_qp *qp)
 {
-        u64 hret;
-        if (!qp)
-                return 0;
+	u64 hret;
+	if (!qp)
+		return 0;
 
-        if ((hret = ehea_destroy_qp_res(qp, NORMAL_FREE)) == H_R_STATE) {
-                ehea_error_data(qp->adapter, qp->fw_handle);
-                hret = ehea_destroy_qp_res(qp, FORCE_FREE);
+	hcp_epas_dtor(&qp->epas);
+
+	if ((hret = ehea_destroy_qp_res(qp, NORMAL_FREE)) == H_R_STATE) {
+		ehea_error_data(qp->adapter, qp->fw_handle);
+		hret = ehea_destroy_qp_res(qp, FORCE_FREE);
+	}
+
+	if (hret != H_SUCCESS) {
+		ehea_error("destroy QP failed");
+		return -EIO;
         }
 
-        if (hret != H_SUCCESS) {
-                ehea_error("destroy QP failed");
-                return -EIO;
-        }
-
-        return 0;
+	return 0;
 }
 
 int ehea_reg_kernel_mr(struct ehea_adapter *adapter, struct ehea_mr *mr)
@@ -580,7 +586,7 @@ int ehea_reg_kernel_mr(struct ehea_adapter *adapter, struct ehea_mr *mr)
 
 	while (nr_pages > 0) {
 		if (nr_pages > 1) {
-			u64 num_pages = min(nr_pages, (u64)512);
+			u64 num_pages = min(nr_pages, (u64)EHEA_MAX_RPAGE);
 			for (i = 0; i < num_pages; i++)
 				pt[i] = virt_to_abs((void*)(((u64)start) +
 							    ((k++) *

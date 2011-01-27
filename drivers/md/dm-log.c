@@ -40,7 +40,7 @@ int dm_unregister_dirty_log_type(struct dirty_log_type *type)
 	return 0;
 }
 
-static struct dirty_log_type *get_type(const char *type_name)
+static struct dirty_log_type *_get_type(const char *type_name)
 {
 	struct dirty_log_type *type;
 
@@ -58,6 +58,35 @@ static struct dirty_log_type *get_type(const char *type_name)
 
 	spin_unlock(&_lock);
 	return NULL;
+}
+
+static int load_log_module(const char *type_name)
+{
+	int r;
+
+	if (!strncmp(type_name, "clustered_disk", 14) ||
+	    !strncmp(type_name, "clustered_core", 14))
+		r = request_module("dm-cmirror");
+	else
+		r = -ENODEV;
+
+	return r < 0 ? r : 0;
+}
+
+static struct dirty_log_type *get_type(const char *type_name)
+{
+	struct dirty_log_type *type;
+
+	if ((type = _get_type(type_name)))
+		return type;
+
+	/* Logging type not found.  Try to find module. */
+	if (load_log_module(type_name)) {
+		DMWARN("Module for logging type \"%s\" not found.", type_name);
+		return NULL;
+	}
+
+	return _get_type(type_name);
 }
 
 static void put_type(struct dirty_log_type *type)

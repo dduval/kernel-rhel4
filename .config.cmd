@@ -1,5 +1,6 @@
 deps_config := \
 	lib/Kconfig \
+	drivers/xenpv_hvm/Kconfig \
 	drivers/xen/Kconfig \
 	crypto/Kconfig \
 	security/selinux/Kconfig \
@@ -14,10 +15,12 @@ deps_config := \
 	drivers/firmware/Kconfig \
 	drivers/edac/Kconfig \
 	drivers/infiniband/util/Kconfig \
-	drivers/infiniband/ulp/vnic/Kconfig \
+	drivers/infiniband/ulp/qlgc_vnic/Kconfig \
 	drivers/infiniband/ulp/sdp/Kconfig \
 	drivers/infiniband/ulp/srp/Kconfig \
 	drivers/infiniband/ulp/ipoib/Kconfig \
+	drivers/infiniband/hw/mlx4/Kconfig \
+	drivers/infiniband/hw/nes/Kconfig \
 	drivers/infiniband/hw/cxgb3/Kconfig \
 	drivers/infiniband/hw/amso1100/Kconfig \
 	drivers/infiniband/hw/ehca/Kconfig \

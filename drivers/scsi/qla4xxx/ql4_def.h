@@ -611,6 +611,9 @@ typedef struct fc_port {
 
 	lun_bit_mask_t lun_mask;
 	int loop_id;
+
+	unsigned long last_queue_full;
+	unsigned long last_ramp_up;
 } fc_port_t;
 
 
@@ -722,7 +725,7 @@ typedef struct scsi_qla_host {
 	#define AF_LINK_UP		      8 /* 0x00000100 */
 	#define AF_IRQ_ATTACHED	      	     10 /* 0x00000400 */
 	#define AF_64BIT_PCI_ADDR	     11 /* 0x00000800 */
-	#define AF_DISABLE_ACB_COMPLETE	     12 /* 0x00001000 */
+	#define AF_WAIT4DISABLE_ACB_COMPLETE 12 /* 0x00001000 */
 	#define AF_MSI_ENABLED	     	     13 /* 0x00002000 */
 
 	unsigned long   dpc_flags;
@@ -1029,6 +1032,10 @@ typedef struct scsi_qla_host {
 	uint8_t		ipv6_addr0[16];
 	uint8_t		ipv6_addr1[16];
 	uint8_t		ipv6_default_router_addr[16];
+	uint8_t		ipv6_link_local_state;
+	uint8_t		ipv6_addr0_state;
+	uint8_t		ipv6_addr1_state;
+	uint8_t		ipv6_default_router_state;
 }scsi_qla_host_t;
 
 #define ADAPTER_UP(ha) ((test_bit(AF_ONLINE, &ha->flags) != 0) && \
