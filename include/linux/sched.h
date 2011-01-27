@@ -330,6 +330,7 @@ struct signal_struct {
 	struct key *session_keyring;	/* keyring inherited over fork */
 	struct key *process_keyring;	/* keyring private to this process */
 #endif
+	atomic_t live;
 #endif
 };
 
@@ -466,6 +467,9 @@ struct task_struct_aux {
 	struct completion *vfork_done;	/* for vfork() [displaced from task_struct] */
 	struct key *thread_keyring;	/* keyring private to this thread */
 	unsigned char jit_keyring;	/* default keyring to attach requested keys to */
+#ifndef __GENKSYMS__
+	struct key *request_key_auth;   /* assumed request_key authority */
+#endif
 };
 
 #define task_aux(tsk) ((tsk)->auxilliary)

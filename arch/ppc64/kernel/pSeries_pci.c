@@ -195,6 +195,36 @@ static void python_countermeasures(unsigned long addr)
 	iounmap(chip_regs);
 }
 
+static void check_s7a(void)
+{
+  	struct device_node *root;
+	char *model;
+
+	root = of_find_node_by_path("/");
+	if (root) {
+		model = get_property(root, "model", NULL);
+		if (model && !strcmp(model, "IBM,7013-S7A"))
+			s7a_workaround = 1;
+		of_node_put(root);
+	}
+}
+
+void __devinit pSeries_irq_bus_setup(struct pci_bus *bus)
+{
+       struct pci_dev *dev;
+
+       list_for_each_entry(dev, &bus->devices, bus_list) {
+		pci_read_irq_line(dev);
+		if (s7a_workaround) {
+			if (dev->irq > 16) {
+				dev->irq -= 3;
+				pci_write_config_byte(dev, PCI_INTERRUPT_LINE,
+					dev->irq);
+			}
+		}
+	}
+}
+
 void __init init_pci_config_tokens (void)
 {
 	read_pci_config = rtas_token("read-pci-config");
@@ -422,6 +452,8 @@ unsigned long __init find_and_init_phbs(void)
 
 	of_node_put(root);
 	pci_devs_phb_init();
+	ppc_md.irq_bus_setup = pSeries_irq_bus_setup;
+	check_s7a();
 
 	return 0;
 }
@@ -481,20 +513,6 @@ void pcibios_name_device(struct pci_dev *dev)
 }   
 DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, pcibios_name_device);
 #endif
-
-static void check_s7a(void)
-{
-	struct device_node *root;
-	char *model;
-
-	root = of_find_node_by_path("/");
-	if (root) {
-		model = get_property(root, "model", NULL);
-		if (model && !strcmp(model, "IBM,7013-S7A"))
-			s7a_workaround = 1;
-		of_node_put(root);
-	}
-}
 
 static int get_bus_io_range(struct pci_bus *bus, unsigned long *start_phys,
 				unsigned long *start_virt, unsigned long *size)
@@ -660,20 +678,6 @@ EXPORT_SYMBOL(pcibios_remove_root_bus);
 
 void __init pSeries_final_fixup(void)
 {
-	struct pci_dev *dev = NULL;
-
-	check_s7a();
-
-	while ((dev = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
-		pci_read_irq_line(dev);
-		if (s7a_workaround) {
-			if (dev->irq > 16) {
-				dev->irq -= 3;
-				pci_write_config_byte(dev, PCI_INTERRUPT_LINE, dev->irq);
-			}
-		}
-	}
-
 	phbs_remap_io();
 	pSeries_request_regions();
 	pci_fix_bus_sysdata();

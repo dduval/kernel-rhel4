@@ -100,7 +100,6 @@ qla2100_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	qla2x00_next(ha);
-	ha->last_irq_cpu = smp_processor_id();
 	ha->total_isr_cnt++;
 
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
@@ -219,7 +218,6 @@ qla2300_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	qla2x00_next(ha);
-	ha->last_irq_cpu = smp_processor_id();
 	ha->total_isr_cnt++;
 
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&
@@ -476,6 +474,8 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 
 		ha->flags.management_server_logged_in = 0;
 		ha->link_data_rate = 0xff;
+		if (ql2xfdmienable)
+			set_bit(REGISTER_FDMI_NEEDED, &ha->dpc_flags);
 
 		/* Update AEN queue. */
 		qla2x00_enqueue_aen(ha, MBA_LOOP_DOWN, NULL);
@@ -1646,7 +1646,6 @@ qla24xx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	qla2x00_next(ha);
-	ha->last_irq_cpu = smp_processor_id();
 	ha->total_isr_cnt++;
 
 	if (test_bit(MBX_INTR_WAIT, &ha->mbx_cmd_flags) &&

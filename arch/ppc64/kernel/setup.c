@@ -254,12 +254,13 @@ static void __init setup_cpu_maps(void)
 			/*
 			 * Only spin up secondary threads if SMT is enabled.
 			 * We must leave space in the logical map for the
-			 * threads.
+			 * threads.  cpu_present_map is fixed up later
+			 * after smp init.
 			 */
 			if (j == 0 || smt_enabled_at_boot) {
 				cpu_set(cpu, cpu_present_map);
-				set_hard_smp_processor_id(cpu, intserv[j]);
 			}
+			set_hard_smp_processor_id(cpu, intserv[j]);
 			cpu_set(cpu, cpu_possible_map);
 			cpu++;
 		}

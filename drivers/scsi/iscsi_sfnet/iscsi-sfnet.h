@@ -38,7 +38,7 @@ struct iscsi_session_ioctl;
 struct iscsi_task;
 struct iscsi_hdr;
 
-#define ISCSI_DRIVER_VERSION	"4:0.1.11-1"
+#define ISCSI_DRIVER_VERSION	"4:0.1.11-2"
 #define ISCSI_MAX_CMD_LEN	16
 #define ISCSI_CMDS_PER_LUN	32
 #define ISCSI_MAX_CMDS_PER_LUN  128

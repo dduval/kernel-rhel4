@@ -78,6 +78,11 @@
 #define NS_TO_JIFFIES(TIME)	((TIME) / (1000000000 / HZ))
 #define JIFFIES_TO_NS(TIME)	((TIME) * (1000000000 / HZ))
 
+/** Max backoff if we encounter pinned tasks. Pretty arbitrary value, but
+* so long as it is large enough.
+*/
+#define MAX_PINNED_INTERVAL	512
+
 /*
  * These are the 'tuning knobs' of the scheduler:
  *
@@ -445,7 +450,7 @@ struct sched_domain {
  * interrupts.  Note the ordering: we can safely lookup the task_rq without
  * explicitly disabling preemption.
  */
-static runqueue_t *task_rq_lock(task_t *p, unsigned long *flags)
+static inline runqueue_t *task_rq_lock(task_t *p, unsigned long *flags)
 {
 	struct runqueue *rq;
 
@@ -566,7 +571,7 @@ struct file_operations proc_schedstat_operations = {
 /*
  * rq_lock - lock a given runqueue and disable interrupts.
  */
-static runqueue_t *this_rq_lock(void)
+static inline runqueue_t *this_rq_lock(void)
 {
 	runqueue_t *rq;
 
@@ -1458,7 +1463,7 @@ void fastcall sched_exit(task_t * p)
  * with the lock held can cause deadlocks; see schedule() for
  * details.)
  */
-static void finish_task_switch(task_t *prev)
+static inline void finish_task_switch(task_t *prev)
 {
 	runqueue_t *rq = this_rq();
 	struct mm_struct *mm = rq->prev_mm;
@@ -1765,7 +1770,7 @@ void pull_task(runqueue_t *src_rq, prio_array_t *src_array, task_t *p,
  */
 static inline
 int can_migrate_task(task_t *p, runqueue_t *rq, int this_cpu,
-		     struct sched_domain *sd, enum idle_type idle)
+		     struct sched_domain *sd, enum idle_type idle, int *all_pinned)
 {
 	/*
 	 * We do not migrate tasks that are:
@@ -1777,6 +1782,8 @@ int can_migrate_task(task_t *p, runqueue_t *rq, int this_cpu,
 		return 0;
 	if (!cpu_isset(this_cpu, p->cpus_allowed))
 		return 0;
+
+	*all_pinned = 0;
 
 	/* Aggressive migration if we've failed balancing */
 	if (idle == NEWLY_IDLE ||
@@ -1797,15 +1804,17 @@ int can_migrate_task(task_t *p, runqueue_t *rq, int this_cpu,
  */
 static int move_tasks(runqueue_t *this_rq, int this_cpu, runqueue_t *busiest,
 		      unsigned long max_nr_move, struct sched_domain *sd,
-		      enum idle_type idle)
+		      enum idle_type idle, int *all_pinned)
 {
 	prio_array_t *array, *dst_array;
 	struct list_head *head, *curr;
-	int idx, pulled = 0;
+	int idx, pulled = 0, pinned = 0;
 	task_t *tmp;
 
 	if (max_nr_move <= 0 || busiest->nr_running <= 1)
 		goto out;
+
+	pinned=1;
 
 	/*
 	 * We first consider expired tasks. Those will likely not be
@@ -1845,7 +1854,7 @@ skip_queue:
 
 	curr = curr->prev;
 
-	if (!can_migrate_task(tmp, busiest, this_cpu, sd, idle)) {
+	if (!can_migrate_task(tmp, busiest, this_cpu, sd, idle, &pinned)) {
 		if (curr != head)
 			goto skip_queue;
 		idx++;
@@ -1871,6 +1880,9 @@ skip_queue:
 		goto skip_bitmap;
 	}
 out:
+	if (all_pinned)
+		*all_pinned = pinned;
+
 	return pulled;
 }
 
@@ -2045,7 +2057,7 @@ static int load_balance(int this_cpu, runqueue_t *this_rq,
 	struct sched_group *group;
 	runqueue_t *busiest;
 	unsigned long imbalance;
-	int nr_moved;
+	int nr_moved, all_pinned=0;
 
 	spin_lock(&this_rq->lock);
 	schedstat_inc(sd, lb_cnt[idle]);
@@ -2084,9 +2096,15 @@ static int load_balance(int this_cpu, runqueue_t *this_rq,
 		 */
 		double_lock_balance(this_rq, busiest);
 		nr_moved = move_tasks(this_rq, this_cpu, busiest,
-						imbalance, sd, idle);
+						imbalance, sd, idle,
+						&all_pinned);
 		spin_unlock(&busiest->lock);
+
+		/* All tasks on this runqueue were pinned by CPU affinity */
+		if (unlikely(all_pinned))
+			goto out_balanced;
 	}
+
 	spin_unlock(&this_rq->lock);
 
 	if (!nr_moved) {
@@ -2123,11 +2141,12 @@ static int load_balance(int this_cpu, runqueue_t *this_rq,
 out_balanced:
 	spin_unlock(&this_rq->lock);
 
+	sd->nr_balance_failed = 0;
 	/* tune up the balancing interval */
-	if (sd->balance_interval < sd->max_interval)
+	if ((all_pinned && sd->balance_interval < MAX_PINNED_INTERVAL) ||
+			(sd->balance_interval < sd->max_interval))
 		sd->balance_interval *= 2;
-
-	return 0;
+ 	return 0;
 }
 
 /*
@@ -2149,13 +2168,13 @@ static int load_balance_newidle(int this_cpu, runqueue_t *this_rq,
 	group = find_busiest_group(sd, this_cpu, &imbalance, NEWLY_IDLE);
 	if (!group) {
 		schedstat_inc(sd, lb_nobusyg[NEWLY_IDLE]);
-		goto out;
+		goto out_balanced;
 	}
 
 	busiest = find_busiest_queue(group);
 	if (!busiest || busiest == this_rq) {
 		schedstat_inc(sd, lb_nobusyq[NEWLY_IDLE]);
-		goto out;
+		goto out_balanced;
 	}
 
 	/* Attempt to move tasks */
@@ -2163,14 +2182,19 @@ static int load_balance_newidle(int this_cpu, runqueue_t *this_rq,
 
 	schedstat_add(sd, lb_imbalance[NEWLY_IDLE], imbalance);
 	nr_moved = move_tasks(this_rq, this_cpu, busiest,
-					imbalance, sd, NEWLY_IDLE);
-	if (!nr_moved)
+			imbalance, sd, NEWLY_IDLE, NULL);
+	if (!nr_moved) {
 		schedstat_inc(sd, lb_failed[NEWLY_IDLE]);
+	} else
+                sd->nr_balance_failed = 0;
 
 	spin_unlock(&busiest->lock);
-
-out:
 	return nr_moved;
+
+out_balanced:
+	schedstat_inc(sd, lb_balanced[NEWLY_IDLE]);
+	sd->nr_balance_failed = 0;
+	return 0;
 }
 
 /*
@@ -2245,7 +2269,7 @@ static void active_load_balance(runqueue_t *busiest, int busiest_cpu)
 		if (unlikely(busiest == rq))
 			goto next_group;
 		double_lock_balance(busiest, rq);
-		if (move_tasks(rq, push_cpu, busiest, 1, sd, IDLE)) {
+		if (move_tasks(rq, push_cpu, busiest, 1, sd, IDLE, NULL)) {
 			schedstat_inc(busiest, alb_lost);
 			schedstat_inc(rq, alb_gained);
 		} else {
@@ -2943,6 +2967,106 @@ void fastcall __sched wait_for_completion(struct completion *x)
 	spin_unlock_irq(&x->wait.lock);
 }
 EXPORT_SYMBOL(wait_for_completion);
+
+unsigned long fastcall __sched
+wait_for_completion_timeout(struct completion *x, unsigned long timeout)
+{
+       might_sleep();
+
+       spin_lock_irq(&x->wait.lock);
+       if (!x->done) {
+               DECLARE_WAITQUEUE(wait, current);
+
+               wait.flags |= WQ_FLAG_EXCLUSIVE;
+               __add_wait_queue_tail(&x->wait, &wait);
+               do {
+                       __set_current_state(TASK_UNINTERRUPTIBLE);
+                       spin_unlock_irq(&x->wait.lock);
+                       timeout = schedule_timeout(timeout);
+                       spin_lock_irq(&x->wait.lock);
+                       if (!timeout) {
+                               __remove_wait_queue(&x->wait, &wait);
+                               goto out;
+                       }
+               } while (!x->done);
+               __remove_wait_queue(&x->wait, &wait);
+       }
+       x->done--;
+out:
+       spin_unlock_irq(&x->wait.lock);
+       return timeout;
+}
+EXPORT_SYMBOL(wait_for_completion_timeout);
+
+int fastcall __sched wait_for_completion_interruptible(struct completion *x)
+{
+       int ret = 0;
+
+       might_sleep();
+
+       spin_lock_irq(&x->wait.lock);
+       if (!x->done) {
+               DECLARE_WAITQUEUE(wait, current);
+
+               wait.flags |= WQ_FLAG_EXCLUSIVE;
+               __add_wait_queue_tail(&x->wait, &wait);
+               do {
+                       if (signal_pending(current)) {
+                               ret = -ERESTARTSYS;
+                               __remove_wait_queue(&x->wait, &wait);
+                               goto out;
+                       }
+                       __set_current_state(TASK_INTERRUPTIBLE);
+                       spin_unlock_irq(&x->wait.lock);
+                       schedule();
+                       spin_lock_irq(&x->wait.lock);
+               } while (!x->done);
+               __remove_wait_queue(&x->wait, &wait);
+       }
+       x->done--;
+out:
+       spin_unlock_irq(&x->wait.lock);
+
+       return ret;
+}
+EXPORT_SYMBOL(wait_for_completion_interruptible);
+
+unsigned long fastcall __sched
+wait_for_completion_interruptible_timeout(struct completion *x,
+                                         unsigned long timeout)
+{
+       might_sleep();
+
+       spin_lock_irq(&x->wait.lock);
+       if (!x->done) {
+               DECLARE_WAITQUEUE(wait, current);
+
+               wait.flags |= WQ_FLAG_EXCLUSIVE;
+               __add_wait_queue_tail(&x->wait, &wait);
+               do {
+                       if (signal_pending(current)) {
+                               timeout = -ERESTARTSYS;
+                               __remove_wait_queue(&x->wait, &wait);
+                               goto out;
+                       }
+                       __set_current_state(TASK_INTERRUPTIBLE);
+                       spin_unlock_irq(&x->wait.lock);
+                       timeout = schedule_timeout(timeout);
+                       spin_lock_irq(&x->wait.lock);
+                       if (!timeout) {
+                               __remove_wait_queue(&x->wait, &wait);
+                               goto out;
+                       }
+               } while (!x->done);
+               __remove_wait_queue(&x->wait, &wait);
+       }
+       x->done--;
+out:
+       spin_unlock_irq(&x->wait.lock);
+       return timeout;
+}
+EXPORT_SYMBOL(wait_for_completion_interruptible_timeout);
+
 
 #define	SLEEP_ON_VAR					\
 	unsigned long flags;				\

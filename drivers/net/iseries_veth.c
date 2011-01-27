@@ -79,11 +79,16 @@
 #include <asm/iommu.h>
 #include <asm/vio.h>
 
+//#define DEBUG	1
+
 #include "iseries_veth.h"
 
 MODULE_AUTHOR("Kyle Lucke <klucke@us.ibm.com>");
 MODULE_DESCRIPTION("iSeries Virtual ethernet driver");
 MODULE_LICENSE("GPL");
+
+#define DRV_NAME	"iseries_veth"
+#define DRV_VERSION	"2.0"
 
 #define VETH_NUMBUFFERS		(120)
 #define VETH_ACKTIMEOUT 	(1000000) /* microseconds */
@@ -115,7 +120,7 @@ struct veth_msg {
 	struct veth_msg *next;
 	struct VethFramesData data;
 	int token;
-	unsigned long in_use;
+	int in_use;
 	struct sk_buff *skb;
 	struct device *dev;
 };
@@ -127,7 +132,13 @@ struct veth_lpar_connection {
 	int num_events;
 	struct VethCapData local_caps;
 
+	struct kobject kobject;
 	struct timer_list ack_timer;
+
+	struct timer_list reset_timer;
+	unsigned int reset_timeout;
+	unsigned long last_contact;
+	int outstanding_tx;
 
 	spinlock_t lock;
 	unsigned long state;
@@ -141,7 +152,6 @@ struct veth_lpar_connection {
 	struct VethCapData remote_caps;
 	u32 ack_timeout;
 
-	spinlock_t msg_stack_lock;
 	struct veth_msg *msg_stack_head;
 };
 
@@ -151,13 +161,13 @@ struct veth_port {
 	u64 mac_addr;
 	HvLpIndexMap lpar_map;
 
-	spinlock_t pending_gate;
-	struct sk_buff *pending_skb;
-	HvLpIndexMap pending_lpmask;
+	/* queue_lock protects the stopped_map and dev's queue. */
+	spinlock_t queue_lock;
+	HvLpIndexMap stopped_map;
 
+	/* mcast_gate protects promiscuous, num_mcast & mcast_addr. */
 	rwlock_t mcast_gate;
 	int promiscuous;
-	int all_mcast;
 	int num_mcast;
 	u64 mcast_addr[VETH_MAX_MCAST];
 };
@@ -168,42 +178,58 @@ static struct net_device *veth_dev[HVMAXARCHITECTEDVIRTUALLANS]; /* = 0 */
 
 static int veth_start_xmit(struct sk_buff *skb, struct net_device *dev);
 static void veth_recycle_msg(struct veth_lpar_connection *, struct veth_msg *);
-static void veth_flush_pending(struct veth_lpar_connection *cnx);
+static void veth_wake_queues(struct veth_lpar_connection *cnx);
+static void veth_stop_queues(struct veth_lpar_connection *cnx);
 static void veth_receive(struct veth_lpar_connection *, struct VethLpEvent *);
-static void veth_timed_ack(unsigned long connectionPtr);
+static void veth_release_connection(struct kobject *kobject);
+static void veth_timed_ack(unsigned long ptr);
+static void veth_timed_reset(unsigned long ptr);
+
+static struct kobj_type veth_lpar_connection_ktype = {
+	.release	= veth_release_connection
+};
 
 /*
  * Utility functions
  */
 
-#define veth_printk(prio, fmt, args...) \
-	printk(prio "%s: " fmt, __FILE__, ## args)
+#define veth_info(fmt, args...) \
+	printk(KERN_INFO DRV_NAME ": " fmt, ## args)
 
 #define veth_error(fmt, args...) \
-	printk(KERN_ERR "(%s:%3.3d) ERROR: " fmt, __FILE__, __LINE__ , ## args)
+	printk(KERN_ERR DRV_NAME ": Error: " fmt, ## args)
 
+#ifdef DEBUG
+#define veth_debug(fmt, args...) \
+	printk(KERN_DEBUG DRV_NAME ": " fmt, ## args)
+#else
+#define veth_debug(fmt, args...) do {} while (0)
+#endif
+
+/* You must hold the connection's lock when you call this function. */
 static inline void veth_stack_push(struct veth_lpar_connection *cnx,
 				   struct veth_msg *msg)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cnx->msg_stack_lock, flags);
 	msg->next = cnx->msg_stack_head;
 	cnx->msg_stack_head = msg;
-	spin_unlock_irqrestore(&cnx->msg_stack_lock, flags);
 }
 
+/* You must hold the connection's lock when you call this function. */
 static inline struct veth_msg *veth_stack_pop(struct veth_lpar_connection *cnx)
 {
-	unsigned long flags;
 	struct veth_msg *msg;
 
-	spin_lock_irqsave(&cnx->msg_stack_lock, flags);
 	msg = cnx->msg_stack_head;
 	if (msg)
 		cnx->msg_stack_head = cnx->msg_stack_head->next;
-	spin_unlock_irqrestore(&cnx->msg_stack_lock, flags);
+
 	return msg;
+}
+
+/* You must hold the connection's lock when you call this function. */
+static inline int veth_stack_is_empty(struct veth_lpar_connection *cnx)
+{
+	return cnx->msg_stack_head == NULL;
 }
 
 static inline HvLpEvent_Rc
@@ -278,7 +304,7 @@ static void veth_take_cap(struct veth_lpar_connection *cnx,
 						  HvLpEvent_Type_VirtualLan);
 
 	if (cnx->state & VETH_STATE_GOTCAPS) {
-		veth_error("Received a second capabilities from lpar %d\n",
+		veth_error("Received a second capabilities from LPAR %d.\n",
 			   cnx->remote_lp);
 		event->base_event.xRc = HvLpEvent_Rc_BufferNotAvailable;
 		HvCallEvent_ackLpEvent((struct HvLpEvent *) event);
@@ -297,7 +323,7 @@ static void veth_take_cap_ack(struct veth_lpar_connection *cnx,
 
 	spin_lock_irqsave(&cnx->lock, flags);
 	if (cnx->state & VETH_STATE_GOTCAPACK) {
-		veth_error("Received a second capabilities ack from lpar %d\n",
+		veth_error("Received a second capabilities ack from LPAR %d.\n",
 			   cnx->remote_lp);
 	} else {
 		memcpy(&cnx->cap_ack_event, event,
@@ -314,10 +340,13 @@ static void veth_take_monitor_ack(struct veth_lpar_connection *cnx,
 	unsigned long flags;
 
 	spin_lock_irqsave(&cnx->lock, flags);
-	veth_printk(KERN_DEBUG, "Monitor ack returned for lpar %d\n",
-		    cnx->remote_lp);
-	cnx->state |= VETH_STATE_RESET;
-	veth_kick_statemachine(cnx);
+	veth_debug("cnx %d: lost connection.\n", cnx->remote_lp);
+	/* Avoid kicking the statemachine once we're shutdown.
+	 * It's unnecessary and it could break veth_stop_connection(). */
+	if (! (cnx->state & VETH_STATE_SHUTDOWN)) {
+		cnx->state |= VETH_STATE_RESET;
+		veth_kick_statemachine(cnx);
+	}
 	spin_unlock_irqrestore(&cnx->lock, flags);
 }
 
@@ -336,8 +365,8 @@ static void veth_handle_ack(struct VethLpEvent *event)
 		veth_take_monitor_ack(cnx, event);
 		break;
 	default:
-		veth_error("Unknown ack type %d from lpar %d\n",
-			   event->base_event.xSubtype, rlp);
+		veth_error("Unknown ack type %d from LPAR %d.\n",
+				event->base_event.xSubtype, rlp);
 	};
 }
 
@@ -346,7 +375,7 @@ static void veth_handle_int(struct VethLpEvent *event)
 	HvLpIndex rlp = event->base_event.xSourceLp;
 	struct veth_lpar_connection *cnx = veth_cnx[rlp];
 	unsigned long flags;
-	int i;
+	int i, acked = 0;
 
 	BUG_ON(! cnx);
 
@@ -360,21 +389,30 @@ static void veth_handle_int(struct VethLpEvent *event)
 		break;
 	case VethEventTypeFramesAck:
 		spin_lock_irqsave(&cnx->lock, flags);
+
 		for (i = 0; i < VETH_MAX_ACKS_PER_MSG; ++i) {
 			u16 msgnum = event->u.frames_ack_data.token[i];
 
-			if (msgnum < VETH_NUMBUFFERS)
+			if (msgnum < VETH_NUMBUFFERS) {
 				veth_recycle_msg(cnx, cnx->msgs + msgnum);
+				cnx->outstanding_tx--;
+				acked++;
+			}
 		}
+
+		if (acked > 0) {
+			cnx->last_contact = jiffies;
+			veth_wake_queues(cnx);
+		}
+
 		spin_unlock_irqrestore(&cnx->lock, flags);
-		veth_flush_pending(cnx);
 		break;
 	case VethEventTypeFrames:
 		veth_receive(cnx, event);
 		break;
 	default:
-		veth_error("Unknown interrupt type %d from lpar %d\n",
-			   event->base_event.xSubtype, rlp);
+		veth_error("Unknown interrupt type %d from LPAR %d.\n",
+				event->base_event.xSubtype, rlp);
 	};
 }
 
@@ -400,8 +438,8 @@ static int veth_process_caps(struct veth_lpar_connection *cnx)
 	     || (remote_caps->ack_threshold > VETH_MAX_ACKS_PER_MSG)
 	     || (remote_caps->ack_threshold == 0)
 	     || (cnx->ack_timeout == 0) ) {
-		veth_error("Received incompatible capabilities from lpar %d\n",
-			   cnx->remote_lp);
+		veth_error("Received incompatible capabilities from LPAR %d.\n",
+				cnx->remote_lp);
 		return HvLpEvent_Rc_InvalidSubtypeData;
 	}
 
@@ -418,8 +456,8 @@ static int veth_process_caps(struct veth_lpar_connection *cnx)
 			cnx->num_ack_events += num;
 
 		if (cnx->num_ack_events < num_acks_needed) {
-			veth_error("Couldn't allocate enough ack events for lpar %d\n",
-				   cnx->remote_lp);
+			veth_error("Couldn't allocate enough ack events "
+					"for LPAR %d.\n", cnx->remote_lp);
 
 			return HvLpEvent_Rc_BufferNotAvailable;
 		}
@@ -440,15 +478,15 @@ static void veth_statemachine(void *p)
 
  restart:
 	if (cnx->state & VETH_STATE_RESET) {
-		int i;
-
-		del_timer(&cnx->ack_timer);
-
 		if (cnx->state & VETH_STATE_OPEN)
 			HvCallEvent_closeLpEventPath(cnx->remote_lp,
 						     HvLpEvent_Type_VirtualLan);
 
-		/* reset ack data */
+		/*
+		 * Reset ack data. This prevents the ack_timer actually
+		 * doing anything, even if it runs one more time when
+		 * we drop the lock below.
+		 */
 		memset(&cnx->pending_acks, 0xff, sizeof (cnx->pending_acks));
 		cnx->num_pending_acks = 0;
 
@@ -458,14 +496,32 @@ static void veth_statemachine(void *p)
 				| VETH_STATE_SENTCAPACK | VETH_STATE_READY);
 
 		/* Clean up any leftover messages */
-		if (cnx->msgs)
+		if (cnx->msgs) {
+			int i;
 			for (i = 0; i < VETH_NUMBUFFERS; ++i)
 				veth_recycle_msg(cnx, cnx->msgs + i);
+		}
+
+		cnx->outstanding_tx = 0;
+		veth_wake_queues(cnx);
+
+		/* Drop the lock so we can do stuff that might sleep or
+		 * take other locks. */
 		spin_unlock_irq(&cnx->lock);
-		veth_flush_pending(cnx);
+
+		del_timer_sync(&cnx->ack_timer);
+		del_timer_sync(&cnx->reset_timer);
+
 		spin_lock_irq(&cnx->lock);
+
 		if (cnx->state & VETH_STATE_RESET)
 			goto restart;
+
+		/* Hack, wait for the other end to reset itself. */
+		if (! (cnx->state & VETH_STATE_SHUTDOWN)) {
+			schedule_delayed_work(&cnx->statemachine_wq, 5 * HZ);
+			goto out;
+		}
 	}
 
 	if (cnx->state & VETH_STATE_SHUTDOWN)
@@ -498,9 +554,8 @@ static void veth_statemachine(void *p)
 		} else {
 			if ( (rc != HvLpEvent_Rc_PartitionDead)
 			     && (rc != HvLpEvent_Rc_PathClosed) )
-				veth_error("Error sending monitor to "
-					   "lpar %d, rc=%x\n",
-					   rlp, (int) rc);
+				veth_error("Error sending monitor to LPAR %d, "
+						"rc = %d\n", rlp, rc);
 
 			/* Oh well, hope we get a cap from the other
 			 * end and do better when that kicks us */
@@ -523,9 +578,9 @@ static void veth_statemachine(void *p)
 		} else {
 			if ( (rc != HvLpEvent_Rc_PartitionDead)
 			     && (rc != HvLpEvent_Rc_PathClosed) )
-				veth_error("Error sending caps to "
-					   "lpar %d, rc=%x\n",
-					   rlp, (int) rc);
+				veth_error("Error sending caps to LPAR %d, "
+						"rc = %d\n", rlp, rc);
+
 			/* Oh well, hope we get a cap from the other
 			 * end and do better when that kicks us */
 			goto out;
@@ -565,10 +620,8 @@ static void veth_statemachine(void *p)
 			add_timer(&cnx->ack_timer);
 			cnx->state |= VETH_STATE_READY;
 		} else {
-			veth_printk(KERN_ERR, "Caps rejected (rc=%d) by "
-				    "lpar %d\n",
-				    cnx->cap_ack_event.base_event.xRc,
-				    rlp);
+			veth_error("Caps rejected by LPAR %d, rc = %d\n",
+					rlp, cnx->cap_ack_event.base_event.xRc);
 			goto cant_cope;
 		}
 	}
@@ -581,8 +634,8 @@ static void veth_statemachine(void *p)
 	/* FIXME: we get here if something happens we really can't
 	 * cope with.  The link will never work once we get here, and
 	 * all we can do is not lock the rest of the system up */
-	veth_error("Badness on connection to lpar %d (state=%04lx) "
-		   " - shutting down\n", rlp, cnx->state);
+	veth_error("Unrecoverable error on connection to LPAR %d, shutting down"
+			" (state = 0x%04lx)\n", rlp, cnx->state);
 	cnx->state |= VETH_STATE_SHUTDOWN;
 	spin_unlock_irq(&cnx->lock);
 }
@@ -591,7 +644,7 @@ static int veth_init_connection(u8 rlp)
 {
 	struct veth_lpar_connection *cnx;
 	struct veth_msg *msgs;
-	int i;
+	int i, rc;
 
 	if ( (rlp == this_lp)
 	     || ! HvLpConfig_doLpsCommunicateOnVirtualLan(this_lp, rlp) )
@@ -605,22 +658,36 @@ static int veth_init_connection(u8 rlp)
 	cnx->remote_lp = rlp;
 	spin_lock_init(&cnx->lock);
 	INIT_WORK(&cnx->statemachine_wq, veth_statemachine, cnx);
+
 	init_timer(&cnx->ack_timer);
 	cnx->ack_timer.function = veth_timed_ack;
 	cnx->ack_timer.data = (unsigned long) cnx;
+
+	init_timer(&cnx->reset_timer);
+	cnx->reset_timer.function = veth_timed_reset;
+	cnx->reset_timer.data = (unsigned long) cnx;
+	cnx->reset_timeout = 5 * HZ * (VETH_ACKTIMEOUT / 1000000);
+
 	memset(&cnx->pending_acks, 0xff, sizeof (cnx->pending_acks));
 
 	veth_cnx[rlp] = cnx;
 
+	/* This gets us 1 reference, which is held on behalf of the driver
+	 * infrastructure. It's released at module unload. */
+	kobject_init(&cnx->kobject);
+	cnx->kobject.ktype = &veth_lpar_connection_ktype;
+	rc = kobject_set_name(&cnx->kobject, "cnx%.2d", rlp);
+	if (rc != 0)
+		return rc;
+
 	msgs = kmalloc(VETH_NUMBUFFERS * sizeof(struct veth_msg), GFP_KERNEL);
 	if (! msgs) {
-		veth_error("Can't allocate buffers for lpar %d\n", rlp);
+		veth_error("Can't allocate buffers for LPAR %d.\n", rlp);
 		return -ENOMEM;
 	}
 
 	cnx->msgs = msgs;
 	memset(msgs, 0, VETH_NUMBUFFERS * sizeof(struct veth_msg));
-	spin_lock_init(&cnx->msg_stack_lock);
 
 	for (i = 0; i < VETH_NUMBUFFERS; i++) {
 		msgs[i].token = i;
@@ -630,8 +697,7 @@ static int veth_init_connection(u8 rlp)
 	cnx->num_events = veth_allocate_events(rlp, 2 + VETH_NUMBUFFERS);
 
 	if (cnx->num_events < (2 + VETH_NUMBUFFERS)) {
-		veth_error("Can't allocate events for lpar %d, only got %d\n",
-			   rlp, cnx->num_events);
+		veth_error("Can't allocate enough events for LPAR %d.\n", rlp);
 		return -ENOMEM;
 	}
 
@@ -642,11 +708,9 @@ static int veth_init_connection(u8 rlp)
 	return 0;
 }
 
-static void veth_stop_connection(u8 rlp)
+static void veth_stop_connection(struct veth_lpar_connection *cnx)
 {
-	struct veth_lpar_connection *cnx = veth_cnx[rlp];
-
-	if (! cnx)
+	if (!cnx)
 		return;
 
 	spin_lock_irq(&cnx->lock);
@@ -654,12 +718,23 @@ static void veth_stop_connection(u8 rlp)
 	veth_kick_statemachine(cnx);
 	spin_unlock_irq(&cnx->lock);
 
-	flush_scheduled_work();
+	/* There's a slim chance the reset code has just queued the
+	 * statemachine to run in five seconds. If so we need to cancel
+	 * that and requeue the work to run now. */
+	if (cancel_delayed_work(&cnx->statemachine_wq)) {
+		spin_lock_irq(&cnx->lock);
+		veth_kick_statemachine(cnx);
+		spin_unlock_irq(&cnx->lock);
+	}
 
-	/* FIXME: not sure if this is necessary - will already have
-	 * been deleted by the state machine, just want to make sure
-	 * its not running any more */
-	del_timer_sync(&cnx->ack_timer);
+	/* Wait for the state machine to run. */
+	flush_scheduled_work();
+}
+
+static void veth_destroy_connection(struct veth_lpar_connection *cnx)
+{
+	if (!cnx)
+		return;
 
 	if (cnx->num_events > 0)
 		mf_deallocateLpEvents(cnx->remote_lp,
@@ -671,18 +746,18 @@ static void veth_stop_connection(u8 rlp)
 				      HvLpEvent_Type_VirtualLan,
 				      cnx->num_ack_events,
 				      NULL, NULL);
-}
-
-static void veth_destroy_connection(u8 rlp)
-{
-	struct veth_lpar_connection *cnx = veth_cnx[rlp];
-
-	if (! cnx)
-		return;
 
 	kfree(cnx->msgs);
+	veth_cnx[cnx->remote_lp] = NULL;
 	kfree(cnx);
-	veth_cnx[rlp] = NULL;
+}
+
+static void veth_release_connection(struct kobject *kobj)
+{
+	struct veth_lpar_connection *cnx;
+	cnx = container_of(kobj, struct veth_lpar_connection, kobject);
+	veth_stop_connection(cnx);
+	veth_destroy_connection(cnx);
 }
 
 /*
@@ -726,16 +801,14 @@ static void veth_set_multicast_list(struct net_device *dev)
 
 	write_lock_irqsave(&port->mcast_gate, flags);
 
-	if (dev->flags & IFF_PROMISC) {	/* set promiscuous mode */
-		printk(KERN_INFO "%s: Promiscuous mode enabled.\n",
-		       dev->name);
+	if ((dev->flags & IFF_PROMISC) || (dev->flags & IFF_ALLMULTI) ||
+			(dev->mc_count > VETH_MAX_MCAST)) {
 		port->promiscuous = 1;
-	} else if ( (dev->flags & IFF_ALLMULTI)
-		    || (dev->mc_count > VETH_MAX_MCAST) ) {
-		port->all_mcast = 1;
 	} else {
 		struct dev_mc_list *dmi = dev->mc_list;
 		int i;
+
+		port->promiscuous = 0;
 
 		/* Update table */
 		port->num_mcast = 0;
@@ -756,101 +829,41 @@ static void veth_set_multicast_list(struct net_device *dev)
 	write_unlock_irqrestore(&port->mcast_gate, flags);
 }
 
-static int veth_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+static void veth_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *info)
 {
-#ifdef SIOCETHTOOL
-	struct ethtool_cmd ecmd;
-
-	if (cmd != SIOCETHTOOL)
-		return -EOPNOTSUPP;
-	if (copy_from_user(&ecmd, ifr->ifr_data, sizeof (ecmd)))
-		return -EFAULT;
-	switch (ecmd.cmd) {
-	case ETHTOOL_GSET:
-		ecmd.supported = (SUPPORTED_1000baseT_Full
-				  | SUPPORTED_Autoneg | SUPPORTED_FIBRE);
-		ecmd.advertising = (SUPPORTED_1000baseT_Full
-				    | SUPPORTED_Autoneg | SUPPORTED_FIBRE);
-
-		ecmd.port = PORT_FIBRE;
-		ecmd.transceiver = XCVR_INTERNAL;
-		ecmd.phy_address = 0;
-		ecmd.speed = SPEED_1000;
-		ecmd.duplex = DUPLEX_FULL;
-		ecmd.autoneg = AUTONEG_ENABLE;
-		ecmd.maxtxpkt = 120;
-		ecmd.maxrxpkt = 120;
-		if (copy_to_user(ifr->ifr_data, &ecmd, sizeof(ecmd)))
-			return -EFAULT;
-		return 0;
-
-	case ETHTOOL_GDRVINFO:{
-			struct ethtool_drvinfo info = { ETHTOOL_GDRVINFO };
-			strncpy(info.driver, "veth", sizeof(info.driver) - 1);
-			info.driver[sizeof(info.driver) - 1] = '\0';
-			strncpy(info.version, "1.0", sizeof(info.version) - 1);
-			if (copy_to_user(ifr->ifr_data, &info, sizeof(info)))
-				return -EFAULT;
-			return 0;
-		}
-		/* get link status */
-	case ETHTOOL_GLINK:{
-			struct ethtool_value edata = { ETHTOOL_GLINK };
-			edata.data = 1;
-			if (copy_to_user(ifr->ifr_data, &edata, sizeof(edata)))
-				return -EFAULT;
-			return 0;
-		}
-
-	default:
-		break;
-	}
-
-#endif
-	return -EOPNOTSUPP;
+	strncpy(info->driver, DRV_NAME, sizeof(info->driver) - 1);
+	info->driver[sizeof(info->driver) - 1] = '\0';
+	strncpy(info->version, DRV_VERSION, sizeof(info->version) - 1);
+	info->version[sizeof(info->version) - 1] = '\0';
 }
 
-static void veth_tx_timeout(struct net_device *dev)
+static int veth_get_settings(struct net_device *dev, struct ethtool_cmd *ecmd)
 {
-	struct veth_port *port = (struct veth_port *)dev->priv;
-	struct net_device_stats *stats = &port->stats;
-	unsigned long flags;
-	int i;
-
-	stats->tx_errors++;
-
-	spin_lock_irqsave(&port->pending_gate, flags);
-
-	printk(KERN_WARNING "%s: Tx timeout!  Resetting lp connections: %08x\n",
-	       dev->name, port->pending_lpmask);
-
-	/* If we've timed out the queue must be stopped, which should
-	 * only ever happen when there is a pending packet. */
-	WARN_ON(! port->pending_lpmask);
-
-	for (i = 0; i < HVMAXARCHITECTEDLPS; i++) {
-		struct veth_lpar_connection *cnx = veth_cnx[i];
-
-		if (! (port->pending_lpmask & (1<<i)))
-			continue;
-
-		/* If we're pending on it, we must be connected to it,
-		 * so we should certainly have a structure for it. */
-		BUG_ON(! cnx);
-
-		/* Theoretically we could be kicking a connection
-		 * which doesn't deserve it, but in practice if we've
-		 * had a Tx timeout, the pending_lpmask will have
-		 * exactly one bit set - the connection causing the
-		 * problem. */
-		spin_lock(&cnx->lock);
-		cnx->state |= VETH_STATE_RESET;
-		veth_kick_statemachine(cnx);
-		spin_unlock(&cnx->lock);
-	}
-
-	spin_unlock_irqrestore(&port->pending_gate, flags);
+	ecmd->supported = (SUPPORTED_1000baseT_Full
+			  | SUPPORTED_Autoneg | SUPPORTED_FIBRE);
+	ecmd->advertising = (SUPPORTED_1000baseT_Full
+			    | SUPPORTED_Autoneg | SUPPORTED_FIBRE);
+	ecmd->port = PORT_FIBRE;
+	ecmd->transceiver = XCVR_INTERNAL;
+	ecmd->phy_address = 0;
+	ecmd->speed = SPEED_1000;
+	ecmd->duplex = DUPLEX_FULL;
+	ecmd->autoneg = AUTONEG_ENABLE;
+	ecmd->maxtxpkt = 120;
+	ecmd->maxrxpkt = 120;
+	return 0;
 }
+
+static u32 veth_get_link(struct net_device *dev)
+{
+	return 1;
+}
+
+static struct ethtool_ops ops = {
+	.get_drvinfo = veth_get_drvinfo,
+	.get_settings = veth_get_settings,
+	.get_link = veth_get_link,
+};
 
 static struct net_device * __init veth_probe_one(int vlan, struct device *vdev)
 {
@@ -866,8 +879,9 @@ static struct net_device * __init veth_probe_one(int vlan, struct device *vdev)
 
 	port = (struct veth_port *) dev->priv;
 
-	spin_lock_init(&port->pending_gate);
+	spin_lock_init(&port->queue_lock);
 	rwlock_init(&port->mcast_gate);
+	port->stopped_map = 0;
 
 	for (i = 0; i < HVMAXARCHITECTEDLPS; i++) {
 		HvLpVirtualLanIndexMap map;
@@ -898,24 +912,19 @@ static struct net_device * __init veth_probe_one(int vlan, struct device *vdev)
 	dev->change_mtu = veth_change_mtu;
 	dev->set_mac_address = NULL;
 	dev->set_multicast_list = veth_set_multicast_list;
-	dev->do_ioctl = veth_ioctl;
-
-	dev->watchdog_timeo = 2 * (VETH_ACKTIMEOUT * HZ / 1000000);
-	dev->tx_timeout = veth_tx_timeout;
+	SET_ETHTOOL_OPS(dev, &ops);
 
 	SET_NETDEV_DEV(dev, vdev);
 
 	rc = register_netdev(dev);
 	if (rc != 0) {
-		veth_printk(KERN_ERR,
-			    "Failed to register ethernet device for vlan %d\n",
-			    vlan);
+		veth_error("Failed registering net device for vlan%d.\n", vlan);
 		free_netdev(dev);
 		return NULL;
 	}
 
-	veth_printk(KERN_DEBUG, "%s attached to iSeries vlan %d (lpar_map=0x%04x)\n",
-		    dev->name, vlan, port->lpar_map);
+	veth_info("%s attached to iSeries vlan %d (LPAR map = 0x%.4X)\n",
+			dev->name, vlan, port->lpar_map);
 
 	return dev;
 }
@@ -930,7 +939,6 @@ static int veth_transmit_to_one(struct sk_buff *skb, HvLpIndex rlp,
 	struct veth_lpar_connection *cnx = veth_cnx[rlp];
 	struct veth_port *port = (struct veth_port *) dev->priv;
 	HvLpEvent_Rc rc;
-	u32 dma_address, dma_length;
 	struct veth_msg *msg = NULL;
 	int err = 0;
 	unsigned long flags;
@@ -943,7 +951,7 @@ static int veth_transmit_to_one(struct sk_buff *skb, HvLpIndex rlp,
 
 	spin_lock_irqsave(&cnx->lock, flags);
 
-	if (! cnx->state & VETH_STATE_READY)
+	if (! (cnx->state & VETH_STATE_READY))
 		goto drop;
 
 	if ((skb->len - 14) > VETH_MAX_MTU)
@@ -956,34 +964,42 @@ static int veth_transmit_to_one(struct sk_buff *skb, HvLpIndex rlp,
 		goto drop;
 	}
 
-	dma_length = skb->len;
-	dma_address = dma_map_single(port->dev, skb->data,
-				     dma_length, DMA_TO_DEVICE);
+	msg->in_use = 1;
 
-	if (dma_mapping_error(dma_address))
+	msg->data.addr[0] = dma_map_single(port->dev, skb->data,
+				skb->len, DMA_TO_DEVICE);
+
+	if (dma_mapping_error(msg->data.addr[0]))
 		goto recycle_and_drop;
 
 	/* Is it really necessary to check the length and address
 	 * fields of the first entry here? */
 	msg->skb = skb;
 	msg->dev = port->dev;
-	msg->data.addr[0] = dma_address;
-	msg->data.len[0] = dma_length;
+	msg->data.len[0] = skb->len;
 	msg->data.eofmask = 1 << VETH_EOF_SHIFT;
-	set_bit(0, &(msg->in_use));
+
 	rc = veth_signaldata(cnx, VethEventTypeFrames, msg->token, &msg->data);
 
 	if (rc != HvLpEvent_Rc_Good)
 		goto recycle_and_drop;
 
+	/* If the timer's not already running, start it now. */
+	if (0 == cnx->outstanding_tx)
+		mod_timer(&cnx->reset_timer, jiffies + cnx->reset_timeout);
+
+	cnx->last_contact = jiffies;
+	cnx->outstanding_tx++;
+
+	if (veth_stack_is_empty(cnx))
+		veth_stop_queues(cnx);
+
 	spin_unlock_irqrestore(&cnx->lock, flags);
 	return 0;
 
  recycle_and_drop:
+	/* we free the skb below, so tell veth_recycle_msg() not to. */
 	msg->skb = NULL;
-	/* need to set in use to make veth_recycle_msg in case this
-	 * was a mapping failure */
-	set_bit(0, &msg->in_use);
 	veth_recycle_msg(cnx, msg);
  drop:
 	port->stats.tx_errors++;
@@ -1021,7 +1037,6 @@ static int veth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	unsigned char *frame = skb->data;
 	struct veth_port *port = (struct veth_port *) dev->priv;
-	unsigned long flags;
 	HvLpIndexMap lpmask;
 
 	if (! (frame[0] & 0x01)) {
@@ -1038,42 +1053,27 @@ static int veth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		lpmask = port->lpar_map;
 	}
 
-	spin_lock_irqsave(&port->pending_gate, flags);
+	veth_transmit_to_many(skb, lpmask, dev);
 
-	lpmask = veth_transmit_to_many(skb, lpmask, dev);
-
-	if (! lpmask) {
-		dev_kfree_skb(skb);
-	} else {
-		if (port->pending_skb) {
-			veth_error("%s: Tx while skb was pending!\n",
-				   dev->name);
-			dev_kfree_skb(skb);
-			spin_unlock_irqrestore(&port->pending_gate, flags);
-			return 1;
-		}
-
-		port->pending_skb = skb;
-		port->pending_lpmask = lpmask;
-		netif_stop_queue(dev);
-	}
-
-	spin_unlock_irqrestore(&port->pending_gate, flags);
+	dev_kfree_skb(skb);
 
 	return 0;
 }
 
+/* You musT hold the connection's lock when you call this function. */
 static void veth_recycle_msg(struct veth_lpar_connection *cnx,
 			     struct veth_msg *msg)
 {
 	u32 dma_address, dma_length;
 
-	if (test_and_clear_bit(0, &msg->in_use)) {
+	if (msg->in_use) {
+		msg->in_use = 0;
 		dma_address = msg->data.addr[0];
 		dma_length = msg->data.len[0];
 
-		dma_unmap_single(msg->dev, dma_address, dma_length,
-				 DMA_TO_DEVICE);
+		if (!dma_mapping_error(dma_address))
+			dma_unmap_single(msg->dev, dma_address, dma_length,
+					DMA_TO_DEVICE);
 
 		if (msg->skb) {
 			dev_kfree_skb_any(msg->skb);
@@ -1082,15 +1082,16 @@ static void veth_recycle_msg(struct veth_lpar_connection *cnx,
 
 		memset(&msg->data, 0, sizeof(msg->data));
 		veth_stack_push(cnx, msg);
-	} else
-		if (cnx->state & VETH_STATE_OPEN)
-			veth_error("Bogus frames ack from lpar %d (#%d)\n",
-				   cnx->remote_lp, msg->token);
+	} else if (cnx->state & VETH_STATE_OPEN) {
+		veth_error("Non-pending frame (# %d) acked by LPAR %d.\n",
+				cnx->remote_lp, msg->token);
+	}
 }
 
-static void veth_flush_pending(struct veth_lpar_connection *cnx)
+static void veth_wake_queues(struct veth_lpar_connection *cnx)
 {
 	int i;
+
 	for (i = 0; i < HVMAXARCHITECTEDVIRTUALLANS; i++) {
 		struct net_device *dev = veth_dev[i];
 		struct veth_port *port;
@@ -1104,20 +1105,77 @@ static void veth_flush_pending(struct veth_lpar_connection *cnx)
 		if (! (port->lpar_map & (1<<cnx->remote_lp)))
 			continue;
 
-		spin_lock_irqsave(&port->pending_gate, flags);
-		if (port->pending_skb) {
-			port->pending_lpmask =
-				veth_transmit_to_many(port->pending_skb,
-						      port->pending_lpmask,
-						      dev);
-			if (! port->pending_lpmask) {
-				dev_kfree_skb_any(port->pending_skb);
-				port->pending_skb = NULL;
-				netif_wake_queue(dev);
-			}
+		spin_lock_irqsave(&port->queue_lock, flags);
+
+		port->stopped_map &= ~(1 << cnx->remote_lp);
+
+		if (0 == port->stopped_map && netif_queue_stopped(dev)) {
+			veth_debug("cnx %d: woke queue for %s.\n",
+					cnx->remote_lp, dev->name);
+			netif_wake_queue(dev);
 		}
-		spin_unlock_irqrestore(&port->pending_gate, flags);
+		spin_unlock_irqrestore(&port->queue_lock, flags);
 	}
+}
+
+static void veth_stop_queues(struct veth_lpar_connection *cnx)
+{
+	int i;
+
+	for (i = 0; i < HVMAXARCHITECTEDVIRTUALLANS; i++) {
+		struct net_device *dev = veth_dev[i];
+		struct veth_port *port;
+
+		if (! dev)
+			continue;
+
+		port = (struct veth_port *)dev->priv;
+
+		/* If this cnx is not on the vlan for this port, continue */
+		if (! (port->lpar_map & (1 << cnx->remote_lp)))
+			continue;
+
+		spin_lock(&port->queue_lock);
+
+		netif_stop_queue(dev);
+		port->stopped_map |= (1 << cnx->remote_lp);
+
+		veth_debug("cnx %d: stopped queue for %s, map = 0x%x.\n",
+				cnx->remote_lp, dev->name, port->stopped_map);
+
+		spin_unlock(&port->queue_lock);
+	}
+}
+
+static void veth_timed_reset(unsigned long ptr)
+{
+	struct veth_lpar_connection *cnx = (struct veth_lpar_connection *)ptr;
+	unsigned long trigger_time, flags;
+
+	/* FIXME is it possible this fires after veth_stop_connection()?
+	 * That would reschedule the statemachine for 5 seconds and probably
+	 * execute it after the module's been unloaded. Hmm. */
+
+	spin_lock_irqsave(&cnx->lock, flags);
+
+	if (cnx->outstanding_tx > 0) {
+		trigger_time = cnx->last_contact + cnx->reset_timeout;
+
+		if (trigger_time < jiffies) {
+			cnx->state |= VETH_STATE_RESET;
+			veth_kick_statemachine(cnx);
+			veth_error("%d packets not acked by LPAR %d within %d "
+					"seconds, resetting.\n",
+					cnx->outstanding_tx, cnx->remote_lp,
+					cnx->reset_timeout / HZ);
+		} else {
+			/* Reschedule the timer */
+			trigger_time = jiffies + cnx->reset_timeout;
+			mod_timer(&cnx->reset_timer, trigger_time);
+		}
+	}
+
+	spin_unlock_irqrestore(&cnx->lock, flags);
 }
 
 /*
@@ -1133,12 +1191,9 @@ static inline int veth_frame_wanted(struct veth_port *port, u64 mac_addr)
 	if ( (mac_addr == port->mac_addr) || (mac_addr == 0xffffffffffff0000) )
 		return 1;
 
-	if (! (((char *) &mac_addr)[0] & 0x01))
-		return 0;
-
 	read_lock_irqsave(&port->mcast_gate, flags);
 
-	if (port->promiscuous || port->all_mcast) {
+	if (port->promiscuous) {
 		wanted = 1;
 		goto out;
 	}
@@ -1195,8 +1250,8 @@ static void veth_flush_acks(struct veth_lpar_connection *cnx)
 			     0, &cnx->pending_acks);
 
 	if (rc != HvLpEvent_Rc_Good)
-		veth_error("Error 0x%x acking frames from lpar %d!\n",
-			   (unsigned)rc, cnx->remote_lp);
+		veth_error("Failed acking frames from LPAR %d, rc = %d\n",
+				cnx->remote_lp, (int)rc);
 
 	cnx->num_pending_acks = 0;
 	memset(&cnx->pending_acks, 0xff, sizeof(cnx->pending_acks));
@@ -1232,9 +1287,10 @@ static void veth_receive(struct veth_lpar_connection *cnx,
 		/* make sure that we have at least 1 EOF entry in the
 		 * remaining entries */
 		if (! (senddata->eofmask >> (startchunk + VETH_EOF_SHIFT))) {
-			veth_error("missing EOF frag in event "
-				   "eofmask=0x%x startchunk=%d\n",
-				   (unsigned) senddata->eofmask, startchunk);
+			veth_error("Missing EOF fragment in event "
+					"eofmask = 0x%x startchunk = %d\n",
+					(unsigned)senddata->eofmask,
+					startchunk);
 			break;
 		}
 
@@ -1253,8 +1309,9 @@ static void veth_receive(struct veth_lpar_connection *cnx,
 		/* nchunks == # of chunks in this frame */
 
 		if ((length - ETH_HLEN) > VETH_MAX_MTU) {
-			veth_error("Received oversize frame from lpar %d "
-				   "(length=%d)\n", cnx->remote_lp, length);
+			veth_error("Received oversize frame from LPAR %d "
+					"(length = %d)\n",
+					cnx->remote_lp, length);
 			continue;
 		}
 
@@ -1281,13 +1338,18 @@ static void veth_receive(struct veth_lpar_connection *cnx,
 
 		vlan = skb->data[9];
 		dev = veth_dev[vlan];
-		if (! dev)
-			/* Some earlier versions of the driver sent
-			   broadcasts down all connections, even to
-			   lpars that weren't on the relevant vlan.
-			   So ignore packets belonging to a vlan we're
-			   not on. */
+		if (! dev) {
+			/*
+			 * Some earlier versions of the driver sent
+			 * broadcasts down all connections, even to lpars
+			 * that weren't on the relevant vlan. So ignore
+			 * packets belonging to a vlan we're not on.
+			 * We can also be here if we receive packets while
+			 * the driver is going down, because then dev is NULL.
+			 */
+			dev_kfree_skb_irq(skb);
 			continue;
+		}
 
 		port = (struct veth_port *)dev->priv;
 		dest = *((u64 *) skb->data) & 0xFFFFFFFFFFFF0000;
@@ -1342,15 +1404,31 @@ static void veth_timed_ack(unsigned long ptr)
 
 static int veth_remove(struct vio_dev *vdev)
 {
-	int i = vdev->unit_address;
+	struct veth_lpar_connection *cnx;
 	struct net_device *dev;
+	struct veth_port *port;
+	int i;
 
-	dev = veth_dev[i];
-	if (dev != NULL) {
-		veth_dev[i] = NULL;
-		unregister_netdev(dev);
-		free_netdev(dev);
+	dev = veth_dev[vdev->unit_address];
+
+	if (! dev)
+		return 0;
+
+	port = netdev_priv(dev);
+
+	for (i = 0; i < HVMAXARCHITECTEDLPS; i++) {
+		cnx = veth_cnx[i];
+
+		if (cnx && (port->lpar_map & (1 << i))) {
+			/* Drop our reference to connections on our VLAN */
+			kobject_put(&cnx->kobject);
+		}
 	}
+
+	veth_dev[vdev->unit_address] = NULL;
+	unregister_netdev(dev);
+	free_netdev(dev);
+
 	return 0;
 }
 
@@ -1358,6 +1436,7 @@ static int veth_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 {
 	int i = vdev->unit_address;
 	struct net_device *dev;
+	struct veth_port *port;
 
 	dev = veth_probe_one(i, &vdev->dev);
 	if (dev == NULL) {
@@ -1366,11 +1445,23 @@ static int veth_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	}
 	veth_dev[i] = dev;
 
-	/* Start the state machine on each connection, to commence
-	 * link negotiation */
-	for (i = 0; i < HVMAXARCHITECTEDLPS; i++)
-		if (veth_cnx[i])
-			veth_kick_statemachine(veth_cnx[i]);
+	port = (struct veth_port*)netdev_priv(dev);
+
+	/* Start the state machine on each connection on this vlan. If we're
+	 * the first dev to do so this will commence link negotiation */
+	for (i = 0; i < HVMAXARCHITECTEDLPS; i++) {
+		struct veth_lpar_connection *cnx;
+
+		if (! (port->lpar_map & (1 << i)))
+			continue;
+
+		cnx = veth_cnx[i];
+		if (!cnx)
+			continue;
+
+		kobject_get(&cnx->kobject);
+		veth_kick_statemachine(cnx);
+	}
 
 	return 0;
 }
@@ -1386,7 +1477,7 @@ static struct vio_device_id veth_device_table[] __devinitdata = {
 MODULE_DEVICE_TABLE(vio, veth_device_table);
 
 static struct vio_driver veth_driver = {
-	.name = "iseries_veth",
+	.name = DRV_NAME,
 	.id_table = veth_device_table,
 	.probe = veth_probe,
 	.remove = veth_remove
@@ -1399,29 +1490,27 @@ static struct vio_driver veth_driver = {
 void __exit veth_module_cleanup(void)
 {
 	int i;
+	struct veth_lpar_connection *cnx;
 
-	/* Stop the queues first to stop any new packets being sent. */
-	for (i = 0; i < HVMAXARCHITECTEDVIRTUALLANS; i++)
-		if (veth_dev[i])
-			netif_stop_queue(veth_dev[i]);
-
-	/* Stop the connections before we unregister the driver. This
-	 * ensures there's no skbs lying around holding the device open. */
-	for (i = 0; i < HVMAXARCHITECTEDLPS; ++i)
-		veth_stop_connection(i);
-
+	/* Disconnect our "irq" to stop events coming from the Hypervisor. */
 	HvLpEvent_unregisterHandler(HvLpEvent_Type_VirtualLan);
 
-	/* Hypervisor callbacks may have scheduled more work while we
-	 * were stoping connections. Now that we've disconnected from
-	 * the hypervisor make sure everything's finished. */
+	/* Make sure any work queued from Hypervisor callbacks is finished. */
 	flush_scheduled_work();
 
-	vio_unregister_driver(&veth_driver);
+	for (i = 0; i < HVMAXARCHITECTEDLPS; ++i) {
+		cnx = veth_cnx[i];
 
-	for (i = 0; i < HVMAXARCHITECTEDLPS; ++i)
-		veth_destroy_connection(i);
-	
+		if (!cnx)
+			continue;
+
+		/* Drop the driver's reference to the connection */
+		kobject_put(&cnx->kobject);
+	}
+
+	/* Unregister the driver, which will close all the netdevs and stop
+	 * the connections when they're no longer referenced. */
+	vio_unregister_driver(&veth_driver);
 }
 module_exit(veth_module_cleanup);
 
@@ -1434,15 +1523,24 @@ int __init veth_module_init(void)
 
 	for (i = 0; i < HVMAXARCHITECTEDLPS; ++i) {
 		rc = veth_init_connection(i);
-		if (rc != 0) {
-			veth_module_cleanup();
-			return rc;
-		}
+		if (rc != 0)
+			goto error;
 	}
 
 	HvLpEvent_registerHandler(HvLpEvent_Type_VirtualLan,
 				  &veth_handle_event);
 
-	return vio_register_driver(&veth_driver);
+	rc = vio_register_driver(&veth_driver);
+	if (rc != 0)
+		goto error;
+
+	return 0;
+
+error:
+	for (i = 0; i < HVMAXARCHITECTEDLPS; ++i) {
+		veth_destroy_connection(veth_cnx[i]);
+	}
+
+	return rc;
 }
 module_init(veth_module_init);

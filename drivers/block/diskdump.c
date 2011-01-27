@@ -7,6 +7,13 @@
  *
  *  Some codes were derived from netdump and copyright belongs to
  *  Red Hat, Inc.
+ *
+ *
+ *  The idea and some codes of dump compression were derived from LKCD.
+ *
+ * Copyright (C) 1999 - 2002 Silicon Graphics, Inc. All rights reserved.
+ * Copyright (C) 2001 - 2002 Matt D. Robinson.  All rights reserved.
+ * Copyright (C) 2002 International Business Machines Corp. 
  */
 /*
  * This program is free software; you can redistribute it and/or modify
@@ -40,6 +47,8 @@
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
 #include <linux/swap.h>
+#include <linux/zlib.h>
+#include <linux/vmalloc.h>
 #include <linux/diskdump.h>
 #include <asm/diskdump.h>
 
@@ -61,11 +70,13 @@ static int allow_risky_dumps = 1;
 static unsigned int block_order = 2;
 static int sample_rate = 8;
 static int dump_level = 0;
+static int compress = 0;
 module_param_named(fallback_on_err, fallback_on_err, bool, S_IRUGO|S_IWUSR);
 module_param_named(allow_risky_dumps, allow_risky_dumps, bool, S_IRUGO|S_IWUSR);
 module_param_named(block_order, block_order, uint, S_IRUGO|S_IWUSR);
 module_param_named(sample_rate, sample_rate, int, S_IRUGO|S_IWUSR);
 module_param_named(dump_level, dump_level, int, S_IRUGO|S_IWUSR);
+module_param_named(compress, compress, int, S_IRUGO);
 
 static unsigned long timestamp_1sec;
 static uint32_t module_crc;
@@ -89,6 +100,18 @@ static unsigned int total_ram_blocks;		/* The size of memory */
 static unsigned int total_blocks;		/* The sum of above */
 
 static unsigned int bitmap_index;		/* next block to write bitmap */
+
+static int compress_block_order;
+static char *compress_buffer;
+static void *deflate_workspace;
+static void *curr_buf; /* current position in the dump buffer */
+static void *dump_buf; /* starting addr of dump buffer */
+static int diskdump_compress_write(struct disk_dump_partition *dump_part,
+				   int *offset, unsigned int *blocks,
+				   struct page *);
+static int diskdump_compress_flush(struct disk_dump_partition *dump_part,
+				   int offset, unsigned int *blocks);
+
 /*
  * This is not a parameter actually, but used to pass the number of
  * required blocks to userland tools
@@ -131,6 +154,10 @@ static int page_is_dumpable(unsigned long pfn)
 	    !kern_addr_valid((unsigned long)pfn_to_kaddr(pfn)))
 		return 0;
 
+ 	if ((dump_level & DUMP_EXCLUDE_CACHE) &&
+	    (dump_level & DUMP_SAVE_PRIVATE) &&
+	    PagePrivate(page))
+		return 1;
 	if ((dump_level & DUMP_EXCLUDE_CACHE) && !PageAnon(page) &&
 	    (PageLRU(page) || PageSwapCache(page)))
 		return 0;
@@ -202,13 +229,18 @@ static inline void clear_status(int nr, int maxnr)
 	lapse = 0;
 }
 
-static inline void print_last_status(int nr, int nr_skipped, int maxnr)
+static inline void print_last_status(int nr, int nr_skipped, int maxnr,
+				     int blocks_uncompressed)
 {
 	if (nr_skipped >= 0)
 		printk("%u(%u saved %u skipped)/%u                        \n",
-		       nr + nr_skipped, nr, nr_skipped, maxnr);
+		       blocks_uncompressed + nr_skipped, blocks_uncompressed,
+		       nr_skipped, maxnr);
 	else
-		printk("%u/%u                        \n", nr, maxnr);
+		printk("%u/%u                        \n", blocks_uncompressed,
+		       maxnr);
+	if (compress)
+		printk("%d compressed into %d\n", blocks_uncompressed, nr);
 	lapse = 0;
 }
 /*
@@ -313,7 +345,7 @@ static int check_dump_partition(struct disk_dump_partition *dump_part,
 	int i;
 	unsigned int device_blocks	= SECTOR_BLOCK(dump_part->nr_sects);
 
-	if (dump_level && device_blocks < partition_size)
+	if (!strict_size_check() && device_blocks < partition_size)
 		partition_size = device_blocks;
 
 	if (sample_rate < 0)		/* No check */
@@ -473,7 +505,7 @@ static int write_memory(struct disk_dump_partition *dump_part, int offset,
 			unsigned int *blocks_written)
 {
 	char *kaddr;
-	unsigned int blocks = 0;
+	unsigned int blocks = 0, blocks_uncompressed = 0;
 	int blocks_skipped = dump_level ? 0 : -1;
 	struct page *page;
 	unsigned long nr;
@@ -482,7 +514,8 @@ static int write_memory(struct disk_dump_partition *dump_part, int offset,
 	int dumpable;
 
 	for (nr = next_ram_page(ULONG_MAX); nr < max_pfn; nr = next_ram_page(nr)) {
-		print_status(blocks, blocks_skipped, blocks_written_expected);
+		print_status(blocks_uncompressed, blocks_skipped,
+			     blocks_written_expected);
 
 		dumpable = page_is_dumpable(nr);
 		if ((ret = set_bitmap(dump_part, dumpable)) < 0) {
@@ -532,28 +565,42 @@ static int write_memory(struct disk_dump_partition *dump_part, int offset,
 		kunmap_atomic(kaddr, KM_CRASHDUMP);
 
 write:
-		blk_in_chunk++;
-		blocks++;
-
-		if (blk_in_chunk >= (1 << block_order)) {
-			ret = write_blocks(dump_part, offset, scratch,
-					   blk_in_chunk);
-			if (ret < 0) {
-				Err("I/O error %d on block %u", ret, offset);
+		if (compress) {
+			ret = diskdump_compress_write(dump_part, &offset,
+						      &blocks, page);
+			if (ret) {
+				Err("compress error pfn=%lu: %d", nr, ret);
 				break;
 			}
-			offset += blk_in_chunk;
-			blk_in_chunk = 0;
+		} else {
+			blk_in_chunk++;
+			blocks++;
+
+			if (blk_in_chunk >= (1 << block_order)) {
+				ret = write_blocks(dump_part, offset, scratch,
+						   blk_in_chunk);
+				if (ret < 0) {
+					Err("I/O error %d on block %u",
+					    ret, offset);
+					break;
+				}
+				offset += blk_in_chunk;
+				blk_in_chunk = 0;
+			}
 		}
+		blocks_uncompressed++;
 	}
-	if (ret >= 0 && blk_in_chunk > 0) {
+	if (compress)
+		diskdump_compress_flush(dump_part, offset, &blocks);
+	else if (ret >= 0 && blk_in_chunk > 0) {
 		ret = write_blocks(dump_part, offset, scratch, blk_in_chunk);
 		if (ret < 0)
 			Err("I/O error %d on block %u", ret, offset);
 	}
 
 out:
-	print_last_status(blocks, blocks_skipped, blocks_written_expected);
+	print_last_status(blocks, blocks_skipped, blocks_written_expected,
+			  blocks_uncompressed);
 	flush_bitmap(dump_part);
 
 	*blocks_written = blocks;
@@ -754,6 +801,19 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 			goto done;
 		}
 
+	if ((dump_level & DUMP_EXCLUDE_FREE) && diskdump_mark_free_pages() < 0)
+		/*
+		 * The free page list is broken.
+		 * Free pages will be dumped.
+		 */
+		dump_level &= ~DUMP_EXCLUDE_FREE;
+
+	/* Prepare for compression */
+	if ((compress_buffer == NULL) || (deflate_workspace == NULL))
+		compress = 0;
+	if (compress)
+		curr_buf = dump_buf = compress_buffer;
+
 	/* partial dump requires an extra bitmap */
 	if (dump_level)		
 		bitmap_blocks <<= 1;
@@ -762,13 +822,6 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 		Warn("dump partition is too small. Aborted");
 		goto done;
 	}
-
-	if ((dump_level & DUMP_EXCLUDE_FREE) && diskdump_mark_free_pages() < 0)
-		/*
-		 * The free page list is broken.
-		 * Free pages will be dumped.
-		 */
-		dump_level &= ~DUMP_EXCLUDE_FREE;
 
 	/* Check dump partition */
 	printk("check dump partition...\n");
@@ -786,6 +839,8 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 	dump_header.utsname	     = system_utsname;
 	dump_header.timestamp	     = xtime;
 	dump_header.status	     = DUMP_HEADER_INCOMPLETED;
+	if (compress)
+		dump_header.status   |= DUMP_HEADER_COMPRESSED;
 	dump_header.block_size	     = PAGE_SIZE;
 	dump_header.sub_hdr_size     = size_of_sub_header();
 	dump_header.bitmap_blocks    = bitmap_blocks;
@@ -812,7 +867,7 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 		goto done;
 
 	max_written_blocks = total_ram_blocks;
-	if (!dump_level && dump_header.device_blocks < total_blocks) {
+	if (strict_size_check() && dump_header.device_blocks < total_blocks) {
 		Warn("dump partition is too small. actual blocks %u. expected blocks %u. whole memory will not be saved",
 				dump_header.device_blocks, total_blocks);
 		max_written_blocks -= (total_blocks - dump_header.device_blocks);
@@ -839,8 +894,11 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 	 * into partition again.
 	 */
 	dump_header.written_blocks += written_blocks;
-	if (!ret)
+	if (!ret) {
 		dump_header.status = DUMP_HEADER_COMPLETED;
+		if (compress)
+			dump_header.status |= DUMP_HEADER_COMPRESSED;
+	}
 	write_header(dump_part);
 
 	dump_err = 0;
@@ -909,7 +967,8 @@ static int add_dump_partition(struct disk_dump_device *dump_device,
 	dump_part->nr_sects   = bdev->bd_part->nr_sects;
 	dump_part->start_sect = bdev->bd_part->start_sect;
 
-	if (!dump_level && SECTOR_BLOCK(dump_part->nr_sects) < total_blocks)
+	if (strict_size_check() &&
+	    SECTOR_BLOCK(dump_part->nr_sects) < total_blocks)
 		Warn("%s is too small to save whole system memory\n",
 			bdevname(bdev, buffer));
 
@@ -1082,6 +1141,7 @@ static int disk_dump_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, "# fallback_on_err: %u\n", fallback_on_err);
 		seq_printf(seq, "# allow_risky_dumps: %u\n", allow_risky_dumps);
 		seq_printf(seq, "# dump_level: %d\n", dump_level);
+		seq_printf(seq, "# compress: %d\n", compress);
 		seq_printf(seq, "# total_blocks: %u\n", total_blocks);
 		seq_printf(seq, "#\n");
 
@@ -1211,6 +1271,201 @@ static void compute_total_blocks(void)
 		total_blocks, header_blocks, bitmap_blocks, total_ram_blocks);
 }
 
+/*
+ * Compress a DUMP_PAGE_SIZE page using gzip-style algorithms (the
+ * deflate functions similar to what's used in PPP).
+ */
+static u32
+diskdump_compress_gzip(const u8 *old, u32 oldsize, u8 *new, u32 newsize)
+{
+	int err;
+	z_stream dump_stream;
+
+	dump_stream.workspace = deflate_workspace;
+	if ((err = zlib_deflateInit(&dump_stream, Z_BEST_SPEED)) != Z_OK) {
+		Err("zlib_deflateInit() failed (%d)!", err);
+		return 0;
+	}
+
+	if (oldsize > DUMP_PAGE_SIZE) {
+		Err("oversize input: %d", oldsize);
+		return 0;
+	}
+
+	dump_stream.next_in   = (u8 *)old;
+	dump_stream.avail_in  = oldsize;
+	dump_stream.next_out  = new;
+	dump_stream.avail_out = newsize;
+
+	/* deflate the page -- check for error */
+	err = zlib_deflate(&dump_stream, Z_FINISH);
+	if (err != Z_STREAM_END) {
+		/* zero is return code here */
+		zlib_deflateEnd(&dump_stream);
+		Err("zlib_deflate() failed (%d)!", err);
+		return 0;
+	}
+
+	/* let's end the deflated compression stream */
+	if ((err = zlib_deflateEnd(&dump_stream)) != Z_OK)
+		Err("zlib_deflateEnd() failed (%d)!\n", err);
+
+	/* return the compressed byte total (if it's smaller) */
+	if (dump_stream.total_out >= oldsize)
+		return oldsize;
+
+	return dump_stream.total_out;
+}
+
+/* 
+ * Base compression function that saves the selected block of data in the dump 
+ */
+static int diskdump_compress_page(char *addr, struct page *page)
+{
+	void *buf = curr_buf;
+	struct dump_page dp;
+	int bytes;
+	u32 size;
+	int len = PAGE_SIZE;
+
+	/* It must not occur. */
+	if (buf >= dump_buf + DUMP_BUFFER_SIZE)
+		return -1;
+
+	memset(&dp, 0, sizeof(dp));
+	dp.page_flags = page->flags;
+	buf += sizeof(dp);
+
+	size = bytes = len;
+	/* check for compression */
+	size = diskdump_compress_gzip(addr, bytes, buf, DUMP_DPC_PAGE_SIZE);
+
+	/* set the compressed flag if the page did compress */
+	if (size && size < bytes) {
+		dp.flags |= DUMP_DH_COMPRESSED;
+	} else {
+		/* compression failed -- default to raw mode */
+		memcpy(buf, addr, bytes);
+		size = bytes;
+	}
+	dp.size = size;
+	memcpy(curr_buf, &dp, sizeof(dp));
+	curr_buf = buf + size;
+
+	return curr_buf - dump_buf;
+}
+
+/*
+ * return 0  : continue
+ *        <0 : error
+ */
+static int diskdump_compress_write(struct disk_dump_partition *dump_part,
+				   int *offset, unsigned int *blocks,
+				   struct page *page)
+{
+	int ret, size, remain;
+
+	if ((size = diskdump_compress_page(scratch, page)) < 0) {
+		Err("compression fatal error");
+		return -1;
+	}
+
+	if (size < DUMP_BUFFER_SIZE)
+		return 0;
+
+	ret = write_blocks(dump_part, *offset, dump_buf, NR_BUFFER_PAGES);
+	remain = size - DUMP_BUFFER_SIZE;
+	if (ret < 0) {
+		Err("I/O error %d on block %u", ret, *offset);
+		return ret;
+	}
+	*offset += NR_BUFFER_PAGES;
+	*blocks += NR_BUFFER_PAGES;
+	if (remain)
+		memcpy(dump_buf, dump_buf + DUMP_BUFFER_SIZE, remain);
+
+	curr_buf = dump_buf + remain;
+	return 0;
+}
+
+static int diskdump_compress_flush(struct disk_dump_partition *dump_part,
+				   int offset, unsigned int *blocks)
+{
+	int len, ret;
+	int size = curr_buf - dump_buf;
+
+	len = (size + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
+	/*
+	 * Even if len >= DUMP_BUFFER_SIZE, no data is broken
+	 * because size of dump_buf == DUMP_BUFFER_SIZE + PAGE_SIZE*2.
+	 */
+	memset(curr_buf, 'm', len - size);
+
+	ret = write_blocks(dump_part, offset, dump_buf, len >> PAGE_SHIFT);
+	if (ret < 0) {
+		Err("I/O error %d on block %u", ret, offset);
+		return -1;
+	}
+	*blocks += len >> PAGE_SHIFT;
+	return 0;
+}
+
+/* Initialize compression mechanism */
+static void diskdump_compress_init(void)
+{
+	struct page *page;
+
+	if (!compress)
+		return;
+
+	if (block_order > 2)
+		compress_block_order = block_order;
+	else
+		compress_block_order = 2;
+
+	/* Allocate compress buffer */
+	do {
+		page = alloc_pages(GFP_KERNEL, compress_block_order);
+		if (page != NULL)
+			break;
+	} while (--compress_block_order >= 2);
+
+	if (page == NULL) {
+		Err("Faild to alloc dump buffer");
+		compress = 0;
+		return;
+	}
+	compress_buffer = page_address(page);
+
+	deflate_workspace = vmalloc(zlib_deflate_workspacesize());
+	if (deflate_workspace == NULL) {
+		Err("Failed to alloc %d bytes for deflate workspace",
+			zlib_deflate_workspacesize());
+		free_pages((unsigned long)compress_buffer,
+		           compress_block_order);
+		compress = 0;
+		return;
+	}
+
+	return;
+}
+
+/* Clean compression mechanism */
+static void diskdump_compress_cleanup(void)
+{
+	if (compress_buffer) {
+		free_pages((unsigned long)compress_buffer,
+		           compress_block_order);
+		compress_buffer = NULL;
+	}
+
+	if (deflate_workspace) {
+		vfree(deflate_workspace);
+		deflate_workspace = NULL;
+	}
+}
+
+
 struct disk_dump_ops dump_ops = {
 	.add_dump	= register_disk_dump_device,
 	.remove_dump	= unregister_disk_dump_device,
@@ -1252,11 +1507,15 @@ static int init_diskdump(void)
 
 	if (diskdump_register_hook(start_disk_dump)) {
 		Err("failed to register hooks.");
+		free_pages((unsigned long)scratch, block_order);
+		free_pages((unsigned long)bitmap, 0);
 		return -1;
 	}
 
 	if (diskdump_register_ops(&dump_ops)) {
 		Err("failed to register ops.");
+		free_pages((unsigned long)scratch, block_order);
+		free_pages((unsigned long)bitmap, 0);
 		return -1;
 	}
 
@@ -1285,6 +1544,7 @@ static int init_diskdump(void)
 			p->proc_fops = &disk_dump_fops;
 	}
 #endif
+	diskdump_compress_init();
 
 	return 0;
 }
@@ -1300,6 +1560,7 @@ static void cleanup_diskdump(void)
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("diskdump", NULL);
 #endif
+	diskdump_compress_cleanup();
 }
 
 module_init(init_diskdump);

@@ -173,7 +173,18 @@ struct cpuinfo_ia64 {
 #endif
 };
 
+struct cpuinfo_ia64_topology {
+	__u32 socket_id;	/* physical processor socket id */
+	__u16 core_id;		/* core id */
+	__u16 thread_id;	/* thread id */
+	__u16 num_log;		/* Total number of logical processors on
+				 * this socket that were successfully booted */
+	__u8  cores_per_socket;	/* Cores per processor socket */
+	__u8  threads_per_core;	/* Threads per core */
+};
+
 DECLARE_PER_CPU(struct cpuinfo_ia64, cpu_info);
+DECLARE_PER_CPU(struct cpuinfo_ia64_topology, cpu_info_topology);
 
 /*
  * The "local" data variable.  It refers to the per-CPU data of the currently executing
@@ -183,6 +194,8 @@ DECLARE_PER_CPU(struct cpuinfo_ia64, cpu_info);
  */
 #define local_cpu_data		(&__ia64_per_cpu_var(cpu_info))
 #define cpu_data(cpu)		(&per_cpu(cpu_info, cpu))
+#define local_cpu_data_topology (&__ia64_per_cpu_var(cpu_info_topology))
+#define cpu_data_topology(cpu)	(&per_cpu(cpu_info_topology, cpu))
 
 extern void identify_cpu (struct cpuinfo_ia64 *);
 extern void print_cpu_info (struct cpuinfo_ia64 *);

@@ -878,9 +878,12 @@ static void write_failure_handler(void *data)
 	struct bio *bio;
 	struct bio_list failed_writes;
 	struct mirror_set *ms = (struct mirror_set *)data;
+	struct dirty_log *log = ms->rh.log;
 
-	dm_table_event(ms->ti->table);
-	wait_for_completion(&ms->failure_completion);
+	if (log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK) {
+		dm_table_event(ms->ti->table);
+		wait_for_completion(&ms->failure_completion);
+	}
 
 	/* Take list out to handle endios. */
 	spin_lock_irq(&ms->lock);
@@ -1477,7 +1480,7 @@ static void mirror_presuspend(struct dm_target *ti)
 	run = ms->failures.head ? 1 : 0;
 	spin_unlock_irqrestore(&ms->lock, flags);
 
-	if (run)
+	if (run && (log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK))
 		complete(&ms->failure_completion);
 
 	if (log->type->presuspend && log->type->presuspend(log))
@@ -1548,7 +1551,7 @@ static int mirror_status(struct dm_target *ti, status_type_t type,
 
 static struct target_type mirror_target = {
 	.name	 = "mirror",
-	.version = {1, 0, 1},
+	.version = {1, 1, 0},
 	.module	 = THIS_MODULE,
 	.ctr	 = mirror_ctr,
 	.dtr	 = mirror_dtr,

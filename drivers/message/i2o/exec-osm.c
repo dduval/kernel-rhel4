@@ -168,8 +168,7 @@ int i2o_msg_post_wait_mem(struct i2o_controller *c, u32 m, unsigned long
 
 	if (iwait->complete) {
 		spin_unlock_irqrestore(&i2o_exec_wait_list_lock, flags);
-		if (readl(&iwait->msg->body[0]) >> 24)
-			rc = readl(&iwait->msg->body[0]) & 0xff;
+		rc = readl(&iwait->msg->body[0]) >> 24;
 		i2o_flush_reply(c, iwait->m);
 		i2o_exec_wait_free(iwait);
 	} else {

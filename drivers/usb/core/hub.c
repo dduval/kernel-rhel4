@@ -824,6 +824,44 @@ static int hub_reset(struct usb_hub *hub)
 	return 0;
 }
 
+static void usb_disconnect_nolock(struct usb_device **pdev)
+{
+	struct usb_device	*udev = *pdev;
+
+	/* mark the device as inactive, so any further urb submissions for
+	 * this device (and any of its children) will fail immediately.
+	 * this quiesces everyting except pending urbs.
+	 */
+	usb_set_device_state(udev, USB_STATE_NOTATTACHED);
+
+	dev_info (&udev->dev, "USB disconnect, address %d\n", udev->devnum);
+
+	/* deallocate hcd/hardware state ... nuking all pending urbs and
+	 * cleaning up all state associated with the current configuration
+	 * so that the hardware is now fully quiesced.
+	 */
+	usb_disable_device(udev, 0);
+
+	/* Free the device number, remove the /proc/bus/usb entry and
+	 * the sysfs attributes, and delete the parent's children[]
+	 * (or root_hub) pointer.
+	 */
+	dev_dbg (&udev->dev, "unregistering device\n");
+	if (udev->devnum > 0) {
+		clear_bit(udev->devnum, udev->bus->devmap.devicemap);
+		udev->devnum = -1;
+	}
+	usbfs_remove_device(udev);
+	usb_remove_sysfs_dev_files(udev);
+
+	/* Avoid races with recursively_mark_NOTATTACHED() and locktree() */
+	spin_lock_irq(&device_state_lock);
+	*pdev = NULL;
+	spin_unlock_irq(&device_state_lock);
+
+	device_unregister(&udev->dev);
+}
+
 /* caller has locked the hub */
 /* FIXME!  This routine should be subsumed into hub_reset */
 static void hub_start_disconnect(struct usb_device *hdev)
@@ -835,7 +873,7 @@ static void hub_start_disconnect(struct usb_device *hdev)
 	if (parent) {
 		for (i = 0; i < parent->maxchild; i++) {
 			if (parent->children[i] == hdev) {
-				usb_disconnect(&parent->children[i]);
+				usb_disconnect_nolock(&parent->children[i]);
 				return;
 			}
 		}
@@ -1077,23 +1115,33 @@ static int choose_configuration(struct usb_device *udev)
 }
 
 #ifdef DEBUG
-static void show_string(struct usb_device *udev, char *id, int index)
+static void show_string(struct usb_device *udev, char *id, char *string)
+{
+	if (!string)
+		return;
+	dev_printk(KERN_INFO, &udev->dev, "%s: %s\n", id, string);
+}
+
+#else
+static inline void show_string(struct usb_device *udev, char *id, char *string)
+{}
+#endif
+
+static void get_string(struct usb_device *udev, char **string, int index)
 {
 	char *buf;
 
 	if (!index)
 		return;
-	if (!(buf = kmalloc(256, GFP_KERNEL)))
+	buf = kmalloc(256, GFP_KERNEL);
+	if (!buf)
 		return;
 	if (usb_string(udev, index, buf, 256) > 0)
-		dev_printk(KERN_INFO, &udev->dev, "%s: %s\n", id, buf);
-	kfree(buf);
+		*string = buf;
+	else
+		kfree(buf);
 }
 
-#else
-static inline void show_string(struct usb_device *udev, char *id, int index)
-{}
-#endif
 
 #ifdef	CONFIG_USB_OTG
 #include "otg_whitelist.h"
@@ -1131,22 +1179,20 @@ int usb_new_device(struct usb_device *udev)
 		goto fail;
 	}
 
+	/* read the standard strings and cache them if present */
+	get_string(udev, &udev->product, udev->descriptor.iProduct);
+	get_string(udev, &udev->manufacturer, udev->descriptor.iManufacturer);
+	get_string(udev, &udev->serial, udev->descriptor.iSerialNumber);
+
 	/* Tell the world! */
 	dev_dbg(&udev->dev, "new device strings: Mfr=%d, Product=%d, "
 			"SerialNumber=%d\n",
 			udev->descriptor.iManufacturer,
 			udev->descriptor.iProduct,
 			udev->descriptor.iSerialNumber);
-
-	if (udev->descriptor.iProduct)
-		show_string(udev, "Product",
-				udev->descriptor.iProduct);
-	if (udev->descriptor.iManufacturer)
-		show_string(udev, "Manufacturer",
-				udev->descriptor.iManufacturer);
-	if (udev->descriptor.iSerialNumber)
-		show_string(udev, "SerialNumber",
-				udev->descriptor.iSerialNumber);
+	show_string(udev, "Product", udev->product);
+	show_string(udev, "Manufacturer", udev->manufacturer);
+	show_string(udev, "SerialNumber", udev->serial);
 
 #ifdef	CONFIG_USB_OTG
 	/*

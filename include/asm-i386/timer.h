@@ -22,6 +22,7 @@ struct timer_opts{
 	unsigned long (*get_offset)(void);
 	unsigned long long (*monotonic_clock)(void);
 	void (*delay)(unsigned long);
+	unsigned long (*read_timer)(void);
 };
 
 #define TICK_SIZE (tick_nsec / 1000)
@@ -46,6 +47,7 @@ extern struct timer_opts timer_cyclone;
 #endif
 
 extern unsigned long calibrate_tsc(void);
+extern unsigned long read_timer_tsc(void);
 extern void init_cpu_khz(void);
 #ifdef CONFIG_HPET_TIMER
 extern struct timer_opts timer_hpet;

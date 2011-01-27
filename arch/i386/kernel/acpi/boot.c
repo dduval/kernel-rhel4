@@ -472,7 +472,7 @@ unsigned int acpi_register_gsi(u32 gsi, int edge_level, int active_high_low)
 
 #ifdef CONFIG_X86_IO_APIC
 	if (acpi_irq_model == ACPI_IRQ_MODEL_IOAPIC) {
-		mp_register_gsi(gsi, edge_level, active_high_low);
+		gsi = mp_register_gsi(gsi, edge_level, active_high_low);
 	}
 #endif
 	acpi_gsi_to_irq(gsi, &irq);
@@ -580,6 +580,12 @@ static int __init acpi_parse_fadt(unsigned long phys, unsigned long size)
 #ifdef	CONFIG_ACPI_INTERPRETER
 	/* initialize sci_int early for INT_SRC_OVR MADT parsing */
 	acpi_fadt.sci_int = fadt->sci_int;
+#endif
+
+#ifdef CONFIG_ACPI_BUS
+	/* initialize rev and reserved6 for apic mode detection */
+	acpi_fadt.revision = fadt->revision;
+	acpi_fadt.reserved6 = fadt->reserved6;
 #endif
 
 #ifdef CONFIG_X86_PM_TIMER
@@ -698,7 +704,7 @@ acpi_parse_madt_ioapic_entries(void)
 		return -ENODEV;
 	}
 
-	count = acpi_table_parse_madt(ACPI_MADT_IOAPIC, acpi_parse_ioapic, MAX_IO_APICS);
+	count = acpi_table_parse_madt(ACPI_MADT_IOAPIC, acpi_parse_ioapic, MAX_IO_APICS_EXT);
 	if (!count) {
 		printk(KERN_ERR PREFIX "No IOAPIC entries present\n");
 		return -ENODEV;
@@ -759,6 +765,9 @@ acpi_process_madt(void)
 			acpi_lapic = 1;
 			clustered_apic_check();
 
+#ifdef CONFIG_X86_GENERICARCH
+			generic_bigsmp_probe();
+#endif   
 			/*
 			 * Parse MADT IO-APIC entries
 			 */

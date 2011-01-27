@@ -3,7 +3,11 @@
 
 #include <linux/config.h>
 
-/* Max 8 Nodes - APIC limit currently */
+/* Implement this change only for large-SMP configuration */
+#if NR_CPUS > 8
+#define NODES_SHIFT	6
+#else
 #define NODES_SHIFT	3
+#endif
 
 #endif

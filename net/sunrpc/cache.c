@@ -169,12 +169,12 @@ static struct file_operations cache_flush_operations;
 static void do_cache_clean(void *data);
 static DECLARE_WORK(cache_cleaner, do_cache_clean, NULL);
 
-void cache_register(struct cache_detail *cd)
+static void __cache_register(struct cache_detail *cd, struct module *owner)
 {
 	cd->proc_ent = proc_mkdir(cd->name, proc_net_rpc);
 	if (cd->proc_ent) {
 		struct proc_dir_entry *p;
-		cd->proc_ent->owner = THIS_MODULE;
+		cd->proc_ent->owner = owner ? owner : THIS_MODULE;
 		cd->channel_ent = cd->content_ent = NULL;
 		
  		p = create_proc_entry("flush", S_IFREG|S_IRUSR|S_IWUSR,
@@ -182,7 +182,7 @@ void cache_register(struct cache_detail *cd)
 		cd->flush_ent =  p;
  		if (p) {
  			p->proc_fops = &cache_flush_operations;
- 			p->owner = THIS_MODULE;
+ 			p->owner = owner ? owner : THIS_MODULE;
  			p->data = cd;
  		}
  
@@ -192,7 +192,7 @@ void cache_register(struct cache_detail *cd)
 			cd->channel_ent = p;
 			if (p) {
 				p->proc_fops = &cache_file_operations;
-				p->owner = THIS_MODULE;
+				p->owner = owner ? owner : THIS_MODULE;
 				p->data = cd;
 			}
 		}
@@ -202,7 +202,7 @@ void cache_register(struct cache_detail *cd)
 			cd->content_ent = p;
  			if (p) {
  				p->proc_fops = &content_file_operations;
- 				p->owner = THIS_MODULE;
+ 				p->owner = owner ? owner : THIS_MODULE;
  				p->data = cd;
  			}
  		}
@@ -220,6 +220,16 @@ void cache_register(struct cache_detail *cd)
 
 	/* start the cleaning process */
 	schedule_work(&cache_cleaner);
+}
+
+void cache_register(struct cache_detail *cd)
+{
+	__cache_register(cd, NULL);
+}
+
+void cache_register_owner(struct cache_detail *cd, struct module *owner)
+{
+	__cache_register(cd,owner);
 }
 
 int cache_unregister(struct cache_detail *cd)
@@ -344,12 +354,10 @@ int cache_clean(void)
 			if (test_and_clear_bit(CACHE_PENDING, &ch->flags))
 				queue_loose(current_detail, ch);
 
-			if (!atomic_read(&ch->refcnt))
+			if (atomic_read(&ch->refcnt) == 1)
 				break;
 		}
 		if (ch) {
-			cache_get(ch);
-			clear_bit(CACHE_HASHED, &ch->flags);
 			*cp = ch->next;
 			ch->next = NULL;
 			current_detail->entries--;

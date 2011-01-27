@@ -42,6 +42,7 @@ EXPORT_SYMBOL(rpc_release_task);
 /* RPC client functions */
 EXPORT_SYMBOL(rpc_create_client);
 EXPORT_SYMBOL(rpc_clone_client);
+EXPORT_SYMBOL(rpc_bind_new_program);
 EXPORT_SYMBOL(rpc_destroy_client);
 EXPORT_SYMBOL(rpc_shutdown_client);
 EXPORT_SYMBOL(rpc_release_client);
@@ -115,6 +116,7 @@ EXPORT_SYMBOL(cache_purge);
 EXPORT_SYMBOL(cache_fresh);
 EXPORT_SYMBOL(cache_init);
 EXPORT_SYMBOL(cache_register);
+EXPORT_SYMBOL(cache_register_owner);
 EXPORT_SYMBOL(cache_unregister);
 EXPORT_SYMBOL(qword_add);
 EXPORT_SYMBOL(qword_addhex);
@@ -131,6 +133,10 @@ EXPORT_SYMBOL(xdr_encode_netobj);
 EXPORT_SYMBOL(xdr_encode_pages);
 EXPORT_SYMBOL(xdr_inline_pages);
 EXPORT_SYMBOL(xdr_shift_buf);
+EXPORT_SYMBOL(xdr_encode_word);
+EXPORT_SYMBOL(xdr_decode_word);
+EXPORT_SYMBOL(xdr_encode_array2);
+EXPORT_SYMBOL(xdr_decode_array2);
 EXPORT_SYMBOL(xdr_buf_from_iov);
 EXPORT_SYMBOL(xdr_buf_subsegment);
 EXPORT_SYMBOL(xdr_buf_read_netobj);
@@ -162,8 +168,8 @@ init_sunrpc(void)
 #ifdef CONFIG_PROC_FS
 	rpc_proc_init();
 #endif
-	cache_register(&auth_domain_cache);
-	cache_register(&ip_map_cache);
+	cache_register_owner(&auth_domain_cache, THIS_MODULE);
+	cache_register_owner(&ip_map_cache, THIS_MODULE);
 out:
 	return err;
 }

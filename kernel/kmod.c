@@ -154,14 +154,14 @@ struct subprocess_info {
 static int ____exec_usermodehelper(char *path, char **argv, char **envp,
 				   struct key *session_keyring)
 {
-	struct key *old_session;
+	struct key *new_session, *old_session;
 	int retval;
 
 	/* Unblock all signals. */
-	key_get(session_keyring);
+	new_session = key_get(session_keyring);
 	flush_signals(current);
 	spin_lock_irq(&current->sighand->siglock);
-	old_session = __install_session_keyring(current, session_keyring);
+	old_session = __install_session_keyring(current, new_session);
 	flush_signal_handlers(current, 1);
 	sigemptyset(&current->blocked);
 	recalc_sigpending();

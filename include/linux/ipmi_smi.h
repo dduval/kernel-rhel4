@@ -104,6 +104,13 @@ struct ipmi_smi_handlers
 	/* Called to poll for work to do.  This is so upper layers can
 	   poll for operations during things like crash dumps. */
 	void (*poll)(void *send_info);
+
+	/* Tell the handler that we are using it/not using it.  The
+	   message handler get the modules that this handler belongs
+	   to; this function lets the SMI claim any modules that it
+	   uses.  These may be NULL if this is not required. */
+	int (*inc_usecount)(void *send_info);
+	void (*dec_usecount)(void *send_info);
 };
 
 /* Add a low-level interface to the IPMI driver.  Note that if the

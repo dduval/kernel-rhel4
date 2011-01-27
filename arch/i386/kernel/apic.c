@@ -772,6 +772,7 @@ void __init init_apic_mappings(void)
 #ifdef CONFIG_X86_IO_APIC
 	{
 		unsigned long ioapic_phys, idx = FIX_IO_APIC_BASE_0;
+		unsigned long idx_ext = FIX_IO_APIC_BASE_EXT_0;
 		int i;
 
 		for (i = 0; i < nr_ioapics; i++) {
@@ -789,11 +790,18 @@ fake_ioapic_page:
 				ioapic_phys = (unsigned long) alloc_bootmem_pages(PAGE_SIZE);
 				ioapic_phys = __pa(ioapic_phys);
 			}
-			set_fixmap_nocache(idx, ioapic_phys);
+
+			set_fixmap_nocache(idx_ext, ioapic_phys);
+
+			if (i < MAX_IO_APICS) {
+				set_fixmap_nocache(idx, ioapic_phys);
+				idx++;
+			}
+
 			apic_printk(APIC_DEBUG, "mapped IOAPIC to "
 					"%08lx (%08lx)\n",
-					__fix_to_virt(idx), ioapic_phys);
-			idx++;
+					__fix_to_virt(idx_ext), ioapic_phys);
+			idx_ext++;
 		}
 	}
 #endif

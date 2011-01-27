@@ -766,7 +766,15 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 			maxcpus = simple_strtoul(from + 8, NULL, 0);
 		}
 #endif
-
+#ifdef CONFIG_X86_HT
+		/* "noht" disables hyperthreading by only recognizing
+		 * the first CPU of a sibling set
+		 */
+		else if (!memcmp(from, "noht", 4)) {
+			extern int disable_x86_ht;
+			disable_x86_ht = 1;
+		}
+#endif
 #ifdef CONFIG_ACPI_BOOT
 		/* "acpi=off" disables both ACPI table parsing and interpreter */
 		else if (!memcmp(from, "acpi=off", 8)) {
@@ -1379,6 +1387,8 @@ void __init setup_arch(char **cmdline_p)
 
 	max_low_pfn = setup_memory();
 
+	noht_init();
+
 	/*
 	 * NOTE: before this point _nobody_ is allowed to allocate
 	 * any memory using the bootmem allocator.  Although the
@@ -1424,6 +1434,12 @@ void __init setup_arch(char **cmdline_p)
 	 */
 	acpi_boot_table_init();
 	acpi_boot_init();
+
+#if defined(CONFIG_SMP) && defined(CONFIG_X86_PC)
+	if (def_to_bigsmp) {
+		printk(KERN_WARNING "More than 8 CPUs detected and CONFIG_X86_PC cannot handle it.\nUse CONFIG_X86_GENERICARCH or CONFIG_X86_BIGSMP.\n");
+	}
+#endif
 
 #ifdef CONFIG_X86_LOCAL_APIC
 	if (smp_found_config)

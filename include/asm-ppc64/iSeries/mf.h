@@ -64,6 +64,7 @@ extern int mf_getVmlinuxChunk(char *buffer, int *size, int offset, u64 side);
 
 extern int mf_setRtcTime(unsigned long time);
 extern int mf_getRtcTime(unsigned long *time);
+extern int mf_get_boot_rtc(struct rtc_time *tm);
 extern int mf_getRtc( struct rtc_time * tm );
 extern int mf_setRtc( struct rtc_time * tm );
 

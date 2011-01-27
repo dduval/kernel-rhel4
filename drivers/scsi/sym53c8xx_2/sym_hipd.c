@@ -1503,7 +1503,7 @@ static void sym_check_goals(struct scsi_device *sdev)
 		st->options &= ~PPR_OPT_DT;
 	}
 
-	if (!(np->features & FE_ULTRA3))
+	if (np->scsi_mode != SMODE_LVD || !(np->features & FE_ULTRA3))
 		st->options &= ~PPR_OPT_DT;
 
 	if (st->options & PPR_OPT_DT) {
@@ -1550,7 +1550,7 @@ static int sym_prepare_nego(hcb_p np, ccb_p cp, int nego, u_char *msgptr)
 	/*
 	 *  negotiate using PPR ?
 	 */
-	if (scsi_device_dt(sdev)) {
+	if (np->scsi_mode == SMODE_LVD && scsi_device_dt(sdev)) {
 		nego = NS_PPR;
 	} else {
 		/*
@@ -4177,7 +4177,8 @@ sym_ppr_nego_check(hcb_p np, int req, int target)
 	if (!wide || !(np->features & FE_ULTRA3))
 		dt &= ~PPR_OPT_DT;
 
-	if (!(np->features & FE_U3EN))	/* Broken U3EN bit not supported */
+	/* Broken U3EN bit and non-LVD not supported */
+	if (np->scsi_mode != SMODE_LVD || !(np->features & FE_U3EN))
 		dt &= ~PPR_OPT_DT;
 
 	if (dt != (np->msgin[7] & PPR_OPT_MASK)) chg = 1;

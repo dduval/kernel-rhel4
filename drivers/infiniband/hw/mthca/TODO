@@ -1,0 +1,23 @@
+Small projects (extensions to existing code):
+    APM support: ib_mthca's QP modify does not set alternate path
+        fields in QP context.
+    Full support for asynchronous events: dispatching CQ and various
+        unaffiliated errors still needs to be implemented.
+    UD address vectors in HCA memory with DDR hidden: Even if the HCA
+        does not expose its memory via a PCI BAR, the ACCESS_DDR
+        firmware command could be used to write UD address vectors
+        into HCA memory.
+    Miscellaneous verbs: At least query AH, query QP and resize CQ are
+        not implemented.
+    Reduce doorbell locking on 32-bit architectures: By using a
+        a doorbell page dedicated to each EQ, no lock is required in
+        the EQ poll path.
+    Finish SRQ support: add support for resizing SRQs.
+
+Medium projects (well understood but require a fair amount of code):
+    SMR support: ib_mthca does not support shared memory regions.
+    MW support: ib_mthca does not support memory windows.
+
+Local Variables:
+mode: text
+End:

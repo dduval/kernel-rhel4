@@ -104,6 +104,8 @@ struct nfs_open_context {
  */
 struct nfs_delegation;
 
+struct posix_acl;
+
 /*
  * nfs fs inode data in memory
  */
@@ -122,6 +124,7 @@ struct nfs_inode {
 	 * Various flags
 	 */
 	unsigned int		flags;
+	unsigned long		cache_validity;
 
 	/*
 	 * read_cache_jiffies is when we started read-caching this inode,
@@ -146,6 +149,7 @@ struct nfs_inode {
 	unsigned long		attrtimeo_timestamp;
 	__u64			change_attr;		/* v4 only */
 
+	unsigned long		last_updated;
 	/* "Generation counter" for the attribute cache. This is
 	 * bumped whenever we update the metadata on the
 	 * server.
@@ -158,6 +162,10 @@ struct nfs_inode {
 	atomic_t		data_updates;
 
 	struct nfs_access_entry	cache_access;
+#ifdef CONFIG_NFS_V3_ACL
+	struct posix_acl	*acl_access;
+	struct posix_acl	*acl_default;
+#endif
 
 	/*
 	 * This is the cookie verifier used for NFSv3 readdir
@@ -194,14 +202,21 @@ struct nfs_inode {
 };
 
 /*
- * Legal inode flag values
+ * Cache validity bit flags
  */
-#define NFS_INO_STALE		0x0001		/* possible stale inode */
-#define NFS_INO_ADVISE_RDPLUS   0x0002          /* advise readdirplus */
-#define NFS_INO_REVALIDATING	0x0004		/* revalidating attrs */
-#define NFS_INO_INVALID_ATTR	0x0008		/* cached attrs are invalid */
-#define NFS_INO_INVALID_DATA	0x0010		/* cached data is invalid */
-#define NFS_INO_INVALID_ATIME	0x0020		/* cached atime is invalid */
+#define NFS_INO_INVALID_ATTR   0x0001      /* cached attrs are invalid */
+#define NFS_INO_INVALID_DATA   0x0002      /* cached data is invalid */
+#define NFS_INO_INVALID_ATIME  0x0004      /* cached atime is invalid */
+#define NFS_INO_INVALID_ACCESS 0x0008      /* cached access cred invalid */
+#define NFS_INO_INVALID_ACL    0x0010      /* cached acls are invalid */
+#define NFS_INO_REVAL_PAGECACHE    0x0020      /* must revalidate pagecache */
+
+/*
+ * Legal values of flags field
+ */
+#define NFS_INO_REVALIDATING   0x0001      /* revalidating attrs */
+#define NFS_INO_ADVISE_RDPLUS  0x0002      /* advise readdirplus */
+#define NFS_INO_STALE      0x0004      /* possible stale inode */
 
 static inline struct nfs_inode *NFS_I(struct inode *inode)
 {
@@ -239,8 +254,11 @@ static inline int nfs_caches_unstable(struct inode *inode)
 
 static inline void NFS_CACHEINV(struct inode *inode)
 {
-	if (!nfs_caches_unstable(inode))
-		NFS_FLAGS(inode) |= NFS_INO_INVALID_ATTR;
+	if (!nfs_caches_unstable(inode)) {
+		spin_lock(&inode->i_lock);
+		NFS_I(inode)->cache_validity |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS;
+		spin_unlock(&inode->i_lock);
+	}
 }
 
 static inline int nfs_server_capable(struct inode *inode, int cap)
@@ -299,7 +317,9 @@ extern int nfs_release(struct inode *, struct file *);
 extern int nfs_attribute_timeout(struct inode *inode);
 extern int nfs_revalidate_inode(struct nfs_server *server, struct inode *inode);
 extern int __nfs_revalidate_inode(struct nfs_server *, struct inode *);
+extern void nfs_revalidate_mapping(struct inode *inode, struct address_space *mapping);
 extern int nfs_setattr(struct dentry *, struct iattr *);
+extern void nfs_setattr_update_inode(struct inode *inode, struct iattr *attr);
 extern void nfs_begin_attr_update(struct inode *);
 extern void nfs_end_attr_update(struct inode *);
 extern void nfs_begin_data_update(struct inode *);
@@ -315,10 +335,19 @@ extern void nfs_file_clear_open_context(struct file *filp);
 /* linux/net/ipv4/ipconfig.c: trims ip addr off front of name, too. */
 extern u32 root_nfs_parse_addr(char *name); /*__init*/
 
+static inline void nfs_fattr_init(struct nfs_fattr *fattr)
+{
+	fattr->valid = 0;
+	fattr->time_start = jiffies;
+}
+
 /*
  * linux/fs/nfs/file.c
  */
 extern struct inode_operations nfs_file_inode_operations;
+#ifdef CONFIG_NFS_V3
+extern struct inode_operations nfs3_file_inode_operations;
+#endif /* CONFIG_NFS_V3 */
 extern struct file_operations nfs_file_operations;
 extern struct address_space_operations nfs_file_aops;
 
@@ -334,6 +363,22 @@ static inline struct rpc_cred *nfs_file_cred(struct file *file)
 }
 
 /*
+ * linux/fs/nfs/xattr.c
+ */
+#ifdef CONFIG_NFS_V3_ACL
+extern ssize_t nfs3_listxattr(struct dentry *, char *, size_t);
+extern ssize_t nfs3_getxattr(struct dentry *, const char *, void *, size_t);
+extern int nfs3_setxattr(struct dentry *, const char *,
+			const void *, size_t, int);
+extern int nfs3_removexattr (struct dentry *, const char *name);
+#else
+# define nfs3_listxattr NULL
+# define nfs3_getxattr NULL
+# define nfs3_setxattr NULL
+# define nfs3_removexattr NULL
+#endif
+
+/*
  * linux/fs/nfs/direct.c
  */
 extern ssize_t nfs_direct_IO(int, struct kiocb *, const struct iovec *, loff_t,
@@ -347,8 +392,13 @@ extern ssize_t nfs_file_direct_write(struct kiocb *iocb, const char __user *buf,
  * linux/fs/nfs/dir.c
  */
 extern struct inode_operations nfs_dir_inode_operations;
+#ifdef CONFIG_NFS_V3
+extern struct inode_operations nfs3_dir_inode_operations;
+#endif /* CONFIG_NFS_V3 */
 extern struct file_operations nfs_dir_operations;
 extern struct dentry_operations nfs_dentry_operations;
+
+extern int nfs_instantiate(struct dentry *dentry, struct nfs_fh *fh, struct nfs_fattr *fattr);
 
 /*
  * linux/fs/nfs/symlink.c
@@ -468,6 +518,8 @@ static inline void nfs_commit_free(struct nfs_write_data *p)
 # define IS_SWAPFILE(inode)	(0)
 #endif
 
+extern void  nfs_writedata_release(struct rpc_task *task);
+
 /*
  * linux/fs/nfs/read.c
  */
@@ -496,6 +548,29 @@ static inline void nfs_readdata_free(struct nfs_read_data *p)
 }
 
 extern void  nfs_readdata_release(struct rpc_task *task);
+
+/*
+ * linux/fs/nfs3proc.c
+ */
+#ifdef CONFIG_NFS_V3_ACL
+extern struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type);
+extern int nfs3_proc_setacl(struct inode *inode, int type,
+			    struct posix_acl *acl);
+extern int nfs3_proc_set_default_acl(struct inode *dir, struct inode *inode,
+		mode_t mode);
+extern void nfs3_forget_cached_acls(struct inode *inode);
+#else
+static inline int nfs3_proc_set_default_acl(struct inode *dir,
+					    struct inode *inode,
+					    mode_t mode)
+{
+	return 0;
+}
+
+static inline void nfs3_forget_cached_acls(struct inode *inode)
+{
+}
+#endif /* CONFIG_NFS_V3_ACL */
 
 /*
  * linux/fs/mount_clnt.c

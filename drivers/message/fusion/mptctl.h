@@ -180,7 +180,8 @@ struct mpt_ioctl_pci_info2 {
  */
 #define MPT_IOCTL_INTERFACE_SCSI	(0x00)
 #define MPT_IOCTL_INTERFACE_FC		(0x01)
-#define MPT_IOCTL_INTERFACE_SAS		(0x02)
+#define MPT_IOCTL_INTERFACE_FC_IP	(0x02)
+#define MPT_IOCTL_INTERFACE_SAS		(0x03)
 #define MPT_IOCTL_VERSION_LENGTH	(32)
 
 struct mpt_ioctl_iocinfo {

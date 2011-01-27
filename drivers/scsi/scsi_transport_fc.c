@@ -27,6 +27,14 @@
 
 #define FC_PRINTK(x, l, f, a...)	printk(l "scsi(%d:%d:%d:%d): " f, (x)->host->host_no, (x)->channel, (x)->id, (x)->lun , ##a)
 
+/*
+ * Redefine so that we can have same named attributes in the
+ * sdev/starget/host objects.
+ */
+#define FC_CLASS_DEVICE_ATTR(_prefix,_name,_mode,_show,_store)         \
+struct class_device_attribute class_device_attr_##_prefix##_##_name =  \
+	__ATTR(_name,_mode,_show,_store)
+
 static void transport_class_release(struct class_device *class_dev);
 static void host_class_release(struct class_device *class_dev);
 static void fc_timeout_blocked_host(void *data);
@@ -35,7 +43,7 @@ static void fc_timeout_blocked_tgt(void *data);
 #define FC_STARGET_NUM_ATTRS 	4	/* increase this if you add attributes */
 #define FC_STARGET_OTHER_ATTRS 	0	/* increase this if you add "always on"
 					 * attributes */
-#define FC_HOST_NUM_ATTRS	1
+#define FC_HOST_NUM_ATTRS	3
 
 struct fc_internal {
 	struct scsi_transport_template t;
@@ -108,6 +116,7 @@ static int fc_setup_host_transport_attrs(struct Scsi_Host *shost)
 	 * failure cases.  The scsi lldd is responsible for initializing
 	 * all transport attributes to valid values per host.
 	 */
+	fc_host_port_id(shost) = -1;
 	fc_host_link_down_tmo(shost) = -1;
 	INIT_WORK(&fc_host_link_down_work(shost),
 		  fc_timeout_blocked_host, shost);
@@ -208,7 +217,6 @@ fc_starget_rd_attr_cast(port_name, "0x%llx\n", unsigned long long);
 fc_starget_rd_attr(port_id, "0x%06x\n");
 fc_starget_rw_attr(dev_loss_tmo, "%d\n");
 
-
 /*
  * Host Attribute Management
  */
@@ -242,7 +250,7 @@ store_fc_host_##field(struct class_device *cdev, const char *buf,	\
 
 #define fc_host_rd_attr(field, format_string)				\
 	fc_host_show_function(field, format_string, )			\
-static CLASS_DEVICE_ATTR(host_##field, S_IRUGO,				\
+static FC_CLASS_DEVICE_ATTR(host, field, S_IRUGO,			\
 			 show_fc_host_##field, NULL)
 
 #define fc_host_rd_attr_cast(field, format_string, cast)		\
@@ -275,9 +283,37 @@ static CLASS_DEVICE_ATTR(host_##field, S_IRUGO | S_IWUSR,		\
 	if (i->f->show_host_##field)					\
 		count++
 
+#define SETUP_PRIVATE_HOST_ATTRIBUTE_RW(field)				\
+{									\
+	i->private_host_attrs[count] = class_device_attr_host_##field;	\
+	i->host_attrs[count] = &i->private_host_attrs[count];		\
+	count++;							\
+}
+
 /* The FC Tranport Host Attributes: */
 fc_host_rw_attr(link_down_tmo, "%d\n");
+fc_host_rd_attr(port_id, "0x%06x\n");
 
+/* Private Host Attributes */
+static ssize_t
+store_fc_private_host_issue_lip(struct class_device *cdev,
+				const char *buf, size_t count)
+{
+	struct Scsi_Host *shost = transport_class_to_shost(cdev);
+	struct fc_internal *i = to_fc_internal(shost->transportt);
+	int ret;
+
+	/* ignore any data value written to the attribute */
+	if (i->f->issue_fc_host_lip) {
+		ret = i->f->issue_fc_host_lip(shost);
+		return ret ? ret: count;
+	}
+
+	return -ENOENT;
+}
+
+static FC_CLASS_DEVICE_ATTR(host, issue_lip, S_IWUSR, NULL,
+			    store_fc_private_host_issue_lip);
 
 
 struct scsi_transport_template *
@@ -324,6 +360,9 @@ fc_attach_transport(struct fc_function_template *ft)
 	/* setup host attributes */
 	count=0;
 	SETUP_HOST_ATTRIBUTE_RW(link_down_tmo);
+	SETUP_HOST_ATTRIBUTE_RD(port_id);
+	if (ft->issue_fc_host_lip)
+		SETUP_PRIVATE_HOST_ATTRIBUTE_RW(issue_lip)
 
 	BUG_ON(count > FC_HOST_NUM_ATTRS);
 

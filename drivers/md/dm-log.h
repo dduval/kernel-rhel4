@@ -9,6 +9,15 @@
 
 #include "dm.h"
 
+/*
+ * Values returned by get_failure_response()
+ *   DMLOG_IOERR_IGNORE:  ignore device failures
+ *   DMLOG_IOERR_BLOCK:     issue dm event, and do not complete
+ *                 I/O until presuspend is recieved.
+ */
+#define DMLOG_IOERR_IGNORE 0
+#define DMLOG_IOERR_BLOCK  1
+
 typedef sector_t region_t;
 
 struct dirty_log_type;
@@ -118,6 +127,12 @@ struct dirty_log_type {
 	 */
 	int (*status)(struct dirty_log *log, status_type_t status_type,
 		      char *result, unsigned int maxlen);
+
+	/*
+	 * Return the code describing what to do in the event
+	 * of a device failure.
+	 */
+	int (*get_failure_response)(struct dirty_log *log);
 };
 
 int dm_register_dirty_log_type(struct dirty_log_type *type);

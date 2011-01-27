@@ -82,4 +82,7 @@ struct flock {
 
 #define F_LINUX_SPECIFIC_BASE	1024
 
+#define force_o_largefile()	do_force_o_largefile()
+extern int do_force_o_largefile(void);
+
 #endif /* _ASM_IA64_FCNTL_H */

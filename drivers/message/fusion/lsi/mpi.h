@@ -6,7 +6,7 @@
  *          Title:  MPI Message independent structures and definitions
  *  Creation Date:  July 27, 2000
  *
- *    mpi.h Version:  01.05.07
+ *    mpi.h Version:  01.05.10
  *
  *  Version History
  *  ---------------
@@ -71,6 +71,11 @@
  *  03-11-05  01.05.07  Removed function codes for SCSI IO 32 and
  *                      TargetAssistExtended requests.
  *                      Removed EEDP IOCStatus codes.
+ *  06-24-05  01.05.08  Added function codes for SCSI IO 32 and
+ *                      TargetAssistExtended requests.
+ *                      Added EEDP IOCStatus codes.
+ *  08-03-05  01.05.09  Bumped MPI_HEADER_VERSION_UNIT.
+ *  08-30-05  01.05.10  Added 2 new IOCStatus codes for Target.
  *  --------------------------------------------------------------------------
  */
 
@@ -101,7 +106,7 @@
 /* Note: The major versions of 0xe0 through 0xff are reserved */
 
 /* versioning for this MPI header set */
-#define MPI_HEADER_VERSION_UNIT             (0x09)
+#define MPI_HEADER_VERSION_UNIT             (0x0C)
 #define MPI_HEADER_VERSION_DEV              (0x00)
 #define MPI_HEADER_VERSION_UNIT_MASK        (0xFF00)
 #define MPI_HEADER_VERSION_UNIT_SHIFT       (8)
@@ -292,10 +297,13 @@
 #define MPI_FUNCTION_DIAG_BUFFER_POST               (0x1D)
 #define MPI_FUNCTION_DIAG_RELEASE                   (0x1E)
 
+#define MPI_FUNCTION_SCSI_IO_32                     (0x1F)
+
 #define MPI_FUNCTION_LAN_SEND                       (0x20)
 #define MPI_FUNCTION_LAN_RECEIVE                    (0x21)
 #define MPI_FUNCTION_LAN_RESET                      (0x22)
 
+#define MPI_FUNCTION_TARGET_ASSIST_EXTENDED         (0x23)
 #define MPI_FUNCTION_TARGET_CMD_BUF_BASE_POST       (0x24)
 #define MPI_FUNCTION_TARGET_CMD_BUF_LIST_POST       (0x25)
 
@@ -681,6 +689,15 @@ typedef struct _MSG_DEFAULT_REPLY
 #define MPI_IOCSTATUS_SCSI_EXT_TERMINATED       (0x004C)
 
 /****************************************************************************/
+/*  For use by SCSI Initiator and SCSI Target end-to-end data protection    */
+/****************************************************************************/
+
+#define MPI_IOCSTATUS_EEDP_GUARD_ERROR          (0x004D)
+#define MPI_IOCSTATUS_EEDP_REF_TAG_ERROR        (0x004E)
+#define MPI_IOCSTATUS_EEDP_APP_TAG_ERROR        (0x004F)
+
+
+/****************************************************************************/
 /*  SCSI Target values                                                      */
 /****************************************************************************/
 
@@ -696,6 +713,8 @@ typedef struct _MSG_DEFAULT_REPLY
 #define MPI_IOCSTATUS_TARGET_DATA_OFFSET_ERROR   (0x006D)
 #define MPI_IOCSTATUS_TARGET_TOO_MUCH_WRITE_DATA (0x006E)
 #define MPI_IOCSTATUS_TARGET_IU_TOO_SHORT        (0x006F)
+#define MPI_IOCSTATUS_TARGET_ACK_NAK_TIMEOUT     (0x0070)
+#define MPI_IOCSTATUS_TARGET_NAK_RECEIVED        (0x0071)
 
 /****************************************************************************/
 /*  Additional FCP target values (obsolete)                                 */
@@ -730,7 +749,7 @@ typedef struct _MSG_DEFAULT_REPLY
 #define MPI_IOCSTATUS_LAN_CANCELED              (0x0087)
 
 /****************************************************************************/
-/*  Serial Attached SCSI values                                                              */
+/*  Serial Attached SCSI values                                             */
 /****************************************************************************/
 
 #define MPI_IOCSTATUS_SAS_SMP_REQUEST_FAILED    (0x0090)

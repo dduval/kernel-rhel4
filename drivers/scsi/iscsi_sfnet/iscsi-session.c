@@ -1302,10 +1302,13 @@ establish_session(struct iscsi_session *session, unsigned int login_delay)
 		if (rc > 0)
 			/* established or redirected */
 			login_failures = 0;
-		else if (rc < 0)
+		else if (rc < 0) {
 			/* failed, retry */
+			spin_lock(&session->portal_lock);
+			iscsi_set_portal(session);
+			spin_unlock(&session->portal_lock);
 			login_failures++;
-		 else {
+		 } else {
 			/* failed, give up */
 			iscsi_host_err(session, "Session giving up\n");
 			set_bit(SESSION_TERMINATING, &session->control_bits);

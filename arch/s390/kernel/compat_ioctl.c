@@ -16,6 +16,7 @@
 #define CODE
 #include "../../../fs/compat_ioctl.c"
 #include <asm/dasd.h>
+#include <asm/vmcp.h>
 #include <asm/tape390.h>
 
 static int do_ioctl32_pointer(unsigned int fd, unsigned int cmd,
@@ -64,6 +65,11 @@ COMPATIBLE_IOCTL(BIODASDSATTR)
 #if defined(CONFIG_S390_TAPE) || defined(CONFIG_S390_TAPE_MODULE)
 COMPATIBLE_IOCTL(TAPE390_DISPLAY)
 #endif
+
+COMPATIBLE_IOCTL(VMCP_SETBUF)
+COMPATIBLE_IOCTL(VMCP_GETCODE)
+COMPATIBLE_IOCTL(VMCP_GETSIZE)
+
 
 /* s390 doesn't need handlers here */
 COMPATIBLE_IOCTL(TIOCGSERIAL)

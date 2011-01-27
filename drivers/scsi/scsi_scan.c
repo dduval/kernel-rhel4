@@ -63,14 +63,14 @@
  * SCSI_SCAN_NO_RESPONSE: no valid response received from the target, this
  * includes allocation or general failures preventing IO from being sent.
  *
- * SCSI_SCAN_TARGET_PRESENT: target responded, but no device is available
+ * SCSI_SCAN_LUN_IGNORED: target responded, but no device is available
  * on the given LUN.
  *
  * SCSI_SCAN_LUN_PRESENT: target responded, and a device is available on a
  * given LUN.
  */
 #define SCSI_SCAN_NO_RESPONSE		0
-#define SCSI_SCAN_TARGET_PRESENT	1
+#define SCSI_SCAN_LUN_IGNORED		1
 #define SCSI_SCAN_LUN_PRESENT		2
 
 static char *scsi_null_device_strs = "nullnullnullnull";
@@ -444,7 +444,7 @@ static void scsi_probe_lun(struct scsi_request *sreq, char *inq_result,
 
 	/*
 	 * The scanning code needs to know the scsi_level, even if no
-	 * device is attached at LUN 0 (SCSI_SCAN_TARGET_PRESENT) so
+	 * device is attached at LUN 0 (SCSI_SCAN_LUN_IGNORED) so
 	 * non-zero LUNs can be scanned.
 	 */
 	sdev->scsi_level = inq_result[2] & 0x07;
@@ -623,6 +623,15 @@ static int scsi_add_lun(struct scsi_device *sdev, char *inq_result, int *bflags)
 	return SCSI_SCAN_LUN_PRESENT;
 }
 
+static void scsi_scan_remove(struct scsi_device *sdev)
+{
+	if (sdev->host->transportt->device_destroy)
+		sdev->host->transportt->device_destroy(sdev);
+	if (sdev->host->hostt->slave_destroy)
+		sdev->host->hostt->slave_destroy(sdev);
+	put_device(&sdev->sdev_gendev);
+}
+
 /**
  * scsi_probe_and_add_lun - probe a LUN, if a LUN is found add it
  * @sdevscan:	probe the LUN corresponding to this Scsi_Device
@@ -635,8 +644,10 @@ static int scsi_add_lun(struct scsi_device *sdev, char *inq_result, int *bflags)
  *
  * Return:
  *     SCSI_SCAN_NO_RESPONSE: could not allocate or setup a Scsi_Device
- *     SCSI_SCAN_TARGET_PRESENT: target responded, but no device is
- *         attached at the LUN
+ *     SCSI_SCAN_LUN_IGNORED: target responded, but no device is
+ *         attached at the LUN. The sdev is never made visible, and must
+ *         be freed by the caller via scsi_scan_remove(). This way, LUN 0
+ *         is avaiable for use with the REPORT LUN command.
  *     SCSI_SCAN_LUN_PRESENT: a new Scsi_Device was allocated and initialized
  **/
 static int scsi_probe_and_add_lun(struct Scsi_Host *host,
@@ -702,7 +713,10 @@ static int scsi_probe_and_add_lun(struct Scsi_Host *host,
 		SCSI_LOG_SCAN_BUS(3, printk(KERN_INFO
 					"scsi scan: peripheral qualifier of 3,"
 					" no device added\n"));
-		res = SCSI_SCAN_TARGET_PRESENT;
+		res = SCSI_SCAN_LUN_IGNORED;
+
+		if (!sdevp)
+			scsi_scan_remove(sdev);
 		goto out_free_result;
 	}
 
@@ -712,8 +726,6 @@ static int scsi_probe_and_add_lun(struct Scsi_Host *host,
 			sdev->lockable = 0;
 			scsi_unlock_floptical(sreq, result);
 		}
-		if (bflagsp)
-			*bflagsp = bflags;
 	}
 
  out_free_result:
@@ -721,16 +733,14 @@ static int scsi_probe_and_add_lun(struct Scsi_Host *host,
  out_free_sreq:
 	scsi_release_request(sreq);
  out_free_sdev:
-	if (res == SCSI_SCAN_LUN_PRESENT) {
+	if (res == SCSI_SCAN_LUN_PRESENT || res == SCSI_SCAN_LUN_IGNORED) {
 		if (sdevp)
 			*sdevp = sdev;
-	} else {
-		if (sdev->host->hostt->slave_destroy)
-			sdev->host->hostt->slave_destroy(sdev);
-		if (sdev->host->transportt->device_destroy)
-			sdev->host->transportt->device_destroy(sdev);
-		put_device(&sdev->sdev_gendev);
-	}
+		if (bflagsp)
+			*bflagsp = bflags;
+	} else
+		scsi_scan_remove(sdev);
+
  out:
 	return res;
 }
@@ -1064,6 +1074,8 @@ struct scsi_device *__scsi_add_device(struct Scsi_Host *shost, uint channel,
 	down(&shost->scan_mutex);
 	res = scsi_probe_and_add_lun(shost, channel, id, lun, NULL,
 				     &sdev, 1, hostdata);
+	if (res == SCSI_SCAN_LUN_IGNORED)
+		scsi_scan_remove(sdev);
 	if (res != SCSI_SCAN_LUN_PRESENT)
 		sdev = ERR_PTR(-ENODEV);
 	up(&shost->scan_mutex);
@@ -1105,8 +1117,8 @@ void scsi_rescan_device(struct device *dev)
  *     First try a REPORT LUN scan, if that does not scan the target, do a
  *     sequential scan of LUNs on the target id.
  **/
-static void scsi_scan_target(struct Scsi_Host *shost, unsigned int channel,
-			     unsigned int id, unsigned int lun, int rescan)
+void scsi_scan_target(struct Scsi_Host *shost, unsigned int channel,
+		      unsigned int id, unsigned int lun, int rescan)
 {
 	int bflags = 0;
 	int res;
@@ -1122,9 +1134,9 @@ static void scsi_scan_target(struct Scsi_Host *shost, unsigned int channel,
 		/*
 		 * Scan for a specific host/chan/id/lun.
 		 */
-		scsi_probe_and_add_lun(shost, channel, id, lun, NULL, NULL,
-				       rescan, NULL);
-		return;
+		res = scsi_probe_and_add_lun(shost, channel, id, lun, NULL,
+					     &sdev, rescan, NULL);
+		goto out;
 	}
 
 	/*
@@ -1133,24 +1145,21 @@ static void scsi_scan_target(struct Scsi_Host *shost, unsigned int channel,
 	 */
 	res = scsi_probe_and_add_lun(shost, channel, id, 0, &bflags, &sdev,
 				     rescan, NULL);
-	if (res == SCSI_SCAN_LUN_PRESENT) {
-		if (scsi_report_lun_scan(sdev, bflags, rescan) != 0)
+	if (sdev && res != SCSI_SCAN_NO_RESPONSE) {
+		if (scsi_report_lun_scan(sdev, bflags, rescan) != 0) {
+			if (res == SCSI_SCAN_LUN_IGNORED)
+				bflags |= BLIST_SPARSELUN;
 			/*
 			 * The REPORT LUN did not scan the target,
 			 * do a sequential scan.
 			 */
 			scsi_sequential_lun_scan(shost, channel, id, bflags,
 				       	res, sdev->scsi_level, rescan);
-	} else if (res == SCSI_SCAN_TARGET_PRESENT) {
-		/*
-		 * There's a target here, but lun 0 is offline so we
-		 * can't use the report_lun scan.  Fall back to a
-		 * sequential lun scan with a bflags of SPARSELUN and
-		 * a default scsi level of SCSI_2
-		 */
-		scsi_sequential_lun_scan(shost, channel, id, BLIST_SPARSELUN,
-				SCSI_SCAN_TARGET_PRESENT, SCSI_2, rescan);
+		}
 	}
+ out:
+	if (res == SCSI_SCAN_LUN_IGNORED)
+		scsi_scan_remove(sdev);
 }
 
 static void scsi_scan_channel(struct Scsi_Host *shost, unsigned int channel,

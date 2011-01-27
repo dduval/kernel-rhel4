@@ -515,7 +515,7 @@ static int get_more_blocks(struct dio *dio)
 			fs_count++;
 
 		create = dio->rw == WRITE;
-		if (dio->lock_type == DIO_LOCKING) {
+		if ((dio->lock_type == DIO_LOCKING) || (dio->lock_type == DIO_CLUSTER_LOCKING)) {
 			if (dio->block_in_file < (i_size_read(dio->inode) >>
 							dio->blkbits))
 				create = 0;
@@ -1123,6 +1123,12 @@ direct_io_worker(int rw, struct kiocb *iocb, struct inode *inode,
 }
 
 /*
+ * The maximum size of an i/o request which can handled by block
+ * devices.
+ */
+#define	MAX_DIO_SIZE	((u32)INT_MAX + 1)
+
+/*
  * This is a library function for use by filesystem drivers.
  *
  * For writes to S_ISREG files, we are called under i_sem and return with i_sem
@@ -1145,6 +1151,12 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 	ssize_t retval = -EINVAL;
 	loff_t end = offset;
 	struct dio *dio;
+	int nseg;
+	unsigned long segs_reqd;
+	struct iovec *niov = NULL;
+	int asegs;
+	caddr_t nbase;
+	size_t nlen;
 
 	if (bdev)
 		bdev_blkbits = blksize_bits(bdev_hardsect_size(bdev));
@@ -1155,6 +1167,44 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 		blocksize_mask = (1 << blkbits) - 1;
 		if (offset & blocksize_mask)
 			goto out;
+	}
+
+	/*
+	 * Check to see if any individual segment is larger than
+	 * 2G.  If so, then break it up into 2G sized chunks.
+	 */
+	segs_reqd = 0;
+	for (seg = 0; seg < nr_segs; seg++)
+		segs_reqd += ((iov[seg].iov_len - 1) / MAX_DIO_SIZE) + 1;
+	if (segs_reqd != nr_segs) {
+		if (segs_reqd > 2 * UIO_MAXIOV) {
+			retval = -EINVAL;
+			goto out;
+		}
+		niov = kmalloc(sizeof(*niov) * segs_reqd, GFP_KERNEL);
+		if (!niov) {
+			retval = -ENOMEM;
+			goto out;
+		}
+		nseg = 0;
+		for (seg = 0; seg < nr_segs; seg++) {
+			nbase = iov[seg].iov_base;
+			nlen = iov[seg].iov_len;
+			asegs = (iov[seg].iov_len - 1) / MAX_DIO_SIZE;
+			while (asegs > 0) {
+				niov[nseg].iov_base = nbase;
+				niov[nseg].iov_len = MAX_DIO_SIZE;
+				nbase += MAX_DIO_SIZE;
+				nlen -= MAX_DIO_SIZE;
+				nseg++;
+				asegs--;
+			}
+			niov[nseg].iov_base = nbase;
+			niov[nseg].iov_len = nlen;
+			nseg++;
+		}
+		iov = niov;
+		nr_segs = segs_reqd;
 	}
 
 	/* Check the memory alignment.  Blocks cannot straddle pages */
@@ -1183,9 +1233,16 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 	 * For regular files using DIO_OWN_LOCKING,
 	 *	neither readers nor writers take any locks here
 	 *	(i_sem is already held and release for writers here)
+	 * The DIO_CLUSTER_LOCKING allows (cluster) filesystem manages its own
+	 *	locking (bypassing i_sem and i_alloc_sem handling within
+	 *	__blockdev_direct_IO()).
 	 */
+
 	dio->lock_type = dio_lock_type;
-	if (dio_lock_type != DIO_NO_LOCKING) {
+	if (dio_lock_type == DIO_CLUSTER_LOCKING)
+		goto cluster_skip_locking;
+
+	if (dio_lock_type != DIO_NO_LOCKING) { 
 		if (rw == READ) {
 			struct address_space *mapping;
 
@@ -1205,6 +1262,9 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 		if (dio_lock_type == DIO_LOCKING)
 			down_read(&inode->i_alloc_sem);
 	}
+
+cluster_skip_locking:
+
 	/*
 	 * For file extending writes updating i_size before data
 	 * writeouts complete can expose uninitialized blocks. So
@@ -1217,6 +1277,8 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 	retval = direct_io_worker(rw, iocb, inode, iov, offset,
 				nr_segs, blkbits, get_blocks, end_io, dio);
 out:
+	if (niov)
+		kfree(niov);
 	return retval;
 }
 EXPORT_SYMBOL(__blockdev_direct_IO);

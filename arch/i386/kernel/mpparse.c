@@ -52,7 +52,7 @@ int mp_bus_id_to_pci_bus [MAX_MP_BUSSES] = { [0 ... MAX_MP_BUSSES-1] = -1 };
 int mp_current_pci_id;
 
 /* I/O APIC entries */
-struct mpc_config_ioapic mp_ioapics[MAX_IO_APICS];
+struct mpc_config_ioapic mp_ioapics[MAX_IO_APICS_EXT];
 
 /* # of MP IRQ source entries */
 struct mpc_config_intsrc mp_irqs[MAX_IRQ_SOURCES];
@@ -64,6 +64,8 @@ int nr_ioapics;
 
 int pic_mode;
 unsigned long mp_lapic_addr;
+
+unsigned int def_to_bigsmp = 0;
 
 /* Processor that is doing the boot up */
 unsigned int boot_cpu_physical_apicid = -1U;
@@ -112,7 +114,7 @@ static int MP_valid_apicid(int apicid, int version)
 #else
 static int MP_valid_apicid(int apicid, int version)
 {
-	if (version >= 0x14)
+	if (version >= 0x10)
 		return apicid < 0xff;
 	else
 		return apicid < 0xf;
@@ -123,11 +125,20 @@ void __init MP_processor_info (struct mpc_config_processor *m)
 {
  	int ver, apicid;
 	physid_mask_t tmp;
+	extern int sibling_ht_mask;
  	
 	if (!(m->mpc_cpuflag & CPU_ENABLED))
 		return;
 
 	apicid = mpc_apic_id(m, translation_table[mpc_record]);
+
+	/* If the "noht" boot option is set, then enable only the
+	 * first CPU of a sibling set...
+	 */
+	if (apicid & sibling_ht_mask) {
+		m->mpc_cpuflag &= ~CPU_ENABLED;
+		return;
+	}
 
 	if (m->mpc_featureflag&(1<<0))
 		Dprintk("    Floating point unit present.\n");
@@ -211,10 +222,33 @@ void __init MP_processor_info (struct mpc_config_processor *m)
 	 * Validate version
 	 */
 	if (ver == 0x0) {
-		printk(KERN_WARNING "BIOS bug, APIC version is 0 for CPU#%d! fixing up to 0x10. (tell your hw vendor)\n", m->mpc_apicid);
-		ver = 0x10;
-	}
+		switch (boot_cpu_data.x86_vendor) {
+		case X86_VENDOR_INTEL:
+		  ver = 0x14;
+		  break;
+		case X86_VENDOR_AMD:
+		default:
+		  ver = 0x10;
+		  break;
+                }
+		printk(KERN_WARNING "BIOS bug, APIC version is 0 for CPU#%d! fixing up to %d. (tell your hw vendor)\n", m->mpc_apicid, ver);
+        }
 	apic_version[m->mpc_apicid] = ver;
+	if (num_processors > 8) {
+		switch (boot_cpu_data.x86_vendor) {
+		case X86_VENDOR_INTEL:
+		  if (APIC_XAPIC(ver))
+		      def_to_bigsmp = 1;
+		  break;
+		case X86_VENDOR_AMD:
+		  if (APIC_XAPIC_AMD(ver))
+		      def_to_bigsmp = 0;
+		  break;
+		default:
+		  def_to_bigsmp = 0;
+		  break;
+                }
+        }
 	bios_cpu_apicid[num_processors - 1] = m->mpc_apicid;
 }
 
@@ -252,10 +286,10 @@ static void __init MP_ioapic_info (struct mpc_config_ioapic *m)
 
 	printk(KERN_INFO "I/O APIC #%d Version %d at 0x%lX.\n",
 		m->mpc_apicid, m->mpc_apicver, m->mpc_apicaddr);
-	if (nr_ioapics >= MAX_IO_APICS) {
+	if (nr_ioapics >= MAX_IO_APICS_EXT) {
 		printk(KERN_CRIT "Max # of I/O APICs (%d) exceeded (found %d).\n",
-			MAX_IO_APICS, nr_ioapics);
-		panic("Recompile kernel with bigger MAX_IO_APICS!.\n");
+			MAX_IO_APICS_EXT, nr_ioapics);
+		panic("Recompile kernel with bigger MAX_IO_APICS_EXT!.\n");
 	}
 	if (!m->mpc_apicaddr) {
 		printk(KERN_ERR "WARNING: bogus zero I/O APIC address"
@@ -869,7 +903,7 @@ struct mp_ioapic_routing {
 	int			gsi_base;
 	int			gsi_end;
 	u32			pin_programmed[4];
-} mp_ioapic_routing[MAX_IO_APICS];
+} mp_ioapic_routing[MAX_IO_APICS_EXT];
 
 
 static int mp_find_ioapic (
@@ -897,10 +931,10 @@ void __init mp_register_ioapic (
 {
 	int			idx = 0;
 
-	if (nr_ioapics >= MAX_IO_APICS) {
+	if (nr_ioapics >= MAX_IO_APICS_EXT) {
 		printk(KERN_ERR "ERROR: Max # of I/O APICs (%d) exceeded "
-			"(found %d)\n", MAX_IO_APICS, nr_ioapics);
-		panic("Recompile kernel with bigger MAX_IO_APICS!\n");
+			"(found %d)\n", MAX_IO_APICS_EXT, nr_ioapics);
+		panic("Recompile kernel with bigger MAX_IO_APICS_EXT!\n");
 	}
 	if (!address) {
 		printk(KERN_ERR "WARNING: Bogus (zero) I/O APIC address"
@@ -914,8 +948,16 @@ void __init mp_register_ioapic (
 	mp_ioapics[idx].mpc_flags = MPC_APIC_USABLE;
 	mp_ioapics[idx].mpc_apicaddr = address;
 
-	set_fixmap_nocache(FIX_IO_APIC_BASE_0 + idx, address);
-	mp_ioapics[idx].mpc_apicid = io_apic_get_unique_id(idx, id);
+	set_fixmap_nocache(FIX_IO_APIC_BASE_EXT_0 + idx, address);
+
+	if (idx < MAX_IO_APICS)
+		set_fixmap_nocache(FIX_IO_APIC_BASE_0 + idx, address);
+
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) && (boot_cpu_data.x86 < 15))
+		mp_ioapics[idx].mpc_apicid = io_apic_get_unique_id(idx, id);
+	else
+		mp_ioapics[idx].mpc_apicid = id;
+
 	mp_ioapics[idx].mpc_apicver = io_apic_get_version(idx);
 	
 	/* 
@@ -996,6 +1038,12 @@ void __init mp_config_acpi_legacy_irqs (void)
 	mp_bus_id_to_type[MP_ISA_BUS] = MP_BUS_ISA;
 	Dprintk("Bus #%d is ISA\n", MP_ISA_BUS);
 
+	/*
+	 * Older generations of ES7000 have no legacy identity mappings
+	 */
+	if (es7000_plat == 1)
+		return;
+
 	/* 
 	 * Locate the IOAPIC that manages the ISA IRQs (0-15). 
 	 */
@@ -1051,22 +1099,32 @@ void __init mp_config_acpi_legacy_irqs (void)
 
 int (*platform_rename_gsi)(int ioapic, int gsi);
 
-void mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
+#define MAX_GSI_NUM	4096
+
+/*
+ * Mapping between Global System Interrups, which
+ * represent all possible interrupts, and IRQs
+ * assigned to actual devices.
+ */
+static u8 gsi_to_irq[MAX_GSI_NUM];
+
+int mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
 {
 	int			ioapic = -1;
 	int			ioapic_pin = 0;
 	int			idx, bit = 0;
+        static int              pci_irq = 16;
 
 #ifdef CONFIG_ACPI_BUS
 	/* Don't set up the ACPI SCI because it's already set up */
 	if (acpi_fadt.sci_int == gsi)
-		return;
+		return gsi;
 #endif
 
 	ioapic = mp_find_ioapic(gsi);
 	if (ioapic < 0) {
 		printk(KERN_WARNING "No IOAPIC for GSI %u\n", gsi);
-		return;
+		return gsi;
 	}
 
 	ioapic_pin = gsi - mp_ioapic_routing[ioapic].gsi_base;
@@ -1085,19 +1143,41 @@ void mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
 		printk(KERN_ERR "Invalid reference to IOAPIC pin "
 			"%d-%d\n", mp_ioapic_routing[ioapic].apic_id, 
 			ioapic_pin);
-		return;
+		return gsi;
 	}
 	if ((1<<bit) & mp_ioapic_routing[ioapic].pin_programmed[idx]) {
 		Dprintk(KERN_DEBUG "Pin %d-%d already programmed\n",
 			mp_ioapic_routing[ioapic].apic_id, ioapic_pin);
-		return;
+		return gsi_to_irq[gsi];
 	}
 
 	mp_ioapic_routing[ioapic].pin_programmed[idx] |= (1<<bit);
 
+        if (edge_level) {
+                /*
+                 * For PCI devices assign IRQs in order, avoiding gaps
+                 * due to unused I/O APIC pins.
+                 */
+                int irq = gsi;
+                if (gsi < MAX_GSI_NUM) {
+                        if (gsi > 15)
+                                gsi = pci_irq++;
+                        /*
+                         * Don't assign IRQ used by ACPI SCI
+                         */
+                        if (gsi == acpi_fadt.sci_int)
+                                gsi = pci_irq++;
+                        gsi_to_irq[irq] = gsi;
+                } else {
+                        printk(KERN_ERR "GSI %u is too high\n", gsi);
+                        return gsi;
+                }
+        }
+
 	io_apic_set_pci_routing(ioapic, ioapic_pin, gsi,
 		    edge_level == ACPI_EDGE_SENSITIVE ? 0 : 1,
 		    active_high_low == ACPI_ACTIVE_HIGH ? 0 : 1);
+	return gsi;
 }
 
 #endif /*CONFIG_X86_IO_APIC && (CONFIG_ACPI_INTERPRETER || CONFIG_ACPI_BOOT)*/

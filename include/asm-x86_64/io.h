@@ -135,6 +135,8 @@ extern inline void * phys_to_virt(unsigned long address)
 #define page_to_phys(page)	((page - mem_map) << PAGE_SHIFT)
 #endif
 
+#include <asm-generic/iomap.h>
+
 extern void __iomem *__ioremap(unsigned long offset, unsigned long size, unsigned long flags);
 
 extern inline void __iomem * ioremap (unsigned long offset, unsigned long size)

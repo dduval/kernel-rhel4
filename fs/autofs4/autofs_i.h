@@ -40,14 +40,6 @@
 
 #define AUTOFS_SUPER_MAGIC 0x0187
 
-/*
- * If the daemon returns a negative response (AUTOFS_IOC_FAIL) then the
- * kernel will keep the negative response cached for up to the time given
- * here, although the time can be shorter if the kernel throws the dcache
- * entry away.  This probably should be settable from user space.
- */
-#define AUTOFS_NEGATIVE_TIMEOUT (60*HZ)	/* 1 minute */
-
 /* Unified info structure.  This is pointed to by both the dentry and
    inode structures.  Each file in the filesystem has an instance of this
    structure.  It holds a reference to the dentry, so dentries are never
@@ -101,6 +93,7 @@ struct autofs_sb_info {
 	int needs_reghost;
 	struct super_block *sb;
 	struct semaphore wq_sem;
+	spinlock_t fs_lock;
 	struct autofs_wait_queue *queues; /* Wait queue pointer */
 };
 
@@ -126,9 +119,18 @@ static inline int autofs4_oz_mode(struct autofs_sb_info *sbi) {
 static inline int autofs4_ispending(struct dentry *dentry)
 {
 	struct autofs_info *inf = autofs4_dentry_ino(dentry);
+	int pending = 0;
 
-	return (dentry->d_flags & DCACHE_AUTOFS_PENDING) ||
-		(inf != NULL && inf->flags & AUTOFS_INF_EXPIRING);
+	if (dentry->d_flags & DCACHE_AUTOFS_PENDING)
+		return 1;
+
+	if (inf) {
+		spin_lock(&inf->sbi->fs_lock);
+		pending = inf->flags & AUTOFS_INF_EXPIRING;
+		spin_unlock(&inf->sbi->fs_lock);
+	}
+
+	return pending;
 }
 
 static inline void autofs4_copy_atime(struct file *src, struct file *dst)
@@ -173,6 +175,19 @@ enum autofs_notify
 int autofs4_wait(struct autofs_sb_info *,struct dentry *, enum autofs_notify);
 int autofs4_wait_release(struct autofs_sb_info *,autofs_wqt_t,int);
 void autofs4_catatonic_mode(struct autofs_sb_info *);
+
+static inline int autofs4_follow_mount(struct vfsmount **mnt, struct dentry **dentry)
+{
+	int res = 0;
+
+	while (d_mountpoint(*dentry)) {
+		int followed = follow_down(mnt, dentry);
+		if (!followed)
+			break;
+		res = 1;
+	}
+	return res;
+}
 
 static inline int simple_positive(struct dentry *dentry)
 {

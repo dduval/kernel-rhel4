@@ -354,7 +354,7 @@ static int sg_scsi_ioctl(struct file *file, request_queue_t *q,
 		return -EFAULT;
 	if (in_len > PAGE_SIZE || out_len > PAGE_SIZE)
 		return -EINVAL;
-	if (get_user(opcode, (int *)sic->data))
+	if (get_user(opcode, (char *)sic->data))
 		return -EFAULT;
 
 	bytes = max(in_len, out_len);

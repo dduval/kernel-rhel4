@@ -403,6 +403,8 @@ do { \
 #define spin_trylock(lock)	_spin_trylock(lock)
 #define write_trylock(lock)	_write_trylock(lock)
 
+#define DEFINE_SPINLOCK(x)	spinlock_t x = SPIN_LOCK_UNLOCKED
+#define DEFINE_RWLOCK(x)	rw_lock_t x = RW_LOCK_UNLOCKED
 /* Where's read_trylock? */
 
 #define spin_lock(lock)		_spin_lock(lock)

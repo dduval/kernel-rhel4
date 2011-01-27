@@ -89,6 +89,7 @@
 /* MPC52xx type numbers */
 #define PORT_MPC52xx	59
 #define PORT_ICOM	60
+#define PORT_JSM        61
 
 #ifdef __KERNEL__
 

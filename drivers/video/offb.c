@@ -26,8 +26,10 @@
 #include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
+#include <linux/pci.h>
 #include <asm/io.h>
 #include <asm/prom.h>
+#include <asm/pci-bridge.h>
 
 #ifdef CONFIG_PPC32
 #include <asm/bootx.h>
@@ -350,7 +352,8 @@ static void __init offb_init_nodriver(struct device_node *dp)
 	int *pp, i;
 	unsigned int len;
 	int width = 640, height = 480, depth = 8, pitch;
-	unsigned *up, address;
+	unsigned *up;
+	unsigned long address = 0, rsize;
 
 	if ((pp = (int *) get_property(dp, "depth", &len)) != NULL
 	    && len == sizeof(int))
@@ -368,13 +371,34 @@ static void __init offb_init_nodriver(struct device_node *dp)
 			pitch = 0x1000;
 	} else
 		pitch = width;
-	if ((up = (unsigned *) get_property(dp, "address", &len)) != NULL
+
+	rsize = (unsigned long)pitch * (unsigned long)height *
+		(unsigned long)(depth / 8);
+
+#ifdef CONFIG_PCI
+	/* First try to locate the PCI device if any */
+	{
+		struct pci_dev *pdev = NULL;
+
+	        while ((pdev = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, pdev)) != NULL)
+                	if (dp == pci_device_to_OF_node(pdev))
+				break;
+		if (pdev) {
+			for (i = 0; i < 6 && address == 0; i++) {
+				if ((pci_resource_flags(pdev, i) & IORESOURCE_MEM) &&
+					(pci_resource_len(pdev, i) >= rsize))
+					address = pci_resource_start(pdev, i);
+			}
+		}
+        }
+#endif /* CONFIG_PCI */
+
+	if (address == 0 && (up = (unsigned *) get_property(dp, "address", &len)) != NULL
 	    && len == sizeof(unsigned))
 		address = (u_long) * up;
-	else {
+	if (address == 0) {
 		for (i = 0; i < dp->n_addrs; ++i)
-			if (dp->addrs[i].size >=
-			    pitch * height * depth / 8)
+			if (dp->addrs[i].size >= rsize)
 				break;
 		if (i >= dp->n_addrs) {
 			printk(KERN_ERR
@@ -383,7 +407,7 @@ static void __init offb_init_nodriver(struct device_node *dp)
 			return;
 		}
 
-		address = (u_long) dp->addrs[i].address;
+		address = (unsigned long)dp->addrs[i].address;
 
 		/* kludge for valkyrie */
 		if (strcmp(dp->name, "valkyrie") == 0)

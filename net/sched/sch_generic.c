@@ -517,6 +517,10 @@ void dev_activate(struct net_device *dev)
 		write_unlock_bh(&qdisc_tree_lock);
 	}
 
+	if (!netif_carrier_ok(dev))
+		/* Delay activation until next carrier-on event */
+		return;
+
 	spin_lock_bh(&dev->queue_lock);
 	if ((dev->qdisc = dev->qdisc_sleeping) != &noqueue_qdisc) {
 		dev->trans_start = jiffies;

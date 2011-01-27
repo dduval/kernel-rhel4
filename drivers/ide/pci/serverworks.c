@@ -21,6 +21,9 @@
  *
  *   CSB6: `Champion South Bridge' IDE Interface (optional: third channel)
  *
+ *   HT1000: AKA BCM5785 - Hypertransport Southbridge for Opteron systems. IDE
+ *   controller same as the CSB6. Single channel ATA100 only.
+ *
  * Documentation:
  *	Available under NDA only. Errata info very hard to get.
  *
@@ -61,7 +64,7 @@ static int svwks_get_info (char *buffer, char **addr, off_t offset, int count)
 	int i, len;
 
 	p += sprintf(p, "\n                             "
-			"ServerWorks OSB4/CSB5/CSB6\n");
+			"ServerWorks OSB4/CSB5/CSB6/HT1000\n");
 
 	for (i = 0; i < n_svwks_devs; i++) {
 		struct pci_dev *dev = svwks_devs[i];
@@ -85,6 +88,9 @@ static int svwks_get_info (char *buffer, char **addr, off_t offset, int count)
 
 		p += sprintf(p, "\n                            ServerWorks ");
 		switch(dev->device) {
+			case PCI_DEVICE_ID_SERVERWORKS_HT1000IDE:
+				p += sprintf(p, "HT1000 ");
+				break;
 			case PCI_DEVICE_ID_SERVERWORKS_CSB6IDE2:
 			case PCI_DEVICE_ID_SERVERWORKS_CSB6IDE:
 				p += sprintf(p, "CSB6 ");
@@ -220,6 +226,9 @@ static u8 svwks_ratemask (ide_drive_t *drive)
 	if (!svwks_revision)
 		pci_read_config_byte(dev, PCI_REVISION_ID, &svwks_revision);
 
+	if (dev->device == PCI_DEVICE_ID_SERVERWORKS_HT1000IDE)
+		return 2;
+
 	if (dev->device == PCI_DEVICE_ID_SERVERWORKS_OSB4IDE) {
 		u32 reg = 0;
 		if (isa_dev)
@@ -258,6 +267,7 @@ static u8 svwks_csb_check (struct pci_dev *dev)
 		case PCI_DEVICE_ID_SERVERWORKS_CSB5IDE:
 		case PCI_DEVICE_ID_SERVERWORKS_CSB6IDE:
 		case PCI_DEVICE_ID_SERVERWORKS_CSB6IDE2:
+		case PCI_DEVICE_ID_SERVERWORKS_HT1000IDE:
 			return 1;
 		default:
 			break;
@@ -609,7 +619,13 @@ static unsigned int __devinit init_chipset_svwks (struct pci_dev *dev, const cha
 			btr |= (svwks_revision >= SVWKS_CSB5_REVISION_NEW) ? 0x3 : 0x2;
 		pci_write_config_byte(dev, 0x5A, btr);
 	}
-
+	/* HT1000 IDE controller - single channel */
+	else if (dev->device == PCI_DEVICE_ID_SERVERWORKS_HT1000IDE) {
+		pci_read_config_byte(dev, 0x5A, &btr);
+		btr &= ~0x40;
+		btr |= 0x3;
+		pci_write_config_byte(dev, 0x5A, btr);
+	}
 
 #if defined(DISPLAY_SVWKS_TIMINGS) && defined(CONFIG_PROC_FS)
 	svwks_devs[n_svwks_devs++] = dev;
@@ -808,6 +824,7 @@ static struct pci_device_id svwks_pci_tbl[] = {
 	{ PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_CSB5IDE, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 1},
 	{ PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_CSB6IDE, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 2},
 	{ PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_CSB6IDE2, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 3},
+	{ PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_HT1000IDE, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 4},
 	{ 0, },
 };
 MODULE_DEVICE_TABLE(pci, svwks_pci_tbl);

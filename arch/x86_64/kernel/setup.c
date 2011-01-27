@@ -80,6 +80,9 @@ extern int acpi_numa;
 extern int __initdata numa_off;
 #endif
 
+int sibling_ht_mask = 0;
+int disable_x86_ht;
+
 /* For PCI or other memory-mapped resources */
 unsigned long pci_mem_start = 0x10000000;
 
@@ -323,6 +326,15 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 		if (!memcmp(from,"numa=on", 7))
 			numa_off = 0;
 #endif
+#ifdef CONFIG_X86_HT
+		/* "noht" disables hyperthreading by only recognizing
+		 * the first CPU of a sibling set
+		 */
+		if (!memcmp(from, "noht", 4)) {
+			extern int disable_x86_ht;
+			disable_x86_ht = 1;
+		}
+#endif
 
 	next_char:
 		c = *(from++);
@@ -453,6 +465,43 @@ static void __init reserve_ebda_region(void)
 		reserve_bootmem_generic(addr, PAGE_SIZE);
 }
 
+static void noht_init(void)
+{
+	unsigned int cpuid_level;
+	char vendorid[13];
+	vendorid[12] = 0;
+
+	/* Have to get CPUID level and vendor ID here since
+ 	 * we haven't populated boot_cpu_data yet
+	 */
+
+	cpuid(0, &cpuid_level, (int *)&vendorid[0], (int *)&vendorid[8], (int *)&vendorid[4]);
+
+	if (!strncmp(vendorid, "GenuineIntel", 12) && disable_x86_ht) {
+		int siblings, eax, ebx, ecx, edx;
+		/* If "noht" specified, calculate a mask that
+		 * can be used to determine which APIC IDs
+		 * correspond to the first CPU in a sibling
+		 * set.
+		 */
+		printk("Hyperthreading disabled by user\n");
+		ebx = cpuid_ebx(1);
+		siblings = (ebx & 0xff0000) >> 16;
+		if (!siblings) 
+			siblings = 1;
+		if (cpuid_level >= 4) {
+			cpuid_count(4, 0, &eax, &ebx, &ecx, &edx);
+			if (eax & 0x1f)
+				siblings /= ((eax >> 26) + 1);
+		}
+		
+		sibling_ht_mask = 1;
+		while(sibling_ht_mask < siblings)
+			sibling_ht_mask <<= 1;
+		sibling_ht_mask--;
+	}
+}
+
 void __init setup_arch(char **cmdline_p)
 {
 	unsigned long low_mem_size;
@@ -498,6 +547,9 @@ void __init setup_arch(char **cmdline_p)
 
 	init_memory_mapping(); 
 
+#ifdef CONFIG_X86_HT
+	noht_init();
+#endif
 #ifdef CONFIG_ACPI_BOOT
 	/*
 	 * Initialize the ACPI boot-time table parser (gets the RSDP and SDT).
@@ -719,6 +771,35 @@ static void __init display_cacheinfo(struct cpuinfo_x86 *c)
 	}
 }
 
+/*
+ * On a AMD dual core setup the lower bits of the APIC id distingush the cores.
+ * Assumes number of cores is a power of two.
+ */
+static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
+{
+#ifdef CONFIG_SMP
+	int cpu = smp_processor_id();
+	unsigned bits;
+	int initial_apic_id;
+
+	bits = 0;
+	while ((1 << bits) < c->x86_num_cores)
+		bits++;
+
+	/* Low order bits define the core id (index of core in socket) */
+	cpu_core_id[cpu] = phys_proc_id[cpu] & ((1 << bits)-1);
+	/* Convert the APIC ID into the socket ID */
+	phys_proc_id[cpu] >>= bits;
+
+	initial_apic_id = hard_smp_processor_id();
+	printk(KERN_INFO  "AMD CPU%d: Physical Processor ID: %d\n",
+	       cpu, phys_proc_id[cpu]);
+	printk(KERN_INFO  "AMD CPU%d: Processor Core ID: %d\n",
+	       cpu, cpu_core_id[cpu]);
+	printk(KERN_INFO  "AMD CPU%d: Initial APIC ID: %d\n",
+	       cpu, initial_apic_id);
+#endif
+}
 
 static int __init init_amd(struct cpuinfo_x86 *c)
 {
@@ -749,9 +830,12 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 
 #ifdef CONFIG_SMP
 	if (cpuid_eax(0x80000000) >= 0x80000008) {
+	        phys_proc_id[c->x86_apicid] = c->x86_apicid;
 		c->x86_num_cores = (cpuid_ecx(0x80000008) & 0xff) + 1;
 		if (c->x86_num_cores & (c->x86_num_cores - 1))
 			c->x86_num_cores = 1;
+
+		amd_detect_cmp(c);
 
 #ifdef CONFIG_NUMA
 		/* On a dual core setup the lower bits of apic id
@@ -783,7 +867,7 @@ static void __init detect_ht(struct cpuinfo_x86 *c)
 	int	initial_apic_id;
 	int 	cpu = smp_processor_id();
 	
-	if (!cpu_has(c, X86_FEATURE_HT))
+	if (!cpu_has(c, X86_FEATURE_HT) || (boot_cpu_data.x86_vendor == X86_VENDOR_AMD && cpu_has(c, X86_FEATURE_CMP_LEGACY)))
 		return;
 
 	cpuid(1, &eax, &ebx, &ecx, &edx);
@@ -1090,6 +1174,12 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"tm2", NULL, "cid", NULL, NULL, "cx16", "xtpr", NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+		/* AMD-defined (#2) */
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	};
 	static char *x86_power_flags[] = { 
 		"ts",	/* temperature sensor */
@@ -1129,7 +1219,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	if (c->x86_cache_size >= 0) 
 		seq_printf(m, "cache size\t: %d KB\n", c->x86_cache_size);
 	
-#ifdef CONFIG_X86_HT
+#if defined (CONFIG_X86_HT) && defined (X86_FEATURE_CMP_LEGACY)
 	if (smp_num_siblings > 1 || c->x86_num_cores > 1) {
 		seq_printf(m, "physical id\t: %d\n", phys_proc_id[c - cpu_data]);
 		seq_printf(m, "siblings\t: %d\n", smp_num_siblings * c->x86_num_cores);

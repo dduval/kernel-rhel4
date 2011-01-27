@@ -32,6 +32,7 @@
 #define _LINUX_USBDEVICE_FS_H
 
 #include <linux/types.h>
+#include <linux/compat.h>
 
 /* --------------------------------------------------------------------- */
 
@@ -123,6 +124,14 @@ struct usbdevfs_hub_portinfo {
 	char port [127];	/* e.g. port 3 connects to device 27 */
 };
 
+#ifdef CONFIG_COMPAT
+struct usbdevfs_ioctl32 {
+	s32 ifno;
+	s32 ioctl_code;
+	compat_caddr_t data;
+};
+#endif
+
 #define USBDEVFS_CONTROL           _IOWR('U', 0, struct usbdevfs_ctrltransfer)
 #define USBDEVFS_BULK              _IOWR('U', 2, struct usbdevfs_bulktransfer)
 #define USBDEVFS_RESETEP           _IOR('U', 3, unsigned int)
@@ -138,6 +147,7 @@ struct usbdevfs_hub_portinfo {
 #define USBDEVFS_RELEASEINTERFACE  _IOR('U', 16, unsigned int)
 #define USBDEVFS_CONNECTINFO       _IOW('U', 17, struct usbdevfs_connectinfo)
 #define USBDEVFS_IOCTL             _IOWR('U', 18, struct usbdevfs_ioctl)
+#define USBDEVFS_IOCTL32           _IOWR('U', 18, struct usbdevfs_ioctl32)
 #define USBDEVFS_HUB_PORTINFO      _IOR('U', 19, struct usbdevfs_hub_portinfo)
 #define USBDEVFS_RESET             _IO('U', 20)
 #define USBDEVFS_CLEAR_HALT        _IOR('U', 21, unsigned int)

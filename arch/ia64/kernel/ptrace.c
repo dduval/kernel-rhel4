@@ -1537,10 +1537,13 @@ asmlinkage void
 syscall_trace_leave (long arg0, long arg1, long arg2, long arg3,
 		     long arg4, long arg5, long arg6, long arg7, long stack)
 {
-	if (unlikely(current->audit_context))
+	if (unlikely(current->audit_context)) {
+		int success = AUDITSC_RESULT(((struct pt_regs *) &stack)->r10);
+		long result = ((struct pt_regs *) &stack)->r8;
 		audit_syscall_exit(current, 
-				   AUDITSC_RESULT(((struct pt_regs *) &stack)->r8),
-				   ((struct pt_regs *) &stack)->r8);
+				   success,
+				   (success == AUDITSC_SUCCESS) ? result : -result);
+	}
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE) && (current->ptrace & PT_PTRACED))
 		syscall_trace();

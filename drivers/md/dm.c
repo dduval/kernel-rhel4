@@ -30,6 +30,7 @@ struct dm_io {
 	int error;
 	struct bio *bio;
 	atomic_t io_count;
+	unsigned long start_time;
 };
 
 /*
@@ -54,6 +55,7 @@ union map_info *dm_get_mapinfo(struct bio *bio)
  */
 #define DMF_BLOCK_IO 0
 #define DMF_SUSPENDED 1
+#define DMF_FROZEN 2
 
 struct mapped_device {
 	struct rw_semaphore io_lock;
@@ -96,7 +98,7 @@ struct mapped_device {
 	 * freeze/thaw support require holding onto a super block
 	 */
 	struct super_block *frozen_sb;
-	struct block_device *frozen_bdev;
+	struct block_device *suspended_bdev;
 };
 
 #define MIN_IOS 256
@@ -237,6 +239,38 @@ static inline void free_tio(struct mapped_device *md, struct target_io *tio)
 	mempool_free(tio, md->tio_pool);
 }
 
+static void start_io_acct(struct dm_io *io)
+{
+	struct mapped_device *md = io->md;
+
+	io->start_time = jiffies;
+
+	disk_round_stats(dm_disk(md));
+	dm_disk(md)->in_flight = atomic_inc_return(&md->pending);
+}
+
+static int end_io_acct(struct dm_io *io)
+{
+	struct mapped_device *md = io->md;
+	struct bio *bio = io->bio;
+	unsigned long duration = jiffies - io->start_time;
+	int pending;
+
+	disk_round_stats(dm_disk(md));
+	dm_disk(md)->in_flight = pending = atomic_dec_return(&md->pending);
+
+	switch (bio_data_dir(bio)) {
+	case WRITE:
+		disk_stat_add(dm_disk(md), write_ticks, duration);
+		break;
+	case READ:
+		disk_stat_add(dm_disk(md), read_ticks, duration);
+		break;
+	}
+
+	return !pending;
+}
+
 /*
  * Add the bio to the list of deferred io.
  */
@@ -292,7 +326,7 @@ static inline void dec_pending(struct dm_io *io, int error)
 		io->error = error;
 
 	if (atomic_dec_and_test(&io->io_count)) {
-		if (atomic_dec_and_test(&io->md->pending))
+		if (end_io_acct(io))
 			/* nudge anyone waiting on suspend queue */
 			wake_up(&io->md->wait);
 
@@ -541,7 +575,7 @@ static void __split_bio(struct mapped_device *md, struct bio *bio)
 	ci.sector_count = bio_sectors(bio);
 	ci.idx = bio->bi_idx;
 
-	atomic_inc(&md->pending);
+	start_io_acct(ci.io);
 	while (ci.sector_count)
 		__clone_and_map(&ci);
 
@@ -563,6 +597,14 @@ static int dm_request(request_queue_t *q, struct bio *bio)
 	struct mapped_device *md = q->queuedata;
 
 	down_read(&md->io_lock);
+
+	if (bio_data_dir(bio) == WRITE) {
+		disk_stat_inc(dm_disk(md), writes);
+		disk_stat_add(dm_disk(md), write_sectors, bio_sectors(bio));
+	} else {
+		disk_stat_inc(dm_disk(md), reads);
+		disk_stat_add(dm_disk(md), read_sectors, bio_sectors(bio));
+	}
 
 	/*
 	 * If we're suspended we have to queue
@@ -824,9 +866,9 @@ static void __set_size(struct mapped_device *md, sector_t size)
 {
 	set_capacity(md->disk, size);
 
-	down(&md->frozen_bdev->bd_inode->i_sem);
-	i_size_write(md->frozen_bdev->bd_inode, (loff_t)size << SECTOR_SHIFT);
-	up(&md->frozen_bdev->bd_inode->i_sem);
+	down(&md->suspended_bdev->bd_inode->i_sem);
+	i_size_write(md->suspended_bdev->bd_inode, (loff_t)size << SECTOR_SHIFT);
+	up(&md->suspended_bdev->bd_inode->i_sem);
 }
 
 static int __bind(struct mapped_device *md, struct dm_table *t)
@@ -979,43 +1021,33 @@ out:
  */
 static int lock_fs(struct mapped_device *md)
 {
-	int r = -ENOMEM;
-
-	md->frozen_bdev = bdget_disk(md->disk, 0);
-	if (!md->frozen_bdev) {
-		DMWARN("bdget failed in lock_fs");
-		goto out;
-	}
+	int r;
 
 	WARN_ON(md->frozen_sb);
 
-	md->frozen_sb = freeze_bdev(md->frozen_bdev);
+	md->frozen_sb = freeze_bdev(md->suspended_bdev);
 	if (IS_ERR(md->frozen_sb)) {
 		r = PTR_ERR(md->frozen_sb);
-		goto out_bdput;
+		md->frozen_sb = NULL;
+		return r;
 	}
 
+	set_bit(DMF_FROZEN, &md->flags);
+
 	/* don't bdput right now, we don't want the bdev
-	 * to go away while it is locked.  We'll bdput
-	 * in unlock_fs
+	 * to go away while it is locked.
 	 */
 	return 0;
-
-out_bdput:
-	bdput(md->frozen_bdev);
-	md->frozen_sb = NULL;
-	md->frozen_bdev = NULL;
-out:
-	return r;
 }
 
 static void unlock_fs(struct mapped_device *md)
 {
-	thaw_bdev(md->frozen_bdev, md->frozen_sb);
-	bdput(md->frozen_bdev);
+	if (!test_bit(DMF_FROZEN, &md->flags))
+		return;
 
+	thaw_bdev(md->suspended_bdev, md->frozen_sb);
 	md->frozen_sb = NULL;
-	md->frozen_bdev = NULL;
+	clear_bit(DMF_FROZEN, &md->flags);
 }
 
 /*
@@ -1025,7 +1057,7 @@ static void unlock_fs(struct mapped_device *md)
  * dm_bind_table, dm_suspend must be called to flush any in
  * flight bios and ensure that any further io gets deferred.
  */
-int dm_suspend(struct mapped_device *md)
+int dm_suspend(struct mapped_device *md, int do_lockfs)
 {
 	struct dm_table *map = NULL;
 	DECLARE_WAITQUEUE(wait, current);
@@ -1041,10 +1073,19 @@ int dm_suspend(struct mapped_device *md)
 	/* This does not get reverted if there's an error later. */
 	dm_table_presuspend_targets(map);
 
-	/* Flush I/O to the device. */
-	r = lock_fs(md);
-	if (r)
+	md->suspended_bdev = bdget_disk(md->disk, 0);
+	if (!md->suspended_bdev) {
+		DMWARN("bdget failed in dm_suspend");
+		r = -ENOMEM;
 		goto out;
+	}
+
+	/* Flush I/O to the device. */
+	if (do_lockfs) {
+		r = lock_fs(md);
+		if (r)
+			goto out;
+	}
 
 	/*
 	 * First we set the BLOCK_IO flag so no more ios will be mapped.
@@ -1093,6 +1134,11 @@ int dm_suspend(struct mapped_device *md)
 	r = 0;
 
 out:
+	if (r && md->suspended_bdev) {
+		bdput(md->suspended_bdev);
+		md->suspended_bdev = NULL;
+	}
+
 	dm_table_put(map);
 	up(&md->suspend_lock);
 	return r;
@@ -1122,6 +1168,9 @@ int dm_resume(struct mapped_device *md)
 	up_write(&md->io_lock);
 
 	unlock_fs(md);
+
+	bdput(md->suspended_bdev);
+	md->suspended_bdev = NULL;
 
 	clear_bit(DMF_SUSPENDED, &md->flags);
 

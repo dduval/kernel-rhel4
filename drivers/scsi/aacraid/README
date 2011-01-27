@@ -13,6 +13,7 @@ Supported Cards/Chipsets
 	Adaptec 2020S
 	Adaptec 2025S
 	Adaptec 2120S
+	Adaptec 2130S
 	Adaptec 2200S
 	Adaptec 2230S
 	Adaptec 2240S
@@ -35,6 +36,17 @@ Supported Cards/Chipsets
 	HP NetRAID-4M
 	Legend S220
 	Legend S230
+	IBM ServeRAID 7t
+	IBM ServeRAID 8i
+	IBM ServeRAID 8k/8k-l4
+	IBM ServeRAID 8k/8k-l8
+	ICP 9014R0
+	ICP 9024R0
+	ICP 9047MA
+	ICP 9087MA
+	ICP 9085LI
+	ICP 5085AU
+	ICP 9067MA
 
 People
 -------------------------
@@ -42,14 +54,14 @@ Alan Cox <alan@redhat.com>
 Christoph Hellwig <hch@infradead.org>	(updates for new-style PCI probing and SCSI host registration,
 					 small cleanups/fixes)
 Matt Domsch <matt_domsch@dell.com>	(revision ioctl, adapter messages)
-Deanna Bonds <deanna_bonds@adaptec.com> (non-DASD support, PAE fibs and 64 bit, added new adaptec controllers
+Deanna Bonds                            (non-DASD support, PAE fibs and 64 bit, added new adaptec controllers
 					 added new ioctls, changed scsi interface to use new error handler,
 					 increased the number of fibs and outstanding commands to a container)
 
 					(fixed 64bit and 64G memory model, changed confusing naming convention
 					 where fibs that go to the hardware are consistently called hw_fibs and
 					 not just fibs like the name of the driver tracking structure)
-Mark Salyzyn <Mark_Salyzyn@adaptec.com> Fixed panic issues and added some new product ids for upcoming hbas.
+Mark Salyzyn <Mark_Salyzyn@adaptec.com> Fixed panic issues and added some new product ids for upcoming hbas. Performance tuning, card failover and bug mitigations.
 
 Original Driver
 -------------------------
@@ -60,7 +72,7 @@ Mailing List
 linux-scsi@vger.kernel.org (Interested parties troll here)
 Also note this is very different to Brian's original driver
 so don't expect him to support it.
-Adaptec does support this driver.  Contact either tech support or Mark Salyzyn.
+Adaptec does support this driver.  Contact Adaptec tech support.
 
 Original by Brian Boerner February 2001
 Rewritten by Alan Cox, November 2001

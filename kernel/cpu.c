@@ -217,6 +217,8 @@ int __devinit cpu_up(unsigned int cpu)
 	/* Now call notifier in preparation. */
 	notifier_call_chain(&cpu_chain, CPU_ONLINE, hcpu);
 
+	cpu_run_sbin_hotplug(cpu, "online");
+
 out_notify:
 	if (ret != 0)
 		notifier_call_chain(&cpu_chain, CPU_UP_CANCELED, hcpu);

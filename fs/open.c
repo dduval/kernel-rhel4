@@ -741,6 +741,8 @@ asmlinkage long sys_fchown(unsigned int fd, uid_t user, gid_t group)
 	return error;
 }
 
+static struct file *__dentry_open(struct dentry *, struct vfsmount *, int, struct file *);
+
 /*
  * Note that while the flag value (low two bits) for sys_open means:
  *	00 - read-only
@@ -759,6 +761,7 @@ struct file *filp_open(const char * filename, int flags, int mode)
 {
 	int namei_flags, error;
 	struct nameidata nd;
+	struct file *f;
 
 	namei_flags = flags;
 	if ((namei_flags+1) & O_ACCMODE)
@@ -766,10 +769,16 @@ struct file *filp_open(const char * filename, int flags, int mode)
 	if (namei_flags & O_TRUNC)
 		namei_flags |= 2;
 
+	error = -ENFILE;
+	f = get_empty_filp();
+	if (f == NULL)
+		return ERR_PTR(error);
+
 	error = open_namei(filename, namei_flags, mode, &nd);
 	if (!error)
-		return dentry_open(nd.dentry, nd.mnt, flags);
+		return __dentry_open(nd.dentry, nd.mnt, flags, f);
 
+	put_filp(f);
 	return ERR_PTR(error);
 }
 
@@ -777,14 +786,27 @@ EXPORT_SYMBOL(filp_open);
 
 struct file *dentry_open(struct dentry *dentry, struct vfsmount *mnt, int flags)
 {
-	struct file * f;
-	struct inode *inode;
 	int error;
+	struct file *f;
 
 	error = -ENFILE;
 	f = get_empty_filp();
-	if (!f)
-		goto cleanup_dentry;
+	if (f == NULL) {
+		dput(dentry);
+		mntput(mnt);
+		return ERR_PTR(error);
+	}
+
+	return __dentry_open(dentry, mnt, flags, f);
+}
+
+EXPORT_SYMBOL(dentry_open);
+
+static struct file *__dentry_open(struct dentry *dentry, struct vfsmount *mnt, int flags, struct file *f)
+{
+	struct inode *inode;
+	int error;
+
 	f->f_flags = flags;
 	f->f_mode = ((flags+1) & O_ACCMODE) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
 	inode = dentry->d_inode;
@@ -829,13 +851,10 @@ cleanup_all:
 	f->f_vfsmnt = NULL;
 cleanup_file:
 	put_filp(f);
-cleanup_dentry:
 	dput(dentry);
 	mntput(mnt);
 	return ERR_PTR(error);
 }
-
-EXPORT_SYMBOL(dentry_open);
 
 /*
  * Find an empty file descriptor entry, and mark it busy.
@@ -948,9 +967,9 @@ asmlinkage long sys_open(const char __user * filename, int flags, int mode)
 	char * tmp;
 	int fd, error;
 
-#if BITS_PER_LONG != 32
-	flags |= O_LARGEFILE;
-#endif
+	if (force_o_largefile())
+		flags |= O_LARGEFILE;
+
 	tmp = getname(filename);
 	fd = PTR_ERR(tmp);
 	if (!IS_ERR(tmp)) {

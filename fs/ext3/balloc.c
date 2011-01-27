@@ -269,7 +269,8 @@ void ext3_discard_reservation(struct inode *inode)
 
 	if (!rsv_is_empty(&rsv->rsv_window)) {
 		spin_lock(rsv_lock);
-		rsv_window_remove(inode->i_sb, rsv);
+		if (!rsv_is_empty(&rsv->rsv_window))
+			rsv_window_remove(inode->i_sb, rsv);
 		spin_unlock(rsv_lock);
 	}
 }
@@ -779,19 +780,11 @@ static struct reserve_window_node *find_next_reservable_window(
 
 /**
  * 	alloc_new_reservation()--allocate a new reservation window
- *		if there is an existing reservation, discard it first
- *		then allocate the new one from there
- *		otherwise allocate the new reservation from the given
- *		start block, or the beginning of the group, if a goal
- *		is not given.
  *
  *		To make a new reservation, we search part of the filesystem
- *		reservation list (the list that inside the group).
- *
- *		If we have a old reservation, the search goal is the end of
- *		last reservation. If we do not have a old reservation, then we
- *		start from a given goal, or the first block of the group, if
- *		the goal is not given.
+ *		reservation list (the list that inside the group). We try to
+ *		allocate a new reservation window near the allocation goal,
+ *		or the beginning of the group, if there is no goal.
  *
  *		We first find a reservable space after the goal, then from
  *		there, we check the bitmap for the first free block after
@@ -813,8 +806,6 @@ static struct reserve_window_node *find_next_reservable_window(
  *
  *	@goal: The goal (group-relative).  It is where the search for a
  *		free reservable space should start from.
- *		if we have a old reservation, start_block is the end of
- *		old reservation. Otherwise,
  *		if we have a goal(goal >0 ), then start from there,
  *		no goal(goal = -1), we start from the first block
  *		of the group.
@@ -845,10 +836,10 @@ static int alloc_new_reservation(struct reserve_window_node *my_rsv,
 		start_block = goal + group_first_block;
 
 	size = atomic_read(&my_rsv->rsv_goal_size);
-	/* if we have a old reservation, start the search from the old rsv */
 	if (!rsv_is_empty(&my_rsv->rsv_window)) {
 		/*
 		 * if the old reservation is cross group boundary
+		 * and if the goal is inside the old reservation window,
 		 * we will come here when we just failed to allocate from
 		 * the first part of the window. We still have another part
 		 * that belongs to the next group. In this case, there is no
@@ -861,13 +852,10 @@ static int alloc_new_reservation(struct reserve_window_node *my_rsv,
 		 */
 
 		if ((my_rsv->rsv_start <= group_end_block) &&
-				(my_rsv->rsv_end > group_end_block))
+				(my_rsv->rsv_end > group_end_block) &&
+				(start_block >= my_rsv->rsv_start))
 			return -1;
 
-		/* remember where we are before we discard the old one */
-		if (my_rsv->rsv_end + 1 > start_block)
-			start_block = my_rsv->rsv_end + 1;
-		search_head = my_rsv;
 		if ((atomic_read(&my_rsv->rsv_alloc_hit) > 
 		     (my_rsv->rsv_end - my_rsv->rsv_start + 1) / 2)) {
 			/*
@@ -881,14 +869,10 @@ static int alloc_new_reservation(struct reserve_window_node *my_rsv,
 			atomic_set(&my_rsv->rsv_goal_size, size);
 		}
 	}
-	else {
-		/*
-		 * we don't have a reservation,
-		 * we set our goal(start_block) and
-		 * the list head for the search
-		 */
-		search_head = search_reserve_window(fs_rsv_root, start_block);
-	}
+	/*
+	 * shift the search start to the window near the goal block
+	 */
+	search_head = search_reserve_window(fs_rsv_root, start_block);
 
 	/*
 	 * find_next_reservable_window() simply finds a reservable window
@@ -963,6 +947,13 @@ found_rsv_window:
 	}
 	return 0;		/* succeed */
 failed:
+	/*
+	 * failed to find a new reservation window in the current
+	 * group, remove the current(stale) reservation window
+	 * if there is any
+	 */
+	if (!rsv_is_empty(&my_rsv->rsv_window))
+		rsv_window_remove(sb, my_rsv);
 	return -1;		/* failed */
 }
 

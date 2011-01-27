@@ -34,6 +34,7 @@
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <linux/filter.h>
+#include <asm/unaligned.h>
 
 /* No hurry in this branch */
 static u8 *load_pointer(struct sk_buff *skb, int k)
@@ -169,7 +170,10 @@ int sk_run_filter(struct sk_buff *skb, struct sock_filter *filter, int flen)
 			k = fentry->k;
  load_w:
 			if (k >= 0 && (unsigned int)(k+sizeof(u32)) <= len) {
-				A = ntohl(*(u32*)&data[k]);
+				u32 *dp = (u32 *) &data[k];
+				u32 tmp = get_unaligned(dp);
+
+				A = ntohl(tmp);
 				continue;
 			}
 			if (k < 0) {
@@ -179,14 +183,19 @@ int sk_run_filter(struct sk_buff *skb, struct sock_filter *filter, int flen)
 					break;
 				ptr = load_pointer(skb, k);
 				if (ptr) {
-					A = ntohl(*(u32*)ptr);
+					u32 *dp = (u32 *) ptr;
+					u32 tmp = get_unaligned(dp);
+
+					A = ntohl(tmp);
 					continue;
 				}
 			} else {
 				u32 _tmp, *p;
 				p = skb_header_pointer(skb, k, 4, &_tmp);
 				if (p != NULL) {
-					A = ntohl(*p);
+					u32 tmp = get_unaligned(p);
+
+					A = ntohl(tmp);
 					continue;
 				}
 			}
@@ -195,7 +204,10 @@ int sk_run_filter(struct sk_buff *skb, struct sock_filter *filter, int flen)
 			k = fentry->k;
  load_h:
 			if (k >= 0 && (unsigned int)(k + sizeof(u16)) <= len) {
-				A = ntohs(*(u16*)&data[k]);
+				u16 *dp = (u16 *) &data[k];
+				u16 tmp = get_unaligned(dp);
+
+				A = ntohs(tmp);
 				continue;
 			}
 			if (k < 0) {
@@ -205,14 +217,19 @@ int sk_run_filter(struct sk_buff *skb, struct sock_filter *filter, int flen)
 					break;
 				ptr = load_pointer(skb, k);
 				if (ptr) {
-					A = ntohs(*(u16*)ptr);
+					u16 *dp = (u16 *) ptr;
+					u16 tmp = get_unaligned(dp);
+
+					A = ntohs(tmp);
 					continue;
 				}
 			} else {
 				u16 _tmp, *p;
 				p = skb_header_pointer(skb, k, 2, &_tmp);
 				if (p != NULL) {
-					A = ntohs(*p);
+					u16 tmp = get_unaligned(p);
+
+					A = ntohs(tmp);
 					continue;
 				}
 			}

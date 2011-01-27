@@ -397,8 +397,8 @@ static DefineSimpleCacheLookupMap(ent, nametoid);
 void
 nfsd_idmap_init(void)
 {
-	cache_register(&idtoname_cache);
-	cache_register(&nametoid_cache);
+	cache_register_owner(&idtoname_cache, THIS_MODULE);
+	cache_register_owner(&nametoid_cache, THIS_MODULE);
 }
 
 void

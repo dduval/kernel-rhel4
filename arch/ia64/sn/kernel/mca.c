@@ -136,6 +136,9 @@ int sn_salinfo_platform_oemdata(const u8 *sect_header, u8 **oemdata, u64 *oemdat
 
 static int __init sn_salinfo_init(void)
 {
+	if (!ia64_platform_is("sn2"))
+		return -ENOSYS;
+
 	salinfo_platform_oemdata = &sn_salinfo_platform_oemdata;
 	return 0;
 }

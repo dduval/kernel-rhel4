@@ -25,6 +25,10 @@
 #include <asm/bitops.h>
 #include <asm/types.h>
 
+extern struct Qdisc noop_qdisc;
+
+extern void dev_activate(struct net_device *dev);
+extern void dev_deactivate(struct net_device *dev);
 
 enum lw_bits {
 	LW_RUNNING = 0,
@@ -74,6 +78,12 @@ void linkwatch_run_queue(void)
 		clear_bit(__LINK_STATE_LINKWATCH_PENDING, &dev->state);
 
 		if (dev->flags & IFF_UP) {
+			if (netif_carrier_ok(dev)) {
+				WARN_ON(dev->qdisc_sleeping == &noop_qdisc);
+				dev_activate(dev);
+			} else
+				dev_deactivate(dev);
+
 			netdev_state_change(dev);
 		}
 

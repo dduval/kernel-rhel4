@@ -101,8 +101,8 @@ mpi_fdiv_qr( MPI quot, MPI rem, MPI dividend, MPI divisor )
     MPI temp_divisor = NULL;
 
     if( quot == divisor || rem == divisor ) {
-	if (mpi_copy( &temp_divisor, divisor ) < 0);
-	return -ENOMEM;
+	if (mpi_copy( &temp_divisor, divisor ) < 0)
+		return -ENOMEM;
 	divisor = temp_divisor;
     }
 

@@ -741,6 +741,8 @@ void do_generic_mapping_read(struct address_space *mapping,
 {
 	struct inode *inode = mapping->host;
 	unsigned long index, end_index, offset;
+	unsigned long last_index;
+	unsigned long next_index;
 	loff_t isize;
 	struct page *cached_page;
 	int error;
@@ -748,6 +750,8 @@ void do_generic_mapping_read(struct address_space *mapping,
 
 	cached_page = NULL;
 	index = *ppos >> PAGE_CACHE_SHIFT;
+	next_index = index;
+	last_index = (*ppos + desc->count + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
 	offset = *ppos & ~PAGE_CACHE_MASK;
 
 	isize = i_size_read(inode);
@@ -772,8 +776,10 @@ void do_generic_mapping_read(struct address_space *mapping,
 		nr = nr - offset;
 
 		cond_resched();
-		if (!nonblock)
-			page_cache_readahead(mapping, &ra, filp, index);
+		if (!nonblock && index == next_index)
+			next_index = page_cache_readahead(mapping, &ra, filp, 
+							  index, 
+							  last_index - index);
 
 find_page:
 		page = find_get_page(mapping, index);
@@ -853,11 +859,21 @@ readpage:
 			goto readpage_error;
 
 		if (!PageUptodate(page)) {
-			wait_on_page_locked(page);
+			lock_page(page);
 			if (!PageUptodate(page)) {
+				if (page->mapping == NULL) {
+					/*
+					 * invalidate_inode_pages got it
+					 */
+					unlock_page(page);
+					page_cache_release(page);
+					goto find_page;
+				}
+				unlock_page(page);
 				error = -EIO;
 				goto readpage_error;
 			}
+			unlock_page(page);
 		}
 
 		/*
@@ -1229,7 +1245,7 @@ retry_all:
 	 * For sequential accesses, we use the generic readahead logic.
 	 */
 	if (VM_SequentialReadHint(area))
-		page_cache_readahead(mapping, ra, file, pgoff);
+		page_cache_readahead(mapping, ra, file, pgoff, 1);
 
 	/*
 	 * Do we have something in the page cache already?

@@ -26,6 +26,7 @@
 #include <linux/namei.h>
 #include <linux/mount.h>
 #include <linux/hash.h>
+#include <linux/module.h>
 
 #include <linux/sunrpc/svc.h>
 #include <linux/nfsd/nfsd.h>
@@ -1169,8 +1170,8 @@ nfsd_export_init(void)
 {
 	dprintk("nfsd: initializing export module.\n");
 
-	cache_register(&svc_export_cache);
-	cache_register(&svc_expkey_cache);
+	cache_register_owner(&svc_export_cache, THIS_MODULE);
+	cache_register_owner(&svc_expkey_cache, THIS_MODULE);
 
 }
 

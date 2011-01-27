@@ -96,21 +96,6 @@ static inline int sctp_rcv_checksum(struct sk_buff *skb)
 	return 0;
 }
 
-/* The free routine for skbuffs that sctp receives */
-static void sctp_rfree(struct sk_buff *skb)
-{
-	atomic_sub(sizeof(struct sctp_chunk),&skb->sk->sk_rmem_alloc);
-	sock_rfree(skb);
-}
-
-/* The ownership wrapper routine to do receive buffer accounting */
-static void sctp_rcv_set_owner_r(struct sk_buff *skb, struct sock *sk)
-{
-	skb_set_owner_r(skb,sk);
-	skb->destructor = sctp_rfree;
-	atomic_add(sizeof(struct sctp_chunk),&sk->sk_rmem_alloc);
-}
-
 /*
  * This is the routine which IP calls when receiving an SCTP packet.
  */
@@ -177,10 +162,6 @@ int sctp_rcv(struct sk_buff *skb)
 	rcvr = asoc ? &asoc->base : &ep->base;
 	sk = rcvr->sk;
 
-	if ((sk) && (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf)) {
-		goto discard_release;
-	}
-
 	/*
 	 *if a frame arrives on an interface and the receiving socket is
 	 *bound to another interface, via SO_BINDTODEVICE, treat it as OOTB
@@ -237,8 +218,6 @@ int sctp_rcv(struct sk_buff *skb)
 		ret = -ENOMEM;
 		goto discard_release;
 	}
-
-	sctp_rcv_set_owner_r(skb,sk);
 
 	/* Remember what endpoint is to handle this packet. */
 	chunk->rcvr = rcvr;

@@ -456,7 +456,7 @@ gss_pipe_downcall(struct file *filp, const char __user *src, size_t mlen)
 	struct gss_cl_ctx *ctx = NULL;
 	ssize_t left;
 	int err;
-	int gss_err;
+	int gss_err = 0;
 
 	if (mlen > MSG_BUF_MAXSIZE)
 		return -EFBIG;
@@ -486,6 +486,8 @@ gss_pipe_downcall(struct file *filp, const char __user *src, size_t mlen)
 	spin_lock(&gss_auth->lock);
 	gss_msg = __gss_find_upcall(gss_auth, acred.uid);
 	if (gss_msg) {
+		if (gss_err)
+			gss_msg->msg.errno = -EACCES;
 		__gss_unhash_msg(gss_msg);
 		spin_unlock(&gss_auth->lock);
 		gss_release_msg(gss_msg);
@@ -513,7 +515,10 @@ gss_pipe_release(struct inode *inode)
 	struct rpc_auth *auth;
 	struct gss_auth *gss_auth;
 
-	clnt = rpci->private;
+	clnt = ((rpci != NULL) ? ((struct rpc_clnt *)rpci->private) : NULL);
+	if (clnt == NULL || clnt->cl_auth == NULL)
+		return;
+
 	auth = clnt->cl_auth;
 	gss_auth = container_of(auth, struct gss_auth, rpc_auth);
 	spin_lock(&gss_auth->lock);

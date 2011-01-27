@@ -787,6 +787,7 @@ static void exit_notify(struct task_struct *tsk)
 asmlinkage NORET_TYPE void do_exit(long code)
 {
 	struct task_struct *tsk = current;
+	int group_dead;
 
 	profile_task_exit(tsk);
 
@@ -812,7 +813,10 @@ asmlinkage NORET_TYPE void do_exit(long code)
 				current->comm, current->pid,
 				preempt_count());
 
-	acct_process(code);
+	group_dead = atomic_dec_and_test(&tsk->signal->live);
+	if (group_dead) 
+		acct_process(code);
+
 	if (current->tux_info) {
 #ifdef CONFIG_TUX_DEBUG
 		printk("Possibly unexpected TUX-thread exit(%ld) at %p?\n",
@@ -829,7 +833,7 @@ asmlinkage NORET_TYPE void do_exit(long code)
 	exit_thread();
 	exit_keys(tsk);
 
-	if (tsk->signal->leader)
+	if (group_dead && tsk->signal->leader)
 		disassociate_ctty(1);
 
 	module_put(tsk->thread_info->exec_domain->module);
@@ -1329,6 +1333,10 @@ static long do_wait(pid_t pid, int options, struct siginfo __user *infop,
 
 	add_wait_queue(&current->wait_chldexit,&wait);
 repeat:
+	/*
+	 * We will set this flag if we see any child that might later
+	 * match our criteria, even if we are not able to reap it yet.
+	 */
 	flag = 0;
 	current->state = TASK_INTERRUPTIBLE;
 	read_lock(&tasklist_lock);
@@ -1347,11 +1355,23 @@ repeat:
 
 			switch (p->state) {
 			case TASK_TRACED:
+				/*
+				 * When we hit the race with PTRACE_ATTACH
+				 * we will not report this child.  But the
+				 * race means it has not yet been moved to
+				 * our ptrace_children list, so we need to
+				 * set the flag here to avoid a spurious ECHILD
+				 * when the race happens with the only child.
+				 */
 				flag = 1;
 				if (!my_ptrace_child(p))
 					continue;
 				/*FALLTHROUGH*/
 			case TASK_STOPPED:
+				/*
+				 * It's stopped now, so it might later
+				 * continue, exit, or stop again.
+				 */
 				flag = 1;
 				if (!(options & WUNTRACED) &&
 				    !my_ptrace_child(p))
@@ -1387,8 +1407,12 @@ repeat:
 						goto end;
 					break;
 				}
-				flag = 1;
 check_continued:
+				/*
+				 * It's running now, so it might later
+				 * exit, stop, or stop and then continue.
+				 */
+				flag = 1;
 				if (!unlikely(options & WCONTINUED))
 					continue;
 				retval = wait_task_continued(

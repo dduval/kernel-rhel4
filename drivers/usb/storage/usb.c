@@ -510,37 +510,6 @@ static void get_device_info(struct us_data *us, int id_index)
 				idesc->bInterfaceProtocol,
 				msgs[msg]);
 	}
-
-	/* Read the device's string descriptors */
-	if (dev->descriptor.iManufacturer)
-		usb_string(dev, dev->descriptor.iManufacturer, 
-			   us->vendor, sizeof(us->vendor));
-	if (dev->descriptor.iProduct)
-		usb_string(dev, dev->descriptor.iProduct, 
-			   us->product, sizeof(us->product));
-	if (dev->descriptor.iSerialNumber)
-		usb_string(dev, dev->descriptor.iSerialNumber, 
-			   us->serial, sizeof(us->serial));
-
-	/* Use the unusual_dev strings if the device didn't provide them */
-	if (strlen(us->vendor) == 0) {
-		if (unusual_dev->vendorName)
-			strlcpy(us->vendor, unusual_dev->vendorName,
-				sizeof(us->vendor));
-		else
-			strcpy(us->vendor, "Unknown");
-	}
-	if (strlen(us->product) == 0) {
-		if (unusual_dev->productName)
-			strlcpy(us->product, unusual_dev->productName,
-				sizeof(us->product));
-		else
-			strcpy(us->product, "Unknown");
-	}
-	if (strlen(us->serial) == 0)
-		strcpy(us->serial, "None");
-
-	US_DEBUGP("Vendor: %s,  Product: %s\n", us->vendor, us->product);
 }
 
 /* Get the transport settings */
@@ -765,28 +734,6 @@ static int usb_stor_acquire_resources(struct us_data *us)
 
 	/* For bulk-only devices, determine the max LUN value */
 	if (us->protocol == US_PR_BULK) {
-		struct usb_device_descriptor *ddesc = &us->pusb_dev->descriptor;
-
-		/*
-		 * We can easily inherit a stalled device if we reload
-		 * the usb-storage module. This also resets toggles.
-		 *
-		 * Clearing a halt when an endpoint is not halted should be
-		 * completely safe, but TEAC CD-210PU is broken in a very
-		 * funny way. It pretends to process clears normally, then
-		 * fails all commands except TUR and INQUIRY with key/ASC/ASCQ
-		 * 6/04/01 ("unit is getting ready") ... forever. The drive
-		 * is not combined with anything, so we just reset it.
-		 */
-		if (ddesc->idVendor == USB_VENDOR_ID_TEAC &&
-		    ddesc->idProduct == 0x1000)
-		{
-			usb_reset_configuration(us->pusb_dev);
-		} else {
-			usb_stor_clear_halt(us, us->recv_bulk_pipe);
-			usb_stor_clear_halt(us, us->send_bulk_pipe);
-		}
-
 		p = usb_stor_Bulk_max_lun(us);
 		if (p < 0) {
 			up(&us->dev_semaphore);

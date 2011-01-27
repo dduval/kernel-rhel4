@@ -701,9 +701,6 @@ static int i2o_cfg_passthru32(unsigned fd, unsigned cmnd, unsigned long arg,
 
 	sg_offset = (msg->u.head[0] >> 4) & 0x0f;
 
-	writel(i2o_config_driver.context, &msg->u.s.icntxt);
-	writel(i2o_cntxt_list_add(c, reply), &msg->u.s.tcntxt);
-
 	memset(sg_list, 0, sizeof(sg_list[0]) * SG_TABLESIZE);
 	if (sg_offset) {
 		struct sg_simple_element *sg;
@@ -769,8 +766,10 @@ static int i2o_cfg_passthru32(unsigned fd, unsigned cmnd, unsigned long arg,
 	}
 
 	rcode = i2o_msg_post_wait(c, m, 60);
-	if (rcode)
+	if (rcode) {
+		reply[4] = ((u32) rcode) << 24;
 		goto sg_list_cleanup;
+	}
 
 	if (sg_offset) {
 		u32 msg[MSG_FRAME_SIZE];
@@ -820,6 +819,7 @@ static int i2o_cfg_passthru32(unsigned fd, unsigned cmnd, unsigned long arg,
 		}
 	}
 
+      sg_list_cleanup:
 	/* Copy back the reply to user space */
 	if (reply_size) {
 		// we wrote our own values for context - now restore the user supplied ones
@@ -837,13 +837,11 @@ static int i2o_cfg_passthru32(unsigned fd, unsigned cmnd, unsigned long arg,
 		}
 	}
 
-      sg_list_cleanup:
 	for (i = 0; i < sg_index; i++)
 		i2o_dma_free(&c->pdev->dev, &sg_list[i]);
 
       cleanup:
 	kfree(reply);
-	printk(KERN_INFO "rcode: %d\n", rcode);
 	return rcode;
 }
 
@@ -917,9 +915,6 @@ static int i2o_cfg_passthru(unsigned long arg)
 
 	sg_offset = (msg->u.head[0] >> 4) & 0x0f;
 
-	writel(i2o_config_driver.context, &msg->u.s.icntxt);
-	writel(i2o_cntxt_list_add(c, reply), &msg->u.s.tcntxt);
-
 	memset(sg_list, 0, sizeof(sg_list[0]) * SG_TABLESIZE);
 	if (sg_offset) {
 		struct sg_simple_element *sg;
@@ -982,8 +977,10 @@ static int i2o_cfg_passthru(unsigned long arg)
 	}
 
 	rcode = i2o_msg_post_wait(c, m, 60);
-	if (rcode)
+	if (rcode) {
+		reply[4] = ((u32) rcode) << 24;
 		goto sg_list_cleanup;
+	}
 
 	if (sg_offset) {
 		u32 msg[128];
@@ -1033,6 +1030,7 @@ static int i2o_cfg_passthru(unsigned long arg)
 		}
 	}
 
+      sg_list_cleanup:
 	/* Copy back the reply to user space */
 	if (reply_size) {
 		// we wrote our own values for context - now restore the user supplied ones
@@ -1049,7 +1047,6 @@ static int i2o_cfg_passthru(unsigned long arg)
 		}
 	}
 
-      sg_list_cleanup:
 	for (i = 0; i < sg_index; i++)
 		kfree(sg_list[i]);
 

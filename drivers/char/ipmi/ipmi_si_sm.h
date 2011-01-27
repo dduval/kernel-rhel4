@@ -51,7 +51,7 @@ struct si_sm_io
 	/* Generic info used by the actual handling routines, the
            state machine shouldn't touch these. */
 	void *info;
-	void *addr;
+	void __iomem *addr;
 	int  regspacing;
 	int  regsize;
 	int  regshift;
@@ -62,6 +62,7 @@ enum si_sm_result
 {
 	SI_SM_CALL_WITHOUT_DELAY, /* Call the driver again immediately */
 	SI_SM_CALL_WITH_DELAY,	/* Delay some before calling again. */
+	SI_SM_CALL_WITH_TICK_DELAY,	/* Delay at least 1 tick before calling again. */
 	SI_SM_TRANSACTION_COMPLETE, /* A transaction is finished. */
 	SI_SM_IDLE,		/* The SM is in idle state. */
 	SI_SM_HOSED,		/* The hardware violated the state machine. */

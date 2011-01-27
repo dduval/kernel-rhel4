@@ -50,10 +50,11 @@
 #ifdef CONFIG_X86_LOCAL_APIC
 #include <asm/apic.h>
 #endif
+#include "ipmi_kcompat.h"
 
 #define	PFX "IPMI Watchdog: "
 
-#define IPMI_WATCHDOG_VERSION "33.4"
+#define IPMI_WATCHDOG_VERSION "33.11"
 
 /*
  * The IPMI command/response information for the watchdog timer.
@@ -157,7 +158,7 @@ static char preaction[16] = "pre_none";
 static unsigned char preop_val = WDOG_PREOP_NONE;
 
 static char preop[16] = "preop_none";
-static spinlock_t ipmi_read_lock = SPIN_LOCK_UNLOCKED;
+static DEFINE_SPINLOCK(ipmi_read_lock);
 static char data_to_read = 0;
 static DECLARE_WAIT_QUEUE_HEAD(read_q);
 static struct fasync_struct *fasync_q = NULL;
@@ -366,20 +367,6 @@ static void panic_halt_ipmi_set_timeout(void)
 	}
 }
 
-/* Do a delayed shutdown, with the delay in milliseconds.  If power_off is
-   false, do a reset.  If power_off is true, do a power down.  This is
-   primarily for the IMB code's shutdown. */
-void ipmi_delayed_shutdown(long delay, int power_off)
-{
-	ipmi_ignore_heartbeat = 1;
-	if (power_off) 
-		ipmi_watchdog_state = WDOG_TIMEOUT_POWER_DOWN;
-	else
-		ipmi_watchdog_state = WDOG_TIMEOUT_RESET;
-	timeout = delay;
-	ipmi_set_timeout(IPMI_SET_TIMEOUT_HB_IF_NECESSARY);
-}
-
 /* We use a semaphore to make sure that only one thing can send a
    heartbeat at one time, because we only have one copy of the data.
    The semaphore is claimed when the set_timeout is sent and freed
@@ -518,9 +505,9 @@ static void panic_halt_ipmi_heartbeat(void)
 
 static struct watchdog_info ident=
 {
-	0, /* WDIOF_SETTIMEOUT, */
-	1,
-	"IPMI"
+	.options	= 0,	/* WDIOF_SETTIMEOUT, */
+	.firmware_version = 1,
+	.identity	= "IPMI"
 };
 
 static int ipmi_ioctl(struct inode *inode, struct file *file,
@@ -723,11 +710,11 @@ static int ipmi_close(struct inode *ino, struct file *filep)
 		if (expect_close == 42) {
 			ipmi_watchdog_state = WDOG_TIMEOUT_NONE;
 			ipmi_set_timeout(IPMI_SET_TIMEOUT_NO_HB);
-			clear_bit(0, &ipmi_wdog_open);
 		} else {
 			printk(KERN_CRIT PFX "Unexpected close, not stopping watchdog!\n");
 			ipmi_heartbeat();
 		}
+		clear_bit(0, &ipmi_wdog_open);
 	}
 
 	ipmi_fasync (-1, filep, 0);
@@ -748,9 +735,9 @@ static struct file_operations ipmi_wdog_fops = {
 };
 
 static struct miscdevice ipmi_wdog_miscdev = {
-	WATCHDOG_MINOR,
-	"watchdog",
-	&ipmi_wdog_fops
+	.minor		= WATCHDOG_MINOR,
+	.name		= "watchdog",
+	.fops		= &ipmi_wdog_fops
 };
 
 static DECLARE_RWSEM(register_sem);
@@ -885,12 +872,10 @@ static int wdog_reboot_handler(struct notifier_block *this,
 }
 
 static struct notifier_block wdog_reboot_notifier = {
-	wdog_reboot_handler,
-	NULL,
-	0
+	.notifier_call	= wdog_reboot_handler,
+	.next		= NULL,
+	.priority	= 0
 };
-
-extern int panic_timeout; /* Why isn't this defined anywhere? */
 
 static int wdog_panic_handler(struct notifier_block *this,
 			      unsigned long         event,
@@ -915,9 +900,9 @@ static int wdog_panic_handler(struct notifier_block *this,
 }
 
 static struct notifier_block wdog_panic_notifier = {
-	wdog_panic_handler,
-	NULL,
-	150   /* priority: INT_MAX >= x >= 0 */
+	.notifier_call	= wdog_panic_handler,
+	.next		= NULL,
+	.priority	= 150	/* priority: INT_MAX >= x >= 0 */
 };
 
 
@@ -1054,10 +1039,6 @@ static __exit void ipmi_unregister_watchdog(void)
 	/* Make sure no one can call us any more. */
 	misc_deregister(&ipmi_wdog_miscdev);
 
-	/*  Disable the timer. */
-	ipmi_watchdog_state = WDOG_TIMEOUT_NONE;
-	ipmi_set_timeout(IPMI_SET_TIMEOUT_NO_HB);
-
 	/* Wait to make sure the message makes it out.  The lower layer has
 	   pointers to our buffers, we want to make sure they are done before
 	   we release our memory. */
@@ -1084,9 +1065,6 @@ static void __exit ipmi_wdog_exit(void)
 	ipmi_unregister_watchdog();
 }
 module_exit(ipmi_wdog_exit);
-
-EXPORT_SYMBOL(ipmi_delayed_shutdown);
-
 module_init(ipmi_wdog_init);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Corey Minyard <minyard@mvista.com>");

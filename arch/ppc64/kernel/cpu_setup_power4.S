@@ -33,7 +33,9 @@ _GLOBAL(__970_cpu_preinit)
 	srwi	r0,r0,16
 	cmpwi	cr0,r0,0x39
 	cmpwi	cr1,r0,0x3c
+	cmpwi	cr2,r0,0x44
 	cror	4*cr0+eq,4*cr0+eq,4*cr1+eq
+	cror	4*cr0+eq,4*cr0+eq,4*cr2+eq
 	bnelr
 
 	/* Make sure HID4:rm_ci is off before MMU is turned off, that large
@@ -121,7 +123,9 @@ _GLOBAL(__save_cpu_setup)
 	srwi	r0,r0,16
 	cmpwi	cr0,r0,0x39
 	cmpwi	cr1,r0,0x3c
+	cmpwi	cr2,r0,0x44
 	cror	4*cr0+eq,4*cr0+eq,4*cr1+eq
+	cror	4*cr0+eq,4*cr0+eq,4*cr2+eq
 	bne	1f
 
 	/* Save HID0,1,4 and 5 */
@@ -153,7 +157,9 @@ _GLOBAL(__restore_cpu_setup)
 	srwi	r0,r0,16
 	cmpwi	cr0,r0,0x39
 	cmpwi	cr1,r0,0x3c
+	cmpwi	cr2,r0,0x44
 	cror	4*cr0+eq,4*cr0+eq,4*cr1+eq
+	cror	4*cr0+eq,4*cr0+eq,4*cr2+eq
 	bne	1f
 
 	/* Clear interrupt prefix */

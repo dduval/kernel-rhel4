@@ -1,0 +1,16 @@
+=============================================================================
+
+       Digi NEO (DGNC) Driver Installation Guide
+                       for Linux Kernel 2.6
+               Copyright (C) 2003, Digi International
+============================================================================
+
+       This driver supports the Digi Neo PCI.
+
+       This driver requires the DGNC Tools package to be installed.
+
+       The Tools package can be found at http://www.digi.com
+
+============================================================================
+
+

@@ -1,0 +1,71 @@
+0.01: 17 May 2004:
+	- Initial release.
+
+0.02: 21 May 2004:
+	- Change SSE2 doorbell implementation to plain SSE.
+	- Add support for RC to QP modify (still can't post
+	  atomic or RDMA ops).
+	- Handle error CQ entries.
+	- Fix CQN in SW2HW_CQ/HW2SW_CQ.
+	- Various code cleanups.
+
+0.03:  1 Jun 2004:
+	- Allocate UD address vectors in HCA memory.
+        - Add support for event-driven firmware commands.
+        - Add "CQ cleaning": remove stale events when a QP is
+	  destroyed.
+
+0.04: 13 Jun 2004:
+	- Fix endianness problems; now tested and working on
+	  i386, ia64 and ppc64.
+	- Fix alignment of eqe entry types by using
+	  __attribute__((packed)) properly.
+	- Make MTT writes even length for FW efficiency.
+	- Add wmb() after writing "next" segment for sends and
+	  receives to ensure descriptor is fully written before
+	  doorbell is rung.
+	- Make sure send_wqe_offset is aligned to size of send
+	  WQEs to prevent WQEs from crossing a page boundary.
+
+0.05:  8 Nov 2004:
+	- Set local ACK timeout and retry count values
+	  correctly in QP modify.
+	- Set PCI-X Read Byte Count and PCI Express Max Read
+	  Request Size register for max performance.
+	- Implement new "poll multi" operation.
+	- Fix allocation of direct QPs and CQs on platforms
+	  where pci_alloc_consistent() may return a DMA address
+	  not aligned to the size of the buffer (eg IBM
+	  pSeries).
+	- Implement MSI/MSI-X support.  (MSI-X support requires
+	  HCA firmware that has not been released yet.  Both
+	  MSI and MSI-X may be less stable than using standard
+	  INTx).
+	- Implement more asynchronous events.
+	- Always reset the HCA on initialization since we we
+	  might not be able to tell that the HCA was left
+	  running.
+	- Remove mthca_pci.h (since we already depend on kernel
+	  2.6.8). 
+	- Rework API to conform with new OpenIB verbs.
+	- Fix mapping of HCA memory on JS20 (don't trust what the HCA
+	  tells us about PCI addresses).
+        - Don't request SRQ events if FW doesn't support SRQ.
+        - Add firmware version and revision ID to sysfs.
+        - Add get_dma_mr entry point.
+
+0.06: in progress:
+	- Processed trap repress packets should be consumed.
+	- Replace writel(swab32(x)) with __raw_writel(x) (and
+	  similarly for writeq) now that ppc64 EEH is fixed.
+	- Add Arbel workaround when creating AVs without GRH.
+	- Add support for querying link speed/width.
+	- Add an rmb() between checking the ownership bit of an event
+	  queue entry and reading the contents of the EQE (ppc64 fix).
+	- Implement port_modify with SET_IB.
+        - Start on Arbel Mem-Free support.
+        - Reduce data path locking (patches from MST).
+
+Local Variables:
+mode: text
+End:

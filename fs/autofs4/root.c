@@ -205,7 +205,11 @@ static int autofs4_dir_open(struct inode *inode, struct file *file)
 		struct vfsmount *fp_mnt = mntget(mnt);
 		struct dentry *fp_dentry = dget(dentry);
 
-		while (follow_down(&fp_mnt, &fp_dentry) && d_mountpoint(fp_dentry));
+		if (!autofs4_follow_mount(&fp_mnt, &fp_dentry)) {
+			dput(fp_dentry);
+			mntput(fp_mnt);
+			return -ENOENT;
+		}
 
 		fp = dentry_open(fp_dentry, fp_mnt, file->f_flags);
 		status = PTR_ERR(fp);
@@ -302,7 +306,14 @@ static int try_to_fill_dentry(struct dentry *dentry,
 		
 		DPRINTK("expire done status=%d", status);
 		
-		return 0;
+		/*
+		 * If the directory still exists the mount request must
+		 * continue otherwise it can't be followed at the right
+		 * time during the walk.
+		 */
+		status = d_invalidate(dentry);
+		if (status != -EBUSY)
+			return 0;
 	}
 
 	DPRINTK("dentry=%p %.*s ino=%p",
@@ -322,7 +333,6 @@ static int try_to_fill_dentry(struct dentry *dentry,
 		
 		/* Turn this into a real negative dentry? */
 		if (status == -ENOENT) {
-			dentry->d_time = jiffies + AUTOFS_NEGATIVE_TIMEOUT;
 			spin_lock(&dentry->d_lock);
 			dentry->d_flags &= ~DCACHE_AUTOFS_PENDING;
 			spin_unlock(&dentry->d_lock);
@@ -386,13 +396,13 @@ static int autofs4_revalidate(struct dentry * dentry, struct nameidata *nd)
 
 	/* Negative dentry.. invalidate if "old" */
 	if (dentry->d_inode == NULL)
-		return (dentry->d_time - jiffies <= AUTOFS_NEGATIVE_TIMEOUT);
+		return 0;
 
 	/* Check for a non-mountpoint directory with no contents */
 	spin_lock(&dcache_lock);
 	if (S_ISDIR(dentry->d_inode->i_mode) &&
 	    !d_mountpoint(dentry) && 
-	    list_empty(&dentry->d_subdirs)) {
+	    simple_empty_nolock(dentry)) {
 		DPRINTK("dentry=%p %.*s, emptydir",
 			 dentry, dentry->d_name.len, dentry->d_name.name);
 		spin_unlock(&dcache_lock);

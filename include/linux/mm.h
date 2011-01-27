@@ -732,10 +732,11 @@ int do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 			unsigned long offset, unsigned long nr_to_read);
 int force_page_cache_readahead(struct address_space *mapping, struct file *filp,
 			unsigned long offset, unsigned long nr_to_read);
-void page_cache_readahead(struct address_space *mapping, 
-			  struct file_ra_state *ra,
-			  struct file *filp,
-			  unsigned long offset);
+unsigned long page_cache_readahead(struct address_space *mapping, 
+				   struct file_ra_state *ra,
+				   struct file *filp,
+				   unsigned long offset,
+				   unsigned long nr_to_read);
 void handle_ra_miss(struct address_space *mapping, 
 		    struct file_ra_state *ra, pgoff_t offset);
 unsigned long max_sane_readahead(unsigned long nr);

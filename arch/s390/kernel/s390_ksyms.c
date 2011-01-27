@@ -64,3 +64,4 @@ EXPORT_SYMBOL(console_devno);
 EXPORT_SYMBOL(console_irq);
 EXPORT_SYMBOL(sys_wait4);
 EXPORT_SYMBOL(cpcmd);
+EXPORT_SYMBOL(cpcmd_new);

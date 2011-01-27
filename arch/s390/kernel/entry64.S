@@ -692,7 +692,7 @@ cleanup_critical:
 	clc	8(8,%r12),BASED(cleanup_table_sysc_work_loop)
 	jl	0f
 	clc	8(8,%r12),BASED(cleanup_table_sysc_work_loop+8)
-	jl	cleanup_sysc_leave
+	jl	cleanup_sysc_return
 0:
 	br	%r14
 

@@ -33,6 +33,7 @@
 #include <linux/mount.h>
 #include <linux/diskdump.h>
 #include <asm/diskdump.h>
+#include <asm/crashdump.h>
 #include "../fs/sysfs/sysfs.h"
 
 static DECLARE_MUTEX(dump_ops_mutex);
@@ -273,26 +274,26 @@ void try_crashdump(struct pt_regs *regs)
 		netdump_func(regs);
 }
 
+extern unsigned long max_pfn;
+
 int diskdump_mark_free_pages(void)
 {
 	struct zone *zone;
-	unsigned long zone_pfn, start_pfn, err_pfn, i, pfn;
+	unsigned long start_pfn, err_pfn, i, pfn;
 	int order, free_page_cnt = 0;
 	struct list_head *curr, *previous, *dlhead;
+
+	/*
+	 * This is not necessary if PG_nosave_free is cleared
+	 * while allocating new pages.
+	 */
+	for (pfn = next_ram_page(ULONG_MAX); pfn < max_pfn; pfn = next_ram_page(pfn))
+		if (pfn_valid(pfn))
+			ClearPageNosaveFree(pfn_to_page(pfn));
 
 	for_each_zone(zone) {
 		if (!zone->spanned_pages)
 			continue;
-
-		/*
-		 * This is not necessary if PG_nosave_free is cleared
-		 * while allocating new pages.
-		 */
-		for (zone_pfn = 0; zone_pfn < zone->spanned_pages; ++zone_pfn) {
-			pfn = zone_pfn + zone->zone_start_pfn;
-			if (pfn_valid(pfn))
-				ClearPageNosaveFree(pfn_to_page(pfn));
-		}
 
 		for (order = MAX_ORDER - 1; order >= 0; --order) {
 			/*

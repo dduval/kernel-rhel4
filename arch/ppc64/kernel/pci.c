@@ -859,6 +859,9 @@ void __devinit pcibios_fixup_bus(struct pci_bus *bus)
 		pcibios_fixup_device_resources(dev, bus);
 	}
 
+	if (ppc_md.irq_bus_setup)
+		ppc_md.irq_bus_setup(bus);
+
 	/* XXX Need to check why Alpha doesnt do this - Anton */
 	if (!pci_probe_only)
 		return;

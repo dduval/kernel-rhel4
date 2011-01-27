@@ -1,0 +1,45 @@
+#
+# Kernel configuration file for the SAS Class
+#
+# Copyright (C) 2005 Adaptec, Inc.  All rights reserved.
+# Copyright (C) 2005 Luben Tuikov <luben_tuikov@adaptec.com>
+#
+# This file is licensed under GPLv2.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License as
+# published by the Free Software Foundation; version 2 of the
+# License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
+# USA
+#
+# $Id: //depot/sas-class/Kconfig#6 $
+#
+
+config SAS_CLASS
+	tristate "SAS Layer and Discovery"
+	depends on SCSI
+	help
+		If you wish to use a SAS Low Level Device Driver (LLDD)
+		say Y or M here.  Otherwise, say N.
+
+		SAS LLDDs which can make use of the SAS Transport Layer
+		are LLDDs who do not hide the transport in firmware.
+		Such LLDDs expose the transport to a management layer.
+		E.g. aic94xx SAS LLDD is such a LLDD.
+
+config SAS_DEBUG
+	bool "Compile the SAS Layer in debug mode"
+	default y
+	depends on SAS_CLASS
+	help
+		Compiles the SAS Layer in debug mode.  In debug mode, the
+		SAS Layer prints diagnostic and debug messages.

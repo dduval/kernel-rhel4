@@ -33,6 +33,7 @@
 #include <linux/sched.h>
 #include <linux/skbuff.h>
 #include <linux/netlink.h>
+#include <linux/key.h>
 
 /*
  * These functions are in security/capability.c and are used
@@ -1228,6 +1229,7 @@ struct security_operations {
 	int (*sk_alloc_security) (struct sock *sk, int family, int priority);
 	void (*sk_free_security) (struct sock *sk);
 #endif	/* CONFIG_SECURITY_NETWORK */
+
 };
 
 /* global variables */

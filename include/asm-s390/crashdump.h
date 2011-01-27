@@ -1,0 +1,4 @@
+#ifndef _ASM_S390_CRASHDUMP_H_
+#define _ASM_S390_CRASHDUMP_H_
+
+#endif /* _ASM_S390_CRASHDUMP_H_ */

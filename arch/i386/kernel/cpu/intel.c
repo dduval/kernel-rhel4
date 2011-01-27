@@ -277,6 +277,18 @@ static unsigned int intel_size_cache(struct cpuinfo_x86 * c, unsigned int size)
 	return size;
 }
 
+static void intel_identify(struct cpuinfo_x86 * c)
+{
+	extern int disable_x86_ht;
+
+	generic_identify(c);
+
+	if (disable_x86_ht) {
+		clear_bit(X86_FEATURE_HT, c->x86_capability);
+	}
+}
+
+
 static struct cpu_dev intel_cpu_dev __initdata = {
 	.c_vendor	= "Intel",
 	.c_ident 	= { "GenuineIntel" },
@@ -330,7 +342,7 @@ static struct cpu_dev intel_cpu_dev __initdata = {
 		},
 	},
 	.c_init		= init_intel,
-	.c_identify	= generic_identify,
+	.c_identify	= intel_identify,
 	.c_size_cache	= intel_size_cache,
 };
 

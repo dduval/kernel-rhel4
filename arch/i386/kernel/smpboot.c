@@ -1063,7 +1063,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 			for (i = 0; i < NR_CPUS; i++) {
 				if (!cpu_isset(i, cpu_callout_map))
 					continue;
-				if (phys_proc_id[cpu] == phys_proc_id[i]) {
+				if (cpu_core_id[cpu] == cpu_core_id[i]) {
 					siblings++;
 					cpu_set(i, cpu_sibling_map[cpu]);
 				}
@@ -1074,7 +1074,10 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		}
 
 		if (siblings != smp_num_siblings)
+		{
 			printk(KERN_WARNING "WARNING: %d siblings found for CPU%d, should be %d\n", siblings, cpu, smp_num_siblings);
+			smp_num_siblings = siblings;
+		}
 	}
 
 	if (nmi_watchdog == NMI_LOCAL_APIC)

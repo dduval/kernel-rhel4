@@ -56,6 +56,9 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 			task->tk_pid, clnt->cl_server,
 			map->pm_prog, map->pm_vers, map->pm_prot);
 
+	/* Autobind on cloned rpc clients is discouraged */
+	BUG_ON(clnt->cl_parent != clnt);
+
 	spin_lock(&pmap_lock);
 	if (map->pm_binding) {
 		rpc_sleep_on(&map->pm_bindwait, task, NULL, NULL);
@@ -70,6 +73,8 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 		task->tk_status = PTR_ERR(pmap_clnt);
 		goto bailout;
 	}
+	/* Don't need reserved ports to get ports from portmappers */
+	pmap_clnt->cl_xprt->resvport = 0;
 	task->tk_status = 0;
 
 	/*

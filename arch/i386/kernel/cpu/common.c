@@ -14,12 +14,15 @@
 static int cachesize_override __initdata = -1;
 static int disable_x86_fxsr __initdata = 0;
 static int disable_x86_serial_nr __initdata = 1;
+int disable_x86_ht = 0;
 
 struct cpu_dev * cpu_devs[X86_VENDOR_NUM] = {};
 
 extern void mcheck_init(struct cpuinfo_x86 *c);
 
 extern int disable_pse;
+
+int sibling_ht_mask = 0;
 
 static void default_init(struct cpuinfo_x86 * c)
 {
@@ -227,6 +230,7 @@ void __init early_cpu_detect(void)
 		c->x86_mask = tfms & 15;
 		if (cap0 & (1<<19))
 			c->x86_cache_alignment = ((misc >> 8) & 0xff) * 8;
+
 	}
 
 	early_intel_workaround(c);
@@ -587,4 +591,30 @@ void __init cpu_init (void)
 	current_thread_info()->status = 0;
 	current->used_math = 0;
 	mxcsr_feature_mask_init();
+}
+
+void noht_init(void)
+{
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) && disable_x86_ht) {
+		int siblings, eax, ebx, ecx, edx;
+		/* If "noht" specified, calculate a mask that
+		 * can be used to determine which APIC IDs
+		 * correspond to the first CPU in a sibling
+		 * set.
+		 */
+		ebx = cpuid_ebx(1);
+		siblings = (ebx & 0xff0000) >> 16;
+		if (!siblings) 
+			siblings = 1;
+		if (boot_cpu_data.cpuid_level >= 4) {
+			cpuid_count(4, 0, &eax, &ebx, &ecx, &edx);
+			if (eax & 0x1f)
+				siblings /= ((eax >> 26) + 1);
+		}
+		
+		sibling_ht_mask = 1;
+		while(sibling_ht_mask < siblings)
+			sibling_ht_mask <<= 1;
+		sibling_ht_mask--;
+	}
 }

@@ -53,13 +53,13 @@
  */
 
 #define PCI_SAL_ADDRESS(seg, bus, devfn, reg)	\
-	((u64)(seg << 24) | (u64)(bus << 16) |	\
+	((u64)((u64) seg << 24) | (u64)(bus << 16) |	\
 	 (u64)(devfn << 8) | (u64)(reg))
 
 /* SAL 3.2 adds support for extended config space. */
 
 #define PCI_SAL_EXT_ADDRESS(seg, bus, devfn, reg)	\
-	((u64)(seg << 28) | (u64)(bus << 20) |		\
+	((u64)((u64) seg << 28) | (u64)(bus << 20) |		\
 	 (u64)(devfn << 12) | (u64)(reg))
 
 static int

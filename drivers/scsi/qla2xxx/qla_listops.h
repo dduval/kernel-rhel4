@@ -227,10 +227,9 @@ del_from_scsi_retry_queue(struct scsi_qla_host * ha, srb_t * sp)
  *      sp = srb pointer.
  *      SCSI_LU_Q lock must be already obtained.
  */
-static inline int 
+static inline void 
 __add_to_pending_queue(struct scsi_qla_host *ha, srb_t * sp)
 {
-	int	empty;
 	/*
         if( sp->state != SRB_NO_QUEUE_STATE &&
         	sp->state != SRB_FREE_STATE &&
@@ -238,12 +237,9 @@ __add_to_pending_queue(struct scsi_qla_host *ha, srb_t * sp)
 		BUG();
 	*/
 
-	empty = list_empty(&ha->pending_queue);
 	list_add_tail(&sp->list, &ha->pending_queue);
 	ha->qthreads++;
 	sp->state = SRB_PENDING_STATE;
-
-	return (empty);
 }
 
 static inline void 
@@ -261,18 +257,16 @@ __add_to_pending_queue_head(struct scsi_qla_host *ha, srb_t * sp)
 	sp->state = SRB_PENDING_STATE;
 }
 
-static inline int
+static inline void
 add_to_pending_queue(struct scsi_qla_host *ha, srb_t *sp)
 {
-	int	empty;
 	unsigned long flags;
 
 	spin_lock_irqsave(&ha->list_lock, flags);
-	empty = __add_to_pending_queue(ha, sp);
+	__add_to_pending_queue(ha, sp);
 	spin_unlock_irqrestore(&ha->list_lock, flags);
-
-	return (empty);
 }
+
 static inline void
 add_to_pending_queue_head(struct scsi_qla_host *ha, srb_t *sp)
 {

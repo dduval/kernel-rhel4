@@ -2971,6 +2971,13 @@ static int ipr_eh_host_reset(struct scsi_cmnd * scsi_cmd)
 	ENTER;
 	ioa_cfg = (struct ipr_ioa_cfg *) scsi_cmd->device->host->hostdata;
 
+	if (crashdump_mode()) {
+		if (ioa_cfg->allow_cmds)
+			return SUCCESS;
+		else
+			return FAILED;
+	}
+
 	dev_err(&ioa_cfg->pdev->dev,
 		"Adapter being reset as a result of error recovery.\n");
 

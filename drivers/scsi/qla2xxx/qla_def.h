@@ -252,6 +252,7 @@
  * valid range of an N-PORT id is 0 through 0x7ef.
  */
 #define NPH_LAST_HANDLE		0x7ef
+#define NPH_MGMT_SERVER		0x7fa		/*  FFFFFA */
 #define NPH_SNS			0x7fc		/*  FFFFFC */
 #define NPH_FABRIC_CONTROLLER	0x7fd		/*  FFFFFD */
 #define NPH_F_PORT		0x7fe		/*  FFFFFE */
@@ -689,6 +690,7 @@ typedef struct {
 #define MBC_WRITE_RAM_WORD_EXTENDED	0xd	/* Write RAM word extended */
 #define MBC_READ_RAM_EXTENDED		0xf	/* Read RAM extended. */
 #define MBC_IOCB_COMMAND		0x12	/* Execute IOCB command. */
+#define MBC_STOP_FIRMWARE		0x14	/* Stop firmware. */
 #define MBC_ABORT_COMMAND		0x15	/* Abort IOCB command. */
 #define MBC_ABORT_DEVICE		0x16	/* Abort device (ID/LUN). */
 #define MBC_ABORT_TARGET		0x17	/* Abort target (ID). */
@@ -972,7 +974,7 @@ typedef struct {
 	 * MSB BIT 1 =
 	 * MSB BIT 2 =
 	 * MSB BIT 3 =
-	 * MSB BIT 4 =
+	 * MSB BIT 4 = LED mode
 	 * MSB BIT 5 = enable 50 ohm termination
 	 * MSB BIT 6 = Data Rate (2300 only)
 	 * MSB BIT 7 = Data Rate (2300 only)
@@ -1094,7 +1096,7 @@ typedef struct {
 	 * MSB BIT 1 =
 	 * MSB BIT 2 =
 	 * MSB BIT 3 =
-	 * MSB BIT 4 =
+	 * MSB BIT 4 = LED mode
 	 * MSB BIT 5 = enable 50 ohm termination
 	 * MSB BIT 6 = Data Rate (2300 only)
 	 * MSB BIT 7 = Data Rate (2300 only)
@@ -1190,10 +1192,7 @@ typedef struct {
 
 	uint8_t link_down_timeout;
 
-	uint8_t adapter_id_0[4];
-	uint8_t adapter_id_1[4];
-	uint8_t adapter_id_2[4];
-	uint8_t adapter_id_3[4];
+	uint8_t adapter_id[16];
 
 	uint8_t alt1_boot_node_name[WWN_SIZE];
 	uint16_t alt1_boot_lun_number;
@@ -1875,6 +1874,8 @@ typedef struct fc_lun {
 
 #define CT_REJECT_RESPONSE	0x8001
 #define CT_ACCEPT_RESPONSE	0x8002
+#define CT_REASON_CANNOT_PERFORM	0x09
+#define CT_EXPL_ALREADY_REGISTERED	0x10
 
 #define NS_N_PORT_TYPE	0x01
 #define NS_NL_PORT_TYPE	0x02
@@ -1915,6 +1916,100 @@ typedef struct fc_lun {
 #define	RSNN_NN_CMD	 0x239
 #define	RSNN_NN_REQ_SIZE (16 + 8 + 1 + 255)
 #define	RSNN_NN_RSP_SIZE 16
+
+/*
+ * HBA attribute types.
+ */
+#define FDMI_HBA_ATTR_COUNT			10
+#define FDMI_HBA_NODE_NAME			1
+#define FDMI_HBA_MANUFACTURER			2
+#define FDMI_HBA_SERIAL_NUMBER			3
+#define FDMI_HBA_MODEL				4
+#define FDMI_HBA_MODEL_DESCRIPTION		5
+#define FDMI_HBA_HARDWARE_VERSION		6
+#define FDMI_HBA_DRIVER_VERSION			7
+#define FDMI_HBA_OPTION_ROM_VERSION		8
+#define FDMI_HBA_FIRMWARE_VERSION		9
+#define FDMI_HBA_OS_NAME_AND_VERSION		0xa
+#define FDMI_HBA_MAXIMUM_CT_PAYLOAD_LENGTH	0xb
+
+struct ct_fdmi_hba_attr {
+	uint16_t type;
+	uint16_t len;
+	union {
+		uint8_t node_name[WWN_SIZE];
+		uint8_t manufacturer[32];
+		uint8_t serial_num[8];
+		uint8_t model[16];
+		uint8_t model_desc[80];
+		uint8_t hw_version[16];
+		uint8_t driver_version[32];
+		uint8_t orom_version[16];
+		uint8_t fw_version[16];
+		uint8_t os_version[128];
+		uint8_t max_ct_len[4];
+	} a;
+};
+
+struct ct_fdmi_hba_attributes {
+	uint32_t count;
+	struct ct_fdmi_hba_attr entry[FDMI_HBA_ATTR_COUNT];
+};
+
+/*
+ * Port attribute types.
+ */
+#define FDMI_PORT_ATTR_COUNT		6
+#define FDMI_PORT_FC4_TYPES		1
+#define FDMI_PORT_SUPPORT_SPEED		2
+#define FDMI_PORT_CURRENT_SPEED		3
+#define FDMI_PORT_MAX_FRAME_SIZE	4
+#define FDMI_PORT_OS_DEVICE_NAME	5
+#define FDMI_PORT_HOST_NAME		6
+
+struct ct_fdmi_port_attr {
+	uint16_t type;
+	uint16_t len;
+	union {
+		uint8_t fc4_types[32];
+		uint32_t sup_speed;
+		uint32_t cur_speed;
+		uint32_t max_frame_size;
+		uint8_t os_dev_name[32];
+		uint8_t host_name[32];
+	} a;
+};
+
+/*
+ * Port Attribute Block.
+ */
+struct ct_fdmi_port_attributes {
+	uint32_t count;
+	struct ct_fdmi_port_attr entry[FDMI_PORT_ATTR_COUNT];
+};
+
+/* FDMI definitions. */
+#define GRHL_CMD	0x100
+#define GHAT_CMD	0x101
+#define GRPL_CMD	0x102
+#define GPAT_CMD	0x110
+
+#define RHBA_CMD	0x200
+#define RHBA_RSP_SIZE	16
+
+#define RHAT_CMD	0x201
+#define RPRT_CMD	0x210
+
+#define RPA_CMD		0x211
+#define RPA_RSP_SIZE	16
+
+#define DHBA_CMD	0x300
+#define DHBA_REQ_SIZE	(16 + 8)
+#define DHBA_RSP_SIZE	16
+
+#define DHAT_CMD	0x301
+#define DPRT_CMD	0x310
+#define DPA_CMD		0x311
 
 /* CT command header -- request/response common fields */
 struct ct_cmd_hdr {
@@ -1973,6 +2068,43 @@ struct ct_sns_req {
 			uint8_t name_len;
 			uint8_t sym_node_name[255];
 		} rsnn_nn;
+
+		struct {
+			uint8_t hba_indentifier[8];
+		} ghat;
+
+		struct {
+			uint8_t hba_identifier[8];
+			uint32_t entry_count;
+			uint8_t port_name[8];
+			struct ct_fdmi_hba_attributes attrs;
+		} rhba;
+
+		struct {
+			uint8_t hba_identifier[8];
+			struct ct_fdmi_hba_attributes attrs;
+		} rhat;
+
+		struct {
+			uint8_t port_name[8];
+			struct ct_fdmi_port_attributes attrs;
+		} rpa;
+
+		struct {
+			uint8_t port_name[8];
+		} dhba;
+
+		struct {
+			uint8_t port_name[8];
+		} dhat;
+
+		struct {
+			uint8_t port_name[8];
+		} dprt;
+
+		struct {
+			uint8_t port_name[8];
+		} dpa;
 	} req;
 };
 
@@ -2030,6 +2162,12 @@ struct ct_sns_rsp {
 		struct {
 			uint8_t fc4_types[32];
 		} gft_id;
+
+		struct {
+			uint32_t entry_count;
+			uint8_t port_name[8];
+			struct ct_fdmi_hba_attributes attrs;
+		} ghat;
 	} rsp;
 };
 
@@ -2218,6 +2356,7 @@ typedef struct scsi_qla_host {
 #define IOCTL_ERROR_RECOVERY	23      
 #define LOOP_RESET_NEEDED	24
 #define BEACON_BLINK_NEEDED	25
+#define REGISTER_FDMI_NEEDED	26
 
 	uint32_t	device_flags;
 #define DFLG_LOCAL_DEVICES		BIT_0
@@ -2288,8 +2427,6 @@ typedef struct scsi_qla_host {
         uint32_t	scsi_retry_q_cnt; 
         uint32_t	failover_cnt; 
 
-	unsigned long	last_irq_cpu;	/* cpu where we got our last irq */
-
 	uint16_t           revision;
 	uint8_t           ports;
 	u_long            actthreads;
@@ -2356,6 +2493,7 @@ typedef struct scsi_qla_host {
 	uint16_t	max_luns;
 	uint16_t	max_targets;
 	uint16_t	last_loop_id;
+	uint16_t	mgmt_svr_loop_id;
 
         uint32_t	login_retry_count; 
 
@@ -2486,6 +2624,7 @@ typedef struct scsi_qla_host {
 	uint8_t		model_number[16+1];
 #define BINZERO		"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
 	char		*model_desc;
+	uint8_t		adapter_id[16+1];
 
 	uint8_t		*node_name;
 	uint8_t		*port_name;
@@ -2496,6 +2635,9 @@ typedef struct scsi_qla_host {
 	uint64_t	BytesRequested;
 	uint64_t	IosExecuted;
 	uint64_t	BytesExecuted;
+
+	uint8_t		driver_verstr[80];
+	uint8_t		driver_version[4];
 
 	/* Needed for BEACON */
 	uint8_t		beacon_blink_led;
@@ -2514,7 +2656,8 @@ typedef struct scsi_qla_host {
  */
 #define LOOP_TRANSITION(ha) \
 	(test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) || \
-	 test_bit(LOOP_RESYNC_NEEDED, &ha->dpc_flags))
+	 test_bit(LOOP_RESYNC_NEEDED, &ha->dpc_flags) || \
+	 atomic_read(&ha->loop_state) == LOOP_DOWN)
 
 #define LOOP_NOT_READY(ha) \
 	((test_bit(ISP_ABORT_NEEDED, &ha->dpc_flags) || \
@@ -2559,6 +2702,7 @@ typedef struct scsi_qla_host {
 #define QLA_SUSPENDED			0x106
 #define QLA_BUSY			0x107
 #define QLA_RSCNS_HANDLED		0x108
+#define QLA_ALREADY_REGISTERED		0x109
 
 /*
 * Stat info for all adpaters

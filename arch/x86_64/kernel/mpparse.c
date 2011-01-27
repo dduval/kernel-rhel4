@@ -107,6 +107,7 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 static void __init MP_processor_info (struct mpc_config_processor *m)
 {
 	int ver;
+	extern int sibling_ht_mask;
 
 	if (!(m->mpc_cpuflag & CPU_ENABLED))
 		return;
@@ -116,6 +117,14 @@ static void __init MP_processor_info (struct mpc_config_processor *m)
 	       (m->mpc_cpufeature & CPU_FAMILY_MASK)>>8,
 	       (m->mpc_cpufeature & CPU_MODEL_MASK)>>4,
 		m->mpc_apicver);
+
+	/* If the "noht" boot option is set, then enable only the
+	 * first CPU of a sibling set...
+	 */
+	if (m->mpc_apicid & sibling_ht_mask) {
+		m->mpc_cpuflag &= ~CPU_ENABLED;
+		return;
+	}
 
 	if (m->mpc_cpuflag & CPU_BOOTPROCESSOR) {
 		Dprintk("    Bootup CPU\n");
@@ -763,7 +772,7 @@ void __init mp_register_ioapic (
 	mp_ioapics[idx].mpc_apicaddr = address;
 
 	set_fixmap_nocache(FIX_IO_APIC_BASE_0 + idx, address);
-	mp_ioapics[idx].mpc_apicid = io_apic_get_unique_id(idx, id);
+	mp_ioapics[idx].mpc_apicid = id;
 	mp_ioapics[idx].mpc_apicver = io_apic_get_version(idx);
 	
 	/* 
@@ -899,25 +908,35 @@ void __init mp_config_acpi_legacy_irqs (void)
 	return;
 }
 
-void mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
+#define MAX_GSI_NUM	4096
+
+/*
+ * Mapping between Global System Interrupts, which
+ * represent all possible interrupts, to the IRQs
+ * assigned to actual devices.
+ */
+static u8 gsi_to_irq[MAX_GSI_NUM];
+
+int mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
 {
 	int			ioapic = -1;
 	int			ioapic_pin = 0;
 	int			idx, bit = 0;
+	static int              pci_irq = 16;
 
 	if (acpi_irq_model != ACPI_IRQ_MODEL_IOAPIC)
-		return;
+		return gsi;
 
 #ifdef CONFIG_ACPI_BUS
 	/* Don't set up the ACPI SCI because it's already set up */
 	if (acpi_fadt.sci_int == gsi)
-		return;
+		return gsi;
 #endif
 
 	ioapic = mp_find_ioapic(gsi);
 	if (ioapic < 0) {
 		printk(KERN_WARNING "No IOAPIC for GSI %u\n", gsi);
-		return;
+		return gsi;
 	}
 
 	ioapic_pin = gsi - mp_ioapic_routing[ioapic].gsi_start;
@@ -933,19 +952,41 @@ void mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
 		printk(KERN_ERR "Invalid reference to IOAPIC pin "
 			"%d-%d\n", mp_ioapic_routing[ioapic].apic_id, 
 			ioapic_pin);
-		return;
+		return gsi;
 	}
 	if ((1<<bit) & mp_ioapic_routing[ioapic].pin_programmed[idx]) {
 		Dprintk(KERN_DEBUG "Pin %d-%d already programmed\n",
 			mp_ioapic_routing[ioapic].apic_id, ioapic_pin);
-		return;
+		return gsi_to_irq[gsi];
 	}
 
 	mp_ioapic_routing[ioapic].pin_programmed[idx] |= (1<<bit);
 
+	if (edge_level) {
+		/*
+		 * For PCI devices assign IRQs in order, avoiding gaps
+		 * due to unused I/O APIC pins.
+		 */
+		int irq = gsi;
+		if (gsi < MAX_GSI_NUM) {
+			if (gsi > 15)
+				gsi = pci_irq++;
+			/*
+			 * Don't assign IRQ used by ACPI SCI
+			 */
+			if (gsi == acpi_fadt.sci_int)
+				gsi = pci_irq++;
+			gsi_to_irq[irq] = gsi;
+		} else {
+			printk(KERN_ERR "GSI %u is too high\n", gsi);
+			return gsi;
+		}
+	}
+
 	io_apic_set_pci_routing(ioapic, ioapic_pin, gsi,
 		edge_level == ACPI_EDGE_SENSITIVE ? 0 : 1,
 		active_high_low == ACPI_ACTIVE_HIGH ? 0 : 1);
+	return gsi;
 }
 
 #endif /*CONFIG_X86_IO_APIC*/

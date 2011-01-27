@@ -2142,6 +2142,8 @@ void disk_round_stats(struct gendisk *disk)
 	disk->stamp_idle = now;
 }
 
+EXPORT_SYMBOL_GPL(disk_round_stats);
+
 /*
  * queue lock must be held
  */

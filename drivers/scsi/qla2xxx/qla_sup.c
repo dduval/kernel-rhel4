@@ -135,6 +135,7 @@ qla2x00_clear_nvram_protection(scsi_qla_host_t *ha)
 
 		/* Wait for NVRAM to become ready. */
 		WRT_REG_WORD(&reg->nvram, NVR_SELECT);
+		RD_REG_WORD(&reg->nvram);	/* PCI Posting. */
 		do {
 			NVRAM_DELAY();
 			word = RD_REG_WORD(&reg->nvram);
@@ -187,6 +188,7 @@ qla2x00_set_nvram_protection(scsi_qla_host_t *ha, int stat)
 
 	/* Wait for NVRAM to become ready. */
 	WRT_REG_WORD(&reg->nvram, NVR_SELECT);
+	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
 	do {
 		NVRAM_DELAY();
 		word = RD_REG_WORD(&reg->nvram);
@@ -254,6 +256,7 @@ qla2x00_write_nvram_word(scsi_qla_host_t *ha, uint32_t addr, uint16_t data)
 
 	/* Wait for NVRAM to become ready */
 	WRT_REG_WORD(&reg->nvram, NVR_SELECT);
+	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
 	do {
 		NVRAM_DELAY();
 		word = RD_REG_WORD(&reg->nvram);
@@ -306,6 +309,7 @@ qla2x00_write_nvram_word_tmo(scsi_qla_host_t *ha, uint32_t addr, uint16_t data,
 
 	/* Wait for NVRAM to become ready */
 	WRT_REG_WORD(&reg->nvram, NVR_SELECT);
+	RD_REG_WORD(&reg->nvram);		/* PCI Posting. */
 	do {
 		NVRAM_DELAY();
 		word = RD_REG_WORD(&reg->nvram);
@@ -363,6 +367,7 @@ qla2x00_nvram_request(scsi_qla_host_t *ha, uint32_t nv_cmd)
 	/* Read data from NVRAM. */
 	for (cnt = 0; cnt < 16; cnt++) {
 		WRT_REG_WORD(&reg->nvram, NVR_SELECT | NVR_CLOCK);
+		RD_REG_WORD(&reg->nvram);	/* PCI Posting. */
 		NVRAM_DELAY();
 		data <<= 1;
 		reg_data = RD_REG_WORD(&reg->nvram);
@@ -482,21 +487,11 @@ qla24xx_read_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
     uint32_t dwords)
 {
 	uint32_t i;
-	struct device_reg_24xx __iomem *reg =
-	    (struct device_reg_24xx __iomem *)ha->iobase;
-
-	/* Pause RISC. */
-	WRT_REG_DWORD(&reg->hccr, HCCRX_SET_RISC_PAUSE);
-	RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
 
 	/* Dword reads to flash. */
 	for (i = 0; i < dwords; i++, faddr++)
 		dwptr[i] = cpu_to_le32(qla24xx_read_flash_dword(ha,
 		    flash_data_to_access_addr(faddr)));
-
-	/* Release RISC pause. */
-	WRT_REG_DWORD(&reg->hccr, HCCRX_REL_RISC_PAUSE);
-	RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
 
 	return dwptr;
 }
@@ -510,22 +505,11 @@ qla2x00_read_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 	uint32_t *dwptr;
 
 	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
-		struct device_reg_24xx __iomem *reg =
-		    (struct device_reg_24xx __iomem *)ha->iobase;
-
-		/* Pause RISC. */
-		WRT_REG_DWORD(&reg->hccr, HCCRX_SET_RISC_PAUSE);
-		RD_REG_DWORD(&reg->hccr);	/* PCI Posting. */
-
 		/* Dword reads to flash. */
 		dwptr = (uint32_t *)buf;
 		for (i = 0; i < bytes >> 2; i++, naddr++)
 			dwptr[i] = cpu_to_le32(qla24xx_read_flash_dword(ha,
 			    nvram_data_to_access_addr(naddr)));
-
-		/* Release RISC pause. */
-		WRT_REG_DWORD(&reg->hccr, HCCRX_REL_RISC_PAUSE);
-		RD_REG_DWORD(&reg->hccr);	/* PCI Posting. */
 	} else {
 		/* Word reads to NVRAM via registers. */
 		wptr = (uint16_t *)buf;
@@ -585,10 +569,6 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	    (struct device_reg_24xx __iomem *)ha->iobase;
 
 	ret = QLA_SUCCESS;
-
-	/* Pause RISC. */
-	WRT_REG_DWORD(&reg->hccr, HCCRX_SET_RISC_PAUSE);
-	RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
 
 	qla24xx_get_flash_manufacturer(ha, &man_id, &flash_id);
 	DEBUG9(printk("%s(%ld): Flash man_id=%d flash_id=%d\n", __func__,
@@ -653,10 +633,6 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	    RD_REG_DWORD(&reg->ctrl_status) & ~CSRX_FLASH_ENABLE);
 	RD_REG_DWORD(&reg->ctrl_status);	/* PCI Posting. */
 
-	/* Release RISC pause. */
-	WRT_REG_DWORD(&reg->hccr, HCCRX_REL_RISC_PAUSE);
-	RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
-
 	return ret;
 }
 
@@ -674,10 +650,6 @@ qla2x00_write_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 	ret = QLA_SUCCESS;
 
 	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
-		/* Pause RISC. */
-		WRT_REG_DWORD(&reg->hccr, HCCRX_SET_RISC_PAUSE);
-		RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
-
 		/* Enable flash write. */
 		WRT_REG_DWORD(&reg->ctrl_status,
 		    RD_REG_DWORD(&reg->ctrl_status) | CSRX_FLASH_ENABLE);
@@ -711,10 +683,6 @@ qla2x00_write_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 		WRT_REG_DWORD(&reg->ctrl_status,
 		    RD_REG_DWORD(&reg->ctrl_status) & ~CSRX_FLASH_ENABLE);
 		RD_REG_DWORD(&reg->ctrl_status);	/* PCI Posting. */
-
-		/* Release RISC pause. */
-		WRT_REG_DWORD(&reg->hccr, HCCRX_REL_RISC_PAUSE);
-		RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
 	} else {
 		int stat;
 

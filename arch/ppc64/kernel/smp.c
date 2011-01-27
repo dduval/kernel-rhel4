@@ -326,54 +326,6 @@ void cpu_die(void)
 	for(;;);
 }
 
-/* Search all cpu device nodes for an offline logical cpu.  If a
- * device node has a "ibm,my-drc-index" property (meaning this is an
- * LPAR), paranoid-check whether we own the cpu.  For each "thread"
- * of a cpu, if it is offline and has the same hw index as before,
- * grab that in preference.
- */
-static unsigned int find_physical_cpu_to_start(unsigned int old_hwindex)
-{
-	struct device_node *np = NULL;
-	unsigned int best = -1U;
-
-	while ((np = of_find_node_by_type(np, "cpu"))) {
-		int nr_threads, len;
-		u32 *index = (u32 *)get_property(np, "ibm,my-drc-index", NULL);
-		u32 *tid = (u32 *)
-			get_property(np, "ibm,ppc-interrupt-server#s", &len);
-
-		if (!tid)
-			tid = (u32 *)get_property(np, "reg", &len);
-
-		if (!tid)
-			continue;
-
-		/* If there is a drc-index, make sure that we own
-		 * the cpu.
-		 */
-		if (index) {
-			int state;
-			int rc = rtas_get_sensor(9003, *index, &state);
-			if (rc != 0 || state != 1)
-				continue;
-		}
-
-		nr_threads = len / sizeof(u32);
-
-		while (nr_threads--) {
-			if (0 == query_cpu_stopped(tid[nr_threads])) {
-				best = tid[nr_threads];
-				if (best == old_hwindex)
-					goto out;
-			}
-		}
-	}
-out:
-	of_node_put(np);
-	return best;
-}
-
 /**
  * smp_startup_cpu() - start the given cpu
  *
@@ -397,7 +349,7 @@ static inline int __devinit smp_startup_cpu(unsigned int lcpu)
  	if (system_state < SYSTEM_RUNNING)
 		return 1;
 
-	pcpu = find_physical_cpu_to_start(get_hard_smp_processor_id(lcpu));
+	pcpu = get_hard_smp_processor_id(lcpu);
 	if (pcpu == -1U) {
 		printk(KERN_INFO "No more cpus available, failing\n");
 		return 0;
@@ -405,9 +357,6 @@ static inline int __devinit smp_startup_cpu(unsigned int lcpu)
 
 	/* Fixup atomic count: it exited inside IRQ handler. */
 	paca[lcpu].__current->thread_info->preempt_count	= 0;
-
-	/* At boot this is done in prom.c. */
-	paca[lcpu].hw_cpu_id = pcpu;
 
 	status = rtas_call(rtas_token("start-cpu"), 3, 1, NULL,
 			   pcpu, start_here, lcpu);
@@ -659,14 +608,30 @@ void dump_smp_call_function (void (*func) (void *info), void *info)
 {
 	static struct call_data_struct dumpdata;
 	int waitcount;
+	static int dumping_cpu = -1;
 
 	spin_lock(&dump_call_lock);
-	/* if another cpu beat us, they win! */
+	/*
+	 * The cpu that reaches here first will do dumping.  Only the dumping
+	 * cpu skips the if-statement below ONLY ONCE.  The other cpus freeze
+	 * themselves here.
+	 */
 	if (dumpdata.func) {
 		spin_unlock(&dump_call_lock);
+		/*
+		 * The dumping cpu reaches here in case that the netdump starts
+		 * after the diskdump fails.  In the case, the dumping cpu
+		 * needs to return to continue the netdump.  In other cases,
+		 * freezes itself by calling func().
+		 */
+		if (dumping_cpu == smp_processor_id())
+			return;
+
 		func(info);
 		/* NOTREACHED */
 	}
+
+	dumping_cpu = smp_processor_id();
 
 	/* freeze call_lock or wait for on-going IPIs to settle down */
 	waitcount = 0;
@@ -1019,11 +984,14 @@ void __init smp_cpus_done(unsigned int max_cpus)
 
 	set_cpus_allowed(current, old_mask);
 
-	/*
-	 * We know at boot the maximum number of cpus we can add to
-	 * a partition and set cpu_possible_map accordingly. cpu_present_map
-	 * needs to match for the hotplug code to allow us to hot add
-	 * any offline cpus.
+	/* If we booted with smt-enabled=off, secondary threads are
+	 * unmarked in the present map.  Need to fix this up so they
+	 * can be manually onlined.
 	 */
-	cpu_present_map = cpu_possible_map;
+	if ((cur_cpu_spec->cpu_features & CPU_FTR_SMT) &&
+	    !smt_enabled_at_boot) {
+		int cpu;
+		for_each_present_cpu(cpu)
+			cpu_set(cpu ^ 0x1, cpu_present_map);
+	}
 }

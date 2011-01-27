@@ -653,7 +653,7 @@ cleanup_critical:
 	clc	4(4,%r12),BASED(cleanup_table_sysc_work_loop)
 	bl	BASED(0f)
 	clc	4(4,%r12),BASED(cleanup_table_sysc_work_loop+4)
-	bl	BASED(cleanup_sysc_leave)
+	bl	BASED(cleanup_sysc_return)
 0:
 	br	%r14
 

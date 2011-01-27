@@ -727,4 +727,19 @@ config SERIAL_ICOM
 	  This driver can also be built as a module.  If so, the module
 	  will be called icom.
 
+config SERIAL_JSM
+        tristate "Digi International NEO PCI Support"
+        depends on PCI
+        select SERIAL_CORE
+        help
+          This is a driver for Digi International's Neo series
+          of cards which provide multiple serial ports. You would need
+          something like this to connect more than two modems to your Linux
+          box, for instance in order to become a dial-in server. This driver
+          supports PCI boards only.
+          If you have a card like this, say Y here and read the file
+          <file:Documentation/jsm.txt>.
+          To compile this driver as a module, choose M here: the
+          module will be called jsm.
+
 endmenu

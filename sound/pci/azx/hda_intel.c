@@ -47,28 +47,23 @@
 #include "hda_codec.h"
 
 
-static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
-static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
-static char *model[SNDRV_CARDS];
-static int position_fix[SNDRV_CARDS];
+static int index = SNDRV_DEFAULT_IDX1;
+static char *id = SNDRV_DEFAULT_STR1;
+static char *model;
+static int position_fix;
 
-static int num_index = 0;
-static int num_id = 0;
-static int num_enable = 0;
-static int num_model = 0;
-static int num_position_fix = 0;
-
-module_param_array(index, int, num_index, 0444);
+module_param(index, int, 0444);
 MODULE_PARM_DESC(index, "Index value for Intel HD audio interface.");
-module_param_array(id, charp, num_id, 0444);
+module_param(id, charp, 0444);
 MODULE_PARM_DESC(id, "ID string for Intel HD audio interface.");
-module_param_array(enable, bool, num_enable, 0444);
-MODULE_PARM_DESC(enable, "Enable Intel HD audio interface.");
-module_param_array(model, charp, num_model, 0444);
+module_param(model, charp, 0444);
 MODULE_PARM_DESC(model, "Use the given board model.");
-module_param_array(position_fix, int, num_position_fix, 0444);
-MODULE_PARM_DESC(position_fix, "Fix DMA pointer (0 = FIFO size, 1 = none, 2 = POSBUF).");
+module_param(position_fix, int, 0444);
+MODULE_PARM_DESC(position_fix, "Fix DMA pointer (0 = auto, 1 = none, 2 = POSBUF, 3 = FIFO size).");
+
+/* just for backward compatibility */
+static int enable;
+module_param(enable, bool, 0444);
 
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("{{Intel, ICH6},"
@@ -77,7 +72,9 @@ MODULE_SUPPORTED_DEVICE("{{Intel, ICH6},"
 			 "{Intel, ESB2},"
 			 "{ATI, SB450},"
 			 "{VIA, VT8251},"
-			 "{VIA, VT8237A}}");
+			 "{VIA, VT8237A},"
+			 "{SiS, SIS966},"
+			 "{ULI, M5461}}");
 MODULE_DESCRIPTION("Intel HDA driver");
 
 #define SFX	"hda-intel: "
@@ -147,13 +144,30 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
  */
 
 /* max number of SDs */
-#define MAX_ICH6_DEV		8
+/* ICH, ATI and VIA have 4 playback and 4 capture */
+#define ICH6_CAPTURE_INDEX	0
+#define ICH6_NUM_CAPTURE	4
+#define ICH6_PLAYBACK_INDEX	4
+#define ICH6_NUM_PLAYBACK	4
+
+/* ULI has 6 playback and 5 capture */
+#define ULI_CAPTURE_INDEX	0
+#define ULI_NUM_CAPTURE		5
+#define ULI_PLAYBACK_INDEX	5
+#define ULI_NUM_PLAYBACK	6
+
+/* this number is statically defined for simplicity */
+#define MAX_AZX_DEV		16
+
 /* max number of fragments - we may use more if allocating more pages for BDL */
-#define AZX_MAX_FRAG		(PAGE_SIZE / (MAX_ICH6_DEV * 16))
+#define BDL_SIZE		PAGE_ALIGN(8192)
+#define AZX_MAX_FRAG		(BDL_SIZE / (MAX_AZX_DEV * 16))
 /* max buffer size - no h/w limit, you can increase as you like */
 #define AZX_MAX_BUF_SIZE	(1024*1024*1024)
 /* max number of PCM devics per card */
-#define AZX_MAX_PCMS		8
+#define AZX_MAX_AUDIO_PCMS	6
+#define AZX_MAX_MODEM_PCMS	2
+#define AZX_MAX_PCMS		(AZX_MAX_AUDIO_PCMS + AZX_MAX_MODEM_PCMS)
 
 /* RIRB int mask: overrun[2], response[0] */
 #define RIRB_INT_RESPONSE	0x01
@@ -184,6 +198,9 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define ICH6_INT_CTRL_EN	0x40000000	/* controller interrupt enable bit */
 #define ICH6_INT_GLOBAL_EN	0x80000000	/* global interrupt enable bit */
 
+/* GCTL unsolicited response enable bit */
+#define ICH6_GCTL_UREN		(1<<8)
+
 /* GCTL reset bit */
 #define ICH6_GCTL_RESET		(1<<0)
 
@@ -197,16 +214,19 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 
 /* position fix mode */
 enum {
-	POS_FIX_FIFO,
+	POS_FIX_AUTO,
 	POS_FIX_NONE,
-	POS_FIX_POSBUF
+	POS_FIX_POSBUF,
+	POS_FIX_FIFO,
 };
 
 /* Defines for ATI HD Audio support in SB450 south bridge */
-#define ATI_SB450_HDAUDIO_PCI_DEVICE_ID     0x437b
 #define ATI_SB450_HDAUDIO_MISC_CNTR2_ADDR   0x42
 #define ATI_SB450_HDAUDIO_ENABLE_SNOOP      0x02
 
+/* Defines for Nvidia HDA support */
+#define NVIDIA_HDA_TRANSREG_ADDR      0x4e
+#define NVIDIA_HDA_ENABLE_COHBITS     0x0f
 
 /*
  * Use CORB/RIRB for communication from/to codecs.
@@ -230,6 +250,7 @@ struct snd_azx_dev {
 	unsigned int fragsize;		/* size of each period in bytes */
 	unsigned int frags;		/* number for period in the play buffer */
 	unsigned int fifo_size;		/* FIFO size */
+	unsigned int last_pos;		/* last updated period position */
 
 	void __iomem *sd_addr;		/* stream descriptor pointer */
 
@@ -243,6 +264,7 @@ struct snd_azx_dev {
 
 	unsigned int opened: 1;
 	unsigned int running: 1;
+	unsigned int period_updating: 1;
 };
 
 /* CORB/RIRB */
@@ -261,6 +283,14 @@ struct snd_azx {
 	snd_card_t *card;
 	struct pci_dev *pci;
 
+	/* chip type specific */
+	int driver_type;
+	int playback_streams;
+	int playback_index_offset;
+	int capture_streams;
+	int capture_index_offset;
+	int num_streams;
+
 	/* pci resources */
 	unsigned long addr;
 	void __iomem *remap_addr;
@@ -270,8 +300,8 @@ struct snd_azx {
 	spinlock_t reg_lock;
 	struct semaphore open_mutex;
 
-	/* streams */
-	azx_dev_t azx_dev[MAX_ICH6_DEV];
+	/* streams (x num_streams) */
+	azx_dev_t *azx_dev;
 
 	/* PCM */
 	unsigned int pcm_devs;
@@ -293,6 +323,25 @@ struct snd_azx {
 	/* flags */
 	int position_fix;
 	unsigned int initialized: 1;
+};
+
+/* driver types */
+enum {
+	AZX_DRIVER_ICH,
+	AZX_DRIVER_ATI,
+	AZX_DRIVER_VIA,
+	AZX_DRIVER_SIS,
+	AZX_DRIVER_ULI,
+	AZX_DRIVER_NVIDIA,
+};
+
+static char *driver_short_names[] __devinitdata = {
+	[AZX_DRIVER_ICH] = "HDA Intel",
+	[AZX_DRIVER_ATI] = "HDA ATI SB",
+	[AZX_DRIVER_VIA] = "HDA VIA VT82xx",
+	[AZX_DRIVER_SIS] = "HDA SIS966",
+	[AZX_DRIVER_ULI] = "HDA ULI M5461",
+	[AZX_DRIVER_NVIDIA] = "HDA NVidia",
 };
 
 /*
@@ -363,6 +412,8 @@ static void azx_init_cmd_io(azx_t *chip)
 	azx_writel(chip, CORBLBASE, (u32)chip->corb.addr);
 	azx_writel(chip, CORBUBASE, upper_32bit(chip->corb.addr));
 
+	/* set the corb size to 256 entries (ULI requires explicitly) */
+	azx_writeb(chip, CORBSIZE, 0x02);
 	/* set the corb write pointer to 0 */
 	azx_writew(chip, CORBWP, 0);
 	/* reset the corb hw read pointer */
@@ -376,6 +427,8 @@ static void azx_init_cmd_io(azx_t *chip)
 	azx_writel(chip, RIRBLBASE, (u32)chip->rirb.addr);
 	azx_writel(chip, RIRBUBASE, upper_32bit(chip->rirb.addr));
 
+	/* set the rirb size to 256 entries (ULI requires explicitly) */
+	azx_writeb(chip, RIRBSIZE, 0x02);
 	/* reset the rirb hw write pointer */
 	azx_writew(chip, RIRBWP, ICH6_RBRWP_CLR);
 	/* set N=1, get RIRB response interrupt for new entry */
@@ -568,6 +621,9 @@ static int azx_reset(azx_t *chip)
 		return -EBUSY;
 	}
 
+	/* Accept unsolicited responses */
+	azx_writel(chip, GCTL, azx_readl(chip, GCTL) | ICH6_GCTL_UREN);
+
 	/* detect codecs */
 	if (! chip->codec_mask) {
 		chip->codec_mask = azx_readw(chip, STATESTS);
@@ -596,7 +652,7 @@ static void azx_int_disable(azx_t *chip)
 	int i;
 
 	/* disable interrupts in stream descriptor */
-	for (i = 0; i < MAX_ICH6_DEV; i++) {
+	for (i = 0; i < chip->num_streams; i++) {
 		azx_dev_t *azx_dev = &chip->azx_dev[i];
 		azx_sd_writeb(azx_dev, SD_CTL,
 			      azx_sd_readb(azx_dev, SD_CTL) & ~SD_INT_MASK);
@@ -616,7 +672,7 @@ static void azx_int_clear(azx_t *chip)
 	int i;
 
 	/* clear stream status */
-	for (i = 0; i < MAX_ICH6_DEV; i++) {
+	for (i = 0; i < chip->num_streams; i++) {
 		azx_dev_t *azx_dev = &chip->azx_dev[i];
 		azx_sd_writeb(azx_dev, SD_STS, SD_INT_MASK);
 	}
@@ -660,14 +716,14 @@ static void azx_stream_stop(azx_t *chip, azx_dev_t *azx_dev)
  */
 static void azx_init_chip(azx_t *chip)
 {
-	unsigned char tcsel_reg, ati_misc_cntl2;
+	unsigned char reg;
 
 	/* Clear bits 0-2 of PCI register TCSEL (at offset 0x44)
 	 * TCSEL == Traffic Class Select Register, which sets PCI express QOS
 	 * Ensuring these bits are 0 clears playback static on some HD Audio codecs
 	 */
-	pci_read_config_byte (chip->pci, ICH6_PCIREG_TCSEL, &tcsel_reg);
-	pci_write_config_byte(chip->pci, ICH6_PCIREG_TCSEL, tcsel_reg & 0xf8);
+	pci_read_config_byte (chip->pci, ICH6_PCIREG_TCSEL, &reg);
+	pci_write_config_byte(chip->pci, ICH6_PCIREG_TCSEL, reg & 0xf8);
 
 	/* reset controller */
 	azx_reset(chip);
@@ -679,20 +735,25 @@ static void azx_init_chip(azx_t *chip)
 	/* initialize the codec command I/O */
 	azx_init_cmd_io(chip);
 
-	if (chip->position_fix == POS_FIX_POSBUF) {
-		/* program the position buffer */
-		azx_writel(chip, DPLBASE, (u32)chip->posbuf.addr);
-		azx_writel(chip, DPUBASE, upper_32bit(chip->posbuf.addr));
-	}
+	/* program the position buffer */
+	azx_writel(chip, DPLBASE, (u32)chip->posbuf.addr);
+	azx_writel(chip, DPUBASE, upper_32bit(chip->posbuf.addr));
 
-	/* For ATI SB450 azalia HD audio, we need to enable snoop */
-	if (chip->pci->vendor == PCI_VENDOR_ID_ATI && 
-	    chip->pci->device == ATI_SB450_HDAUDIO_PCI_DEVICE_ID) {
+	switch (chip->driver_type) {
+	case AZX_DRIVER_ATI:
+		/* For ATI SB450 azalia HD audio, we need to enable snoop */
 		pci_read_config_byte(chip->pci, ATI_SB450_HDAUDIO_MISC_CNTR2_ADDR, 
-				     &ati_misc_cntl2);
+				     &reg);
 		pci_write_config_byte(chip->pci, ATI_SB450_HDAUDIO_MISC_CNTR2_ADDR, 
-				      (ati_misc_cntl2 & 0xf8) | ATI_SB450_HDAUDIO_ENABLE_SNOOP);
-	}
+				      (reg & 0xf8) | ATI_SB450_HDAUDIO_ENABLE_SNOOP);
+		break;
+	case AZX_DRIVER_NVIDIA:
+		/* For NVIDIA HDA, enable snoop */
+		pci_read_config_byte(chip->pci,NVIDIA_HDA_TRANSREG_ADDR, &reg);
+		pci_write_config_byte(chip->pci,NVIDIA_HDA_TRANSREG_ADDR,
+				      (reg & 0xf0) | NVIDIA_HDA_ENABLE_COHBITS);
+		break;
+        }
 }
 
 
@@ -714,14 +775,16 @@ static irqreturn_t azx_interrupt(int irq, void* dev_id, struct pt_regs *regs)
 		return IRQ_NONE;
 	}
 	
-	for (i = 0; i < MAX_ICH6_DEV; i++) {
+	for (i = 0; i < chip->num_streams; i++) {
 		azx_dev = &chip->azx_dev[i];
 		if (status & azx_dev->sd_int_sta_mask) {
 			azx_sd_writeb(azx_dev, SD_STS, SD_INT_MASK);
 			if (azx_dev->substream && azx_dev->running) {
+				azx_dev->period_updating = 1;
 				spin_unlock(&chip->reg_lock);
 				snd_pcm_period_elapsed(azx_dev->substream);
 				spin_lock(&chip->reg_lock);
+				azx_dev->period_updating = 0;
 			}
 		}
 	}
@@ -822,11 +885,9 @@ static int azx_setup_controller(azx_t *chip, azx_dev_t *azx_dev)
 	/* upper BDL address */
 	azx_sd_writel(azx_dev, SD_BDLPU, upper_32bit(azx_dev->bdl_addr));
 
-	if (chip->position_fix == POS_FIX_POSBUF) {
-		/* enable the position buffer */
-		if (! (azx_readl(chip, DPLBASE) & ICH6_DPLBASE_ENABLE))
-			azx_writel(chip, DPLBASE, (u32)chip->posbuf.addr | ICH6_DPLBASE_ENABLE);
-	}
+	/* enable the position buffer */
+	if (! (azx_readl(chip, DPLBASE) & ICH6_DPLBASE_ENABLE))
+		azx_writel(chip, DPLBASE, (u32)chip->posbuf.addr | ICH6_DPLBASE_ENABLE);
 
 	/* set the interrupt enable bits in the descriptor control register */
 	azx_sd_writel(azx_dev, SD_CTL, azx_sd_readl(azx_dev, SD_CTL) | SD_INT_MASK);
@@ -879,9 +940,15 @@ static int __devinit azx_codec_create(azx_t *chip, const char *model)
 /* assign a stream for the PCM */
 static inline azx_dev_t *azx_assign_device(azx_t *chip, int stream)
 {
-	int dev, i;
-	dev = stream == SNDRV_PCM_STREAM_PLAYBACK ? 4 : 0;
-	for (i = 0; i < 4; i++, dev++)
+	int dev, i, nums;
+	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		dev = chip->playback_index_offset;
+		nums = chip->playback_streams;
+	} else {
+		dev = chip->capture_index_offset;
+		nums = chip->capture_streams;
+	}
+	for (i = 0; i < nums; i++, dev++)
 		if (! chip->azx_dev[dev].opened) {
 			chip->azx_dev[dev].opened = 1;
 			return &chip->azx_dev[dev];
@@ -899,8 +966,8 @@ static snd_pcm_hardware_t azx_pcm_hw = {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_BLOCK_TRANSFER |
 				 SNDRV_PCM_INFO_MMAP_VALID |
-				 SNDRV_PCM_INFO_PAUSE |
-				 SNDRV_PCM_INFO_RESUME),
+				 SNDRV_PCM_INFO_PAUSE /*|*/
+				 /*SNDRV_PCM_INFO_RESUME*/),
 	.formats =		SNDRV_PCM_FMTBIT_S16_LE,
 	.rates =		SNDRV_PCM_RATE_48000,
 	.rate_min =		48000,
@@ -1028,6 +1095,7 @@ static int azx_pcm_prepare(snd_pcm_substream_t *substream)
 		azx_dev->fifo_size = azx_sd_readw(azx_dev, SD_FIFOSIZE) + 1;
 	else
 		azx_dev->fifo_size = 0;
+	azx_dev->last_pos = 0;
 
 	return hinfo->ops.prepare(hinfo, apcm->codec, azx_dev->stream_tag,
 				  azx_dev->format_val, substream);
@@ -1049,6 +1117,7 @@ static int azx_pcm_trigger(snd_pcm_substream_t *substream, int cmd)
 		azx_dev->running = 1;
 		break;
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_STOP:
 		azx_stream_stop(chip, azx_dev);
 		azx_dev->running = 0;
@@ -1058,6 +1127,7 @@ static int azx_pcm_trigger(snd_pcm_substream_t *substream, int cmd)
 	}
 	spin_unlock(&chip->reg_lock);
 	if (cmd == SNDRV_PCM_TRIGGER_PAUSE_PUSH ||
+	    cmd == SNDRV_PCM_TRIGGER_SUSPEND ||
 	    cmd == SNDRV_PCM_TRIGGER_STOP) {
 		int timeout = 5000;
 		while (azx_sd_readb(azx_dev, SD_CTL) & SD_CTL_DMA_START && --timeout)
@@ -1081,6 +1151,31 @@ static snd_pcm_uframes_t azx_pcm_pointer(snd_pcm_substream_t *substream)
 		pos = azx_sd_readl(azx_dev, SD_LPIB);
 		if (chip->position_fix == POS_FIX_FIFO)
 			pos += azx_dev->fifo_size;
+#if 0 /* disabled temprarily, auto-correction doesn't work well... */
+		else if (chip->position_fix == POS_FIX_AUTO && azx_dev->period_updating) {
+			/* check the validity of DMA position */
+			unsigned int diff = 0;
+			azx_dev->last_pos += azx_dev->fragsize;
+			if (azx_dev->last_pos > pos)
+				diff = azx_dev->last_pos - pos;
+			if (azx_dev->last_pos >= azx_dev->bufsize) {
+				if (pos < azx_dev->fragsize)
+					diff = 0;
+				azx_dev->last_pos = 0;
+			}
+			if (diff > 0 && diff <= azx_dev->fifo_size)
+				pos += azx_dev->fifo_size;
+			else {
+				snd_printdd(KERN_INFO "hda_intel: DMA position fix %d, switching to posbuf\n", diff);
+				chip->position_fix = POS_FIX_POSBUF;
+				pos = *azx_dev->posbuf;
+			}
+			azx_dev->period_updating = 0;
+		}
+#else
+		else if (chip->position_fix == POS_FIX_AUTO)
+			pos += azx_dev->fifo_size;
+#endif
 	}
 	if (pos >= azx_dev->bufsize)
 		pos = 0;
@@ -1136,6 +1231,7 @@ static int __devinit create_codec_pcm(azx_t *chip, struct hda_codec *codec,
 					      snd_dma_pci_data(chip->pci),
 					      1024 * 64, 1024 * 128);
 	chip->pcm[pcm_dev] = pcm;
+	chip->pcm_devs = pcm_dev + 1;
 
 	return 0;
 }
@@ -1150,17 +1246,39 @@ static int __devinit azx_pcm_create(azx_t *chip)
 	if ((err = snd_hda_build_pcms(chip->bus)) < 0)
 		return err;
 
+	/* create audio PCMs */
 	pcm_dev = 0;
 	list_for_each(p, &chip->bus->codec_list) {
 		codec = list_entry(p, struct hda_codec, list);
 		for (c = 0; c < codec->num_pcms; c++) {
-			if (pcm_dev >= AZX_MAX_PCMS) {
-				snd_printk(KERN_ERR SFX "Too many PCMs\n");
+			if (codec->pcm_info[c].is_modem)
+				continue; /* create later */
+			if (pcm_dev >= AZX_MAX_AUDIO_PCMS) {
+				snd_printk(KERN_ERR SFX "Too many audio PCMs\n");
 				return -EINVAL;
 			}
 			err = create_codec_pcm(chip, codec, &codec->pcm_info[c], pcm_dev);
 			if (err < 0)
 				return err;
+			pcm_dev++;
+		}
+	}
+
+	/* create modem PCMs */
+	pcm_dev = AZX_MAX_AUDIO_PCMS;
+	list_for_each(p, &chip->bus->codec_list) {
+		codec = list_entry(p, struct hda_codec, list);
+		for (c = 0; c < codec->num_pcms; c++) {
+			if (! codec->pcm_info[c].is_modem)
+				continue; /* already created */
+			if (pcm_dev >= AZX_MAX_PCMS) {
+				snd_printk(KERN_ERR SFX "Too many modem PCMs\n");
+				return -EINVAL;
+			}
+			err = create_codec_pcm(chip, codec, &codec->pcm_info[c], pcm_dev);
+			if (err < 0)
+				return err;
+			chip->pcm[pcm_dev]->dev_class = SNDRV_PCM_CLASS_MODEM;
 			pcm_dev++;
 		}
 	}
@@ -1186,13 +1304,12 @@ static int __devinit azx_init_stream(azx_t *chip)
 	/* initialize each stream (aka device)
 	 * assign the starting bdl address to each stream (device) and initialize
 	 */
-	for (i = 0; i < MAX_ICH6_DEV; i++) {
+	for (i = 0; i < chip->num_streams; i++) {
 		unsigned int off = sizeof(u32) * (i * AZX_MAX_FRAG * 4);
 		azx_dev_t *azx_dev = &chip->azx_dev[i];
 		azx_dev->bdl = (u32 *)(chip->bdl.area + off);
 		azx_dev->bdl_addr = chip->bdl.addr + off;
-		if (chip->position_fix == POS_FIX_POSBUF)
-			azx_dev->posbuf = (volatile u32 *)(chip->posbuf.area + i * 8);
+		azx_dev->posbuf = (volatile u32 *)(chip->posbuf.area + i * 8);
 		/* offset: SDI0=0x80, SDI1=0xa0, ... SDO3=0x160 */
 		azx_dev->sd_addr = chip->remap_addr + (0x20 * i + 0x80);
 		/* int mask: SDI0=0x01, SDI1=0x02, ... SDO3=0x80 */
@@ -1210,7 +1327,7 @@ static int __devinit azx_init_stream(azx_t *chip)
 /*
  * power management
  */
-static int azx_suspend(snd_card_t *card, unsigned int state)
+static int azx_suspend(snd_card_t *card, pm_message_t state)
 {
 	azx_t *chip = card->pm_private_data;
 	int i;
@@ -1245,7 +1362,7 @@ static int azx_free(azx_t *chip)
 	if (chip->initialized) {
 		int i;
 
-		for (i = 0; i < MAX_ICH6_DEV; i++)
+		for (i = 0; i < chip->num_streams; i++)
 			azx_stream_stop(chip, &chip->azx_dev[i]);
 
 		/* disable interrupts */
@@ -1261,10 +1378,10 @@ static int azx_free(azx_t *chip)
 
 		/* wait a little for interrupts to finish */
 		msleep(1);
-
-		iounmap(chip->remap_addr);
 	}
 
+	if (chip->remap_addr)
+		iounmap(chip->remap_addr);
 	if (chip->irq >= 0)
 		free_irq(chip->irq, (void*)chip);
 
@@ -1276,6 +1393,7 @@ static int azx_free(azx_t *chip)
 		snd_dma_free_pages(&chip->posbuf);
 	pci_release_regions(chip->pci);
 	pci_disable_device(chip->pci);
+	kfree(chip->azx_dev);
 	kfree(chip);
 
 	return 0;
@@ -1290,7 +1408,8 @@ static int azx_dev_free(snd_device_t *device)
  * constructor
  */
 static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
-				int posfix, azx_t **rchip)
+				int posfix, int driver_type,
+				azx_t **rchip)
 {
 	azx_t *chip;
 	int err = 0;
@@ -1303,7 +1422,7 @@ static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
 	if ((err = pci_enable_device(pci)) < 0)
 		return err;
 
-	chip = kcalloc(1, sizeof(*chip), GFP_KERNEL);
+	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
 	
 	if (NULL == chip) {
 		snd_printk(KERN_ERR SFX "cannot allocate chip\n");
@@ -1316,8 +1435,19 @@ static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
 	chip->card = card;
 	chip->pci = pci;
 	chip->irq = -1;
+	chip->driver_type = driver_type;
 
 	chip->position_fix = posfix;
+
+#if BITS_PER_LONG != 64
+	/* Fix up base address on ULI M5461 */
+	if (chip->driver_type == AZX_DRIVER_ULI) {
+		u16 tmp3;
+		pci_read_config_word(pci, 0x40, &tmp3);
+		pci_write_config_word(pci, 0x40, tmp3 | 0x10);
+		pci_write_config_dword(pci, PCI_BASE_ADDRESS_1, 0);
+	}
+#endif
 
 	if ((err = pci_request_regions(pci, "ICH HD audio")) < 0) {
 		kfree(chip);
@@ -1344,19 +1474,38 @@ static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
 	pci_set_master(pci);
 	synchronize_irq(chip->irq);
 
+	switch (chip->driver_type) {
+	case AZX_DRIVER_ULI:
+		chip->playback_streams = ULI_NUM_PLAYBACK;
+		chip->capture_streams = ULI_NUM_CAPTURE;
+		chip->playback_index_offset = ULI_PLAYBACK_INDEX;
+		chip->capture_index_offset = ULI_CAPTURE_INDEX;
+		break;
+	default:
+		chip->playback_streams = ICH6_NUM_PLAYBACK;
+		chip->capture_streams = ICH6_NUM_CAPTURE;
+		chip->playback_index_offset = ICH6_PLAYBACK_INDEX;
+		chip->capture_index_offset = ICH6_CAPTURE_INDEX;
+		break;
+	}
+	chip->num_streams = chip->playback_streams + chip->capture_streams;
+	chip->azx_dev = kcalloc(chip->num_streams, sizeof(*chip->azx_dev), GFP_KERNEL);
+	if (! chip->azx_dev) {
+		snd_printk(KERN_ERR "cannot malloc azx_dev\n");
+		goto errout;
+	}
+
 	/* allocate memory for the BDL for each stream */
 	if ((err = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV, snd_dma_pci_data(chip->pci),
-				       PAGE_SIZE, &chip->bdl)) < 0) {
+				       BDL_SIZE, &chip->bdl)) < 0) {
 		snd_printk(KERN_ERR SFX "cannot allocate BDL\n");
 		goto errout;
 	}
-	if (chip->position_fix == POS_FIX_POSBUF) {
-		/* allocate memory for the position buffer */
-		if ((err = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV, snd_dma_pci_data(chip->pci),
-					       MAX_ICH6_DEV * 8, &chip->posbuf)) < 0) {
-			snd_printk(KERN_ERR SFX "cannot allocate posbuf\n");
-			goto errout;
-		}
+	/* allocate memory for the position buffer */
+	if ((err = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV, snd_dma_pci_data(chip->pci),
+				       chip->num_streams * 8, &chip->posbuf)) < 0) {
+		snd_printk(KERN_ERR SFX "cannot allocate posbuf\n");
+		goto errout;
 	}
 	/* allocate CORB/RIRB */
 	if ((err = azx_alloc_cmd_io(chip)) < 0)
@@ -1382,6 +1531,10 @@ static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
 		goto errout;
 	}
 
+	strcpy(card->driver, "HDA-Intel");
+	strcpy(card->shortname, driver_short_names[chip->driver_type]);
+	sprintf(card->longname, "%s at 0x%lx irq %i", card->shortname, chip->addr, chip->irq);
+
 	*rchip = chip;
 	return 0;
 
@@ -1392,35 +1545,24 @@ static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
 
 static int __devinit azx_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 {
-	static int dev;
 	snd_card_t *card;
 	azx_t *chip;
 	int err = 0;
 
-	if (dev >= SNDRV_CARDS)
-		return -ENODEV;
-	if (! enable[dev]) {
-		dev++;
-		return -ENOENT;
-	}
-
-	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
+	card = snd_card_new(index, id, THIS_MODULE, 0);
 	if (NULL == card) {
 		snd_printk(KERN_ERR SFX "Error creating card!\n");
 		return -ENOMEM;
 	}
 
-	if ((err = azx_create(card, pci, position_fix[dev], &chip)) < 0) {
+	if ((err = azx_create(card, pci, position_fix, pci_id->driver_data,
+			      &chip)) < 0) {
 		snd_card_free(card);
 		return err;
 	}
 
-	strcpy(card->driver, "HDA-Intel");
-	strcpy(card->shortname, "HDA Intel");
-	sprintf(card->longname, "%s at 0x%lx irq %i", card->shortname, chip->addr, chip->irq);
-
 	/* create codec instances */
-	if ((err = azx_codec_create(chip, model[dev])) < 0) {
+	if ((err = azx_codec_create(chip, model)) < 0) {
 		snd_card_free(card);
 		return err;
 	}
@@ -1446,7 +1588,6 @@ static int __devinit azx_probe(struct pci_dev *pci, const struct pci_device_id *
 	}
 
 	pci_set_drvdata(pci, card);
-	dev++;
 
 	return err;
 }
@@ -1459,12 +1600,15 @@ static void __devexit azx_remove(struct pci_dev *pci)
 
 /* PCI IDs */
 static struct pci_device_id azx_ids[] = {
-	{ 0x8086, 0x2668, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 }, /* ICH6 */
-	{ 0x8086, 0x27d8, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 }, /* ICH7 */
-	{ 0x8086, 0x269a, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 }, /* ESB2 */
-	{ 0x1002, 0x437b, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 }, /* ATI SB450 */
-	{ 0x1106, 0x3288, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 }, /* VIA VT8251/VT8237A */
-	{ 0x10b9, 0x5461, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 }, /* ALI 5461? */
+	{ 0x8086, 0x2668, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_ICH }, /* ICH6 */
+	{ 0x8086, 0x27d8, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_ICH }, /* ICH7 */
+	{ 0x8086, 0x269a, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_ICH }, /* ESB2 */
+	{ 0x1002, 0x437b, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_ATI }, /* ATI SB450 */
+	{ 0x1106, 0x3288, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_VIA }, /* VIA VT8251/VT8237A */
+	{ 0x1039, 0x7502, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_SIS }, /* SIS966 */
+	{ 0x10b9, 0x5461, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_ULI }, /* ULI M5461 */
+	{ 0x10de, 0x026c, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_NVIDIA }, /* NVIDIA 026c */
+	{ 0x10de, 0x0371, PCI_ANY_ID, PCI_ANY_ID, 0, 0, AZX_DRIVER_NVIDIA }, /* NVIDIA 0371 */
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, azx_ids);

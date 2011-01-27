@@ -38,7 +38,9 @@
 #include <asm/nvram.h>
 #include <asm/time.h>
 #include <asm/iSeries/ItSpCommArea.h>
+#include <asm/iSeries/ItLpQueue.h>
 #include <asm/uaccess.h>
+#include <asm/paca.h>
 #include <linux/dma-mapping.h>
 #include <linux/bcd.h>
 #include <asm/iSeries/vio.h>
@@ -299,6 +301,18 @@ static int signal_vsp_instruction(struct VspCmdData *vspCmd)
 	if (rc == 0)
 		wait_for_completion(&response.com);
 	return rc;
+}
+
+/*
+ * Send a 12-byte CE message (with no data) to the primary partition VSP object
+ */
+static int signal_ce_msg_simple(u8 ce_op, struct CeMsgCompleteData *completion)
+{
+        u8 ce_msg[12];
+
+        memset(ce_msg, 0, sizeof(ce_msg));
+        ce_msg[3] = ce_op;
+        return signal_ce_msg(ce_msg, completion);
 }
 
 
@@ -971,80 +985,132 @@ int mf_getRtcTime(unsigned long *time)
 	}
 	return 0;
 }
+static int rtc_set_tm(int rc, u8 *ce_msg, struct rtc_time *tm)
+{
+	tm->tm_wday = 0;
+	tm->tm_yday = 0;
+	tm->tm_isdst = 0;
+	if (rc) {
+		tm->tm_sec = 0;
+		tm->tm_min = 0;
+		tm->tm_hour = 0;
+		tm->tm_mday = 15;
+		tm->tm_mon = 5;
+		tm->tm_year = 52;
+		return rc;
+	}
+
+	if ((ce_msg[2] == 0xa9) ||
+		(ce_msg[2] == 0xaf)) {
+			/* TOD clock is not set */
+			tm->tm_sec = 1;
+			tm->tm_min = 1;
+			tm->tm_hour = 1;
+			tm->tm_mday = 10;
+			tm->tm_mon = 8;
+			tm->tm_year = 71;
+			mf_setRtc(tm);
+	}
+	{
+		u8 year = ce_msg[5];
+		u8 sec = ce_msg[6];
+		u8 min = ce_msg[7];
+		u8 hour = ce_msg[8];
+		u8 day = ce_msg[10];
+		u8 mon = ce_msg[11];
+
+		BCD_TO_BIN(sec);
+		BCD_TO_BIN(min);
+		BCD_TO_BIN(hour);
+		BCD_TO_BIN(day);
+		BCD_TO_BIN(mon);
+		BCD_TO_BIN(year);
+
+		if (year <= 69)
+				year += 100;
+
+		tm->tm_sec = sec;
+		tm->tm_min = min;
+		tm->tm_hour = hour;
+		tm->tm_mday = day;
+		tm->tm_mon = mon;
+		tm->tm_year = year;
+	}
+
+	return 0;
+}
+struct rtc_time_data {
+        struct completion com;
+        struct CeMsgData ce_msg;
+        int rc;
+};
+
+
+static void get_rtc_time_complete(void *token, struct CeMsgData *ce_msg)
+{
+        struct rtc_time_data *rtc = token;
+
+        memcpy(&rtc->ce_msg, ce_msg, sizeof(rtc->ce_msg));
+        rtc->rc = 0;
+        complete(&rtc->com);
+}
 
 int mf_getRtc(struct rtc_time *tm)
 {
-	struct CeMsgCompleteData ceComplete;
-	struct RtcTimeData rtcData;
+	struct CeMsgCompleteData ce_complete;
+	struct rtc_time_data rtc_data;
 	int rc;
 
-	memset(&ceComplete, 0, sizeof(ceComplete));
-	memset(&rtcData, 0, sizeof(rtcData));
-	init_completion(&rtcData.com);
-	ceComplete.handler = &getRtcTimeComplete;
-	ceComplete.token = (void *)&rtcData;
-	rc = signal_ce_msg("\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00\x00",
-			&ceComplete);
-	if (rc == 0) {
-		wait_for_completion(&rtcData.com);
-
-		if (rtcData.xRc == 0) {
-			if ((rtcData.xCeMsg.ce_msg[2] == 0xa9) ||
-			    (rtcData.xCeMsg.ce_msg[2] == 0xaf)) {
-				/* TOD clock is not set */
-				tm->tm_sec = 1;
-				tm->tm_min = 1;
-				tm->tm_hour = 1;
-				tm->tm_mday = 10;
-				tm->tm_mon = 8;
-				tm->tm_year = 71;
-				mf_setRtc(tm);
-			}
-			{
-				u32 dataWord1 = *((u32 *)(rtcData.xCeMsg.ce_msg+4));
-				u32 dataWord2 = *((u32 *)(rtcData.xCeMsg.ce_msg+8));
-				u8 year = (dataWord1 >> 16) & 0x000000FF;
-				u8 sec = (dataWord1 >> 8) & 0x000000FF;
-				u8 min = dataWord1 & 0x000000FF;
-				u8 hour = (dataWord2 >> 24) & 0x000000FF;
-				u8 day = (dataWord2 >> 8) & 0x000000FF;
-				u8 mon = dataWord2 & 0x000000FF;
-
-				BCD_TO_BIN(sec);
-				BCD_TO_BIN(min);
-				BCD_TO_BIN(hour);
-				BCD_TO_BIN(day);
-				BCD_TO_BIN(mon);
-				BCD_TO_BIN(year);
-
-				if (year <= 69)
-					year += 100;
-	    
-				tm->tm_sec = sec;
-				tm->tm_min = min;
-				tm->tm_hour = hour;
-				tm->tm_mday = day;
-				tm->tm_mon = mon;
-				tm->tm_year = year;
-			}
-		} else {
-			rc = rtcData.xRc;
-			tm->tm_sec = 0;
-			tm->tm_min = 0;
-			tm->tm_hour = 0;
-			tm->tm_mday = 15;
-			tm->tm_mon = 5;
-			tm->tm_year = 52;
-
-		}
-		tm->tm_wday = 0;
-		tm->tm_yday = 0;
-		tm->tm_isdst = 0;
-	}
-
-	return rc;
+	memset(&ce_complete, 0, sizeof(ce_complete));
+	memset(&rtc_data, 0, sizeof(rtc_data));
+	init_completion(&rtc_data.com);
+	ce_complete.handler = &get_rtc_time_complete;
+	ce_complete.token = &rtc_data;
+	rc = signal_ce_msg_simple(0x40, &ce_complete);
+	if (rc)
+		return rc;
+	wait_for_completion(&rtc_data.com);
+	return rtc_set_tm(rtc_data.rc, rtc_data.ce_msg.ce_msg, tm);
 }
 
+struct boot_rtc_time_data {
+	int busy;
+struct CeMsgData ce_msg;
+	int rc;
+};
+
+static void get_boot_rtc_time_complete(void *token, struct CeMsgData *ce_msg)
+{
+	struct boot_rtc_time_data *rtc = token;
+
+	memcpy(&rtc->ce_msg, ce_msg, sizeof(rtc->ce_msg));
+	rtc->rc = 0;
+	rtc->busy = 0;
+}
+
+int mf_get_boot_rtc(struct rtc_time *tm)
+{
+	struct CeMsgCompleteData ce_complete;
+	struct boot_rtc_time_data rtc_data;
+	int rc;
+
+	memset(&ce_complete, 0, sizeof(ce_complete));
+	memset(&rtc_data, 0, sizeof(rtc_data));
+	rtc_data.busy = 1;
+	ce_complete.handler = &get_boot_rtc_time_complete;
+	ce_complete.token = &rtc_data;
+	rc = signal_ce_msg_simple(0x40, &ce_complete);
+	if (rc)
+		return rc;
+	/* We need to poll here as we are not yet taking interrupts */
+	while (rtc_data.busy) {
+		extern unsigned long lpevent_count;
+		struct ItLpQueue *lpq = get_paca()->lpqueue_ptr;
+		if (lpq && ItLpQueue_isLpIntPending(lpq))
+			lpevent_count += ItLpQueue_process(lpq, NULL);
+	}
+	return rtc_set_tm(rtc_data.rc, rtc_data.ce_msg.ce_msg, tm);
+ }
 int mf_setRtc(struct rtc_time * tm)
 {
 	char ceTime[12] = "\x00\x00\x00\x41\x00\x00\x00\x00\x00\x00\x00\x00";

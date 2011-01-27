@@ -1072,8 +1072,8 @@ gss_svc_init(void)
 	if (rv == 0) {
 		rv = svc_auth_client_register(RPC_AUTH_GSS, &svcauth_clnt_gss);
 		if (rv == 0) {
-			cache_register(&rsc_cache);
-			cache_register(&rsi_cache);
+			cache_register_owner(&rsc_cache, THIS_MODULE);
+			cache_register_owner(&rsi_cache, THIS_MODULE);
 		}
 	}
 	return rv;

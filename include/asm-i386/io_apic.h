@@ -59,6 +59,9 @@ static inline void end_edge_ioapic_irq (unsigned int irq) { }
 		((volatile int *)(__fix_to_virt(FIX_IO_APIC_BASE_0 + idx) \
 		+ (mp_ioapics[idx].mpc_apicaddr & ~PAGE_MASK)))
 
+#define IO_APIC_BASE_EXT(idx) \
+		((volatile int *)(__fix_to_virt(FIX_IO_APIC_BASE_EXT_0 + idx) \
+		+ (mp_ioapics[idx].mpc_apicaddr & ~PAGE_MASK)))
 /*
  * The structure of the IO-APIC:
  */
@@ -105,7 +108,7 @@ union IO_APIC_reg_03 {
  * # of IO-APICs and # of IRQ routing registers
  */
 extern int nr_ioapics;
-extern int nr_ioapic_registers[MAX_IO_APICS];
+extern int nr_ioapic_registers[MAX_IO_APICS_EXT];
 
 enum ioapic_irq_destination_types {
 	dest_Fixed = 0,
@@ -151,7 +154,7 @@ struct IO_APIC_route_entry {
  */
 
 /* I/O APIC entries */
-extern struct mpc_config_ioapic mp_ioapics[MAX_IO_APICS];
+extern struct mpc_config_ioapic mp_ioapics[MAX_IO_APICS_EXT];
 
 /* # of MP IRQ source entries */
 extern int mp_irq_entries;
@@ -164,14 +167,14 @@ extern int mpc_default_type;
 
 static inline unsigned int io_apic_read(unsigned int apic, unsigned int reg)
 {
-	*IO_APIC_BASE(apic) = reg;
-	return *(IO_APIC_BASE(apic)+4);
+	*IO_APIC_BASE_EXT(apic) = reg;
+	return *(IO_APIC_BASE_EXT(apic)+4);
 }
 
 static inline void io_apic_write(unsigned int apic, unsigned int reg, unsigned int value)
 {
-	*IO_APIC_BASE(apic) = reg;
-	*(IO_APIC_BASE(apic)+4) = value;
+	*IO_APIC_BASE_EXT(apic) = reg;
+	*(IO_APIC_BASE_EXT(apic)+4) = value;
 }
 
 /*
@@ -184,8 +187,8 @@ extern int sis_apic_bug;
 static inline void io_apic_modify(unsigned int apic, unsigned int reg, unsigned int value)
 {
 	if (sis_apic_bug)
-		*IO_APIC_BASE(apic) = reg;
-	*(IO_APIC_BASE(apic)+4) = value;
+		*IO_APIC_BASE_EXT(apic) = reg;
+	*(IO_APIC_BASE_EXT(apic)+4) = value;
 }
 
 /* 1 if "noapic" boot option passed */

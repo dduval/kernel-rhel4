@@ -32,6 +32,7 @@
 #include <linux/nfsd/cache.h>
 #include <linux/nfsd/syscall.h>
 #include <linux/lockd/bind.h>
+#include <linux/nfsacl.h>
 
 #define NFSDDBG_FACILITY	NFSDDBG_SVC
 
@@ -63,6 +64,32 @@ struct nfsd_list {
 };
 struct list_head nfsd_list = LIST_HEAD_INIT(nfsd_list);
 
+#if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
+static struct svc_stat	nfsd_acl_svcstats;
+static struct svc_version *	nfsd_acl_version[] = {
+	[2] = &nfsd_acl_version2,
+	[3] = &nfsd_acl_version3,
+};
+
+#define NFSD_ACL_NRVERS		(sizeof(nfsd_acl_version)/sizeof(nfsd_acl_version[0]))
+static struct svc_program	nfsd_acl_program = {
+	.pg_prog		= NFS_ACL_PROGRAM,
+	.pg_nvers		= NFSD_ACL_NRVERS,
+	.pg_vers		= nfsd_acl_version,
+	.pg_name		= "nfsd",
+	.pg_class		= "nfsd",
+	.pg_stats		= &nfsd_acl_svcstats,
+};
+
+static struct svc_stat	nfsd_acl_svcstats = {
+	.program	= &nfsd_acl_program,
+};
+
+#define nfsd_acl_program_p	&nfsd_acl_program
+#else
+#define nfsd_acl_program_p	NULL
+#endif /* defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL) */
+
 extern struct svc_version nfsd_version2, nfsd_version3, nfsd_version4;
 
 static struct svc_version *	nfsd_version[] = {
@@ -80,6 +107,7 @@ static struct svc_version *	nfsd_version[] = {
 static struct svc_version *nfsd_versions[NFSD_NRVERS];
 
 struct svc_program		nfsd_program = {
+	.pg_next		= nfsd_acl_program_p,
 	.pg_prog		= NFS_PROGRAM,		/* program number */
 	.pg_nvers		= NFSD_NRVERS,		/* nr of entries in nfsd_version */
 	.pg_vers		= nfsd_versions,	/* version table */
@@ -309,6 +337,8 @@ nfsd(struct svc_rqst *rqstp)
 				break;
 		err = signo;
 	}
+	/* Clear signals before calling lockd_down() and svc_exit_thread() */
+	flush_signals(current);
 
 	lock_kernel();
 

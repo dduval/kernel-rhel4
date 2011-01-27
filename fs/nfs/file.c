@@ -37,6 +37,7 @@
 
 static int nfs_file_open(struct inode *, struct file *);
 static int nfs_file_release(struct inode *, struct file *);
+static loff_t nfs_file_llseek(struct file *file, loff_t offset, int origin);
 static int  nfs_file_mmap(struct file *, struct vm_area_struct *);
 static ssize_t nfs_file_sendfile(struct file *, loff_t *, size_t, read_actor_t, void *);
 static ssize_t nfs_file_read(struct kiocb *, char __user *, size_t, loff_t);
@@ -46,7 +47,7 @@ static int  nfs_fsync(struct file *, struct dentry *dentry, int datasync);
 static int nfs_check_flags(int flags);
 
 struct file_operations nfs_file_operations = {
-	.llseek		= remote_llseek,
+	.llseek		= nfs_file_llseek,
 	.read		= do_sync_read,
 	.write		= do_sync_write,
 	.aio_read		= nfs_file_read,
@@ -66,6 +67,18 @@ struct inode_operations nfs_file_inode_operations = {
 	.getattr	= nfs_getattr,
 	.setattr	= nfs_setattr,
 };
+
+#ifdef CONFIG_NFS_V3
+struct inode_operations nfs3_file_inode_operations = {
+	.permission	= nfs_permission,
+	.getattr	= nfs_getattr,
+	.setattr	= nfs_setattr,
+	.listxattr	= nfs3_listxattr,
+	.getxattr	= nfs3_getxattr,
+	.setxattr	= nfs3_setxattr,
+	.removexattr	= nfs3_removexattr,
+};
+#endif  /* CONFIG_NFS_v3 */
 
 /* Hack for future NFS swap support */
 #ifndef IS_SWAPFILE
@@ -109,6 +122,63 @@ nfs_file_release(struct inode *inode, struct file *filp)
 	if (filp->f_mode & FMODE_WRITE)
 		filemap_fdatawrite(filp->f_mapping);
 	return NFS_PROTO(inode)->file_release(inode, filp);
+}
+
+/**
+ * nfs_revalidate_file - Revalidate the page cache & related metadata
+ * @inode - pointer to inode struct
+ * @file - pointer to file
+ */
+static int nfs_revalidate_file(struct inode *inode, struct file *filp)
+{
+	struct nfs_inode *nfsi = NFS_I(inode);
+	int retval = 0;
+
+	if ((nfsi->cache_validity & (NFS_INO_REVAL_PAGECACHE|NFS_INO_INVALID_ATTR))
+			|| nfs_attribute_timeout(inode))
+		retval = __nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	nfs_revalidate_mapping(inode, filp->f_mapping);
+	return 0;
+}
+
+/**
+ * nfs_revalidate_size - Revalidate the file size
+ * @inode - pointer to inode struct
+ * @file - pointer to struct file
+ *
+ * Revalidates the file length. This is basically a wrapper around
+ * nfs_revalidate_inode() that takes into account the fact that we may
+ * have cached writes (in which case we don't care about the server's
+ * idea of what the file length is), or O_DIRECT (in which case we
+ * shouldn't trust the cache).
+ */
+static int nfs_revalidate_file_size(struct inode *inode, struct file *filp)
+{
+	struct nfs_server *server = NFS_SERVER(inode);
+	struct nfs_inode *nfsi = NFS_I(inode);
+
+	if (server->flags & NFS_MOUNT_NOAC)
+		goto force_reval;
+	if (filp->f_flags & O_DIRECT)
+		goto force_reval;
+	if (nfsi->npages != 0)
+		return 0;
+	if (!(nfsi->cache_validity & NFS_INO_REVAL_PAGECACHE) && !nfs_attribute_timeout(inode))
+		return 0;
+force_reval:
+	return __nfs_revalidate_inode(server, inode);
+}
+
+static loff_t nfs_file_llseek(struct file *filp, loff_t offset, int origin)
+{
+	/* origin == SEEK_END => we must revalidate the cached file length */
+	if (origin == 2) {
+		struct inode *inode = filp->f_mapping->host;
+		int retval = nfs_revalidate_file_size(inode, filp);
+		if (retval < 0)
+			return (loff_t)retval;
+	}
+	return remote_llseek(filp, offset, origin);
 }
 
 /*
@@ -155,7 +225,7 @@ nfs_file_read(struct kiocb *iocb, char __user * buf, size_t count, loff_t pos)
 		dentry->d_parent->d_name.name, dentry->d_name.name,
 		(unsigned long) count, (unsigned long) pos);
 
-	result = nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	result = nfs_revalidate_file(inode, iocb->ki_filp);
 	if (!result)
 		result = generic_file_aio_read(iocb, buf, count, pos);
 	return result;
@@ -173,7 +243,7 @@ nfs_file_sendfile(struct file *filp, loff_t *ppos, size_t count,
 		dentry->d_parent->d_name.name, dentry->d_name.name,
 		(unsigned long) count, (unsigned long long) *ppos);
 
-	res = nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	res = nfs_revalidate_file(inode, filp);
 	if (!res)
 		res = generic_file_sendfile(filp, ppos, count, actor, target);
 	return res;
@@ -189,7 +259,7 @@ nfs_file_mmap(struct file * file, struct vm_area_struct * vma)
 	dfprintk(VFS, "nfs: mmap(%s/%s)\n",
 		dentry->d_parent->d_name.name, dentry->d_name.name);
 
-	status = nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	status = nfs_revalidate_file(inode, file);
 	if (!status)
 		status = generic_file_mmap(file, vma);
 	return status;
@@ -278,9 +348,15 @@ nfs_file_write(struct kiocb *iocb, const char __user *buf, size_t count, loff_t 
 	result = -EBUSY;
 	if (IS_SWAPFILE(inode))
 		goto out_swapfile;
-	result = nfs_revalidate_inode(NFS_SERVER(inode), inode);
-	if (result)
-		goto out;
+	/*
+	 * O_APPEND implies that we must revalidate the file length.
+	 */
+	if (iocb->ki_filp->f_flags & O_APPEND) {
+		result = nfs_revalidate_file_size(inode, iocb->ki_filp);
+		if (result)
+			goto out;
+	}
+	nfs_revalidate_mapping(inode, iocb->ki_filp->f_mapping);
 
 	result = count;
 	if (!count)
@@ -298,10 +374,19 @@ out_swapfile:
 static int do_getlk(struct file *filp, int cmd, struct file_lock *fl)
 {
 	struct inode *inode = filp->f_mapping->host;
-	int status;
+	int status = 0;
 
 	lock_kernel();
-	status = NFS_PROTO(inode)->lock(filp, cmd, fl);
+	/* Use local locking if mounted with "-onolock" */
+	if (!(NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM))
+		status = NFS_PROTO(inode)->lock(filp, cmd, fl);
+	else {
+		struct file_lock *cfl = posix_test_lock(filp, fl);
+
+		fl->fl_type = F_UNLCK;
+		if (cfl != NULL)
+			memcpy(fl, cfl, sizeof(*fl));
+	}
 	unlock_kernel();
 	return status;
 }
@@ -328,7 +413,12 @@ static int do_unlk(struct file *filp, int cmd, struct file_lock *fl)
 	 * 	still need to complete the unlock.
 	 */
 	lock_kernel();
-	status = NFS_PROTO(inode)->lock(filp, cmd, fl);
+	/* Use local locking if mounted with "-onolock" */
+	if (!(NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM))
+		status = NFS_PROTO(inode)->lock(filp, cmd, fl);
+	else 
+		status = posix_lock_file_wait(filp, fl);
+	unlock_kernel();
 	rpc_clnt_sigunmask(NFS_CLIENT(inode), &oldset);
 	return status;
 }
@@ -354,15 +444,20 @@ static int do_setlk(struct file *filp, int cmd, struct file_lock *fl)
 		return status;
 
 	lock_kernel();
-	status = NFS_PROTO(inode)->lock(filp, cmd, fl);
-	/* If we were signalled we still need to ensure that
-	 * we clean up any state on the server. We therefore
-	 * record the lock call as having succeeded in order to
-	 * ensure that locks_remove_posix() cleans it out when
-	 * the process exits.
-	 */
-	if (status == -EINTR || status == -ERESTARTSYS)
-		posix_lock_file_wait(filp, fl);
+	/* Use local locking if mounted with "-onolock" */
+	if (!(NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM)) {
+		status = NFS_PROTO(inode)->lock(filp, cmd, fl);
+		/* If we were signalled we still need to ensure that
+		 * we clean up any state on the server. We therefore
+		 * record the lock call as having succeeded in order to
+		 * ensure that locks_remove_posix() cleans it out when
+		 * the process exits.
+		 */
+		if (status == -EINTR || status == -ERESTARTSYS)
+			posix_lock_file_wait(filp, fl);
+	} else 
+		status = posix_lock_file_wait(filp, fl);
+
 	unlock_kernel();
 	if (status < 0)
 		return status;
@@ -398,15 +493,6 @@ nfs_lock(struct file *filp, int cmd, struct file_lock *fl)
 	/* No mandatory locks over NFS */
 	if ((inode->i_mode & (S_ISGID | S_IXGRP)) == S_ISGID)
 		return -ENOLCK;
-
-	if (NFS_PROTO(inode)->version != 4) {
-		/* Fake OK code if mounted without NLM support */
-		if (NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM) {
-			if (IS_GETLK(cmd))
-				return LOCK_USE_CLNT;
-			return 0;
-		}
-	}
 
 	/*
 	 * No BSD flocks over NFS allowed.

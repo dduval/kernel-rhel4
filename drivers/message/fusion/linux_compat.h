@@ -4,69 +4,16 @@
 #define FUSION_LINUX_COMPAT_H
 
 #include <linux/version.h>
+#include <linux/utsname.h>
 #include <linux/sched.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_cmnd.h>
 
-/* scsi_print_command() came in lk 2.6.8 kernel,
- * prior kernels it was called print_Scsi_Cmnd()
- */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,8))
-extern void print_Scsi_Cmnd(struct scsi_cmnd *cmd);
-#else
-extern void scsi_print_command(struct scsi_cmnd *cmd);
-#endif
-static void inline mptscsih_scsi_print_command(struct scsi_cmnd *cmd){
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,8))
-	print_Scsi_Cmnd(cmd);
-#else
-	scsi_print_command(cmd);
-#endif
-}
-
-/* define scsi_device_online which came in lk 2.6.6,
+/* define pm_message_t which came in lk 2.6.11
  * to be backward compatible to older variants of lk 2.6
  */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,6))
-static int inline scsi_device_online(struct scsi_device *sdev)
-{
-	return sdev->online;
-}
-#endif
-
-/* define msleep, msleep_interruptible which came in lk 2.6.8
- * to be backward compatible to older variants of lk 2.6
- */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,8))
-#ifndef msecs_to_jiffies
-static inline unsigned long msecs_to_jiffies(const unsigned int m)
-{
-#if HZ <= 1000 && !(1000 % HZ)
-        return (m + (1000 / HZ) - 1) / (1000 / HZ);
-#elif HZ > 1000 && !(HZ % 1000)
-        return m * (HZ / 1000);
-#else
-        return (m * HZ + 999) / 1000;
-#endif
-}
-#endif
-static void inline msleep(unsigned long msecs)
-{
-        set_current_state(TASK_UNINTERRUPTIBLE);
-        schedule_timeout(msecs_to_jiffies(msecs) + 1);
-}
-static void inline msleep_interruptible(unsigned long msecs)
-{
-        set_current_state(TASK_INTERRUPTIBLE);
-        schedule_timeout(msecs_to_jiffies(msecs) + 1);
-}
-#endif
-
-/* define __iomem which came in lk 2.6.9
- * to be backward compatible to older variants of lk 2.6
- */
-#ifndef __iomem
-#define __iomem
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11))
+typedef u32 pm_message_t;
 #endif
 
 /* exporting of pci_disable_msi which came in lk 2.6.8
@@ -114,5 +61,8 @@ static inline void pci_disable_msi(struct pci_dev* dev) {}
 #define PCI_DEVICE_ID_LSI_FC949X	(0x0640)
 #endif
 
+#ifndef PCI_DEVICE_ID_LSI_FC949ES
+#define PCI_DEVICE_ID_LSI_FC949ES	(0x0646)
+#endif
 /*}-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 #endif /* _LINUX_COMPAT_H */

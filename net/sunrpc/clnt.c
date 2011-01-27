@@ -207,6 +207,8 @@ rpc_clone_client(struct rpc_clnt *clnt)
 	rpc_init_rtt(&new->cl_rtt_default, clnt->cl_xprt->timeout.to_initval);
 	if (new->cl_auth)
 		atomic_inc(&new->cl_auth->au_count);
+	new->cl_pmap		= &new->cl_pmap_default;
+	rpc_init_wait_queue(&new->cl_pmap_default.pm_bindwait, "bindwait");
 	return new;
 out_no_clnt:
 	printk(KERN_INFO "RPC: out of memory in %s\n", __FUNCTION__);
@@ -300,6 +302,39 @@ rpc_release_client(struct rpc_clnt *clnt)
 	wake_up(&destroy_wait);
 	if (clnt->cl_oneshot || clnt->cl_dead)
 		rpc_destroy_client(clnt);
+}
+
+/**
+ * rpc_bind_new_program - bind a new RPC program to an existing client
+ * @old - old rpc_client
+ * @program - rpc program to set
+ * @vers - rpc program version
+ *
+ * Clones the rpc client and sets up a new RPC program. This is mainly
+ * of use for enabling different RPC programs to share the same transport.
+ * The Sun NFSv2/v3 ACL protocol can do this.
+ */
+struct rpc_clnt *rpc_bind_new_program(struct rpc_clnt *old,
+				      struct rpc_program *program,
+				      int vers)
+{
+	struct rpc_clnt *clnt;
+	struct rpc_version *version;
+
+	BUG_ON(vers >= program->nrvers || !program->version[vers]);
+	version = program->version[vers];
+	clnt = rpc_clone_client(old);
+	if (IS_ERR(clnt))
+		goto out;
+	clnt->cl_procinfo = version->procs;
+	clnt->cl_maxproc  = version->nrprocs;
+	clnt->cl_protname = program->name;
+	clnt->cl_prog     = program->number;
+	clnt->cl_vers     = version->number;
+	clnt->cl_stats    = program->stats;
+
+out:	
+	return clnt;
 }
 
 /*
@@ -994,10 +1029,11 @@ call_verify(struct rpc_task *task)
 			case RPC_AUTH_ERROR:
 				break;
 			case RPC_MISMATCH:
-				printk(KERN_WARNING "%s: RPC call version mismatch!\n", __FUNCTION__);
-				goto out_eio;
+				dprintk("%s: RPC call version mismatch!\n", __FUNCTION__);
+				error = -EPROTONOSUPPORT;
+				goto out_err;
 			default:
-				printk(KERN_WARNING "%s: RPC call rejected, unknown error: %x\n", __FUNCTION__, n);
+				dprintk("%s: RPC call rejected, unknown error: %x\n", __FUNCTION__, n);
 				goto out_eio;
 		}
 		if (--len < 0)
@@ -1048,23 +1084,26 @@ call_verify(struct rpc_task *task)
 	case RPC_SUCCESS:
 		return p;
 	case RPC_PROG_UNAVAIL:
-		printk(KERN_WARNING "RPC: call_verify: program %u is unsupported by server %s\n",
+		dprintk("RPC: call_verify: program %u is unsupported by server %s\n",
 				(unsigned int)task->tk_client->cl_prog,
 				task->tk_client->cl_server);
-		goto out_eio;
+		error = -EPFNOSUPPORT;
+		goto out_err;
 	case RPC_PROG_MISMATCH:
-		printk(KERN_WARNING "RPC: call_verify: program %u, version %u unsupported by server %s\n",
+		dprintk("RPC: call_verify: program %u, version %u unsupported by server %s\n",
 				(unsigned int)task->tk_client->cl_prog,
 				(unsigned int)task->tk_client->cl_vers,
 				task->tk_client->cl_server);
-		goto out_eio;
+		error = -EPROTONOSUPPORT;
+		goto out_err;
 	case RPC_PROC_UNAVAIL:
-		printk(KERN_WARNING "RPC: call_verify: proc %p unsupported by program %u, version %u on server %s\n",
+		dprintk("RPC: call_verify: proc %p unsupported by program %u, version %u on server %s\n",
 				task->tk_msg.rpc_proc,
 				task->tk_client->cl_prog,
 				task->tk_client->cl_vers,
 				task->tk_client->cl_server);
-		goto out_eio;
+		error = -EOPNOTSUPP;
+		goto out_err;
 	case RPC_GARBAGE_ARGS:
 		dprintk("RPC: %4d %s: server saw garbage\n", task->tk_pid, __FUNCTION__);
 		break;			/* retry */
@@ -1077,7 +1116,7 @@ out_retry:
 	task->tk_client->cl_stats->rpcgarbage++;
 	if (task->tk_garb_retry) {
 		task->tk_garb_retry--;
-		dprintk(KERN_WARNING "RPC %s: retrying %4d\n", __FUNCTION__, task->tk_pid);
+		dprintk("RPC %s: retrying %4d\n", __FUNCTION__, task->tk_pid);
 		task->tk_action = call_bind;
 		return NULL;
 	}

@@ -387,18 +387,11 @@ lpfc_events_show(struct class_device *cdev, char *buf)
 	return len;
 }
 
-static ssize_t
-lpfc_issue_lip (struct class_device *cdev, const char *buf, size_t count)
+static int
+__lpfc_issue_lip(struct lpfc_hba *phba)
 {
-	struct Scsi_Host *host = class_to_shost(cdev);
-	struct lpfc_hba *phba = (struct lpfc_hba *) host->hostdata[0];
- 	int val = 0;
 	LPFC_MBOXQ_t *pmboxq;
 	int mbxstatus = MBXERR_ERROR;
-
- 	if ((sscanf(buf, "%d", &val) != 1) ||
-	    (val != 1))
-		return -EINVAL;
 
 	if ((phba->fc_flag & FC_OFFLINE_MODE) ||
 	    (phba->hba_state != LPFC_HBA_READY))
@@ -421,8 +414,41 @@ lpfc_issue_lip (struct class_device *cdev, const char *buf, size_t count)
 	if (mbxstatus == MBXERR_ERROR)
 		return -EIO;
 
+	return 0;
+}
+
+/*
+ * backwards compat scsi host issue lip attr
+ */
+static ssize_t
+lpfc_issue_lip (struct class_device *cdev, const char *buf, size_t count)
+{
+	struct Scsi_Host *host = class_to_shost(cdev);
+	struct lpfc_hba *phba = (struct lpfc_hba *) host->hostdata[0];
+ 	int val = 0, err;
+
+ 	if ((sscanf(buf, "%d", &val) != 1) ||
+	    (val != 1))
+		return -EINVAL;
+
+	err = __lpfc_issue_lip(phba);
+	if (err)
+		return err;
+
 	return strlen(buf);
 }
+
+#ifdef RHEL_U3_FC_XPORT
+/*
+ * fc class host issue lip attr
+ */
+static int
+lpfc_issue_fc_host_lip(struct Scsi_Host *host)
+{
+	struct lpfc_hba *phba = (struct lpfc_hba *) host->hostdata[0];
+	return __lpfc_issue_lip(phba);
+}
+#endif
 
 static ssize_t
 lpfc_nport_evt_cnt_show(struct class_device *cdev, char *buf)
@@ -1584,6 +1610,16 @@ lpfc_set_starget_loss_tmo(struct scsi_target *starget, uint32_t timeout)
 		lpfc_nodev_tmo = 1;
 }
 
+#ifdef RHEL_U3_FC_XPORT
+static void
+lpfc_get_host_port_id(struct Scsi_Host *shost)
+{
+	struct lpfc_hba *phba = (struct lpfc_hba*)shost->hostdata[0];
+	/* note: fc_myDID already in cpu endianness */
+	fc_host_port_id(shost) = phba->fc_myDID;
+}
+#endif
+
 #else /* not RHEL_FC */
 
 static void
@@ -1631,6 +1667,13 @@ static struct fc_function_template lpfc_transport_functions = {
 	.get_starget_dev_loss_tmo = lpfc_get_starget_loss_tmo,
 	.set_starget_dev_loss_tmo = lpfc_set_starget_loss_tmo,
 	.show_starget_dev_loss_tmo = 1,
+
+#ifdef RHEL_U3_FC_XPORT
+	.get_host_port_id  = lpfc_get_host_port_id,
+	.show_host_port_id = 1,
+
+	.issue_fc_host_lip = lpfc_issue_fc_host_lip,
+#endif
 
 #else /* not RHEL_FC */
 	.get_port_id  = lpfc_get_port_id,
@@ -2409,13 +2452,27 @@ static struct pci_device_id lpfc_id_table[] = {
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_PFLY,
 		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_NEPTUNE,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_NEPTUNE_SCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_NEPTUNE_DCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_HELIOS,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_HELIOS_SCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_HELIOS_DCSP,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_BMID,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_BSMB,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR_SCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZEPHYR_DCSP,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_ZMID,
 		PCI_ANY_ID, PCI_ANY_ID, },
@@ -2426,6 +2483,10 @@ static struct pci_device_id lpfc_id_table[] = {
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP101,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP10000S,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP11000S,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LPE11000S,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0 }
 };

@@ -128,6 +128,7 @@ void diskdump_setup_timestamp(void);
 
 #define DUMP_HEADER_COMPLETED	0
 #define DUMP_HEADER_INCOMPLETED	1
+#define DUMP_HEADER_COMPRESSED	8
 
 struct disk_dump_header {
 	char			signature[8];	/* = "DISKDUMP" */
@@ -197,6 +198,7 @@ extern enum disk_dump_states {
 #define DUMP_EXCLUDE_CLEAN 0x00000002	/* Exclude all-zero pages */
 #define DUMP_EXCLUDE_FREE  0x00000004	/* Exclude free pages */
 #define DUMP_EXCLUDE_ANON  0x00000008	/* Exclude Anon pages */
+#define DUMP_SAVE_PRIVATE  0x00000010	/* Save private pages */
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)
 #define	PG_nosave_free		19	/* Free page not to be dumped */
@@ -206,5 +208,27 @@ extern enum disk_dump_states {
 #define ClearPageNosaveFree(page)	clear_bit(PG_nosave_free, &(page)->flags)
 #define TestClearPageNosaveFree(page)	test_and_clear_bit(PG_nosave_free, &(page)->flags)
 #endif
+
+/*
+ * definition for compressin
+ */
+#define DUMP_PAGE_SIZE      PAGE_SIZE
+#define DUMP_BUFFER_SIZE    (((1 << compress_block_order) - 2) << PAGE_SHIFT)
+#define NR_BUFFER_PAGES     (DUMP_BUFFER_SIZE >> PAGE_SHIFT)
+
+/* page size for gzip compression */
+#define DUMP_DPC_PAGE_SIZE	(DUMP_PAGE_SIZE + 512)
+
+/* dump page header flags */
+#define DUMP_DH_COMPRESSED	0x1	/* page is compressed */
+
+/* header associated to each physical page of memory */
+struct dump_page {
+	unsigned long long	page_flags;	/* the page flags */
+	unsigned int		size;		/* the size */
+	unsigned int		flags;		/* the dump flags */
+};
+
+#define strict_size_check()	(!dump_level && !compress)
 
 #endif /* _LINUX_DISKDUMP_H */

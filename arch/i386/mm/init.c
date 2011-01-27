@@ -511,7 +511,10 @@ void __init paging_init(void)
 	set_nx();
 	if (nx_enabled)
 		printk("NX (Execute Disable) protection: active\n");
+	else
 #endif
+	if (exec_shield)
+		printk("Using x86 segment limits to approximate NX protection\n");
 
 	pagetable_init();
 

@@ -53,7 +53,7 @@ int sis_apic_bug = -1;
 /*
  * # of IRQ routing registers
  */
-int nr_ioapic_registers[MAX_IO_APICS];
+int nr_ioapic_registers[MAX_IO_APICS_EXT];
 
 /*
  * Rough estimation of how many shared IRQs there are, can
@@ -1648,6 +1648,13 @@ static void __init setup_ioapic_ids_from_mpc(void)
 	unsigned long flags;
 
 	/*
+	 * Don't check I/O APIC IDs for xAPIC systems. They have
+	 * no meaning without the serial APIC bus.
+	 */
+	if (!(boot_cpu_data.x86_vendor == X86_VENDOR_INTEL && boot_cpu_data.x86 < 15))
+		return;
+
+	/*
 	 * This is broken; anything with a real cpu count has to
 	 * circumvent this idiocy regardless.
 	 */
@@ -2288,7 +2295,7 @@ struct sysfs_ioapic_data {
 	struct sys_device dev;
 	struct IO_APIC_route_entry entry[0];
 };
-static struct sysfs_ioapic_data * mp_ioapic_data[MAX_IO_APICS];
+static struct sysfs_ioapic_data * mp_ioapic_data[MAX_IO_APICS_EXT];
 
 static int ioapic_suspend(struct sys_device *dev, u32 state)
 {

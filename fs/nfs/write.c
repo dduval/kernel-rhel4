@@ -848,6 +848,7 @@ static void nfs_write_rpcsetup(struct nfs_page *req,
 	data->res.fattr   = &data->fattr;
 	data->res.count   = count;
 	data->res.verf    = &data->verf;
+	nfs_fattr_init(&data->fattr);
 
 	NFS_PROTO(inode)->write_setup(data, how);
 
@@ -1226,6 +1227,7 @@ static void nfs_commit_rpcsetup(struct list_head *head,
 	data->res.count   = len;
 	data->res.fattr   = &data->fattr;
 	data->res.verf    = &data->verf;
+	nfs_fattr_init(&data->fattr);
 	
 	NFS_PROTO(inode)->commit_setup(data, how);
 

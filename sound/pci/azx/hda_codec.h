@@ -25,6 +25,8 @@
 #include <sound/control.h>
 #include <sound/pcm.h>
 
+#include "hda_compat.h"
+
 /*
  * nodes
  */
@@ -79,6 +81,8 @@ enum {
 #define AC_VERB_GET_GPIO_MASK			0x0f16
 #define AC_VERB_GET_GPIO_DIRECTION		0x0f17
 #define AC_VERB_GET_CONFIG_DEFAULT		0x0f1c
+/* f20: AFG/MFG */
+#define AC_VERB_GET_SUBSYSTEM_ID		0x0f20
 
 /*
  * SET verbs
@@ -261,6 +265,9 @@ enum {
 #define AC_PINCTL_IN_EN			(1<<5)
 #define AC_PINCTL_OUT_EN		(1<<6)
 #define AC_PINCTL_HP_EN			(1<<7)
+
+/* Unsolicited response - 8bit */
+#define AC_USRSP_EN			(1<<7)
 
 /* configuration default - 32bit */
 #define AC_DEFCFG_SEQUENCE		(0xf<<0)
@@ -459,7 +466,7 @@ struct hda_codec_ops {
 	void (*free)(struct hda_codec *codec);
 	void (*unsol_event)(struct hda_codec *codec, unsigned int res);
 #ifdef CONFIG_PM
-	int (*suspend)(struct hda_codec *codec, unsigned int state);
+	int (*suspend)(struct hda_codec *codec, pm_message_t state);
 	int (*resume)(struct hda_codec *codec);
 #endif
 };
@@ -502,6 +509,7 @@ struct hda_pcm_stream {
 struct hda_pcm {
 	char *name;
 	struct hda_pcm_stream stream[2];
+	unsigned int is_modem;	/* modem codec? */
 };
 
 /* codec information */
@@ -511,6 +519,7 @@ struct hda_codec {
 	struct list_head list;	/* list point */
 
 	hda_nid_t afg;	/* AFG node id */
+	hda_nid_t mfg;	/* MFG node id */
 
 	/* ids */
 	u32 vendor_id;
@@ -609,7 +618,7 @@ void snd_hda_get_codec_name(struct hda_codec *codec, char *name, int namelen);
  * power management
  */
 #ifdef CONFIG_PM
-int snd_hda_suspend(struct hda_bus *bus, unsigned int state);
+int snd_hda_suspend(struct hda_bus *bus, pm_message_t state);
 int snd_hda_resume(struct hda_bus *bus);
 #endif
 

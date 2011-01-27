@@ -4,10 +4,15 @@
  * Copyright (C) 1998-2001, 2003 Hewlett-Packard Co
  *	David Mosberger-Tang <davidm@hpl.hp.com>
  *	Stephane Eranian <eranian@hpl.hp.com>
- * Copyright (C) 2000, Rohit Seth <rohit.seth@intel.com>
+ * Copyright (C) 2000, 2004 Intel Corp
+ * 	Rohit Seth <rohit.seth@intel.com>
+ * 	Suresh Siddha <suresh.b.siddha@intel.com>
+ * 	Gordon Jin <gordon.jin@intel.com>
  * Copyright (C) 1999 VA Linux Systems
  * Copyright (C) 1999 Walt Drummond <drummond@valinux.com>
  *
+ * 12/26/04 S.Siddha, G.Jin, R.Seth
+ *			Add multi-threading and multi-core detection
  * 11/12/01 D.Mosberger Convert get_cpuinfo() to seq_file based show_cpuinfo().
  * 04/04/00 D.Mosberger renamed cpu_initialized to cpu_online_map
  * 03/31/00 R.Seth	cpu_initialized and current->processor fixes
@@ -62,6 +67,7 @@ EXPORT_SYMBOL(__per_cpu_offset);
 #endif
 
 DEFINE_PER_CPU(struct cpuinfo_ia64, cpu_info);
+DEFINE_PER_CPU(struct cpuinfo_ia64_topology, cpu_info_topology);
 DEFINE_PER_CPU(unsigned long, local_per_cpu_offset);
 DEFINE_PER_CPU(unsigned long, ia64_phys_stacked_size_p8);
 unsigned long ia64_cycles_per_usec;
@@ -69,6 +75,13 @@ struct ia64_boot_param *ia64_boot_param;
 struct screen_info screen_info;
 
 unsigned long ia64_max_cacheline_size;
+
+int dma_get_cache_alignment(void)
+{
+        return ia64_max_cacheline_size;
+}
+EXPORT_SYMBOL(dma_get_cache_alignment);
+
 unsigned long ia64_iobase;	/* virtual address for I/O accesses */
 EXPORT_SYMBOL(ia64_iobase);
 struct io_space io_space[MAX_IO_SPACES];
@@ -300,6 +313,34 @@ early_console_setup (void)
 	return -1;
 }
 
+#ifdef CONFIG_SMP
+static void
+check_for_logical_procs (void)
+{
+	pal_logical_to_physical_t info;
+	s64 status;
+
+	status = ia64_pal_logical_to_phys(0, &info);
+	if (status == -1) {
+		printk(KERN_INFO "No logical to physical processor mapping "
+		       "available\n");
+		return;
+	}
+	if (status) {
+		printk(KERN_ERR "ia64_pal_logical_to_phys failed with %ld\n",
+		       status);
+		return;
+	}
+	/*
+	 * Total number of siblings that BSP has.  Though not all of them 
+	 * may have booted successfully. The correct number of siblings 
+	 * booted is in info.overview_num_log.
+	 */
+	smp_num_siblings = info.overview_tpc;
+	smp_num_cpucores = info.overview_cpp;
+}
+#endif
+
 void __init
 setup_arch (char **cmdline_p)
 {
@@ -342,6 +383,19 @@ setup_arch (char **cmdline_p)
 
 #ifdef CONFIG_SMP
 	cpu_physical_id(0) = hard_smp_processor_id();
+
+	cpu_set(0, cpu_sibling_map[0]);
+	cpu_set(0, cpu_core_map[0]);
+
+	check_for_logical_procs();
+	if (smp_num_cpucores > 1)
+		printk(KERN_INFO
+		       "cpu package is Multi-Core capable: number of cores=%d\n",
+		       smp_num_cpucores);
+	if (smp_num_siblings > 1)
+		printk(KERN_INFO
+		       "cpu package is Multi-Threading capable: number of siblings=%d\n",
+		       smp_num_siblings);
 #endif
 
 	cpu_init();	/* initialize the bootstrap CPU */
@@ -406,6 +460,9 @@ show_cpuinfo (struct seq_file *m, void *v)
 	};
 	char family[32], features[128], *cp, sep;
 	struct cpuinfo_ia64 *c = v;
+#ifdef CONFIG_SMP
+	struct cpuinfo_ia64_topology *ct;
+#endif
 	unsigned long mask;
 	int i;
 
@@ -452,12 +509,24 @@ show_cpuinfo (struct seq_file *m, void *v)
 		   "cpu regs   : %u\n"
 		   "cpu MHz    : %lu.%06lu\n"
 		   "itc MHz    : %lu.%06lu\n"
-		   "BogoMIPS   : %lu.%02lu\n\n",
+		   "BogoMIPS   : %lu.%02lu\n",
 		   cpunum, c->vendor, family, c->model, c->revision, c->archrev,
 		   features, c->ppn, c->number,
 		   c->proc_freq / 1000000, c->proc_freq % 1000000,
 		   c->itc_freq / 1000000, c->itc_freq % 1000000,
 		   lpj*HZ/500000, (lpj*HZ/5000) % 100);
+#ifdef CONFIG_SMP
+	ct = cpu_data_topology(cpunum);
+	seq_printf(m, "siblings   : %u\n", ct->num_log);
+	if (ct->threads_per_core > 1 || ct->cores_per_socket > 1)
+		seq_printf(m,
+		   	   "physical id: %u\n"
+		   	   "core id    : %u\n"
+		   	   "thread id  : %u\n",
+		   	   ct->socket_id, ct->core_id, ct->thread_id);
+#endif
+	seq_printf(m,"\n");
+
 	return 0;
 }
 
@@ -519,6 +588,9 @@ identify_cpu (struct cpuinfo_ia64 *c)
 	pal_status_t status;
 	unsigned long impl_va_msb = 50, phys_addr_size = 44;	/* Itanium defaults */
 	int i;
+#ifdef CONFIG_SMP
+	struct cpuinfo_ia64_topology *ct;
+#endif
 
 	for (i = 0; i < 5; ++i)
 		cpuid.bits[i] = ia64_get_cpuid(i);
@@ -526,6 +598,15 @@ identify_cpu (struct cpuinfo_ia64 *c)
 	memcpy(c->vendor, cpuid.field.vendor, 16);
 #ifdef CONFIG_SMP
 	c->cpu = smp_processor_id();
+	ct = cpu_data_topology(c->cpu);
+
+	/* below default values will be overwritten  by identify_siblings() 
+	 * for Multi-Threading/Multi-Core capable cpu's
+	 */
+	ct->threads_per_core = ct->cores_per_socket = ct->num_log = 1;
+	ct->socket_id = -1;
+
+	identify_siblings(ct);
 #endif
 	c->ppn = cpuid.field.ppn;
 	c->number = cpuid.field.number;

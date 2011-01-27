@@ -915,15 +915,18 @@ iscsi_recv_pdu(struct iscsi_session *session, struct iscsi_hdr *hdr,
 	int rc;
 	int data_len;
 	struct scatterlist sg;
+	u8 opcode;
 
 	if (iscsi_recv_header(session, hdr, hdr_digest) != ISCSI_IO_SUCCESS)
 		goto fail;
 
 	data_len = ntoh24(hdr->dlength);
+	opcode = hdr->opcode & ISCSI_OPCODE_MASK;
+
 	/*
 	 * scsi data is read in and processed by its handler for now
 	 */
-	if (data_len && hdr->opcode != ISCSI_OP_SCSI_DATA_RSP) {
+	if (data_len && opcode != ISCSI_OP_SCSI_DATA_RSP) {
         	if (data_len > max_data_len) {
                 	iscsi_host_err(session, "iscsi_recv_pdu() cannot read "
 				       "%d bytes of PDU data, only %d bytes "
@@ -941,7 +944,7 @@ iscsi_recv_pdu(struct iscsi_session *session, struct iscsi_hdr *hdr,
 		rc = iscsi_recv_sg_data(session, data_len, &sg, 1, 0,
 					data_digest);
 		if (rc == ISCSI_IO_CRC32C_ERR) {
-			switch (hdr->opcode) {
+			switch (opcode) {
 			case ISCSI_OP_ASYNC_MSG:
 			case ISCSI_OP_REJECT:
 				/* unsolicited so ignore */
@@ -953,7 +956,7 @@ iscsi_recv_pdu(struct iscsi_session *session, struct iscsi_hdr *hdr,
 			goto fail;
 	}
 
-	switch (hdr->opcode) {
+	switch (opcode) {
 	case ISCSI_OP_NOOP_IN:
 		handle_nop_in(session, hdr);
 		break;
@@ -991,7 +994,7 @@ iscsi_recv_pdu(struct iscsi_session *session, struct iscsi_hdr *hdr,
 		break;
 	default:
 		iscsi_host_err(session, "Dropping session after receiving "
-			       "unexpected opcode 0x%x\n", hdr->opcode);
+			       "unexpected opcode 0x%x\n", opcode);
 		session->time2wait = 2;
 		goto fail;
 	}

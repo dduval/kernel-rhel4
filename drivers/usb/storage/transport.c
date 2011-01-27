@@ -315,7 +315,17 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 
 	/* timeout or excessively long NAK */
 	case -ETIMEDOUT:
-		US_DEBUGP("-- timeout or NAK\n");
+		if (usb_pipecontrol(pipe)) {
+			US_DEBUGP("-- timeout or NAK on control pipe\n");
+			return USB_STOR_XFER_ERROR;
+		}
+		/*
+		 * A timeout could have happened becasue we reloaded and
+		 * inherited a nonzero toggle. And there is no way to know!
+		 * We clear and hope for the best. Bugs 129165, 160308.
+		 */
+		US_DEBUGP("clearing after halt for pipe 0x%x\n", pipe);
+		usb_stor_clear_halt(us, pipe);
 		return USB_STOR_XFER_ERROR;
 
 	/* babble - the device tried to send more than we wanted to read */

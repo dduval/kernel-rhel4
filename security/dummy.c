@@ -869,7 +869,6 @@ static int dummy_setprocattr(struct task_struct *p, char *name, void *value, siz
 	return -EINVAL;
 }
 
-
 struct security_operations dummy_security_ops;
 
 #define set_to_dummy_if_null(ops, function)				\
@@ -1023,5 +1022,6 @@ void security_fixup_ops (struct security_operations *ops)
 	set_to_dummy_if_null(ops, sk_alloc_security);
 	set_to_dummy_if_null(ops, sk_free_security);
 #endif	/* CONFIG_SECURITY_NETWORK */
+
 }
 

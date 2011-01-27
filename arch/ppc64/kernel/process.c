@@ -281,6 +281,11 @@ EXPORT_SYMBOL_GPL(show_regs);
 
 void exit_thread(void)
 {
+	/*
+	 * Remove function-return probe instances associated with this task
+	 * and put them back on the free list. Do not insert an exit probe for
+	 * this function, it will be disabled by kprobe_flush_task if you do.
+	 */
 	kprobe_flush_task(current);
 
 #ifndef CONFIG_SMP
@@ -297,7 +302,6 @@ void flush_thread(void)
 {
 	struct thread_info *t = current_thread_info();
 
-	kprobe_flush_task(current);
 	if (t->flags & _TIF_ABI_PENDING)
 		t->flags ^= (_TIF_ABI_PENDING | _TIF_32BIT);
 

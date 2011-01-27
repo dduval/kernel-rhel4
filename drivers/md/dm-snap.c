@@ -49,6 +49,11 @@ struct pending_exception {
 	struct bio_list snapshot_bios;
 
 	/*
+	 * Short-term queue of pending exceptions prior to submission.
+	 */
+	struct list_head list;
+
+	/*
 	 * Other pending_exceptions that are processing this
 	 * chunk.  When this list is empty, we know we can
 	 * complete the origins.
@@ -371,6 +376,15 @@ static inline ulong round_up(ulong n, ulong size)
 	return (n + size) & ~size;
 }
 
+static void read_snapshot_metadata(struct dm_snapshot *s)
+{
+	if (s->store.read_metadata(&s->store)) {
+		down_write(&s->lock);
+		s->valid = 0;
+		up_write(&s->lock);
+	}
+}
+
 /*
  * Construct a snapshot mapping: <origin_dev> <COW-dev> <p/n> <chunk-size>
  */
@@ -457,7 +471,7 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	s->chunk_shift = ffs(chunk_size) - 1;
 
 	s->valid = 1;
-	s->have_metadata = 0;
+	s->active = 0;
 	s->last_percent = 0;
 	init_rwsem(&s->lock);
 	s->table = ti->table;
@@ -492,7 +506,11 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad5;
 	}
 
+	/* Metadata must only be loaded into one table at once */
+	read_snapshot_metadata(s);
+
 	/* Add snapshot to the list of snapshots for this origin */
+	/* Exceptions aren't triggered till snapshot_resume() is called */
 	if (register_snapshot(s)) {
 		r = -EINVAL;
 		ti->error = "Cannot register snapshot origin";
@@ -529,7 +547,11 @@ static void snapshot_dtr(struct dm_target *ti)
 {
 	struct dm_snapshot *s = (struct dm_snapshot *) ti->private;
 
+	/* Prevent further origin writes from using this snapshot. */
+	/* After this returns there can be no new kcopyd jobs. */
 	unregister_snapshot(s);
+
+	kcopyd_client_destroy(s->kcopyd_client);
 
 	exit_exception_table(&s->pending, pending_cache);
 	exit_exception_table(&s->complete, exception_cache);
@@ -539,7 +561,7 @@ static void snapshot_dtr(struct dm_target *ti)
 
 	dm_put_device(ti, s->origin);
 	dm_put_device(ti, s->cow);
-	kcopyd_client_destroy(s->kcopyd_client);
+
 	kfree(s);
 }
 
@@ -779,6 +801,9 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio,
 	if (!s->valid)
 		return -EIO;
 
+	if (unlikely(bio_barrier(bio)))
+		return -EOPNOTSUPP;
+
 	/*
 	 * Write to snapshot - higher level takes care of RW/RO
 	 * flags so we should only get this if we are
@@ -848,16 +873,9 @@ static void snapshot_resume(struct dm_target *ti)
 {
 	struct dm_snapshot *s = (struct dm_snapshot *) ti->private;
 
-	if (s->have_metadata)
-		return;
-
-	if (s->store.read_metadata(&s->store)) {
-		down_write(&s->lock);
-		s->valid = 0;
-		up_write(&s->lock);
-	}
-
-	s->have_metadata = 1;
+	down_write(&s->lock);
+	s->active = 1;
+	up_write(&s->lock);
 }
 
 static int snapshot_status(struct dm_target *ti, status_type_t type,
@@ -921,14 +939,15 @@ static int __origin_write(struct list_head *snapshots, struct bio *bio)
 	int r = 1, first = 1;
 	struct dm_snapshot *snap;
 	struct exception *e;
-	struct pending_exception *pe, *last = NULL;
+	struct pending_exception *pe, *next_pe, *last = NULL;
 	chunk_t chunk;
+	LIST_HEAD(pe_queue);
 
 	/* Do all the snapshots on this origin */
 	list_for_each_entry (snap, snapshots, list) {
 
-		/* Only deal with valid snapshots */
-		if (!snap->valid)
+		/* Only deal with valid and active snapshots */
+		if (!snap->valid || !snap->active)
 			continue;
 
 		/* Nothing to do if writing beyond end of snapshot */
@@ -956,12 +975,19 @@ static int __origin_write(struct list_head *snapshots, struct bio *bio)
 				snap->valid = 0;
 
 			} else {
-				if (last)
+				if (first) {
+					bio_list_add(&pe->origin_bios, bio);
+					r = 0;
+					first = 0;
+				}
+				if (last && list_empty(&pe->siblings))
 					list_merge(&pe->siblings,
 						   &last->siblings);
-
+				if (!pe->started) {
+					pe->started = 1;
+					list_add_tail(&pe->list, &pe_queue);
+				}
 				last = pe;
-				r = 0;
 			}
 		}
 
@@ -971,24 +997,8 @@ static int __origin_write(struct list_head *snapshots, struct bio *bio)
 	/*
 	 * Now that we have a complete pe list we can start the copying.
 	 */
-	if (last) {
-		pe = last;
-		do {
-			down_write(&pe->snap->lock);
-			if (first)
-				bio_list_add(&pe->origin_bios, bio);
-			if (!pe->started) {
-				pe->started = 1;
-				up_write(&pe->snap->lock);
-				start_copy(pe);
-			} else
-				up_write(&pe->snap->lock);
-			first = 0;
-			pe = list_entry(pe->siblings.next,
-					struct pending_exception, siblings);
-
-		} while (pe != last);
-	}
+	list_for_each_entry_safe(pe, next_pe, &pe_queue, list)
+		start_copy(pe);
 
 	return r;
 }
@@ -1052,6 +1062,9 @@ static int origin_map(struct dm_target *ti, struct bio *bio,
 	struct dm_dev *dev = (struct dm_dev *) ti->private;
 	bio->bi_bdev = dev->bdev;
 
+	if (unlikely(bio_barrier(bio)))
+		return -EOPNOTSUPP;
+
 	/* Only tell snapshots if this is a write */
 	return (bio_rw(bio) == WRITE) ? do_origin(dev, bio) : 1;
 }
@@ -1099,7 +1112,7 @@ static int origin_status(struct dm_target *ti, status_type_t type, char *result,
 
 static struct target_type origin_target = {
 	.name    = "snapshot-origin",
-	.version = {1, 0, 1},
+	.version = {1, 2, 0},
 	.module  = THIS_MODULE,
 	.ctr     = origin_ctr,
 	.dtr     = origin_dtr,
@@ -1110,7 +1123,7 @@ static struct target_type origin_target = {
 
 static struct target_type snapshot_target = {
 	.name    = "snapshot",
-	.version = {1, 0, 1},
+	.version = {1, 2, 0},
 	.module  = THIS_MODULE,
 	.ctr     = snapshot_ctr,
 	.dtr     = snapshot_dtr,

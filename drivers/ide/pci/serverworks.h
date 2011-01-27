@@ -65,6 +65,15 @@ static ide_pci_device_t serverworks_chipsets[] __devinitdata = {
 		.channels	= 1,	/* 2 */
 		.autodma	= AUTODMA,
 		.bootable	= ON_BOARD,
+	},{	/* 4 */
+		.name		= "SvrWks HT1000",
+		.init_setup	= init_setup_svwks,
+		.init_chipset	= init_chipset_svwks,
+		.init_hwif	= init_hwif_svwks,
+		.init_dma	= init_dma_svwks,
+		.channels	= 1,	/* 2 */
+		.autodma	= AUTODMA,
+		.bootable	= ON_BOARD,
 	}
 };
 

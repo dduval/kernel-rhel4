@@ -45,9 +45,13 @@ struct fc_starget_attrs {	/* aka fc_target_attrs */
 
 struct fc_host_attrs {
 	uint32_t link_down_tmo;	/* Link Down timeout in seconds. */
+	uint32_t port_id;
 	struct work_struct link_down_work;
 };
 
+
+#define fc_host_port_id(x) \
+	(((struct fc_host_attrs *)(x)->shost_data)->port_id)
 #define fc_host_link_down_tmo(x) \
 	(((struct fc_host_attrs *)(x)->shost_data)->link_down_tmo)
 #define fc_host_link_down_work(x) \
@@ -64,6 +68,8 @@ struct fc_function_template {
 
 	void    (*get_host_link_down_tmo)(struct Scsi_Host *);
 	void	(*set_host_link_down_tmo)(struct Scsi_Host *, uint32_t);
+	void	(*get_host_port_id)(struct Scsi_Host *);
+	int	(*issue_fc_host_lip)(struct Scsi_Host *);
 
 	/* 
 	 * The driver sets these to tell the transport class it
@@ -77,7 +83,7 @@ struct fc_function_template {
 	unsigned long   show_starget_dev_loss_tmo:1;
 
 	unsigned long   show_host_link_down_tmo:1;
-
+	unsigned long	show_host_port_id:1;
 	/* Private Attributes */
 };
 

@@ -30,6 +30,8 @@
 #define platform_cleanup_stack(stackptr) do { } while (0)
 #define platform_start_crashdump(stackptr,dumpfunc,regs) (0)
 
+#define next_ram_page(pfn) (0)
+
 #undef ELF_CORE_COPY_REGS
 #define ELF_CORE_COPY_REGS(x, y) do { struct pt_regs *z; z = (y); } while (0)
 

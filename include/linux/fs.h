@@ -674,11 +674,13 @@ extern struct list_head file_lock_list;
 #include <linux/fcntl.h>
 
 extern int fcntl_getlk(struct file *, struct flock __user *);
-extern int fcntl_setlk(struct file *, unsigned int, struct flock __user *);
+extern int fcntl_setlk(unsigned int, struct file *, unsigned int,
+			struct flock __user *);
 
 #if BITS_PER_LONG == 32
 extern int fcntl_getlk64(struct file *, struct flock64 __user *);
-extern int fcntl_setlk64(struct file *, unsigned int, struct flock64 __user *);
+extern int fcntl_setlk64(unsigned int, struct file *, unsigned int,
+			struct flock64 __user *);
 #endif
 
 extern void send_sigio(struct fown_struct *fown, int fd, int band);
@@ -1509,7 +1511,8 @@ ssize_t __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 	int lock_type);
 
 enum {
-	DIO_LOCKING = 1, /* need locking between buffered and direct access */
+	DIO_CLUSTER_LOCKING = 0, /* allow (cluster) fs handle its own locking */
+	DIO_LOCKING,     /* need locking between buffered and direct access */
 	DIO_NO_LOCKING,  /* bdev; no locking at all between buffered/direct */
 	DIO_OWN_LOCKING, /* filesystem locks buffered and direct internally */
 };
@@ -1539,6 +1542,15 @@ static inline ssize_t blockdev_direct_IO_own_locking(int rw, struct kiocb *iocb,
 {
 	return __blockdev_direct_IO(rw, iocb, inode, bdev, iov, offset,
 				nr_segs, get_blocks, end_io, DIO_OWN_LOCKING);
+}
+
+static inline ssize_t blockdev_direct_IO_cluster_locking(int rw, struct kiocb *iocb,
+	struct inode *inode, struct block_device *bdev, const struct iovec *iov,
+	loff_t offset, unsigned long nr_segs, get_blocks_t get_blocks,
+	dio_iodone_t end_io)
+{
+	return __blockdev_direct_IO(rw, iocb, inode, bdev, iov, offset,
+			nr_segs, get_blocks, end_io, DIO_CLUSTER_LOCKING);
 }
 
 extern struct file_operations generic_ro_fops;

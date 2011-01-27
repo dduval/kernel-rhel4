@@ -131,4 +131,6 @@ extern void FASTCALL(free_cold_page(struct page *page));
 
 void page_alloc_init(void);
 
+typedef int gfp_t;
+
 #endif /* __LINUX_GFP_H */

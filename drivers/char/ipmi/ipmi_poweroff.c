@@ -31,17 +31,19 @@
  *  with this program; if not, write to the Free Software Foundation, Inc.,
  *  675 Mass Ave, Cambridge, MA 02139, USA.
  */
-#include <asm/semaphore.h>
-#include <linux/kdev_t.h>
+#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/proc_fs.h>
 #include <linux/string.h>
+#include <linux/completion.h>
+#include <linux/kdev_t.h>
 #include <linux/ipmi.h>
 #include <linux/ipmi_smi.h>
+#include <asm/uaccess.h>
 
 #define PFX "IPMI poweroff: "
-#define IPMI_POWEROFF_VERSION	"33.4"
+#define IPMI_POWEROFF_VERSION	"33.11"
 
 /* Where to we insert our poweroff function? */
 extern void (*pm_power_off)(void);
@@ -59,9 +61,10 @@ module_param(poweroff_control, int, IPMI_CHASSIS_POWER_DOWN);
 MODULE_PARM_DESC(poweroff_control, " Set to 2 to enable power cycle instead of power down. Power cycle is contingent on hardware support, otherwise it defaults back to power down.");
 
 /* Stuff from the get device id command. */
-unsigned int mfg_id;
-unsigned int prod_id;
-unsigned char capabilities;
+static unsigned int mfg_id;
+static unsigned int prod_id;
+static unsigned char capabilities;
+static unsigned char ipmi_version;
 
 /* We use our own messages for this operation, we don't let the system
    allocate them, since we may be in a panic situation.  The whole
@@ -89,10 +92,10 @@ static struct ipmi_recv_msg halt_recv_msg =
 
 static void receive_handler(struct ipmi_recv_msg *recv_msg, void *handler_data)
 {
-	struct semaphore *sem = recv_msg->user_msg_data;
+	struct completion *comp = recv_msg->user_msg_data;
 
-	if (sem)
-		up(sem);
+	if (comp)
+		complete(comp);
 }
 
 static struct ipmi_user_hndl ipmi_poweroff_handler =
@@ -105,27 +108,27 @@ static int ipmi_request_wait_for_response(ipmi_user_t            user,
 					  struct ipmi_addr       *addr,
 					  struct kernel_ipmi_msg *send_msg)
 {
-	int              rv;
-	struct semaphore sem;
+	int               rv;
+	struct completion comp;
 
-	sema_init (&sem, 0);
+	init_completion(&comp);
 
-	rv = ipmi_request_supply_msgs(user, addr, 0, send_msg, &sem,
+	rv = ipmi_request_supply_msgs(user, addr, 0, send_msg, &comp,
 				      &halt_smi_msg, &halt_recv_msg, 0);
 	if (rv)
 		return rv;
 
-	down (&sem);
+	wait_for_completion(&comp);
 
 	return halt_recv_msg.msg.data[0];
 }
 
-/* We are in run-to-completion mode, no semaphore is desired. */
+/* We are in run-to-completion mode, no completion is desired. */
 static int ipmi_request_in_rc_mode(ipmi_user_t            user,
 				   struct ipmi_addr       *addr,
 				   struct kernel_ipmi_msg *send_msg)
 {
-	int              rv;
+	int rv;
 
 	rv = ipmi_request_supply_msgs(user, addr, 0, send_msg, NULL,
 				      &halt_smi_msg, &halt_recv_msg, 0);
@@ -337,6 +340,25 @@ static void ipmi_poweroff_cpi1 (ipmi_user_t user)
 }
 
 /*
+ * ipmi_dell_chassis_detect()
+ * Dell systems with IPMI < 1.5 don't set the chassis capability bit
+ * but they can handle a chassis poweroff or powercycle command.
+ */
+
+#define DELL_IANA_MFR_ID {0xA2, 0x02, 0x00}
+static int ipmi_dell_chassis_detect (ipmi_user_t user)
+{
+	const char ipmi_version_major = ipmi_version & 0xF;
+	const char ipmi_version_minor = (ipmi_version >> 4) & 0xF;
+	const char mfr[3]=DELL_IANA_MFR_ID;
+	if (!memcmp(mfr, &mfg_id, sizeof(mfr)) &&
+	    ipmi_version_major <= 1 &&
+	    ipmi_version_minor < 5)
+		return 1;
+	return 0;
+}
+
+/*
  * Standard chassis support
  */
 
@@ -407,11 +429,20 @@ struct poweroff_function {
 };
 
 static struct poweroff_function poweroff_functions[] = {
-	{ "ATCA",    ipmi_atca_detect, ipmi_poweroff_atca },
-	{ "CPI1",    ipmi_cpi1_detect, ipmi_poweroff_cpi1 },
+	{ .platform_type	= "ATCA",
+	  .detect		= ipmi_atca_detect,
+	  .poweroff_func	= ipmi_poweroff_atca },
+	{ .platform_type	= "CPI1",
+	  .detect		= ipmi_cpi1_detect,
+	  .poweroff_func	= ipmi_poweroff_cpi1 },
+	{ .platform_type        = "chassis",
+	  .detect               = ipmi_dell_chassis_detect,
+	  .poweroff_func        = ipmi_poweroff_chassis },
 	/* Chassis should generally be last, other things should override
 	   it. */
-	{ "chassis", ipmi_chassis_detect, ipmi_poweroff_chassis },
+	{ .platform_type	= "chassis",
+	  .detect		= ipmi_chassis_detect,
+	  .poweroff_func	= ipmi_poweroff_chassis },
 };
 #define NUM_PO_FUNCS (sizeof(poweroff_functions) \
 		      / sizeof(struct poweroff_function))
@@ -492,6 +523,7 @@ static void ipmi_po_new_smi(int if_num)
 	prod_id = (halt_recv_msg.msg.data[10]
 		   | (halt_recv_msg.msg.data[11] << 8));
 	capabilities = halt_recv_msg.msg.data[6];
+	ipmi_version = halt_recv_msg.msg.data[5];
 
 
 	/* Scan for a poweroff method */
@@ -545,8 +577,14 @@ static int proc_write_chassctrl(struct file *file, const char *buffer,
 {
 	int          rv = count;
 	unsigned int newval = 0;
+	char buf[10];
 
-	sscanf(buffer, "%d", &newval);
+	memset(buf, 0, sizeof(buf));
+	if (count > 9)
+		return -EINVAL;
+	if (copy_from_user(buf, buffer, count))
+		return -EFAULT;
+	sscanf(buf, "%d", &newval);
 	switch (newval) {
 		case IPMI_CHASSIS_POWER_CYCLE:
 			printk(KERN_INFO PFX "power cycle is now enabled\n");

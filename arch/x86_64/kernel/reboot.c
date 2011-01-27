@@ -99,7 +99,7 @@ static void reboot_warm(void)
 #ifdef CONFIG_SMP
 static void smp_halt(void)
 {
-	int cpuid = safe_smp_processor_id(); 
+	int cpuid = hard_smp_processor_id(); 
 	static int first_entry = 1;
 
 	if (first_entry) { 

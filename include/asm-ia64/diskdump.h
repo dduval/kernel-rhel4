@@ -42,7 +42,6 @@ struct disk_dump_sub_header {
  	int ret;						\
 	struct unw_frame_info *info = platform_arg;		\
 								\
-	ia64_do_copy_regs(info, &dump_sub_header.elf_regs);	\
 	dump_sub_header.sw[smp_processor_id()] = info->sw;	\
 	clear_page(scratch);					\
 	memcpy(scratch, &dump_sub_header, sizeof(dump_sub_header));\

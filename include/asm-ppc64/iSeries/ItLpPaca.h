@@ -108,7 +108,7 @@ struct ItLpPaca
 	volatile u32 xVirtualDecr;	// Virtual DECR for shared procsx78-x7B
 	u16     xSLBCount;              // # of SLBs to maintain        x7C-x7D
 	u8      xIdle;                  // Indicate OS is idle          x7E
-	u8      xRsvd2_2;               // Reserved                     x7F
+	u8      xSaveVMX;               // Save VMX registers           x7F
 
 
 //=============================================================================

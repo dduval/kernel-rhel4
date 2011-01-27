@@ -25,7 +25,7 @@
 #ifndef _H_LPFC_VERSION
 #define _H_LPFC_VERSION
 
-#define LPFC_DRIVER_VERSION "8.0.16.17"
+#define LPFC_DRIVER_VERSION "8.0.16.18"
 
 #define LPFC_DRIVER_NAME "lpfc"
 

@@ -408,7 +408,7 @@ static int cmi9880_fill_multi_dac_nids(struct hda_codec *codec, const struct aut
 		/* search for an empty channel */
 		for (j = 0; j < cfg->line_outs; j++) {
 			if (! assigned[j]) {
-				spec->dac_nids[i] = i + 0x03;
+				spec->dac_nids[i] = j + 0x03;
 				assigned[j] = 1;
 				break;
 			}
@@ -444,11 +444,10 @@ static int cmi9880_fill_multi_init(struct hda_codec *codec, const struct auto_pi
 			len = snd_hda_get_connections(codec, nid, conn, 4);
 			for (k = 0; k < len; k++)
 				if (conn[k] == spec->dac_nids[i]) {
-					spec->multi_init[j].param = j;
+					spec->multi_init[j].param = k;
 					break;
 				}
 			j++;
-			break;
 		}
 	}
 	return 0;
@@ -648,6 +647,7 @@ static struct hda_board_config cmi9880_cfg_tbl[] = {
 	{ .modelname = "min_fp", .config = CMI_MIN_FP },
 	{ .modelname = "full", .config = CMI_FULL },
 	{ .modelname = "full_dig", .config = CMI_FULL_DIG },
+	{ .pci_subvendor = 0x1043, .pci_subdevice = 0x813d, .config = CMI_FULL_DIG }, /* ASUS P5AD2 */
 	{ .modelname = "allout", .config = CMI_ALLOUT },
 	{ .modelname = "auto", .config = CMI_AUTO },
 	{} /* terminator */
@@ -667,7 +667,7 @@ static int patch_cmi9880(struct hda_codec *codec)
 {
 	struct cmi_spec *spec;
 
-	spec = kcalloc(1, sizeof(*spec), GFP_KERNEL);
+	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
 	if (spec == NULL)
 		return -ENOMEM;
 

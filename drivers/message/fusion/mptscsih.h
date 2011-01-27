@@ -81,3 +81,40 @@
 #define MPTSCSIH_PT_CLEAR               0
 
 #endif
+
+extern void mptscsih_remove(struct pci_dev *);
+// This was changed in the 2.6.13 kernel
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
+extern void mptscsih_shutdown(struct device *);
+#else
+extern void mptscsih_shutdown(struct pci_dev *);
+#endif
+#ifdef CONFIG_PM
+extern int mptscsih_suspend(struct pci_dev *pdev, pm_message_t state);
+extern int mptscsih_resume(struct pci_dev *pdev);
+#endif
+extern int mptscsih_proc_info(struct Scsi_Host *host, char *buffer, char **start, off_t offset, int length, int func);
+extern const char * mptscsih_info(struct Scsi_Host *SChost);
+extern int mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *));
+extern int mptscsih_slave_alloc(struct scsi_device *device);
+extern void mptscsih_slave_destroy(struct scsi_device *device);
+extern int mptscsih_slave_configure(struct scsi_device *device);
+extern int mptscsih_abort(struct scsi_cmnd * SCpnt);
+extern int mptscsih_dev_reset(struct scsi_cmnd * SCpnt);
+extern int mptscsih_bus_reset(struct scsi_cmnd * SCpnt);
+extern int mptscsih_host_reset(struct scsi_cmnd *SCpnt);
+extern int mptscsih_bios_param(struct scsi_device * sdev, struct block_device *bdev, sector_t capacity, int geom[]);
+extern int mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *r);
+extern int mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *r);
+extern int mptscsih_scandv_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *r);
+extern int mptscsih_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply);
+extern int mptscsih_ioc_reset(MPT_ADAPTER *ioc, int post_reset);
+extern void mptscsih_timer_expired(unsigned long data);
+extern int mptscsih_readFCDevicePage0(MPT_ADAPTER *ioc, u8 bus, u8 targetId, pFCDevicePage0_t fcDevicePage);
+extern void mptscsih_hot_plug_worker_thread(void * arg);
+extern int mptscsih_TMHandler(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 target, u8 lun, int ctx2abort, ulong timeout);
+extern int mptscsih_change_queue_depth(struct scsi_device *sdev, int qdepth);
+extern int mptscsih_sanity_check(struct scsi_device *sdev);
+extern void mptscsih_poll(struct scsi_device *sdev);
+extern void scsi_print_command(struct scsi_cmnd *cmd);
+

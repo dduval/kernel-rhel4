@@ -382,6 +382,8 @@ struct hid_device {							/* device report descriptor */
 	char phys[64];							/* Device physical location */
 	char uniq[64];							/* Device unique identifier (serial #) */
 
+	int error_count;
+
 	void *ff_private;                                               /* Private data for the force-feedback driver */
 	void (*ff_exit)(struct hid_device*);                            /* Called by hid_exit_ff(hid) */
 	int (*ff_event)(struct hid_device *hid, struct input_dev *input,

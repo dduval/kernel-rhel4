@@ -217,6 +217,8 @@ config SCSI_ISCSI_ATTRS
 	  each attached iSCSI device to sysfs, say Y.
 	  Otherwise, say N.
 
+source "drivers/scsi/sas/Kconfig"
+
 endmenu
 
 menu "SCSI low-level drivers"
@@ -331,6 +333,7 @@ config SCSI_AACRAID
 	depends on EXPERIMENTAL && SCSI && PCI
 
 source "drivers/scsi/aic7xxx/Kconfig.aic7xxx"
+source "drivers/scsi/aic94xx/Kconfig"
 
 config SCSI_AIC7XXX_OLD
 	tristate "Adaptec AIC7xxx support (old driver)"

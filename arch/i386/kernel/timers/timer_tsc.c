@@ -553,4 +553,5 @@ struct timer_opts timer_tsc = {
 	.get_offset =	get_offset_tsc,
 	.monotonic_clock =	monotonic_clock_tsc,
 	.delay = delay_tsc,
+	.read_timer = read_timer_tsc,
 };

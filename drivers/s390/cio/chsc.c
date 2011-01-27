@@ -412,11 +412,7 @@ s390_process_res_acc (u8 chpid, __u16 fla, u32 fla_mask)
 		if (chp_mask == 0) {
 
 			spin_unlock_irq(&sch->lock);
-
-			if (fla_mask != 0)
-				break;
-			else
-				continue;
+			continue;
 		}
 		old_lpm = sch->lpm;
 		sch->lpm = ((sch->schib.pmcw.pim &
@@ -430,7 +426,7 @@ s390_process_res_acc (u8 chpid, __u16 fla, u32 fla_mask)
 
 		spin_unlock_irq(&sch->lock);
 		put_device(&sch->dev);
-		if (fla_mask != 0)
+		if (fla_mask == 0xffff)
 			break;
 	}
 	return rc;

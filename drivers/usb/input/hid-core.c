@@ -918,14 +918,26 @@ static void hid_irq_in(struct urb *urb, struct pt_regs *regs)
 	struct hid_device	*hid = urb->context;
 	int			status;
 
+	if (urb->status == -EILSEQ) {	/* unplug (on uhci) or other error */
+		if (hid->error_count >= 20) {
+			info("not resubmitting, input%d", hid->ifnum);
+			return;
+		}
+		hid->error_count++;
+	} else {
+		hid->error_count = 0;
+	}
+
 	switch (urb->status) {
 		case 0:			/* success */
 			hid_input_report(HID_INPUT_REPORT, urb, regs);
 			break;
 		case -ECONNRESET:	/* unlink */
 		case -ENOENT:
-		case -ESHUTDOWN:
+		case -EPERM:
+		case -ESHUTDOWN:	/* unplug */
 			return;
+		case -EILSEQ:
 		case -ETIMEDOUT:	/* NAK */
 			break;
 		default:		/* error */
@@ -1378,6 +1390,7 @@ void hid_init_reports(struct hid_device *hid)
 #define USB_DEVICE_ID_WACOM_INTUOS2	0x0040
 #define USB_DEVICE_ID_WACOM_VOLITO      0x0060
 #define USB_DEVICE_ID_WACOM_PTU         0x0003
+#define USB_DEVICE_ID_WACOM_INTUOS3     0x00B0
 
 #define USB_VENDOR_ID_KBGEAR            0x084e
 #define USB_DEVICE_ID_KBGEAR_JAMSTUDIO  0x1001
@@ -1516,6 +1529,9 @@ static struct hid_blacklist {
 	{ USB_VENDOR_ID_WACOM, USB_DEVICE_ID_WACOM_INTUOS2 + 7, HID_QUIRK_IGNORE },
 	{ USB_VENDOR_ID_WACOM, USB_DEVICE_ID_WACOM_VOLITO, HID_QUIRK_IGNORE },
 	{ USB_VENDOR_ID_WACOM, USB_DEVICE_ID_WACOM_PTU, HID_QUIRK_IGNORE },
+	{ USB_VENDOR_ID_WACOM, USB_DEVICE_ID_WACOM_INTUOS3, HID_QUIRK_IGNORE },
+	{ USB_VENDOR_ID_WACOM, USB_DEVICE_ID_WACOM_INTUOS3 + 1, HID_QUIRK_IGNORE },
+	{ USB_VENDOR_ID_WACOM, USB_DEVICE_ID_WACOM_INTUOS3 + 2, HID_QUIRK_IGNORE },
 
 	{ USB_VENDOR_ID_GLAB, USB_DEVICE_ID_4_PHIDGETSERVO_30, HID_QUIRK_IGNORE },
 	{ USB_VENDOR_ID_GLAB, USB_DEVICE_ID_1_PHIDGETSERVO_30, HID_QUIRK_IGNORE },

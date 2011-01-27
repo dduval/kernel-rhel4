@@ -2049,6 +2049,16 @@ config R8169_NAPI
 
 	  If in doubt, say N.
 
+config SKY2
+	tristate "SysKonnect Yukon2 support (EXPERIMENTAL)"
+	depends on PCI && EXPERIMENTAL
+	select CRC32
+	---help---
+	  This driver support the Marvell Yukon 2 Gigabit Ethernet adapter.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called sky2.  This is recommended.
+
 config SK98LIN
 	tristate "Marvell Yukon Chipset / SysKonnect SK-98xx Support"
 	depends on PCI
@@ -2148,6 +2158,15 @@ config TIGON3
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called tg3.  This is recommended.
+
+config BNX2
+	tristate "Broadcom NetXtremeII support"
+	depends on PCI
+	help
+	  This driver supports Broadcom NetXtremeII gigabit Ethernet cards.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called bnx2.  This is recommended.
 
 config GIANFAR
 	tristate "Gianfar Ethernet"

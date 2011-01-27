@@ -95,6 +95,10 @@ enum fixed_addresses {
 #ifdef CONFIG_PCI_MMCONFIG
 	FIX_PCIE_MCFG,
 #endif
+#ifdef CONFIG_X86_IO_APIC
+	FIX_IO_APIC_BASE_EXT_0,
+	FIX_IO_APIC_BASE_EXT_END = FIX_IO_APIC_BASE_EXT_0 + MAX_IO_APICS_EXT-1,
+#endif
 	__end_of_permanent_fixed_addresses,
 	/* temporary boot-time mappings, used before ioremap() is functional */
 #define NR_FIX_BTMAPS	16

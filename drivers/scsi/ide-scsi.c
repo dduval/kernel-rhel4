@@ -1209,11 +1209,6 @@ static int __init init_idescsi_module(void)
 	return ide_register_driver(&idescsi_driver);
 }
 
-static void __exit exit_idescsi_module(void)
-{
-	ide_unregister_driver(&idescsi_driver);
-}
 
 module_init(init_idescsi_module);
-module_exit(exit_idescsi_module);
 MODULE_LICENSE("GPL");

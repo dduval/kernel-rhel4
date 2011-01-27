@@ -137,6 +137,16 @@ struct cpu_spec	cpu_specs[] = {
 	    __setup_cpu_ppc970,
 	    COMMON_PPC64_FW
     },
+    {	/* PPC970MP */
+	    0xffff0000, 0x00440000, "PPC970MP",
+	    CPU_FTR_SPLIT_ID_CACHE | CPU_FTR_USE_TB | CPU_FTR_HPTE_TABLE |
+		    CPU_FTR_PPCAS_ARCH_V2 | CPU_FTR_ALTIVEC_COMP |
+		    CPU_FTR_CAN_NAP | CPU_FTR_PMC8 | CPU_FTR_MMCRA,
+	    COMMON_USER_PPC64 | PPC_FEATURE_HAS_ALTIVEC_COMP,
+	    128, 128,
+	    __setup_cpu_ppc970,
+	    COMMON_PPC64_FW
+    },
     {	/* Power5 */
 	    0xffff0000, 0x003a0000, "POWER5 (gr)",
 	    CPU_FTR_SPLIT_ID_CACHE | CPU_FTR_USE_TB | CPU_FTR_HPTE_TABLE |

@@ -52,80 +52,54 @@ int 			mip_port;
 unsigned long		mip_addr, host_addr;
 
 #if defined(CONFIG_X86_IO_APIC) && (defined(CONFIG_ACPI_INTERPRETER) || defined(CONFIG_ACPI_BOOT))
-static unsigned long cycle_irqs = 0;
-static unsigned long free_irqs = 0;
-static int gsi_map[MAX_GSI_MAPSIZE] = { [0 ... MAX_GSI_MAPSIZE-1] = -1 };
 
 /*
  * GSI override for ES7000 platforms.
  */
 
-static int __init
-es7000_gsi_override(int ioapic, int gsi)
-{
-	static int newgsi = 0;
+static unsigned int base;
 
-	if (gsi_map[gsi] != -1)
-		gsi = gsi_map[gsi];
-	else if (cycle_irqs ^ free_irqs) {
-		newgsi = find_next_bit(&cycle_irqs, IOAPIC_GSI_BOUND(0), newgsi);
-		__set_bit(newgsi, &free_irqs);
-		gsi_map[gsi] = newgsi;
-		gsi = newgsi;
-		newgsi++;
-		Dprintk("es7000_gsi_override: free_irqs = 0x%lx\n", free_irqs);
-	}
-
-	return gsi;
-}
-
-static int __init
+static int
 es7000_rename_gsi(int ioapic, int gsi)
 {
-	static int initialized = 0;
-	int i;
-
-	/*
-	 * These should NEVER be true at this point but we'd rather be
-	 * safe than sorry.
-	 */
-	if (acpi_disabled || acpi_pci_disabled || acpi_noirq)
- 		return gsi;
-
-	if (ioapic)
- 		return gsi;
-
-	if (!initialized) {
-		unsigned long tmp_irqs = 0;
-
-		for (i = 0; i < nr_ioapic_registers[0]; i++)
-			__set_bit(mp_irqs[i].mpc_srcbusirq, &tmp_irqs);
-
-		cycle_irqs = (~tmp_irqs & io_apic_irqs & ((1 << IOAPIC_GSI_BOUND(0)) - 1));
-
-		initialized = 1;
-		Dprintk("es7000_rename_gsi: cycle_irqs = 0x%lx\n", cycle_irqs);
+	if (!base) {
+		int i;
+		for (i = 0; i < nr_ioapics; i++)
+			base += nr_ioapic_registers[i];
 	}
 
-	for (i = 0; i < nr_ioapic_registers[0]; i++) {
-		if (mp_irqs[i].mpc_srcbusirq == gsi) {
-			if (mp_irqs[i].mpc_dstirq == gsi)
-				return gsi;
-			else
-				return es7000_gsi_override(0, gsi);
-		}
-	}
+	if (!ioapic && (gsi < 16))
+		gsi += base;
 
 	return gsi;
 }
+
 #endif // (CONFIG_X86_IO_APIC) && (CONFIG_ACPI_INTERPRETER || CONFIG_ACPI_BOOT)
+
+void __init
+setup_unisys ()
+{
+	/*
+	 * Determine the generation of the ES7000 currently running.
+	 *
+	 * es7000_plat = 1 if the machine is a 5xx ES7000 box
+	 * es7000_plat = 2 if the machine is a x86_64 ES7000 box
+	 *
+	 */
+	if (!(boot_cpu_data.x86 <= 15 && boot_cpu_data.x86_model <= 2))
+		es7000_plat = 2;
+	else
+		es7000_plat = 1;
+
+	platform_rename_gsi = es7000_rename_gsi;
+}
 
 /*
  * Parse the OEM Table
  */
 
 int __init
-parse_unisys_oem (char *oemptr, int oem_entries)
+parse_unisys_oem (char *oemptr)
 {
 	int                     i;
 	int 			success = 0;
@@ -140,7 +114,7 @@ parse_unisys_oem (char *oemptr, int oem_entries)
 
 	tp += 8;
 
-	for (i=0; i <= oem_entries; i++) {
+	for (i=0; i <= 6; i++) {
 		type = *tp++;
 		size = *tp++;
 		tp -= 2;
@@ -175,22 +149,19 @@ parse_unisys_oem (char *oemptr, int oem_entries)
 		default:
 			break;
 		}
-		if (i == 6) break;
 		tp += size;
 	}
 
 	if (success < 2) {
 		es7000_plat = 0;
-	} else {
-		printk("\nEnabling ES7000 specific features...\n");
-		es7000_plat = 1;
-		platform_rename_gsi = es7000_rename_gsi;
-	}
+	} else
+		setup_unisys();
+
 	return es7000_plat;
 }
 
 int __init
-find_unisys_acpi_oem_table(unsigned long *oem_addr, int *length)
+find_unisys_acpi_oem_table(unsigned long *oem_addr)
 {
 	struct acpi_table_rsdp		*rsdp = NULL;
 	unsigned long			rsdp_phys = 0;
@@ -234,13 +205,11 @@ find_unisys_acpi_oem_table(unsigned long *oem_addr, int *length)
 				acpi_table_print(header, sdt.entry[i].pa);
 				t = (struct oem_table *) __acpi_map_table(sdt.entry[i].pa, header->length);
 				addr = (void *) __acpi_map_table(t->OEMTableAddr, t->OEMTableSize);
-				*length = header->length;
 				*oem_addr = (unsigned long) addr;
 				return 0;
 			}
 		}
 	}
-	Dprintk("ES7000: did not find Unisys ACPI OEM table!\n");
 	return -1;
 }
 

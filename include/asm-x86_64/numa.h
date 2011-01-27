@@ -1,8 +1,7 @@
 #ifndef _ASM_X8664_NUMA_H 
 #define _ASM_X8664_NUMA_H 1
 
-#define MAXNODE 8 
-#define NODEMASK 0xff
+#include <asm/numnodes.h>
 
 struct node { 
 	u64 start,end; 

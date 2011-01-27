@@ -56,6 +56,7 @@ MODULE_LICENSE("GPL");
 struct cpufreq_acpi_io {
 	struct acpi_processor_performance	acpi_data;
 	struct cpufreq_frequency_table		*freq_table;
+	unsigned int				resume;
 };
 
 static struct cpufreq_acpi_io	*acpi_io_data[NR_CPUS];
@@ -128,10 +129,16 @@ acpi_processor_set_performance (
 	}
 	
 	if (state == data->acpi_data.state) {
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, 
-			"Already at target state (P%d)\n", state));
-		retval = 0;
-		goto migrate_end;
+		if (unlikely(data->resume)) {
+			ACPI_DEBUG_PRINT((ACPI_DB_INFO,
+				"resetting to P%d\n", state));
+			data->resume = 0;
+		} else {
+			ACPI_DEBUG_PRINT((ACPI_DB_INFO,
+				"Already at target state (P%d)\n", state));
+			retval = 0;
+			goto migrate_end;
+		}
 	}
 
 	ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Transitioning from P%d to P%d\n",
@@ -447,6 +454,11 @@ acpi_cpufreq_cpu_init (
 			(u32) data->acpi_data.states[i].transition_latency);
 
 	cpufreq_frequency_table_get_attr(data->freq_table, policy->cpu);
+
+	/* the first call to ->target() should result in us actually
+	 * writing something to the appropriate registers. */
+	data->resume = 1;	 
+
 	return_VALUE(result);
 
  err_freqfree:

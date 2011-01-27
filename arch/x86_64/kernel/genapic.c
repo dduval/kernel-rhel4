@@ -19,6 +19,12 @@
 #include <asm/smp.h>
 #include <asm/ipi.h>
 
+#if defined(CONFIG_ACPI_BUS)
+#include <acpi/acpi_bus.h> 
+
+#define FADT3_FEATURE_BIT_FORCE_APIC_PHYSICAL_DESTINATION_MODE (1 << 5)
+#endif
+
 /* which logical CPU number maps to which CPU (physical APIC ID) */
 volatile char x86_cpu_to_apicid[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
 EXPORT_SYMBOL(x86_cpu_to_apicid);
@@ -40,6 +46,26 @@ void __init clustered_apic_check(void)
 	u8 id;
 	u8 cluster_cnt[NUM_APIC_CLUSTERS];
 
+#if defined(CONFIG_ACPI_BUS)
+	/*
+	 * This is ugly but this will look better once ACPI 3.0 is implemented.
+	 * ACPI 3.0 adds 6 more fixed feature flags to the FADT (the one of
+	 * interest is FORCE_APIC_PHYSICAL_MODE). Since we're still in 
+	 * ACPI 2.0C, we compensate by tapping the reserved6 member which will
+	 * contain the flag we're targetting for.
+	 * 
+	 * NOTE: THIS IS A TEMPORARY HACK! A more elegant solution based off of
+	 *       ACPI 3.0 standards is here:
+	 *       http://www.kernel.org/pub/linux/kernel/people/akpm/patches/2.6/2.6.12-rc2/2.6.12-rc2-mm3/broken-out/x86_64-genapic-update.patch
+	 *
+	 */
+	if (acpi_fadt.revision > FADT2_REVISION_ID)
+		if (acpi_fadt.reserved6 & FADT3_FEATURE_BIT_FORCE_APIC_PHYSICAL_DESTINATION_MODE) {
+			printk(KERN_DEBUG "ACPI FADT FORCE_APIC_PHYSICAL_DESTINATION_MODE feature bit is set.\n");
+			genapic = &apic_cluster;
+			goto print;
+		}
+#endif
 	memset(cluster_cnt, 0, sizeof(cluster_cnt));
 
 	for (i = 0; i < NR_CPUS; i++) {
@@ -70,6 +96,7 @@ void __init clustered_apic_check(void)
 	else
 		genapic = &apic_cluster;
 
+print:
 	printk(KERN_INFO "Setting APIC routing to %s\n", genapic->name);
 }
 

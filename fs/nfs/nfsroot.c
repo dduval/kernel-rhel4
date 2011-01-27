@@ -160,6 +160,8 @@ static match_table_t __initdata tokens = {
 	{Opt_tcp, "proto=tcp"},
 	{Opt_tcp, "tcp"},
 	{Opt_broken_suid, "broken_suid"},
+	{Opt_acl, "acl"},
+	{Opt_noacl, "noacl"},
 	{Opt_err, NULL}
 	
 };
@@ -270,6 +272,12 @@ static int __init root_nfs_parse(char *name, char *buf)
 				break;
 			case Opt_broken_suid:
 				nfs_data.flags |= NFS_MOUNT_BROKEN_SUID;
+				break;
+			case Opt_acl:
+				nfs_data.flags &= ~NFS_MOUNT_NOACL;
+				break;
+			case Opt_noacl:
+				nfs_data.flags |= NFS_MOUNT_NOACL;
 				break;
 			default : 
 				return 0;

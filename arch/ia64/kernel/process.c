@@ -25,6 +25,8 @@
 #include <linux/unistd.h>
 #include <linux/efi.h>
 #include <linux/interrupt.h>
+#include <linux/kprobes.h>
+#include <linux/fcntl.h>
 
 #include <asm/cpu.h>
 #include <asm/delay.h>
@@ -694,6 +696,13 @@ flush_thread (void)
 void
 exit_thread (void)
 {
+	/*
+	 * Remove function-return probe instances associated with this task
+	 * and put them back on the free list. Do not insert an exit probe for
+	 * this function, it will be disabled by kprobe_flush_task if you do.
+	 */
+	kprobe_flush_task(current);
+
 	ia64_drop_fpu(current);
 #ifdef CONFIG_PERFMON
        /* if needed, stop monitoring and flush state to perfmon context */
@@ -801,3 +810,9 @@ ia64_start_dump (struct unw_frame_info *info, void *arg)
 }
 
 EXPORT_SYMBOL_GPL(ia64_start_dump);
+
+int
+do_force_o_largefile()
+{
+	return personality(current->personality) != PER_LINUX32;
+}

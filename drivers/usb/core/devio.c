@@ -1098,23 +1098,20 @@ static int proc_releaseinterface(struct dev_state *ps, void __user *arg)
 	return 0;
 }
 
-static int proc_ioctl (struct dev_state *ps, void __user *arg)
+static int proc_ioctl(struct dev_state *ps, struct usbdevfs_ioctl *ctl)
 {
-	struct usbdevfs_ioctl	ctrl;
 	int			size;
 	void			*buf = NULL;
 	int			retval = 0;
 	struct usb_interface    *intf = NULL;
 	struct usb_driver       *driver = NULL;
 
-	/* get input parameters and alloc buffer */
-	if (copy_from_user(&ctrl, arg, sizeof (ctrl)))
-		return -EFAULT;
-	if ((size = _IOC_SIZE (ctrl.ioctl_code)) > 0) {
+	/* alloc buffer */
+	if ((size = _IOC_SIZE (ctl->ioctl_code)) > 0) {
 		if ((buf = kmalloc (size, GFP_KERNEL)) == 0)
 			return -ENOMEM;
-		if ((_IOC_DIR(ctrl.ioctl_code) & _IOC_WRITE)) {
-			if (copy_from_user (buf, ctrl.data, size)) {
+		if ((_IOC_DIR(ctl->ioctl_code) & _IOC_WRITE)) {
+			if (copy_from_user (buf, ctl->data, size)) {
 				kfree (buf);
 				return -EFAULT;
 			}
@@ -1131,9 +1128,9 @@ static int proc_ioctl (struct dev_state *ps, void __user *arg)
 
 	if (ps->dev->state != USB_STATE_CONFIGURED)
 		retval = -ENODEV;
-	else if (!(intf = usb_ifnum_to_if (ps->dev, ctrl.ifno)))
+	else if (!(intf = usb_ifnum_to_if (ps->dev, ctl->ifno)))
                retval = -EINVAL;
-	else switch (ctrl.ioctl_code) {
+	else switch (ctl->ioctl_code) {
 
 	/* disconnect kernel driver from interface */
 	case USBDEVFS_DISCONNECT:
@@ -1160,7 +1157,7 @@ static int proc_ioctl (struct dev_state *ps, void __user *arg)
 		if (driver == 0 || driver->ioctl == 0) {
 			retval = -ENOTTY;
 		} else {
-			retval = driver->ioctl (intf, ctrl.ioctl_code, buf);
+			retval = driver->ioctl (intf, ctl->ioctl_code, buf);
 			if (retval == -ENOIOCTLCMD)
 				retval = -ENOTTY;
 		}
@@ -1169,14 +1166,41 @@ static int proc_ioctl (struct dev_state *ps, void __user *arg)
 
 	/* cleanup and return */
 	if (retval >= 0
-			&& (_IOC_DIR (ctrl.ioctl_code) & _IOC_READ) != 0
+			&& (_IOC_DIR (ctl->ioctl_code) & _IOC_READ) != 0
 			&& size > 0
-			&& copy_to_user (ctrl.data, buf, size) != 0)
+			&& copy_to_user (ctl->data, buf, size) != 0)
 		retval = -EFAULT;
 	if (buf != 0)
 		kfree (buf);
 	return retval;
 }
+
+static int proc_ioctl_default(struct dev_state *ps, void __user *arg)
+{
+	struct usbdevfs_ioctl	ctrl;
+
+	if (copy_from_user(&ctrl, arg, sizeof (ctrl)))
+		return -EFAULT;
+	return proc_ioctl(ps, &ctrl);
+}
+
+#ifdef CONFIG_COMPAT
+static int proc_ioctl_compat(struct dev_state *ps, void __user *arg)
+{
+	struct usbdevfs_ioctl32 __user *uioc;
+	struct usbdevfs_ioctl ctrl;
+	u32 udata;
+
+	uioc = compat_ptr(arg);
+	if (get_user(ctrl.ifno, &uioc->ifno) ||
+	    get_user(ctrl.ioctl_code, &uioc->ioctl_code) ||
+	    __get_user(udata, &uioc->data))
+		return -EFAULT;
+	ctrl.data = compat_ptr(udata);
+
+	return proc_ioctl(ps, &ctrl);
+}
+#endif
 
 /*
  * NOTE:  All requests here that have interface numbers as parameters
@@ -1259,6 +1283,14 @@ static int usbdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd
 			inode->i_mtime = CURRENT_TIME;
 		break;
 
+#ifdef CONFIG_COMPAT
+
+	case USBDEVFS_IOCTL32:
+		snoop(&dev->dev, "%s: IOCTL\n", __FUNCTION__);
+		ret = proc_ioctl_compat(ps, p);
+		break;
+#endif
+
 	case USBDEVFS_DISCARDURB:
 		snoop(&dev->dev, "%s: DISCARDURB\n", __FUNCTION__);
 		ret = proc_unlinkurb(ps, p);
@@ -1291,7 +1323,7 @@ static int usbdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd
 
 	case USBDEVFS_IOCTL:
 		snoop(&dev->dev, "%s: IOCTL\n", __FUNCTION__);
-		ret = proc_ioctl(ps, p);
+		ret = proc_ioctl_default(ps, p);
 		break;
 	}
 	up(&dev->serialize);

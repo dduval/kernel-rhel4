@@ -48,7 +48,7 @@
 #include <linux/ioctl32.h>
 #include <linux/compat.h>
 
-#define IPMI_DEVINTF_VERSION "33.4"
+#define IPMI_DEVINTF_VERSION "33.11"
 
 struct ipmi_file_private
 {
@@ -412,6 +412,7 @@ static int ipmi_ioctl(struct inode  *inode,
 		break;
 	}
 
+	/* The next four are legacy, not per-channel. */
 	case IPMICTL_SET_MY_ADDRESS_CMD:
 	{
 		unsigned int val;
@@ -421,22 +422,25 @@ static int ipmi_ioctl(struct inode  *inode,
 			break;
 		}
 
-		ipmi_set_my_address(priv->user, val);
-		rv = 0;
+		rv = ipmi_set_my_address(priv->user, 0, val);
 		break;
 	}
 
 	case IPMICTL_GET_MY_ADDRESS_CMD:
 	{
-		unsigned int val;
+		unsigned int  val;
+		unsigned char rval;
 
-		val = ipmi_get_my_address(priv->user);
+		rv = ipmi_get_my_address(priv->user, 0, &rval);
+		if (rv)
+			break;
+
+		val = rval;
 
 		if (copy_to_user(arg, &val, sizeof(val))) {
 			rv = -EFAULT;
 			break;
 		}
-		rv = 0;
 		break;
 	}
 
@@ -449,24 +453,94 @@ static int ipmi_ioctl(struct inode  *inode,
 			break;
 		}
 
-		ipmi_set_my_LUN(priv->user, val);
-		rv = 0;
+		rv = ipmi_set_my_LUN(priv->user, 0, val);
 		break;
 	}
 
 	case IPMICTL_GET_MY_LUN_CMD:
 	{
-		unsigned int val;
+		unsigned int  val;
+		unsigned char rval;
 
-		val = ipmi_get_my_LUN(priv->user);
+		rv = ipmi_get_my_LUN(priv->user, 0, &rval);
+		if (rv)
+			break;
+
+		val = rval;
 
 		if (copy_to_user(arg, &val, sizeof(val))) {
 			rv = -EFAULT;
 			break;
 		}
-		rv = 0;
 		break;
 	}
+
+	case IPMICTL_SET_MY_CHANNEL_ADDRESS_CMD:
+	{
+		struct ipmi_channel_lun_address_set val;
+
+		if (copy_from_user(&val, arg, sizeof(val))) {
+			rv = -EFAULT;
+			break;
+		}
+
+		return ipmi_set_my_address(priv->user, val.channel, val.value);
+		break;
+	}
+
+	case IPMICTL_GET_MY_CHANNEL_ADDRESS_CMD:
+	{
+		struct ipmi_channel_lun_address_set val;
+
+		if (copy_from_user(&val, arg, sizeof(val))) {
+			rv = -EFAULT;
+			break;
+		}
+
+		rv = ipmi_get_my_address(priv->user, val.channel, &val.value);
+		if (rv)
+			break;
+
+		if (copy_to_user(arg, &val, sizeof(val))) {
+			rv = -EFAULT;
+			break;
+		}
+		break;
+	}
+
+	case IPMICTL_SET_MY_CHANNEL_LUN_CMD:
+	{
+		struct ipmi_channel_lun_address_set val;
+
+		if (copy_from_user(&val, arg, sizeof(val))) {
+			rv = -EFAULT;
+			break;
+		}
+
+		rv = ipmi_set_my_LUN(priv->user, val.channel, val.value);
+		break;
+	}
+
+	case IPMICTL_GET_MY_CHANNEL_LUN_CMD:
+	{
+		struct ipmi_channel_lun_address_set val;
+
+		if (copy_from_user(&val, arg, sizeof(val))) {
+			rv = -EFAULT;
+			break;
+		}
+
+		rv = ipmi_get_my_LUN(priv->user, val.channel, &val.value);
+		if (rv)
+			break;
+
+		if (copy_to_user(arg, &val, sizeof(val))) {
+			rv = -EFAULT;
+			break;
+		}
+		break;
+	}
+
 	case IPMICTL_SET_TIMING_PARMS_CMD:
 	{
 		struct ipmi_timing_parms parms;
@@ -760,7 +834,7 @@ static __init int init_ipmi_devintf(void)
 	register_ioctl32_conversion(IPMICTL_SET_TIMING_PARMS_CMD,ipmi_ioctl32);
 	register_ioctl32_conversion(IPMICTL_GET_TIMING_PARMS_CMD,ipmi_ioctl32);
 #endif /* CONFIG_COMPAT */
- 
+
 	return 0;
 }
 module_init(init_ipmi_devintf);

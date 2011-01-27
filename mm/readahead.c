@@ -343,9 +343,10 @@ check_ra_success(struct file_ra_state *ra, pgoff_t attempt,
  * page_cache_readahead is the main function.  If performs the adaptive
  * readahead window size management and submits the readahead I/O.
  */
-void
+unsigned long
 page_cache_readahead(struct address_space *mapping, struct file_ra_state *ra,
-			struct file *filp, unsigned long offset)
+		     struct file *filp, unsigned long offset,
+		     unsigned long nr_to_read)
 {
 	unsigned max;
 	unsigned orig_next_size;
@@ -365,12 +366,12 @@ page_cache_readahead(struct address_space *mapping, struct file_ra_state *ra,
 			goto out;
 	}
 
-	if (ra->next_size == -1UL)
-		goto out;	/* Maximally shrunk */
-
 	max = get_max_readahead(ra);
 	if (max == 0)
 		goto out;	/* No readahead */
+
+	if (ra->next_size == -1UL)
+		goto ra_off;	/* Maximally shrunk */
 
 	orig_next_size = ra->next_size;
 
@@ -418,7 +419,7 @@ page_cache_readahead(struct address_space *mapping, struct file_ra_state *ra,
 	if ((long)ra->next_size <= 0L) {
 		ra->next_size = -1UL;
 		ra->size = 0;
-		goto out;		/* Readahead is off */
+		goto ra_off;		/* Readahead is off */
 	}
 
 	/*
@@ -470,6 +471,9 @@ do_io:
 		}
 		ra->start = offset;
 		ra->size = ra->next_size;
+		if (ra->size < nr_to_read)
+			ra->size = min(nr_to_read, (unsigned long)max);
+		ra->prev_page = offset + ra->size - 1;
 		ra->ahead_start = 0;		/* Invalidate these */
 		ra->ahead_size = 0;
 		actual = do_page_cache_readahead(mapping, filp, offset,
@@ -513,7 +517,22 @@ do_io:
 		}
 	}
 out:
-	return;
+	return ra->prev_page + 1;
+
+ra_off:
+	/* Even if we have decided to terminate readahead for this file,
+	 * a single large read request still wants to be able to
+	 * populate the page cache with a single large bio, so if
+	 * necessary, kick off one limited readahead IO burst to
+	 * complete as much of the read as we can.
+	 */
+	if (nr_to_read > 1) {
+		ra->size = min(nr_to_read, (unsigned long) max);
+		ra->prev_page = offset + ra->size - 1;
+		do_page_cache_readahead(mapping, filp, offset,
+					ra->size);
+	}
+	goto out;
 }
 
 

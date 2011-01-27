@@ -864,6 +864,7 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
 
 	if (clone_flags & CLONE_THREAD) {
 		atomic_inc(&current->signal->count);
+		atomic_inc(&current->signal->live);
 		return 0;
 	}
 	sig = kmem_cache_alloc(signal_cachep, GFP_KERNEL);
@@ -878,6 +879,7 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
 	}
 
 	atomic_set(&sig->count, 1);
+	atomic_set(&sig->live, 1);
 	sig->group_exit = 0;
 	sig->group_exit_code = 0;
 	sig->group_exit_task = NULL;
@@ -1162,6 +1164,9 @@ static task_t *copy_process(unsigned long clone_flags,
 		if (p->pid)
 			__get_cpu_var(process_counts)++;
 	}
+
+	if (!current->signal->tty && p->signal->tty)
+		p->signal->tty = NULL;
 
 	nr_threads++;
 	write_unlock_irq(&tasklist_lock);

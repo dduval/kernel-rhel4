@@ -29,7 +29,6 @@
 #include <asm/unwind.h>
 #include <asm/ptrace.h>
 
-extern void ia64_do_copy_regs(struct unw_frame_info *, void *arg);
 extern void ia64_freeze_cpu(struct unw_frame_info *, void *arg);
 extern void ia64_start_dump(struct unw_frame_info *, void *arg);
 extern int page_is_ram(unsigned long);

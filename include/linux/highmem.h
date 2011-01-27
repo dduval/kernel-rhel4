@@ -16,6 +16,28 @@ extern struct page *highmem_start_page;
 /* declarations for linux/mm/highmem.c */
 unsigned int nr_free_highpages(void);
 
+/*
+ * For the atomic kmaps which are used in IRQ context.   We only disable
+ * interrupts if the kmap will actually be taken.   Hence callers must not
+ * assume that kmap_atomic_maybe_irqsave() actually disabled interrupts!
+ */
+#define kmap_atomic_maybe_irqsave(page, idx, flags)		\
+	({						\
+		if (PageHighMem(page))			\
+			local_irq_save(flags);		\
+		kmap_atomic(page, idx);			\
+	})
+
+#define kunmap_atomic_maybe_irqrestore(addr, idx, flags)		\
+	({						\
+		struct page *page;			\
+							\
+		page = kmap_atomic_to_page(addr);	\
+		kunmap_atomic(addr, idx);		\
+		if (PageHighMem(page))			\
+			local_irq_restore(flags);	\
+	})
+
 #else /* CONFIG_HIGHMEM */
 
 static inline unsigned int nr_free_highpages(void) { return 0; }
@@ -32,6 +54,17 @@ static inline void *kmap(struct page *page)
 #define kmap_atomic_nocache_pfn(pfn, idx)	pfn_to_kaddr(pfn)
 #define kunmap_atomic(addr, idx)		do { } while (0)
 #define kmap_atomic_to_page(ptr)		virt_to_page(ptr)
+
+#define kmap_atomic_maybe_irqsave(page, idx, flags)		\
+	({						\
+		(void)(flags);				\
+		kmap_atomic(page, idx);			\
+	})
+
+#define kunmap_atomic_maybe_irqrestore(addr, idx, flags)		\
+	({						\
+		kunmap_atomic(addr, idx);		\
+	})
 
 #endif /* CONFIG_HIGHMEM */
 

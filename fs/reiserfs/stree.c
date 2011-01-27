@@ -301,7 +301,7 @@ const struct reiserfs_key  MAX_KEY = {0xffffffff, 0xffffffff, {{0xffffffff, 0xff
    of the path, and going upwards.  We must check the path's validity at each step.  If the key is not in
    the path, there is no delimiting key in the tree (buffer is first or last buffer in tree), and in this
    case we return a special key, either MIN_KEY or MAX_KEY. */
-inline	const struct  key * get_lkey  (
+inline	const struct reiserfs_key * get_lkey  (
 	                const struct path         * p_s_chk_path,
                         const struct super_block  * p_s_sb
                       ) {
@@ -340,7 +340,7 @@ inline	const struct  key * get_lkey  (
 
 
 /* Get delimiting key of the buffer at the path and its right neighbor. */
-inline	const struct  key * get_rkey  (
+inline	const struct reiserfs_key * get_rkey  (
 	                const struct path         * p_s_chk_path,
                         const struct super_block  * p_s_sb
                       ) {
