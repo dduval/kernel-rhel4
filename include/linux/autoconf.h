@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.9-prep
- * Sun Jan 23 12:53:49 2011
+ * Sun Jan 23 12:54:44 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_X86_64 1

@@ -35,6 +35,18 @@
 	movq	%rax,R8(%rsp)
 	.endm
 
+	.macro LOAD_ARGS32 offset
+	movl \offset(%rsp),%r11d
+	movl \offset+8(%rsp),%r10d
+	movl \offset+16(%rsp),%r9d
+	movl \offset+24(%rsp),%r8d
+	movl \offset+40(%rsp),%ecx
+	movl \offset+48(%rsp),%edx
+	movl \offset+56(%rsp),%esi
+	movl \offset+64(%rsp),%edi
+	movl \offset+72(%rsp),%eax
+	.endm
+	
 /*
  * 32bit SYSENTER instruction entry.
  *
@@ -107,7 +119,7 @@ sysenter_tracesys:
 	movq	$-ENOSYS,RAX(%rsp)	/* really needed? */
 	movq	%rsp,%rdi        /* &pt_regs -> arg1 */
 	call	syscall_trace_enter
-	LOAD_ARGS ARGOFFSET  /* reload args from stack in case ptrace changed it */
+	LOAD_ARGS32 ARGOFFSET  /* reload args from stack in case ptrace changed it */
 	RESTORE_REST
 	movl	%ebp, %ebp
 	/* no need to do an access_ok check here because rbp has been
@@ -188,7 +200,7 @@ cstar_tracesys:
 	movq $-ENOSYS,RAX(%rsp)	/* really needed? */
 	movq %rsp,%rdi        /* &pt_regs -> arg1 */
 	call syscall_trace_enter
-	LOAD_ARGS ARGOFFSET  /* reload args from stack in case ptrace changed it */
+	LOAD_ARGS32 ARGOFFSET  /* reload args from stack in case ptrace changed it */
 	RESTORE_REST
 	movl RSP-ARGOFFSET(%rsp), %r8d
 	/* no need to do an access_ok check here because r8 has been
@@ -252,7 +264,7 @@ ia32_tracesys:
 	movq $-ENOSYS,RAX(%rsp)	/* really needed? */
 	movq %rsp,%rdi        /* &pt_regs -> arg1 */
 	call syscall_trace_enter
-	LOAD_ARGS ARGOFFSET  /* reload args from stack in case ptrace changed it */
+	LOAD_ARGS32 ARGOFFSET  /* reload args from stack in case ptrace changed it */
 	RESTORE_REST
 	jmp ia32_do_syscall
 
