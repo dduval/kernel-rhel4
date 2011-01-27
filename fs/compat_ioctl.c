@@ -2364,17 +2364,29 @@ static int mtd_rw_oob(unsigned int fd, unsigned int cmd, unsigned long arg)
 static long
 put_dirent32 (struct dirent *d, struct compat_dirent __user *d32)
 {
-        int ret;
+	if (!access_ok(VERIFY_WRITE, d32, sizeof(struct compat_dirent[2])))
+		return -EFAULT;
 
-        if ((ret = verify_area(VERIFY_WRITE, d32,
-                               sizeof(struct compat_dirent))))
-                return ret;
+	/* short name */
+	__put_user(d->d_reclen, &d32->d_reclen);
+	__put_user(0, d32->d_name + d->d_reclen);
+	if (__copy_to_user(d32->d_name, d->d_name, d->d_reclen))
+		return -EFAULT;
 
-        __put_user(d->d_ino, &d32->d_ino);
-        __put_user(d->d_off, &d32->d_off);
-        __put_user(d->d_reclen, &d32->d_reclen);
-        __copy_to_user(d32->d_name, d->d_name, d->d_reclen);
-        return ret;
+	if (d->d_reclen == 0)	/* all done? */
+		return 0;
+	d++;
+	d32++;
+	/* long name */
+	__put_user(d->d_reclen, &d32->d_reclen);
+	__put_user(0, d32->d_name + d->d_reclen);
+	if (d->d_reclen) {
+		__put_user(d->d_ino, &d32->d_ino);
+		__put_user(d->d_off, &d32->d_off);
+		if (__copy_to_user(d32->d_name, d->d_name, d->d_reclen))
+			return -EFAULT;
+	}
+	return 0;
 }
 
 static int vfat_ioctl32(unsigned fd, unsigned cmd, unsigned long arg)
@@ -2398,8 +2410,7 @@ static int vfat_ioctl32(unsigned fd, unsigned cmd, unsigned long arg)
 	ret = sys_ioctl(fd,cmd,(unsigned long)&d);
 	set_fs(oldfs);
 	if (ret >= 0) {
-		ret |= put_dirent32(&d[0], p);
-		ret |= put_dirent32(&d[1], p + 1);
+		ret |= put_dirent32(d, p);
 	}
 	return ret;
 }

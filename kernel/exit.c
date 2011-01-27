@@ -527,10 +527,6 @@ static inline void choose_new_parent(task_t *p, task_t *reaper, task_t *child_re
 
 static inline void reparent_thread(task_t *p, task_t *father, int traced)
 {
-	/* We don't want people slaying init.  */
-	if (p->exit_signal != -1)
-		p->exit_signal = SIGCHLD;
-
 	if (p->pdeath_signal)
 		/* We already hold the tasklist_lock here.  */
 		group_send_sig_info(p->pdeath_signal, (void *) 0, p);
@@ -550,13 +546,7 @@ static inline void reparent_thread(task_t *p, task_t *father, int traced)
 		p->parent = p->real_parent;
 		list_add_tail(&p->sibling, &p->parent->children);
 
-		/* If we'd notified the old parent about this child's death,
-		 * also notify the new parent.
-		 */
-		if (p->exit_state == EXIT_ZOMBIE && p->exit_signal != -1 &&
-		    thread_group_empty(p))
-			do_notify_parent(p, p->exit_signal);
-		else if (p->state == TASK_TRACED) {
+		if (p->state == TASK_TRACED) {
 			/*
 			 * If it was at a trace stop, turn it into
 			 * a normal stop since it's no longer being
@@ -566,6 +556,23 @@ static inline void reparent_thread(task_t *p, task_t *father, int traced)
 		}
 	}
 
+        /* If this is a threaded reparent there is no need to
+         * notify anyone anything has happened.
+         */
+        if (p->real_parent->group_leader == father->group_leader)
+                return;
+
+	/* We don't want people slaying init.  */
+	if (p->exit_signal != -1)
+		p->exit_signal = SIGCHLD;
+
+	/* If we'd notified the old parent about this child's death,
+	 * also notify the new parent.
+	 */
+	if (p->exit_state == EXIT_ZOMBIE && p->exit_signal != -1 &&
+	    thread_group_empty(p))
+		do_notify_parent(p, p->exit_signal);
+	
 	/*
 	 * process group orphan check
 	 * Case ii: Our child is in a different pgrp

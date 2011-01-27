@@ -246,6 +246,7 @@ void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 	struct net_device *dev = skb->dev;
 	struct net_device_wrapper *ndw = dev_wrapper(dev);
 	struct netpoll_info *npinfo;
+	struct sk_buff *skbs;
 
 	if(!ndw || !np || !dev || !netif_running(dev)) {
 		__kfree_skb(skb);
@@ -260,9 +261,24 @@ void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 		return;
 	}
 
+	skb_queue_tail(&npinfo->tx_backlog, skb);		
+
 	do {
 		npinfo->tries--;
-		spin_lock(&dev->xmit_lock);
+
+		if (!spin_trylock(&dev->xmit_lock)) {
+			/*
+			 * If we don't get the lock lets give ourselves
+			 * a chance to wait for it.  if we're not on the same
+			 * procesor, we can wait.  If we are, then we need to 
+			 * bail out.
+			 */
+			if(dev->xmit_lock_owner != smp_processor_id())
+				spin_lock(&dev->xmit_lock);
+			else
+				return;
+		}
+
 		dev->xmit_lock_owner = smp_processor_id();
 
 		/*
@@ -277,10 +293,19 @@ void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 			continue;
 		}
 
-		if (ndw->netpoll_start_xmit)
-			status = ndw->netpoll_start_xmit(np, skb, dev);
-		else
-			status = dev->hard_start_xmit(skb, dev);
+		while ((skbs = skb_dequeue(&npinfo->tx_backlog)) != NULL) {
+			if (ndw->netpoll_start_xmit)
+				status = ndw->netpoll_start_xmit(np, skbs, dev);
+			else
+				status = dev->hard_start_xmit(skbs, dev);
+
+			if (status) {
+				/* We failed, lets try again in a bit */
+				skb_queue_head(&npinfo->tx_backlog, skbs);
+				break;
+			}
+		}
+
 		dev->xmit_lock_owner = -1;
 		spin_unlock(&dev->xmit_lock);
 
@@ -669,6 +694,7 @@ int netpoll_setup(struct netpoll *np)
 		npinfo->tries = MAX_RETRIES;
 		spin_lock_init(&npinfo->rx_lock);
 		skb_queue_head_init(&npinfo->arp_tx);
+		skb_queue_head_init(&npinfo->tx_backlog);
 	} else
 		npinfo = ndw->npinfo;
 
@@ -769,6 +795,7 @@ void netpoll_cleanup(struct netpoll *np)
 {
 	struct net_device_wrapper *ndw;
 	struct netpoll_info *npinfo;
+	struct sk_buff *skb;
 	unsigned long flags;
 
 	if (np->dev && (ndw = dev_wrapper(np->dev))) {
@@ -778,6 +805,8 @@ void netpoll_cleanup(struct netpoll *np)
 			npinfo->rx_np = NULL;
 			npinfo->rx_flags &= ~NETPOLL_RX_ENABLED;
 			spin_unlock_irqrestore(&npinfo->rx_lock, flags);
+			while ((skb = skb_dequeue(&npinfo->tx_backlog)) != NULL)
+				kfree_skb(skb);
 		}
 		dev_put(np->dev);
 	}

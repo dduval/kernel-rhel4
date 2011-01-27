@@ -51,6 +51,7 @@ static inline void leave_mm (unsigned long cpu)
 	if (read_pda(mmu_state) == TLBSTATE_OK)
 		BUG();
 	clear_bit(cpu, &read_pda(active_mm)->cpu_vm_mask);
+	*read_pda(level4_pgt) = 0;
 	__flush_tlb();
 }
 

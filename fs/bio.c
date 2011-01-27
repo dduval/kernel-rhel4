@@ -532,7 +532,7 @@ static struct bio *__bio_map_user(request_queue_t *q, struct block_device *bdev,
 		return ERR_PTR(-ENOMEM);
 
 	ret = -ENOMEM;
-	pages = kmalloc(nr_pages * sizeof(struct page *), GFP_KERNEL);
+	pages = kcalloc(nr_pages, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		goto out;
 
@@ -541,8 +541,10 @@ static struct bio *__bio_map_user(request_queue_t *q, struct block_device *bdev,
 						write_to_vm, 0, pages, NULL);
 	up_read(&current->mm->mmap_sem);
 
-	if (ret < nr_pages)
-		goto out;
+	if (ret < nr_pages) {
+		ret = -EFAULT;
+		goto out_unmap;
+	}
 
 	bio->bi_bdev = bdev;
 
@@ -582,6 +584,13 @@ static struct bio *__bio_map_user(request_queue_t *q, struct block_device *bdev,
 
 	bio->bi_flags |= (1 << BIO_USER_MAPPED);
 	return bio;
+
+out_unmap:
+	for (i = 0; i < nr_pages; i++) {
+		if(!pages[i])
+			break;
+		page_cache_release(pages[i]);
+	}
 out:
 	kfree(pages);
 	bio_put(bio);

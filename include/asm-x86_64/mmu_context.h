@@ -56,6 +56,7 @@ static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 			/* We were in lazy tlb mode and leave_mm disabled 
 			 * tlb flush IPI delivery. We must flush our tlb.
 			 */
+			*read_pda(level4_pgt) = __pa(next->pgd) | _PAGE_TABLE;
 			local_flush_tlb();
 			load_LDT_nolock(&next->context, cpu);
 		}

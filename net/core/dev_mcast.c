@@ -94,7 +94,9 @@ static void __dev_mc_upload(struct net_device *dev)
 void dev_mc_upload(struct net_device *dev)
 {
 	spin_lock_bh(&dev->xmit_lock);
+	dev->xmit_lock_owner = smp_processor_id();
 	__dev_mc_upload(dev);
+	dev->xmit_lock_owner = -1;
 	spin_unlock_bh(&dev->xmit_lock);
 }
 
@@ -108,6 +110,7 @@ int dev_mc_delete(struct net_device *dev, void *addr, int alen, int glbl)
 	struct dev_mc_list *dmi, **dmip;
 
 	spin_lock_bh(&dev->xmit_lock);
+	dev->xmit_lock_owner = smp_processor_id();
 
 	for (dmip = &dev->mc_list; (dmi = *dmip) != NULL; dmip = &dmi->next) {
 		/*
@@ -138,13 +141,14 @@ int dev_mc_delete(struct net_device *dev, void *addr, int alen, int glbl)
 			 *	loaded filter is now wrong. Fix it
 			 */
 			__dev_mc_upload(dev);
-			
+			dev->xmit_lock_owner = -1;	
 			spin_unlock_bh(&dev->xmit_lock);
 			return 0;
 		}
 	}
 	err = -ENOENT;
 done:
+	dev->xmit_lock_owner = -1;
 	spin_unlock_bh(&dev->xmit_lock);
 	return err;
 }
@@ -161,6 +165,8 @@ int dev_mc_add(struct net_device *dev, void *addr, int alen, int glbl)
 	dmi1 = (struct dev_mc_list *)kmalloc(sizeof(*dmi), GFP_ATOMIC);
 
 	spin_lock_bh(&dev->xmit_lock);
+	dev->xmit_lock_owner = smp_processor_id();
+
 	for (dmi = dev->mc_list; dmi != NULL; dmi = dmi->next) {
 		if (memcmp(dmi->dmi_addr, addr, dmi->dmi_addrlen) == 0 &&
 		    dmi->dmi_addrlen == alen) {
@@ -176,6 +182,7 @@ int dev_mc_add(struct net_device *dev, void *addr, int alen, int glbl)
 	}
 
 	if ((dmi = dmi1) == NULL) {
+		dev->xmit_lock_owner = -1;
 		spin_unlock_bh(&dev->xmit_lock);
 		return -ENOMEM;
 	}
@@ -188,11 +195,12 @@ int dev_mc_add(struct net_device *dev, void *addr, int alen, int glbl)
 	dev->mc_count++;
 
 	__dev_mc_upload(dev);
-	
+	dev->xmit_lock_owner = -1;	
 	spin_unlock_bh(&dev->xmit_lock);
 	return 0;
 
 done:
+	dev->xmit_lock_owner = -1;
 	spin_unlock_bh(&dev->xmit_lock);
 	if (dmi1)
 		kfree(dmi1);
@@ -206,6 +214,7 @@ done:
 void dev_mc_discard(struct net_device *dev)
 {
 	spin_lock_bh(&dev->xmit_lock);
+	dev->xmit_lock_owner = smp_processor_id();
 	
 	while (dev->mc_list != NULL) {
 		struct dev_mc_list *tmp = dev->mc_list;
@@ -216,6 +225,7 @@ void dev_mc_discard(struct net_device *dev)
 	}
 	dev->mc_count = 0;
 
+	dev->xmit_lock_owner = -1;
 	spin_unlock_bh(&dev->xmit_lock);
 }
 
@@ -252,6 +262,8 @@ static int dev_mc_seq_show(struct seq_file *seq, void *v)
 	struct net_device *dev = v;
 
 	spin_lock_bh(&dev->xmit_lock);
+	dev->xmit_lock_owner = smp_processor_id();
+
 	for (m = dev->mc_list; m; m = m->next) {
 		int i;
 
@@ -263,6 +275,7 @@ static int dev_mc_seq_show(struct seq_file *seq, void *v)
 
 		seq_putc(seq, '\n');
 	}
+	dev->xmit_lock_owner = -1;
 	spin_unlock_bh(&dev->xmit_lock);
 	return 0;
 }

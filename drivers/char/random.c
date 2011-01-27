@@ -1317,8 +1317,13 @@ static inline void xfer_secondary_pool(struct entropy_store *r,
 {
 	if (r->entropy_count < nbytes * 8 &&
 	    r->entropy_count < r->poolinfo.POOLBITS) {
-		int bytes = max_t(int, random_read_wakeup_thresh / 8,
-				min_t(int, nbytes, TMP_BUF_SIZE));
+		/* If we're limited, always leave two wakeup worth's BITS */
+		int bytes = nbytes;
+	
+		/* pull at least as many as BYTES as wakeup BITS */
+		bytes = max_t(int, bytes, random_read_wakeup_thresh / 8);
+		/* but never more than the buffer size */
+		bytes = min_t(int, bytes, sizeof(tmp));
 
 		DEBUG_ENT("%04d %04d : going to reseed %s with %d bits "
 			  "(%d of %d requested)\n",

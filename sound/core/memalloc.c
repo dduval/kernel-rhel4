@@ -28,6 +28,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/seq_file.h>
 #include <linux/dma-mapping.h>
 #include <linux/moduleparam.h>
 #include <asm/semaphore.h>
@@ -594,34 +595,45 @@ static void __init preallocate_cards(void)
 /*
  * proc file interface
  */
-static int snd_mem_proc_read(char *page, char **start, off_t off,
-			     int count, int *eof, void *data)
+#define SND_MEM_PROC_FILE       "driver/snd-page-alloc"
+static struct proc_dir_entry *snd_mem_proc;
+
+static int snd_mem_proc_read(struct seq_file *seq, void *offset)
 {
-	int len = 0;
 	long pages = snd_allocated_pages >> (PAGE_SHIFT-12);
-	struct list_head *p;
 	struct snd_mem_list *mem;
 	int devno;
 	static char *types[] = { "UNKNOWN", "CONT", "DEV", "DEV-SG", "SBUS" };
 
 	down(&list_mutex);
-	len += snprintf(page + len, count - len,
-			"pages  : %li bytes (%li pages per %likB)\n",
+        seq_printf(seq, "pages  : %li bytes (%li pages per %likB)\n",
 			pages * PAGE_SIZE, pages, PAGE_SIZE / 1024);
 	devno = 0;
-	list_for_each(p, &mem_list_head) {
-		mem = list_entry(p, struct snd_mem_list, list);
+        list_for_each_entry(mem, &mem_list_head, list) {
 		devno++;
-		len += snprintf(page + len, count - len,
-				"buffer %d : ID %08x : type %s\n",
+                seq_printf(seq, "buffer %d : ID %08x : type %s\n",
 				devno, mem->id, types[mem->buffer.dev.type]);
-		len += snprintf(page + len, count - len,
-				"  addr = 0x%lx, size = %d bytes\n",
-				(unsigned long)mem->buffer.addr, (int)mem->buffer.bytes);
+                seq_printf(seq, "  addr = 0x%lx, size = %d bytes\n",
+                           (unsigned long)mem->buffer.addr,
+                           (int)mem->buffer.bytes);
 	}
 	up(&list_mutex);
-	return len;
+        return 0;
 }
+
+static int snd_mem_proc_open(struct inode *inode, struct file *file)
+{
+        return single_open(file, snd_mem_proc_read, NULL);
+}
+
+static const struct file_operations snd_mem_proc_fops = {
+        .owner          = THIS_MODULE,
+        .open           = snd_mem_proc_open,
+        .read           = seq_read,
+        .llseek         = seq_lseek,
+        .release        = single_release,
+};
+
 #endif /* CONFIG_PROC_FS */
 
 /*
@@ -631,7 +643,9 @@ static int snd_mem_proc_read(char *page, char **start, off_t off,
 static int __init snd_mem_init(void)
 {
 #ifdef CONFIG_PROC_FS
-	create_proc_read_entry("driver/snd-page-alloc", 0, NULL, snd_mem_proc_read, NULL);
+	snd_mem_proc = create_proc_entry(SND_MEM_PROC_FILE, 0644, NULL);
+	if (snd_mem_proc)
+		snd_mem_proc->proc_fops = &snd_mem_proc_fops;
 #endif
 	preallocate_cards();
 	return 0;

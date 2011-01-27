@@ -237,6 +237,8 @@ dma_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle,
 			if (high) {
 				if (!(gfp & GFP_DMA)) { 
 					gfp |= GFP_DMA; 
+					free_pages((unsigned long)memory,
+						   get_order(size));
 					goto again;
 				}
 				goto free;
