@@ -214,19 +214,37 @@ static inline int has_pending_signals(sigset_t *signal, sigset_t *blocked)
 
 #define PENDING(p,b) has_pending_signals(&(p)->signal, (b))
 
-fastcall void recalc_sigpending_tsk(struct task_struct *t)
+static int recalc_sigpending_tsk(struct task_struct *t)
 {
 	if (t->signal->group_stop_count > 0 ||
 	    PENDING(&t->pending, &t->blocked) ||
-	    PENDING(&t->signal->shared_pending, &t->blocked))
+	    PENDING(&t->signal->shared_pending, &t->blocked)) {
 		set_tsk_thread_flag(t, TIF_SIGPENDING);
-	else
-		clear_tsk_thread_flag(t, TIF_SIGPENDING);
+		return 1;
+	}
+	/*
+	 * We must never clear the flag in another thread, or in current
+	 * when it's possible the current syscall is returning -ERESTART*.
+	 * So we don't clear it here, and only callers who know they should do.
+	 */
+	return 0;
+}
+
+/*
+ * After recalculating TIF_SIGPENDING, we need to make sure the task wakes up.
+ * This is superfluous when called on current, the wakeup is a harmless no-op.
+ */
+void recalc_sigpending_and_wake(struct task_struct *t)
+{
+	if (recalc_sigpending_tsk(t))
+		signal_wake_up(t, 0);
 }
 
 void recalc_sigpending(void)
 {
-	recalc_sigpending_tsk(current);
+	if (!recalc_sigpending_tsk(current))
+		clear_thread_flag(TIF_SIGPENDING);
+
 }
 
 /* Given the mask, find the first available signal that should be serviced. */
@@ -885,7 +903,7 @@ force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 	if (sigismember(&t->blocked, sig) || t->sighand->action[sig-1].sa.sa_handler == SIG_IGN) {
 		t->sighand->action[sig-1].sa.sa_handler = SIG_DFL;
 		sigdelset(&t->blocked, sig);
-		recalc_sigpending_tsk(t);
+		recalc_sigpending_and_wake(t);
 	}
 	ret = specific_send_sig_info(sig, info, t);
 	spin_unlock_irqrestore(&t->sighand->siglock, flags);
@@ -902,7 +920,7 @@ force_sig_specific(int sig, struct task_struct *t)
 	if (t->sighand->action[sig-1].sa.sa_handler == SIG_IGN)
 		t->sighand->action[sig-1].sa.sa_handler = SIG_DFL;
 	sigdelset(&t->blocked, sig);
-	recalc_sigpending_tsk(t);
+	recalc_sigpending_and_wake(t);
 	specific_send_sig_info(sig, (void *)2, t);
 	spin_unlock_irqrestore(&t->sighand->siglock, flags);
 }
@@ -1688,8 +1706,9 @@ static void ptrace_stop(int exit_code, int nostop_code, siginfo_t *info)
 	/*
 	 * Queued signals ignored us while we were stopped for tracing.
 	 * So check for any that we should take before resuming user mode.
+	 * This sets TIF_SIGPENDING, but never clears it.
 	 */
-	recalc_sigpending();
+	recalc_sigpending_tsk(current);
 }
 
 void ptrace_notify(int exit_code)
@@ -2488,7 +2507,7 @@ do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
 			rm_from_queue(sigmask(sig), &t->signal->shared_pending);
 			do {
 				rm_from_queue(sigmask(sig), &t->pending);
-				recalc_sigpending_tsk(t);
+				recalc_sigpending_and_wake(t);
 				t = next_thread(t);
 			} while (t != current);
 			spin_unlock_irq(&current->sighand->siglock);

@@ -59,6 +59,10 @@ fill_mp_bus_to_cpumask(void)
 		}
 	}
 
+	for (i = 0; i < 256; i++)
+		if (cpus_empty(pci_bus_to_cpumask[i])) 
+			pci_bus_to_cpumask[i] = CPU_MASK_ALL;
+
 	return 0;
 }
 
