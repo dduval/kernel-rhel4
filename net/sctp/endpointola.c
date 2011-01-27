@@ -148,6 +148,7 @@ struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 		sp->autoclose * HZ;
 
 	/* Use SCTP specific send buffer space queues.  */
+	ep->sndbuf_policy = sctp_sndbuf_policy;
 	sk->sk_write_space = sctp_write_space;
 	sk->sk_use_write_queue = 1;
 

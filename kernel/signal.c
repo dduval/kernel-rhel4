@@ -577,15 +577,15 @@ void signal_wake_up(struct task_struct *t, int resume)
 	set_tsk_thread_flag(t, TIF_SIGPENDING);
 
 	/*
-	 * If resume is set, we want to wake it up in the TASK_STOPPED case.
-	 * We don't check for TASK_STOPPED because there is a race with it
+	 * For SIGKILL, we want to wake it up in the stopped/traced case.
+	 * We don't check t->state here because there is a race with it
 	 * executing another processor and just now entering stopped state.
-	 * By calling wake_up_process any time resume is set, we ensure
-	 * the process will wake up and handle its stop or death signal.
+	 * By using wake_up_state, we ensure the process will wake up and
+	 * handle its death signal.
 	 */
 	mask = TASK_INTERRUPTIBLE;
 	if (resume)
-		mask |= TASK_STOPPED;
+		mask |= TASK_STOPPED | TASK_TRACED;
 	if (!wake_up_state(t, mask))
 		kick_process(t);
 }
@@ -911,12 +911,12 @@ __group_complete_signal(int sig, struct task_struct *p)
 	struct task_struct *t;
 
 	/*
-	 * Don't bother zombies and stopped tasks (but
-	 * SIGKILL will punch through stopped state)
+	 * Don't bother traced and stopped tasks (but
+	 * SIGKILL will punch through that).
 	 */
-	mask = TASK_DEAD | TASK_ZOMBIE | TASK_TRACED;
-	if (sig != SIGKILL)
-		mask |= TASK_STOPPED;
+	mask = TASK_STOPPED | TASK_TRACED;
+	if (sig == SIGKILL)
+		mask = 0;
 
 	/*
 	 * Now find a thread we can wake up to take the signal off the queue.
@@ -1070,7 +1070,7 @@ void zap_other_threads(struct task_struct *p)
 		/*
 		 * Don't bother with already dead threads
 		 */
-		if (t->state & (TASK_ZOMBIE|TASK_DEAD))
+		if (t->exit_state & (EXIT_ZOMBIE|EXIT_DEAD))
 			continue;
 
 		/*
@@ -1585,11 +1585,12 @@ do_notify_parent_cldstop(struct task_struct *tsk, struct task_struct *parent,
  * We always set current->last_siginfo while stopped here.
  * That makes it a way to test a stopped process for
  * being ptrace-stopped vs being job-control-stopped.
+ *
+ * If we actually decide not to stop at all because the tracer is gone,
+ * we leave nostop_code in current->exit_code.
  */
-static void ptrace_stop(int exit_code, siginfo_t *info)
+static void ptrace_stop(int exit_code, int nostop_code, siginfo_t *info)
 {
-	BUG_ON(!(current->ptrace & PT_PTRACED));
-
 	/*
 	 * If there is a group stop in progress,
 	 * we must participate in the bookkeeping.
@@ -1604,9 +1605,24 @@ static void ptrace_stop(int exit_code, siginfo_t *info)
 	set_current_state(TASK_TRACED);
 	spin_unlock_irq(&current->sighand->siglock);
 	read_lock(&tasklist_lock);
-	do_notify_parent_cldstop(current, current->parent, CLD_TRAPPED);
-	read_unlock(&tasklist_lock);
-	schedule();
+	if (likely(current->ptrace & PT_PTRACED) &&
+	    likely(current->parent != current->real_parent ||
+		   !(current->ptrace & PT_ATTACHED)) &&
+	    (likely(current->parent->signal != current->signal) ||
+	     !unlikely(current->signal->group_exit))) {
+		do_notify_parent_cldstop(current, current->parent,
+					 CLD_TRAPPED);
+		read_unlock(&tasklist_lock);
+		schedule();
+	} else {
+		/*
+		 * By the time we got the lock, our tracer went away.
+		 * Don't stop here.
+		 */
+		read_unlock(&tasklist_lock);
+		set_current_state(TASK_RUNNING);
+		current->exit_code = nostop_code;
+	}
 
 	/*
 	 * We are back.  Now reacquire the siglock before touching
@@ -1637,7 +1653,7 @@ void ptrace_notify(int exit_code)
 
 	/* Let the debugger run.  */
 	spin_lock_irq(&current->sighand->siglock);
-	ptrace_stop(exit_code, &info);
+	ptrace_stop(exit_code, 0, &info);
 	spin_unlock_irq(&current->sighand->siglock);
 }
 
@@ -1850,7 +1866,7 @@ relock:
 			ptrace_signal_deliver(regs, cookie);
 
 			/* Let the debugger run.  */
-			ptrace_stop(signr, info);
+			ptrace_stop(signr, signr, info);
 
 			/* We're back.  Did the debugger cancel the sig?  */
 			signr = current->exit_code;

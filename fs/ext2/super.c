@@ -122,6 +122,9 @@ static void ext2_put_super (struct super_block * sb)
 			brelse (sbi->s_group_desc[i]);
 	kfree(sbi->s_group_desc);
 	kfree(sbi->s_debts);
+	percpu_counter_destroy(&sbi->s_freeblocks_counter);
+	percpu_counter_destroy(&sbi->s_freeinodes_counter);
+	percpu_counter_destroy(&sbi->s_dirs_counter);
 	brelse (sbi->s_sbh);
 	sb->s_fs_info = NULL;
 	kfree(sbi);
@@ -508,12 +511,18 @@ static int ext2_check_descriptors (struct super_block * sb)
 static loff_t ext2_max_size(int bits)
 {
 	loff_t res = EXT2_NDIR_BLOCKS;
+	/* This constant is calculated to be the largest file size for a
+	 * dense, 4k-blocksize file such that the total number of
+	 * sectors in the file, including data and all indirect blocks,
+	 * does not exceed 2^32. */
+	const loff_t upper_limit = 0x1ff7fffd000LL;
+
 	res += 1LL << (bits-2);
 	res += 1LL << (2*(bits-2));
 	res += 1LL << (3*(bits-2));
 	res <<= bits;
-	if (res > (512LL << 32) - (1 << bits))
-		res = (512LL << 32) - (1 << bits);
+	if (res > upper_limit)
+		res = upper_limit;
 	return res;
 }
 

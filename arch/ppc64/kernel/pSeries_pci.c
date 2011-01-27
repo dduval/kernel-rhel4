@@ -104,7 +104,7 @@ static int rtas_pci_read_config(struct pci_bus *bus,
 	return PCIBIOS_DEVICE_NOT_FOUND;
 }
 
-static int rtas_write_config(struct device_node *dn, int where, int size, u32 val)
+int rtas_write_config(struct device_node *dn, int where, int size, u32 val)
 {
 	unsigned long buid, addr;
 	int ret;
@@ -127,6 +127,7 @@ static int rtas_write_config(struct device_node *dn, int where, int size, u32 va
 
 	return PCIBIOS_SUCCESSFUL;
 }
+EXPORT_SYMBOL(rtas_write_config);
 
 static int rtas_pci_write_config(struct pci_bus *bus,
 				 unsigned int devfn,

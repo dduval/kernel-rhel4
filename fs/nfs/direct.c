@@ -127,34 +127,35 @@ nfs_direct_read_seg(struct inode *inode, struct nfs_open_context *ctx,
 	const unsigned int rsize = NFS_SERVER(inode)->rsize;
 	int tot_bytes = 0;
 	int curpage = 0;
-	struct nfs_read_data	rdata = {
-		.inode		= inode,
-		.cred		= ctx->cred,
-		.args		= {
-			.fh		= NFS_FH(inode),
-			.context	= ctx,
-		},
-		.res		= {
-			.fattr		= &rdata.fattr,
-		},
-	};
+	struct nfs_read_data *rdata;
 
-	rdata.args.pgbase = user_addr & ~PAGE_MASK;
-	rdata.args.offset = file_offset;
-        do {
+	rdata = nfs_readdata_alloc();
+	if (!rdata)
+		return -ENOMEM;
+
+	memset(rdata, 0, sizeof(*rdata));
+	rdata->inode = inode;
+	rdata->cred = ctx->cred;
+	rdata->args.fh = NFS_FH(inode);
+	rdata->args.context = ctx;
+	rdata->res.fattr = &rdata->fattr;
+
+	rdata->args.pgbase = user_addr & ~PAGE_MASK;
+	rdata->args.offset = file_offset;
+	do {
 		int result;
 
-		rdata.args.count = count;
-                if (rdata.args.count > rsize)
-                        rdata.args.count = rsize;
-		rdata.args.pages = &pages[curpage];
+		rdata->args.count = count;
+		if (rdata->args.count > rsize)
+			rdata->args.count = rsize;
+		rdata->args.pages = &pages[curpage];
 
 		dprintk("NFS: direct read: c=%u o=%Ld ua=%lu, pb=%u, cp=%u\n",
-			rdata.args.count, (long long) rdata.args.offset,
-			user_addr + tot_bytes, rdata.args.pgbase, curpage);
+			rdata->args.count, (long long) rdata->args.offset,
+			user_addr + tot_bytes, rdata->args.pgbase, curpage);
 
 		lock_kernel();
-		result = NFS_PROTO(inode)->read(&rdata);
+		result = NFS_PROTO(inode)->read(rdata);
 		unlock_kernel();
 
 		if (result <= 0) {
@@ -162,23 +163,22 @@ nfs_direct_read_seg(struct inode *inode, struct nfs_open_context *ctx,
 				break;
 			if (result == -EISDIR)
 				result = -EINVAL;
+			nfs_readdata_free(rdata);
 			return result;
 		}
 
-                tot_bytes += result;
-		if (rdata.res.eof)
+		tot_bytes += result;
+		if (rdata->res.eof)
 			break;
 
-                rdata.args.offset += result;
-		rdata.args.pgbase += result;
-		curpage += rdata.args.pgbase >> PAGE_SHIFT;
-		rdata.args.pgbase &= ~PAGE_MASK;
+		rdata->args.offset += result;
+		rdata->args.pgbase += result;
+		curpage += rdata->args.pgbase >> PAGE_SHIFT;
+		rdata->args.pgbase &= ~PAGE_MASK;
 		count -= result;
 	} while (count != 0);
 
-	/* XXX: should we zero the rest of the user's buffer if we
-	 *      hit eof? */
-
+	nfs_readdata_free(rdata);
 	return tot_bytes;
 }
 
@@ -191,9 +191,8 @@ nfs_direct_read_seg(struct inode *inode, struct nfs_open_context *ctx,
  * file_offset: offset in file to begin the operation
  * nr_segs: size of iovec array
  *
- * generic_file_direct_IO has already pushed out any non-direct
- * writes so that this read will see them when we read from the
- * server.
+ * We've already pushed out any non-direct writes so that this read
+ * will see them when we read from the server.
  */
 static ssize_t
 nfs_direct_read(struct inode *inode, struct nfs_open_context *ctx,
@@ -258,22 +257,21 @@ nfs_direct_write_seg(struct inode *inode, struct nfs_open_context *ctx,
 	size_t request;
 	int curpage, need_commit, result, tot_bytes;
 	struct nfs_writeverf first_verf;
-	struct nfs_write_data	wdata = {
-		.inode		= inode,
-		.cred		= ctx->cred,
-		.args		= {
-			.fh		= NFS_FH(inode),
-			.context	= ctx,
-		},
-		.res		= {
-			.fattr		= &wdata.fattr,
-			.verf		= &wdata.verf,
-		},
-	};
+	struct nfs_write_data *wdata;
 
-	wdata.args.stable = NFS_UNSTABLE;
+	wdata = nfs_writedata_alloc();
+	if (!wdata)
+		return -ENOMEM;
+
+	wdata->inode = inode;
+	wdata->cred = ctx->cred;
+	wdata->args.fh = NFS_FH(inode);
+	wdata->args.context = ctx;
+	wdata->args.stable = NFS_UNSTABLE;
 	if (IS_SYNC(inode) || NFS_PROTO(inode)->version == 2 || count <= wsize)
-		wdata.args.stable = NFS_FILE_SYNC;
+		wdata->args.stable = NFS_FILE_SYNC;
+	wdata->res.fattr = &wdata->fattr;
+	wdata->res.verf = &wdata->verf;
 
 	nfs_begin_data_update(inode);
 retry:
@@ -281,20 +279,20 @@ retry:
 	tot_bytes = 0;
 	curpage = 0;
 	request = count;
-	wdata.args.pgbase = user_addr & ~PAGE_MASK;
-	wdata.args.offset = file_offset;
-        do {
-		wdata.args.count = request;
-                if (wdata.args.count > wsize)
-                        wdata.args.count = wsize;
-		wdata.args.pages = &pages[curpage];
+	wdata->args.pgbase = user_addr & ~PAGE_MASK;
+	wdata->args.offset = file_offset;
+	do {
+		wdata->args.count = request;
+		if (wdata->args.count > wsize)
+			wdata->args.count = wsize;
+		wdata->args.pages = &pages[curpage];
 
 		dprintk("NFS: direct write: c=%u o=%Ld ua=%lu, pb=%u, cp=%u\n",
-			wdata.args.count, (long long) wdata.args.offset,
-			user_addr + tot_bytes, wdata.args.pgbase, curpage);
+			wdata->args.count, (long long) wdata->args.offset,
+			user_addr + tot_bytes, wdata->args.pgbase, curpage);
 
 		lock_kernel();
-		result = NFS_PROTO(inode)->write(&wdata);
+		result = NFS_PROTO(inode)->write(wdata);
 		unlock_kernel();
 
 		if (result <= 0) {
@@ -304,20 +302,23 @@ retry:
 		}
 
 		if (tot_bytes == 0)
-			memcpy(&first_verf.verifier, &wdata.verf.verifier,
-								VERF_SIZE);
-		if (wdata.verf.committed != NFS_FILE_SYNC) {
+			memcpy(&first_verf.verifier, &wdata->verf.verifier,
+								sizeof(first_verf.verifier));
+		if (wdata->verf.committed != NFS_FILE_SYNC) {
 			need_commit = 1;
 			if (memcmp(&first_verf.verifier,
-					&wdata.verf.verifier, VERF_SIZE))
+					&wdata->verf.verifier, sizeof(first_verf.verifier)))
 				goto sync_retry;
 		}
 
                 tot_bytes += result;
-                wdata.args.offset += result;
-		wdata.args.pgbase += result;
-		curpage += wdata.args.pgbase >> PAGE_SHIFT;
-		wdata.args.pgbase &= ~PAGE_MASK;
+		 /* in case of a short write: stop now, let the app recover */
+		if (result < wdata->args.count)
+			break;
+		wdata->args.offset += result;
+		wdata->args.pgbase += result;
+		curpage += wdata->args.pgbase >> PAGE_SHIFT;
+		wdata->args.pgbase &= ~PAGE_MASK;
 		request -= result;
 	} while (request != 0);
 
@@ -325,27 +326,27 @@ retry:
 	 * Commit data written so far, even in the event of an error
 	 */
 	if (need_commit) {
-		wdata.args.count = tot_bytes;
-		wdata.args.offset = file_offset;
+		wdata->args.count = tot_bytes;
+		wdata->args.offset = file_offset;
 
 		lock_kernel();
-		result = NFS_PROTO(inode)->commit(&wdata);
+		result = NFS_PROTO(inode)->commit(wdata);
 		unlock_kernel();
 
 		if (result < 0 || memcmp(&first_verf.verifier,
-						&wdata.verf.verifier,
-						VERF_SIZE) != 0)
+						&wdata->verf.verifier,
+						sizeof(first_verf.verifier)) != 0)
 			goto sync_retry;
 	}
 	result = tot_bytes;
 
 out:
 	nfs_end_data_update_defer(inode);
-
+	nfs_writedata_free(wdata);
 	return result;
 
 sync_retry:
-	wdata.args.stable = NFS_FILE_SYNC;
+	wdata->args.stable = NFS_FILE_SYNC;
 	goto retry;
 }
 

@@ -48,6 +48,7 @@ obj-$(CONFIG_SND) += \
 	ac97/ \
 	ali5451/ \
 	au88x0/ \
+	azx/ \
 	cs46xx/ \
 	emu10k1/ \
 	ice1712/ \

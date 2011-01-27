@@ -105,6 +105,9 @@ nfs_file_open(struct inode *inode, struct file *filp)
 static int
 nfs_file_release(struct inode *inode, struct file *filp)
 {
+	/* Ensure that dirty pages are flushed out with the right creds */
+	if (filp->f_mode & FMODE_WRITE)
+		filemap_fdatawrite(filp->f_mapping);
 	return NFS_PROTO(inode)->file_release(inode, filp);
 }
 
@@ -359,7 +362,7 @@ static int do_setlk(struct file *filp, int cmd, struct file_lock *fl)
 	 * the process exits.
 	 */
 	if (status == -EINTR || status == -ERESTARTSYS)
-		posix_lock_file(filp, fl);
+		posix_lock_file_wait(filp, fl);
 	unlock_kernel();
 	if (status < 0)
 		return status;

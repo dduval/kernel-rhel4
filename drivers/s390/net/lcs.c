@@ -191,6 +191,7 @@ lcs_alloc_card(void)
 		return NULL;
 	memset(card, 0, sizeof(struct lcs_card));
 	card->lan_type = LCS_FRAME_TYPE_AUTO;
+	card->pkt_seq = 0;
 	card->lancmd_timeout = LCS_LANCMD_TIMEOUT_DEFAULT;
 	/* Allocate io buffers for the read channel. */
 	rc = lcs_alloc_channel(&card->read);
@@ -1874,6 +1875,7 @@ lcs_get_skb(struct lcs_card *card, char *skb_data, unsigned int skb_len)
 	skb->protocol =	card->lan_type_trans(skb, card->dev);
 	card->stats.rx_bytes += skb_len;
 	card->stats.rx_packets++;
+	*((__u32 *)skb->cb) = ++card->pkt_seq;
 	netif_rx(skb);
 }
 

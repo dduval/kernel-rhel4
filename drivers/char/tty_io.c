@@ -1530,14 +1530,10 @@ static void release_dev(struct file * filp)
 	 * each iteration we avoid any problems.
 	 */
 	while (1) {
-		/* Guard against races with tty->count changes elsewhere and
-		   opens on /dev/tty */
-		   
-		down(&tty_sem);
+		
 		tty_closing = tty->count <= 1;
 		o_tty_closing = o_tty &&
 			(o_tty->count <= (pty_master ? 1 : 0));
-		up(&tty_sem);
 		do_sleep = 0;
 
 		if (tty_closing) {
@@ -1574,7 +1570,6 @@ static void release_dev(struct file * filp)
 	 * block, so it's safe to proceed with closing.
 	 */
 	 
-	down(&tty_sem);
 	if (pty_master) {
 		if (--o_tty->count < 0) {
 			printk(KERN_WARNING "release_dev: bad pty slave count "
@@ -1588,7 +1583,6 @@ static void release_dev(struct file * filp)
 		       tty->count, tty_name(tty, buf));
 		tty->count = 0;
 	}
-	up(&tty_sem);
 	
 	/*
 	 * We've decremented tty->count, so we need to remove this file
@@ -1779,9 +1773,10 @@ retry_open:
 	}
 got_driver:
 	retval = init_dev(driver, index, &tty);
-	up(&tty_sem);
-	if (retval)
+	if (retval) {
+		up(&tty_sem);
 		return retval;
+	}
 
 	filp->private_data = tty;
 	file_move(filp, &tty->tty_files);
@@ -1798,6 +1793,8 @@ got_driver:
 		else
 			retval = -ENODEV;
 	}
+	up(&tty_sem);
+
 	filp->f_flags = saved_flags;
 
 	if (!retval && test_bit(TTY_EXCLUSIVE, &tty->flags) && !capable(CAP_SYS_ADMIN))

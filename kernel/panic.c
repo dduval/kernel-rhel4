@@ -21,7 +21,7 @@
 #include <linux/nmi.h>
 
 int panic_timeout;
-int panic_on_oops;
+int panic_on_oops = 1;
 int tainted;
 
 EXPORT_SYMBOL(panic_timeout);

@@ -991,10 +991,10 @@ void __init setup_arch(char **cmdline_p)
 	/* set up the bootmem stuff with available memory */
 	do_init_bootmem();
 
+	ppc_md.setup_arch();
+
 	/* Select the correct idle loop for the platform. */
 	idle_setup();
-
-	ppc_md.setup_arch();
 
 	paging_init();
 	ppc64_boot_msg(0x15, "Setup Done");
@@ -1106,12 +1106,18 @@ __setup("spread_lpevents=", set_spread_lpevents );
 __setup("decr_overclock_proc0=", set_decr_overclock_proc0 );
 __setup("decr_overclock=", set_decr_overclock );
 
+/* Look for xmon= cmdline option */
 #ifdef CONFIG_XMON
 static int __init early_xmon(char *p)
 {
-	/* ensure xmon is enabled */
-	xmon_init();
-	debugger(0);
+	if (strcmp(p, "early") == 0) {
+		/* ensure xmon is enabled */
+		xmon_init();
+		debugger(0);
+	}
+	else if (strcmp(p, "on") == 0) {
+		xmon_init();
+	}
 
 	return 0;
 }

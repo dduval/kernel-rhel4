@@ -29,7 +29,7 @@ extern unsigned long loops_per_jiffy;
 	{						\
 		static int warned=0; 			\
 		unsigned long __ms=(n); 		\
-		/*WARN_ON(in_irq() && !(warned++));*/	\
+		WARN_ON(in_irq() && !(warned++));	\
 		while (__ms--) udelay(1000);		\
 	})
 

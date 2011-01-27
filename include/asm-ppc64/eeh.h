@@ -20,8 +20,10 @@
 #ifndef _PPC64_EEH_H
 #define _PPC64_EEH_H
 
-#include <linux/string.h>
 #include <linux/init.h>
+#include <linux/list.h>
+#include <linux/notifier.h>
+#include <linux/string.h>
 
 struct pci_dev;
 struct device_node;
@@ -29,6 +31,11 @@ struct device_node;
 /* Values for eeh_mode bits in device_node */
 #define EEH_MODE_SUPPORTED	(1<<0)
 #define EEH_MODE_NOCHECK	(1<<1)
+#define EEH_MODE_ISOLATED	(1<<2)
+
+/* Max number of EEH freezes allowed before we consider the device
+ * to be permanently disabled. */
+#define EEH_MAX_ALLOWED_FREEZES 5
 
 #ifdef CONFIG_PPC_PSERIES
 extern void __init eeh_init(void);
@@ -54,6 +61,34 @@ void eeh_add_device_early(struct device_node *);
 void eeh_add_device_late(struct pci_dev *);
 
 /**
+ * eeh_slot_error_detail -- record and EEH error condition to the log
+ * @severity: 1 if temporary, 2 if permanent failure.
+ *
+ * Obtains the the EEH error details from the RTAS subsystem, 
+ * and then logs these details with the RTAS error log system.
+ */
+void eeh_slot_error_detail (struct device_node *dn, int severity);
+
+/** 
+ * rtas_set_slot_reset -- unfreeze a frozen slot
+ *
+ * Clear the EEH-frozen condition on a slot.  This routine
+ * does this by asserting the slot-reset line for 1/10th of 
+ * a second; this routine will sleep while the adapter is 
+ * being reset.
+ */
+void rtas_set_slot_reset (struct device_node *dn);
+
+/**
+ * rtas_configure_bridge -- firmware initialization of pci bridge
+ * 
+ * Ask the firmware to configure any PCI bridge devices 
+ * located behind the indicated node. Required after a 
+ * pci device reset.
+ */
+void rtas_configure_bridge(struct device_node *dn);
+
+/**
  * eeh_remove_device - undo EEH setup for the indicated pci device
  * @dev: pci device to be removed
  *
@@ -68,7 +103,42 @@ void eeh_remove_device(struct pci_dev *);
 #define EEH_RELEASE_DMA		3
 int eeh_set_option(struct pci_dev *dev, int options);
 
-/*
+
+/**
+ * Notifier event flags.
+ */
+#define EEH_NOTIFY_FREEZE  1
+
+/** EEH event -- structure holding pci slot data that describes
+ *  a change in the isolation status of a PCI slot.  A pointer
+ *  to this struct is passed as the data pointer in a notify callback.
+ */
+struct eeh_event {
+	struct list_head     list;
+	struct pci_dev       *dev;
+	struct device_node   *dn;
+	int                  reset_state;
+};
+
+/** Register to find out about EEH events. */
+int eeh_register_notifier(struct notifier_block *nb);
+int eeh_unregister_notifier(struct notifier_block *nb);
+
+/** Save and restore device configuration info across
+ *  device resets
+ */
+struct eeh_cfg_tree;
+struct eeh_cfg_tree * eeh_save_bars(struct device_node *dn);
+void eeh_restore_bars(struct eeh_cfg_tree *tree);
+
+/** Save and restore device configuration info across
+ *  device resets
+ */
+struct eeh_cfg_tree;
+struct eeh_cfg_tree * eeh_save_bars(struct device_node *dn);
+void eeh_restore_bars(struct eeh_cfg_tree *tree);
+
+/**
  * EEH_POSSIBLE_ERROR() -- test for possible MMIO failure.
  *
  * If this macro yields TRUE, the caller relays to eeh_check_failure()

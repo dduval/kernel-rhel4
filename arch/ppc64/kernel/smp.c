@@ -80,8 +80,6 @@ extern unsigned char stab_array[];
 
 extern int cpu_idle(void *unused);
 void smp_call_function_interrupt(void);
-extern long register_vpa(unsigned long flags, unsigned long proc,
-			 unsigned long vpa);
 
 int smt_enabled_at_boot = 1;
 
@@ -458,15 +456,6 @@ static void __init smp_space_timers(unsigned int max_cpus)
 }
 
 #ifdef CONFIG_PPC_PSERIES
-static void vpa_init(int cpu)
-{
-	unsigned long flags, pcpu = get_hard_smp_processor_id(cpu);
-
-	/* Register the Virtual Processor Area (VPA) */
-	flags = 1UL << (63 - 18);
-	register_vpa(flags, pcpu, __pa((unsigned long)&(paca[cpu].lppaca)));
-}
-
 static inline void smp_xics_do_message(int cpu, int msg)
 {
 	set_bit(msg, &xics_ipi_message[cpu].value);
@@ -649,6 +638,7 @@ void smp_send_stop(void)
  * Stolen from the i386 version.
  */
 static spinlock_t call_lock __cacheline_aligned_in_smp = SPIN_LOCK_UNLOCKED;
+static spinlock_t dump_call_lock __cacheline_aligned_in_smp = SPIN_LOCK_UNLOCKED;
 
 static struct call_data_struct {
 	void (*func) (void *info);
@@ -657,9 +647,52 @@ static struct call_data_struct {
 	atomic_t finished;
 	int wait;
 } *call_data;
+static struct call_data_struct *saved_call_data;
 
 /* delay of at least 8 seconds on 1GHz cpu */
 #define SMP_CALL_TIMEOUT (1UL << (30 + 3))
+
+/*
+ * dump version of smp_call_function to avoid deadlock in call_lock
+ */
+void dump_smp_call_function (void (*func) (void *info), void *info)
+{
+	static struct call_data_struct dumpdata;
+	int waitcount;
+
+	spin_lock(&dump_call_lock);
+	/* if another cpu beat us, they win! */
+	if (dumpdata.func) {
+		spin_unlock(&dump_call_lock);
+		func(info);
+		/* NOTREACHED */
+	}
+
+	/* freeze call_lock or wait for on-going IPIs to settle down */
+	waitcount = 0;
+	while (!spin_trylock(&call_lock)) {
+		if (waitcount++ > 1000) {
+			/* save original for dump analysis */
+			saved_call_data = call_data;
+			break;
+		}
+		udelay(1000);
+		barrier();
+	}
+	dumpdata.func = func;
+	dumpdata.info = info;
+	dumpdata.wait = 0; /* not used */
+	atomic_set(&dumpdata.started, 0); /* not used */
+	atomic_set(&dumpdata.finished, 0); /* not used */
+
+	call_data = &dumpdata;
+	wmb();
+	smp_ops->message_pass(MSG_ALL_BUT_SELF, PPC_MSG_CALL_FUNCTION);
+	/* Don't wait */
+	spin_unlock(&dump_call_lock);
+}
+
+EXPORT_SYMBOL(dump_smp_call_function);
 
 /*
  * This function sends a 'generic call function' IPI to all other CPUs
@@ -669,10 +702,7 @@ static struct call_data_struct {
  * <func> The function to run. This must be fast and non-blocking.
  * <info> An arbitrary pointer to pass to the function.
  * <nonatomic> currently unused.
- * <wait> If 1, wait (atomically) until function has completed on other CPUs.
- *        If 0, wait for the IPI to be received by other CPUs, but do not
- *              wait for the function completion on each CPU.
- *        If -1, do not wait for other CPUs to receive IPI.
+ * <wait> If true, wait (atomically) until function has completed on other CPUs.
  * [RETURNS] 0 on success, else a negative status code. Does not return until
  * remote CPUs are nearly ready to execute <<func>> or are or have executed.
  *
@@ -682,32 +712,21 @@ static struct call_data_struct {
 int smp_call_function (void (*func) (void *info), void *info, int nonatomic,
 		       int wait)
 { 
-	static struct call_data_struct dumpdata;
-	struct call_data_struct normaldata;
-	struct call_data_struct *data;
+	struct call_data_struct data;
 	int ret = -1, cpus;
 	unsigned long timeout;
 
 	/* Can deadlock when called with interrupts disabled */
-	WARN_ON(irqs_disabled() && wait >= 0);
+	WARN_ON(irqs_disabled());
+
+	data.func = func;
+	data.info = info;
+	atomic_set(&data.started, 0);
+	data.wait = wait;
+	if (wait)
+		atomic_set(&data.finished, 0);
 
 	spin_lock(&call_lock);
-	if (wait == -1) {
-		if (dumpdata.func) {
-			ret = 0;
-			goto out;
-		}
-		data = &dumpdata;
-	} else
-		data = &normaldata;
-
-	data->func = func;
-	data->info = info;
-	atomic_set(&data->started, 0);
-	data->wait = wait > 0 ? wait : 0;
-	if (wait > 0)
-		atomic_set(&data->finished, 0);
-
 	/* Must grab online cpu count with preempt disabled, otherwise
 	 * it can change. */
 	cpus = num_online_cpus() - 1;
@@ -716,35 +735,34 @@ int smp_call_function (void (*func) (void *info), void *info, int nonatomic,
 		goto out;
 	}
 
-	call_data = data;
+	call_data = &data;
 	wmb();
 	/* Send a message to all other CPUs and wait for them to respond */
 	smp_ops->message_pass(MSG_ALL_BUT_SELF, PPC_MSG_CALL_FUNCTION);
 
 	/* Wait for response */
 	timeout = SMP_CALL_TIMEOUT;
-	while (atomic_read(&data->started) != cpus) {
+	while (atomic_read(&data.started) != cpus) {
 		HMT_low();
 		if (--timeout == 0) {
 			printk("smp_call_function on cpu %d: other cpus not "
 				"responding (%d)\n", smp_processor_id(),
-		       		atomic_read(&data->started));
-			if (wait >= 0)
-				debugger(NULL);
+				atomic_read(&data.started));
+			debugger(NULL);
 			goto out;
 		}
 	}
 
-	if (wait > 0) {
+	if (wait) {
 		timeout = SMP_CALL_TIMEOUT;
-		while (atomic_read(&data->finished) != cpus) {
+		while (atomic_read(&data.finished) != cpus) {
 			HMT_low();
 			if (--timeout == 0) {
 				printk("smp_call_function on cpu %d: other "
 				       "cpus not finishing (%d/%d)\n",
 				       smp_processor_id(),
-				       atomic_read(&data->finished),
-				       atomic_read(&data->started));
+				       atomic_read(&data.finished),
+				       atomic_read(&data.started));
 				debugger(NULL);
 				goto out;
 			}

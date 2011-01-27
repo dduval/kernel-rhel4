@@ -295,7 +295,9 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 	 * protection error (error_code & 1) == 0.
 	 */
 	if (unlikely(address >= TASK_SIZE)) {
-		if (!(error_code & 5))
+		if (!(error_code & 5) &&
+		    ((address >= VMALLOC_START && address <= VMALLOC_END) ||
+                    (address >= MODULES_VADDR && address <= MODULES_END)))
 			goto vmalloc_fault;
 		/*
 		 * Don't take the mm semaphore here. If we fixup a prefetch

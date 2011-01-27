@@ -2,9 +2,7 @@
  * AMD K8 NUMA support.
  * Discover the memory map and associated nodes.
  * 
- * Doesn't use the ACPI SRAT table because it has a questionable license.
- * Instead the northbridge registers are read directly. 
- * XXX in 2.5 we could use the generic SRAT code
+ * This version reads it directly from the K8 northbridge.
  * 
  * Copyright 2002,2003 Andi Kleen, SuSE Labs.
  */
@@ -45,9 +43,19 @@ int __init k8_scan_nodes(unsigned long start, unsigned long end)
 { 
 	unsigned long prevbase;
 	struct node nodes[MAXNODE];
-	int nodeid, i, nb; 
+	int nodeid, i, j, nb; 
 	int found = 0;
 	u32 reg;
+	u32 eax, ebx, ecx, edx;
+        int num_siblings;
+
+        /* Detect the number of siblings per core ourselves because
+         * smp_num_siblings doesn't get computed until later.
+         */
+
+	cpuid(1, &eax, &ebx, &ecx, &edx);
+	num_siblings = (ebx & 0xff0000) >> 16;
+	if(num_siblings == 0) num_siblings = 1;
 
 	nb = find_northbridge(); 
 	if (nb < 0) 
@@ -152,8 +160,10 @@ int __init k8_scan_nodes(unsigned long start, unsigned long end)
 
 	for (i = 0; i < MAXNODE; i++) { 
 		if (nodes[i].start != nodes[i].end) { 
-			/* assume 1:1 NODE:CPU */
-			cpu_to_node[i] = i; 
+			/* All siblings of a given CPU are on the same node */
+			for (j = 0; j < num_siblings; j++) {
+				cpu_to_node[(i*num_siblings)+j] = i; 
+			}
 		setup_node_bootmem(i, nodes[i].start, nodes[i].end); 
 	} 
 	}

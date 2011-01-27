@@ -56,14 +56,11 @@
 
 /* Number of siblings per CPU package */
 int smp_num_siblings = 1;
-char phys_proc_id[NR_CPUS]; /* Package ID of each logical CPU */
+/* Package ID of each logical CPU */
+u8 phys_proc_id[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
 
 /* Bitmask of currently online CPUs */
 cpumask_t cpu_online_map;
-
-/* which logical CPU number maps to which CPU (physical APIC ID) */
-volatile char x86_cpu_to_apicid[NR_CPUS];
-EXPORT_SYMBOL(x86_cpu_to_apicid);
 
 static cpumask_t cpu_callin_map;
 cpumask_t cpu_callout_map;
@@ -311,8 +308,6 @@ void __init smp_callin(void)
 	Dprintk("CALLIN, before setup_local_APIC().\n");
 	setup_local_APIC();
 
-	local_irq_enable();
-
 	/*
 	 * Get our bogomips.
 	 */
@@ -325,8 +320,6 @@ void __init smp_callin(void)
 	 * Save our processor parameters
 	 */
  	smp_store_cpu_info(cpuid);
-
-	local_irq_disable();
 
 	/*
 	 * Allow the master to continue.
@@ -658,6 +651,8 @@ static void __init do_boot_cpu (int apicid)
 		cpu_clear(cpu, cpu_callout_map); /* was set here (do_boot_cpu()) */
 		clear_bit(cpu, &cpu_initialized); /* was set by cpu_init() */
 		cpucount--;
+		x86_cpu_to_apicid[cpu] = BAD_APICID;
+		x86_cpu_to_log_apicid[cpu] = BAD_APICID;
 	}
 }
 

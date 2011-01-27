@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_ct.c 1.143 2004/11/17 14:50:38EST sf_support Exp  $
+ * $Id: lpfc_ct.c 1.148 2005/02/23 10:40:33EST sf_support Exp  $
  *
  * Fibre Channel SCSI LAN Device Driver CT support
  */
@@ -43,7 +43,7 @@
 #include "lpfc_version.h"
 
 
-#define HBA_PORTSPEED_UNKNOWN               0	/* Unknown - transceiver 
+#define HBA_PORTSPEED_UNKNOWN               0	/* Unknown - transceiver
 						 * incapable of reporting */
 #define HBA_PORTSPEED_1GBIT                 1	/* 1 GBit/sec */
 #define HBA_PORTSPEED_2GBIT                 2	/* 2 GBit/sec */
@@ -68,30 +68,32 @@ lpfc_ct_unsol_event(struct lpfc_hba * phba,
 	struct lpfc_iocbq *next_piocbq;
 	struct lpfc_dmabuf *pmbuf = NULL;
 	struct lpfc_dmabuf *matp, *next_matp;
-	uint32_t ctx = 0, count = 0;
+	uint32_t ctx = 0, size = 0, cnt = 0;
 	IOCB_t *icmd = &piocbq->iocb;
+	IOCB_t *save_icmd = icmd;
 	int i, status, go_exit = 0;
 	struct list_head head;
 
-	if (icmd->ulpStatus)
+	if ((icmd->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		((icmd->un.ulpWord[4] & 0xff) == IOERR_RCV_BUFFER_WAITING)) {
+		/* Not enough posted buffers; Try posting more buffers */
+		phba->fc_stat.NoRcvBuf++;
+		lpfc_post_buffer(phba, pring, 0, 1);
+		return;
+	}
+
+	/* If there are no BDEs associated with this IOCB,
+	 * there is nothing to do.
+	 */
+	if (icmd->ulpBdeCount == 0)
 		return;
 
+	INIT_LIST_HEAD(&head);
 	list_add_tail(&head, &piocbq->list);
 	list_for_each_entry_safe(piocbq, next_piocbq, &head, list) {
 		icmd = &piocbq->iocb;
 		if (ctx == 0)
 			ctx = (uint32_t) (icmd->ulpContext);
-		if (icmd->ulpStatus) {
-			if ((icmd->ulpStatus == IOSTAT_LOCAL_REJECT) &&
-				((icmd->un.ulpWord[4] & 0xff)
-				 == IOERR_RCV_BUFFER_WAITING)) {
-				phba->fc_stat.NoRcvBuf++;
-				lpfc_post_buffer(phba, pring, 0, 1);
-			}
-			go_exit = 1;
-			goto ct_unsol_event_exit_piocbq;
-		}
-
 		if (icmd->ulpBdeCount == 0)
 			continue;
 
@@ -105,6 +107,7 @@ lpfc_ct_unsol_event(struct lpfc_hba * phba,
 								 addrLow));
 			if (!matp) {
 				/* Insert lpfc log message here */
+				lpfc_post_buffer(phba, pring, cnt, 1);
 				go_exit = 1;
 				goto ct_unsol_event_exit_piocbq;
 			}
@@ -116,11 +119,16 @@ lpfc_ct_unsol_event(struct lpfc_hba * phba,
 			} else
 				list_add_tail(&matp->list, &pmbuf->list);
 
-			count += icmd->un.cont64[i].tus.f.bdeSize;
+			size += icmd->un.cont64[i].tus.f.bdeSize;
+			cnt++;
 		}
 
-		lpfc_post_buffer(phba, pring, i, 1);
 		icmd->ulpBdeCount = 0;
+	}
+
+	lpfc_post_buffer(phba, pring, cnt, 1);
+	if (save_icmd->ulpStatus) {
+		go_exit = 1;
 	}
 ct_unsol_event_exit_piocbq:
 	list_del(&head);
@@ -130,9 +138,8 @@ ct_unsol_event_exit_piocbq:
 	 */
 	if (!go_exit  &&  pmbuf) {
 		status = lpfc_put_event(phba, FC_REG_CT_EVENT, ctx,
-				       (void *)pmbuf, count, 0);
+				       (void *)pmbuf, size, 0);
 		if (status)
-			/* Need to free IOCB buffer ? */
 			return;
 	}
 	if (pmbuf) {
@@ -546,15 +553,20 @@ lpfc_cmpl_ct_cmd_rsnn_nn(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 	return;
 }
 
-void
+static void
 lpfc_get_hba_sym_node_name(struct lpfc_hba * phba, uint8_t * symbp)
 {
-	uint8_t buf[16];
 	char fwrev[16];
 
 	lpfc_decode_firmware_rev(phba, fwrev, 0);
-	lpfc_get_hba_model_desc(phba, buf, NULL);
-	sprintf(symbp, "Emulex %s FV%s DV%s", buf, fwrev, lpfc_release_version);
+
+	if (phba->Port[0]) {
+		sprintf(symbp, "Emulex %s Port %s FV%s DV%s", phba->ModelName,
+			phba->Port, fwrev, lpfc_release_version);
+	} else {
+		sprintf(symbp, "Emulex %s FV%s DV%s", phba->ModelName,
+			fwrev, lpfc_release_version);
+	}
 }
 
 /*
@@ -846,7 +858,7 @@ lpfc_fdmi_cmd(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, int cmdcode)
 			/* #4 HBA attribute entry */
 			ae = (ATTRIBUTE_ENTRY *) ((uint8_t *) rh + size);
 			ae->ad.bits.AttrType = be16_to_cpu(MODEL);
-			lpfc_get_hba_model_desc(phba, ae->un.Model, NULL);
+			strcpy(ae->un.Model, phba->ModelName);
 			len = strlen(ae->un.Model);
 			len += (len & 3) ? (4 - (len & 3)) : 4;
 			ae->ad.bits.AttrLen = be16_to_cpu(FOURBYTES + len);
@@ -856,8 +868,7 @@ lpfc_fdmi_cmd(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, int cmdcode)
 			/* #5 HBA attribute entry */
 			ae = (ATTRIBUTE_ENTRY *) ((uint8_t *) rh + size);
 			ae->ad.bits.AttrType = be16_to_cpu(MODEL_DESCRIPTION);
-			lpfc_get_hba_model_desc(phba, NULL,
-				 ae->un.ModelDescription);
+			strcpy(ae->un.ModelDescription, phba->ModelDesc);
 			len = strlen(ae->un.ModelDescription);
 			len += (len & 3) ? (4 - (len & 3)) : 4;
 			ae->ad.bits.AttrLen = be16_to_cpu(FOURBYTES + len);
@@ -1105,15 +1116,31 @@ fdmi_cmd_exit:
 	return 1;
 }
 
-
 void
 lpfc_fdmi_tmo(unsigned long ptr)
 {
-	struct lpfc_hba *phba = (struct lpfc_hba*)ptr;
-	struct lpfc_nodelist *ndlp;
+	struct lpfc_hba *phba = (struct lpfc_hba *)ptr;
 	unsigned long iflag;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if (!(phba->work_hba_events & WORKER_FDMI_TMO)) {
+		phba->work_hba_events |= WORKER_FDMI_TMO;
+		if (phba->dpc_wait)
+			up(phba->dpc_wait);
+	}
+	spin_unlock_irqrestore(phba->host->host_lock,iflag);
+}
+
+void
+lpfc_fdmi_tmo_handler(struct lpfc_hba *phba)
+{
+	struct lpfc_nodelist *ndlp;
+
+	spin_lock_irq(phba->host->host_lock);
+	if (!(phba->work_hba_events & WORKER_FDMI_TMO)) {
+		spin_unlock_irq(phba->host->host_lock);
+		return;
+	}
 	ndlp = lpfc_findnode_did(phba, NLP_SEARCH_ALL, FDMI_DID);
 	if (ndlp) {
 		if (system_utsname.nodename[0] != '\0') {
@@ -1122,7 +1149,7 @@ lpfc_fdmi_tmo(unsigned long ptr)
  			mod_timer(&phba->fc_fdmitmo, jiffies + HZ * 60);
 		}
 	}
-	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	spin_unlock_irq(phba->host->host_lock);
 	return;
 }
 
@@ -1212,77 +1239,3 @@ lpfc_decode_firmware_rev(struct lpfc_hba * phba, char *fwrevision, int flag)
 	}
 	return;
 }
-
-void
-lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
-{
-	lpfc_vpd_t *vp;
-	uint32_t id;
-	char str[16];
-
-	vp = &phba->vpd;
-	pci_read_config_dword(phba->pcidev, PCI_VENDOR_ID, &id);
-
-	switch ((id >> 16) & 0xffff) {
-	case PCI_DEVICE_ID_SUPERFLY:
-		if (vp->rev.biuRev >= 1 && vp->rev.biuRev <= 3)
-			strcpy(str, "LP7000 1");
-		else
-			strcpy(str, "LP7000E 1");
-		break;
-	case PCI_DEVICE_ID_DRAGONFLY:
-		strcpy(str, "LP8000 1");
-		break;
-	case PCI_DEVICE_ID_CENTAUR:
-		if (FC_JEDEC_ID(vp->rev.biuRev) == CENTAUR_2G_JEDEC_ID)
-			strcpy(str, "LP9002 2");
-		else
-			strcpy(str, "LP9000 1");
-		break;
-	case PCI_DEVICE_ID_RFLY:
-		strcpy(str, "LP952 2");
-		break;
-	case PCI_DEVICE_ID_PEGASUS:
-		strcpy(str, "LP9802 2");
-		break;
-	case PCI_DEVICE_ID_THOR:
-		strcpy(str, "LP10000 2");
-		break;
-	case PCI_DEVICE_ID_VIPER:
-		strcpy(str, "LPX1000 10");
-		break;
-	case PCI_DEVICE_ID_PFLY:
-		strcpy(str, "LP982 2");
-		break;
-	case PCI_DEVICE_ID_TFLY:
-		strcpy(str, "LP1050 2");
-		break;
-	case PCI_DEVICE_ID_HELIOS:
-		strcpy(str, "LP11000 4");
-		break;
-	case PCI_DEVICE_ID_BMID:
-		strcpy(str, "LP1150 4");
-		break;
-	case PCI_DEVICE_ID_BSMB:
-		strcpy(str, "LP111 4");
-		break;
-	case PCI_DEVICE_ID_ZEPHYR:
-		strcpy(str, "LP11000e 4");
-		break;
-	case PCI_DEVICE_ID_ZMID:
-		strcpy(str, "LP1150e 4");
-		break;
-	case PCI_DEVICE_ID_ZSMB:
-		strcpy(str, "LP111e 4");
-		break;
-	case PCI_DEVICE_ID_LP101:
-		strcpy(str, "LP101 2");
-		break;
-	}
-	if (mdp)
-		sscanf(str, "%s", mdp);
-	if (descp)
-		sprintf(descp, "Emulex LightPulse %s Gigabit PCI Fibre "
-			"Channel Adapter", str);
-}
-

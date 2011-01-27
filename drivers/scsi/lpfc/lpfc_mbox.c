@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mbox.c 1.70 2004/11/18 17:33:04EST sf_support Exp  $
+ * $Id: lpfc_mbox.c 1.75 2005/02/02 16:30:59EST sf_support Exp  $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -42,21 +42,25 @@
 /*                mailbox command             */
 /**********************************************/
 void
-lpfc_dump_mem(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
+lpfc_dump_mem(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint16_t offset)
 {
 	MAILBOX_t *mb;
+	void *ctx;
 
 	mb = &pmb->mb;
+	ctx = pmb->context2;
+
 	/* Setup to dump VPD region */
 	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
 	mb->mbxCommand = MBX_DUMP_MEMORY;
 	mb->un.varDmp.cv = 1;
 	mb->un.varDmp.type = DMP_NV_PARAMS;
+	mb->un.varDmp.entry_index = offset;
 	mb->un.varDmp.region_id = DMP_REGION_VPD;
-	mb->un.varDmp.word_cnt = (DMP_VPD_SIZE / sizeof (uint32_t));
-
+	mb->un.varDmp.word_cnt = (DMP_RSP_SIZE / sizeof (uint32_t));
 	mb->un.varDmp.co = 0;
 	mb->un.varDmp.resp_offset = 0;
+	pmb->context2 = ctx;
 	mb->mbxOwner = OWN_HOST;
 	return;
 }
@@ -221,17 +225,17 @@ lpfc_init_link(struct lpfc_hba * phba,
 			case LINK_SPEED_1G:
 			case LINK_SPEED_2G:
 			case LINK_SPEED_4G:
-				mb->un.varInitLnk.link_flags |= 
+				mb->un.varInitLnk.link_flags |=
 							FLAGS_LINK_SPEED;
 				mb->un.varInitLnk.link_speed = linkspeed;
 			break;
 			case LINK_SPEED_AUTO:
 			default:
-				mb->un.varInitLnk.link_speed = 
+				mb->un.varInitLnk.link_speed =
 							LINK_SPEED_AUTO;
 			break;
 		}
-		
+
 	}
 	else
 		mb->un.varInitLnk.link_speed = LINK_SPEED_AUTO;
@@ -339,7 +343,7 @@ lpfc_set_slim(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint32_t addr,
 }
 
 /**********************************************/
-/*  lpfc_read_nv  Issue a READ CONFIG         */
+/*  lpfc_read_config  Issue a READ CONFIG     */
 /*                mailbox command             */
 /**********************************************/
 void
@@ -595,7 +599,7 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	 * value of pci_resource_start() as the OS value may be a cookie
 	 * for ioremap/iomap.
 	 */
-	
+
 
 	pci_read_config_dword(phba->pcidev, PCI_BASE_ADDRESS_0, &bar_low);
 	pci_read_config_dword(phba->pcidev, PCI_BASE_ADDRESS_1, &bar_high);
@@ -606,7 +610,7 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 					(SLIMOFF*sizeof(uint32_t));
 	if (bar_low & PCI_BASE_ADDRESS_MEM_TYPE_64)
 		phba->slim2p->pcb.hgpAddrHigh = bar_high;
-	else 
+	else
 		phba->slim2p->pcb.hgpAddrHigh = 0;
 	/* write HGP data to SLIM at the required longword offset */
 	memset(&hgp, 0, sizeof(HGP));

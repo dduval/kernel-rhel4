@@ -605,8 +605,8 @@ qdio_kick_outbound_q(struct qdio_q *q)
 			sprintf(dbf_text,"%4x%2x%2x",q->irq,q->q_no,
 				atomic_read(&q->busy_siga_counter));
 			QDIO_DBF_TEXT3(0,trace,dbf_text);
-			q->timing.busy_start=0;
 #endif /* CONFIG_QDIO_DEBUG */
+			q->timing.busy_start=0;
 			break;
 		case (2|QDIO_SIGA_ERROR_B_BIT_SET):
 			/* cc=2 and busy bit: */
@@ -2059,7 +2059,6 @@ tiqdio_check_chsc_availability(void)
 	/* Check for aif time delay disablement fac (bit 56). If installed,
 	 * omit svs even under lpar (good point by rick again) */
 	omit_svs = css_general_characteristics.aif_tdd;
-	sprintf(dbf_text,"omitsvs%1x", omit_svs);
 	QDIO_DBF_TEXT0(0,setup,dbf_text);
 	return 0;
 }
@@ -2088,7 +2087,10 @@ tiqdio_set_subchannel_ind(struct qdio_irq *irq_ptr, int reset_to_zero)
 		u32 kc:4;
 		u32 reserved4:21;
 		u32 isc:3;
-		u32 reserved5[2];
+		u32 word_with_d_bit;
+		/* set to 0x10000000 to enable
+		 * time delay disablement facility */
+		u32 reserved5;
 		u32 subsystem_id;
 		u32 reserved6[1004];
 		struct chsc_header response;
@@ -2126,6 +2128,14 @@ tiqdio_set_subchannel_ind(struct qdio_irq *irq_ptr, int reset_to_zero)
 	scssc_area->kc = QDIO_STORAGE_KEY;
 	scssc_area->isc = TIQDIO_THININT_ISC;
 	scssc_area->subsystem_id = (1<<16) + irq_ptr->irq;
+	/* enables the time delay disablement facility. Don't care
+	 * whether it is really there (i.e. we haven't checked for
+	 * it) */
+	if (css_general_characteristics.aif_tdd)
+		scssc_area->word_with_d_bit = 0x10000000;
+	else
+		QDIO_PRINT_WARN("Time delay disablement facility " \
+				"not available\n");
 
 	result = chsc(scssc_area);
 	if (result) {

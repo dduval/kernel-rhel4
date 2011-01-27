@@ -40,7 +40,7 @@
 #ifdef	CONFIG_X86_64
 
 static inline void  acpi_madt_oem_check(char *oem_id, char *oem_table_id) { }
-static inline void clustered_apic_check(void) { }
+extern void __init clustered_apic_check(void);
 static inline int ioapic_setup_disabled(void) { return 0; }
 #include <asm/proto.h>
 
@@ -67,6 +67,7 @@ int acpi_noirq __initdata = 1;
 int acpi_pci_disabled __initdata = 1;
 #endif
 int acpi_ht __initdata = 1;	/* enable HT */
+int acpi_numa __initdata = -1;
 
 int acpi_lapic;
 int acpi_ioapic;
@@ -756,18 +757,20 @@ acpi_process_madt(void)
 		error = acpi_parse_madt_lapic_entries();
 		if (!error) {
 			acpi_lapic = 1;
+			clustered_apic_check();
 
 			/*
 			 * Parse MADT IO-APIC entries
 			 */
-			error = acpi_parse_madt_ioapic_entries();
-			if (!error) {
-				acpi_irq_model = ACPI_IRQ_MODEL_IOAPIC;
-				acpi_irq_balance_set(NULL);
-				acpi_ioapic = 1;
+			if (!acpi_disabled) {
+				error = acpi_parse_madt_ioapic_entries();
+				if (!error) {
+					acpi_irq_model = ACPI_IRQ_MODEL_IOAPIC;
+					acpi_irq_balance_set(NULL);
+					acpi_ioapic = 1;
 
-				smp_found_config = 1;
-				clustered_apic_check();
+					smp_found_config = 1;
+				}
 			}
 		}
 		if (error == -EINVAL) {
@@ -783,13 +786,16 @@ acpi_process_madt(void)
 }
 
 /*
- * acpi_boot_init()
+ * acpi_boot_table_init() and acpi_boot_init()
  *  called from setup_arch(), always.
  *	1. checksums all tables
  *	2. enumerates lapics
  *	3. enumerates io-apics
  *
- * side effects:
+ * acpi_table_init() is separate to allow reading SRAT without
+ * other side effects.
+ *
+ * side effects of acpi_boot_init:
  *	acpi_lapic = 1 if LAPIC found
  *	acpi_ioapic = 1 if IOAPIC found
  *	if (acpi_lapic && acpi_ioapic) smp_found_config = 1;
@@ -803,15 +809,17 @@ acpi_process_madt(void)
  */
 
 int __init
-acpi_boot_init (void)
+acpi_boot_table_init (void)
 {
 	int error;
 
 	/*
 	 * If acpi_disabled, bail out
-	 * One exception: acpi=ht continues far enough to enumerate LAPICs
+	 * Two exceptions: 
+	 *	acpi=ht continues far enough to enumerate LAPICs
+	 *	numa=acpi continues far enough to parse SRAT and LAPICs
 	 */
-	if (acpi_disabled && !acpi_ht)
+	if (acpi_disabled && !acpi_ht && !acpi_numa)
 		 return 1;
 
 	/* 
@@ -822,8 +830,6 @@ acpi_boot_init (void)
 		disable_acpi();
 		return error;
 	}
-
-	acpi_table_parse(ACPI_BOOT, acpi_parse_sbf);
 
 	/*
 	 * blacklist may disable ACPI entirely
@@ -840,6 +846,21 @@ acpi_boot_init (void)
 			return error;
 		}
 	}
+
+	return 0;
+}
+
+
+int __init acpi_boot_init(void)
+{
+	/*
+	 * If acpi_disabled, bail out
+	 * One exception: acpi=ht continues far enough to enumerate LAPICs
+	 */
+	if (acpi_disabled && !acpi_ht)
+		 return 1;
+
+	acpi_table_parse(ACPI_BOOT, acpi_parse_sbf);
 
 	/*
 	 * set sci_int and PM timer address

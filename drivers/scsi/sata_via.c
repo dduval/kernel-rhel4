@@ -38,7 +38,7 @@
 #include <asm/io.h>
 
 #define DRV_NAME	"sata_via"
-#define DRV_VERSION	"0.20"
+#define DRV_VERSION	"1.0"
 
 enum {
 	via_sata		= 0,
@@ -110,6 +110,9 @@ static struct ata_port_operations svia_sata_ops = {
 
 	.bmdma_setup            = ata_bmdma_setup,
 	.bmdma_start            = ata_bmdma_start,
+	.bmdma_stop		= ata_bmdma_stop,
+	.bmdma_status		= ata_bmdma_status,
+
 	.qc_prep		= ata_qc_prep,
 	.qc_issue		= ata_qc_issue_prot,
 
@@ -170,6 +173,7 @@ static int svia_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	int rc;
 	struct ata_port_info *ppi;
 	struct ata_probe_ent *probe_ent;
+	int pci_dev_busy = 0;
 	u8 tmp8;
 
 	if (!printed_version++)
@@ -180,8 +184,10 @@ static int svia_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 		return rc;
 
 	rc = pci_request_regions(pdev, DRV_NAME);
-	if (rc)
+	if (rc) {
+		pci_dev_busy = 1;
 		goto err_out;
+	}
 
 	pci_read_config_byte(pdev, SATA_PATA_SHARING, &tmp8);
 	if (tmp8 & SATA_2DEV) {
@@ -266,7 +272,8 @@ static int svia_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 err_out_regions:
 	pci_release_regions(pdev);
 err_out:
-	pci_disable_device(pdev);
+	if (!pci_dev_busy)
+		pci_disable_device(pdev);
 	return rc;
 }
 

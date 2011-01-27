@@ -220,3 +220,5 @@ int blkdev_ioctl(struct inode *inode, struct file *file, unsigned cmd,
 	}
 	return -ENOTTY;
 }
+
+EXPORT_SYMBOL(blkdev_ioctl);

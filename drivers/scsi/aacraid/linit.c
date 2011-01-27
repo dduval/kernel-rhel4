@@ -69,6 +69,9 @@ struct aac_dev *aac_devices[MAXIMUM_NUM_ADAPTERS];
 static unsigned aac_count;
 static int aac_cfg_major = -1;
 
+/* kill "aacraid: falsely claims to have parameter commit" message */
+static int commit = -1;
+
 /*
  * Because of the way Linux names scsi devices, the order in this table has
  * become important.  Check for on-board Raid first, add-in cards second.
@@ -677,6 +680,11 @@ static int __init aac_init(void)
 	
 	printk(KERN_INFO "Red Hat/Adaptec aacraid driver (%s %s)\n",
 			AAC_DRIVER_VERSION, AAC_DRIVER_BUILD_DATE);
+
+	if (commit != -1 ) {
+		printk(KERN_WARNING
+			"aacraid: detected deprecated parameter commit\n");
+	}
 
 	error = pci_module_init(&aac_pci_driver);
 	if (error)

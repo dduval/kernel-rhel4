@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc.h 1.134 2004/11/18 14:53:45EST sf_support Exp  $
+ * $Id: lpfc.h 1.142 2005/03/02 12:35:27EST sf_support Exp  $
  */
 
 #ifndef _H_LPFC
@@ -276,9 +276,9 @@ struct lpfc_hba {
 #define FC_ESTABLISH_LINK       0x200	/* Reestablish Link */
 #define FC_RSCN_DISCOVERY       0x400	/* Authenticate all devices after RSCN*/
 #define FC_LOADING		0x1000  /* HBA in process of loading drvr */
-#define FC_UNLOADING		0x2000  /* HBA in process of unloading drvr */
 #define FC_SCSI_SCAN_TMO        0x4000 	/* scsi scan timer running */
 #define FC_ABORT_DISCOVERY      0x8000 	/* we want to abort discovery */
+#define FC_NDISC_ACTIVE         0x10000	/* NPort discovery active */
 
 	uint32_t fc_topology;	/* link topology, from LINK INIT */
 
@@ -322,7 +322,6 @@ struct lpfc_hba {
 	uint32_t cfg_lun_queue_depth;
 	uint32_t cfg_nodev_tmo;
 	uint32_t cfg_hba_queue_depth;
-	uint32_t cfg_automap;
 	uint32_t cfg_fcp_class;
 	uint32_t cfg_use_adisc;
 	uint32_t cfg_ack0;
@@ -339,7 +338,7 @@ struct lpfc_hba {
 
 	lpfc_vpd_t vpd;		/* vital product data */
 
-#if defined(FC_TRANS_265_BLKPATCH)
+#if defined(SLES_FC)
 	/*
 	 * Provide a per-HBA timer for 2.6.5 kernels patched with the
 	 * block/unblock FC transport patch.
@@ -356,6 +355,11 @@ struct lpfc_hba {
 	struct completion     dpc_startup;
 	struct completion     dpc_exiting;
 	struct semaphore     *dpc_wait;
+	uint32_t              work_hba_events;  /* Timeout to be handled  */
+#define WORKER_DISC_TMO                0x1 	/* Discovery timeout */
+#define WORKER_ELS_TMO                 0x2 	/* ELS timeout */
+#define WORKER_MBOX_TMO                0x4 	/* MBOX timeout */
+#define WORKER_FDMI_TMO                0x8 	/* FDMI timeout */
 
 	unsigned long pci_bar0_map;     /* Physical address for PCI BAR0 */
 	unsigned long pci_bar2_map;     /* Physical address for PCI BAR2 */
@@ -375,8 +379,19 @@ struct lpfc_hba {
 
 	uint8_t brd_no;		/* FC board number */
 
-	char SerialNumber[32];	/* adapter Serial Number */
+	char SerialNumber[32];		/* adapter Serial Number */
 	char OptionROMVersion[32];	/* adapter BIOS / Fcode version */
+	char ModelDesc[256];		/* Model Description */
+	char ModelName[80];		/* Model Name */
+	char ProgramType[256];		/* Program Type */
+	char Port[20];			/* Port No */
+	uint8_t vpd_flag;               /* VPD data flag */
+
+#define VPD_MODEL_DESC      0x1         /* valid vpd model description */
+#define VPD_MODEL_NAME      0x2         /* valid vpd model name */
+#define VPD_PROGRAM_TYPE    0x4         /* valid vpd program type */
+#define VPD_PORT            0x8         /* valid vpd port data */
+#define VPD_MASK            0xf         /* mask for any vpd data */
 
 	struct timer_list els_tmofunc;
 

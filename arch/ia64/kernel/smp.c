@@ -53,6 +53,7 @@
  * requirements. It also looks cleaner.
  */
 static spinlock_t call_lock __cacheline_aligned = SPIN_LOCK_UNLOCKED;
+static spinlock_t dump_call_lock __cacheline_aligned = SPIN_LOCK_UNLOCKED;
 
 struct call_data_struct {
 	void (*func) (void *info);
@@ -63,6 +64,7 @@ struct call_data_struct {
 };
 
 static struct call_data_struct * call_data;
+static struct call_data_struct * saved_call_data;
 
 #define IPI_CALL_FUNC		0
 #define IPI_CPU_STOP		1
@@ -290,11 +292,11 @@ smp_call_function_single (int cpuid, void (*func) (void *info), void *info, int 
 
 	/* Wait for response */
 	while (atomic_read(&data.started) != cpus)
-		barrier();
+		cpu_relax();
 
 	if (wait)
 		while (atomic_read(&data.finished) != cpus)
-			barrier();
+			cpu_relax();
 	call_data = NULL;
 
 	spin_unlock_bh(&call_lock);
@@ -302,6 +304,48 @@ smp_call_function_single (int cpuid, void (*func) (void *info), void *info, int 
 	return 0;
 }
 EXPORT_SYMBOL(smp_call_function_single);
+
+/*
+ * dump version of smp_call_function to avoid deadlock in call_lock
+ */
+void dump_smp_call_function (void (*func) (void *info), void *info)
+{
+	static struct call_data_struct dumpdata;
+	int waitcount;
+
+	spin_lock(&dump_call_lock);
+	/* if another cpu beat us, they win! */
+	if (dumpdata.func) {
+		spin_unlock(&dump_call_lock);
+		func(info);
+		/* NOTREACHED */
+	}
+
+	/* freeze call_lock or wait for on-going IPIs to settle down */
+	waitcount = 0;
+	while (!spin_trylock(&call_lock)) {
+		if (waitcount++ > 1000) {
+			/* save original for dump analysis */
+			saved_call_data = call_data;
+			break;
+		}
+		udelay(1000);
+		cpu_relax();
+	}
+
+	dumpdata.func = func;
+	dumpdata.info = info;
+	dumpdata.wait = 0; /* not used */
+	atomic_set(&dumpdata.started, 0); /* not used */
+	atomic_set(&dumpdata.finished, 0); /* not used */
+
+	call_data = &dumpdata;
+	mb();
+	send_IPI_allbutself(IPI_CALL_FUNC);
+	/* Don't wait */
+	spin_unlock(&dump_call_lock);
+}
+EXPORT_SYMBOL(dump_smp_call_function);
 
 /*
  * this function sends a 'generic call function' IPI to all other CPUs
@@ -313,10 +357,7 @@ EXPORT_SYMBOL(smp_call_function_single);
  *  <func>	The function to run. This must be fast and non-blocking.
  *  <info>	An arbitrary pointer to pass to the function.
  *  <nonatomic>	currently unused.
- *  <wait>	If 1, wait (atomically) until function has complete on other
- *		CPUs. If 0, wait for the IPI to be received by other CPUs, but
- *		do not wait for the completion of the IPI on each CPU.  If -1,
- *		do not wait for other CPUs to receive IPI.
+ *  <wait>	If true, wait (atomically) until function has completed on other CPUs.
  *  [RETURNS]   0 on success, else a negative status code.
  *
  * Does not return until remote CPUs are nearly ready to execute <func> or are or have
@@ -328,54 +369,35 @@ EXPORT_SYMBOL(smp_call_function_single);
 int
 smp_call_function (void (*func) (void *info), void *info, int nonatomic, int wait)
 {
-	static struct call_data_struct dumpdata;
-	struct call_data_struct normaldata;
-	struct call_data_struct *data;
+	struct call_data_struct data;
 	int cpus = num_online_cpus()-1;
 
 	if (!cpus)
 		return 0;
 
 	/* Can deadlock when called with interrupts disabled */
-	/* Only if we are waiting for other CPU to ack */
-	WARN_ON(irqs_disabled() && wait >= 0);
+	WARN_ON(irqs_disabled());
+
+	data.func = func;
+	data.info = info;
+	atomic_set(&data.started, 0);
+	data.wait = wait;
+	if (wait)
+		atomic_set(&data.finished, 0);
 
 	spin_lock(&call_lock);
-	if (wait == -1) {
-		/* if another cpu beat us, they win! */
-		if (dumpdata.func) {
-			spin_unlock(&call_lock);
-			return 0;
-		}
-		data = &dumpdata;
-	} else
-		data = &normaldata;
-
-	data->func = func;
-	data->info = info;
-	atomic_set(&data->started, 0);
-	data->wait = wait > 0 ? wait : 0;
-	if (wait > 0)
-		atomic_set(&data->finished, 0);
-
-	call_data = data;
+	call_data = &data;
 	mb();	/* ensure store to call_data precedes setting of IPI_CALL_FUNC */
 	send_IPI_allbutself(IPI_CALL_FUNC);
 
 	/* Wait for response */
-	if (wait >= 0)
-		while (atomic_read(&data->started) != cpus)
-			barrier();
+	while (atomic_read(&data.started) != cpus)
+		cpu_relax();
 
-	if (wait > 0)
-		while (atomic_read(&data->finished) != cpus)
-			barrier();
-
-	if (wait >= 0)
-		call_data = NULL;
-
-	if (wait >= 0)
-		call_data = NULL;
+	if (wait)
+		while (atomic_read(&data.finished) != cpus)
+			cpu_relax();
+	call_data = NULL;
 
 	spin_unlock(&call_lock);
 	return 0;

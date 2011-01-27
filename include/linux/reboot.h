@@ -65,8 +65,6 @@ extern void machine_halt(void);
 extern void machine_power_off(void);
 extern void (*machine_reset)(void);
 
-extern void machine_shutdown(void);
-
 #endif
 
 #endif /* _LINUX_REBOOT_H */

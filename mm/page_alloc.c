@@ -731,6 +731,7 @@ nopage:
 			" order:%d, mode:0x%x\n",
 			p->comm, order, gfp_mask);
 		dump_stack();
+		show_mem();
 	}
 	return NULL;
 got_pg:
@@ -1101,6 +1102,8 @@ void show_free_areas(void)
 			" active:%lukB"
 			" inactive:%lukB"
 			" present:%lukB"
+			" pages_scanned:%lu"
+			" all_unreclaimable? %s"
 			"\n",
 			zone->name,
 			K(zone->free_pages),
@@ -1109,7 +1112,9 @@ void show_free_areas(void)
 			K(zone->pages_high),
 			K(zone->nr_active),
 			K(zone->nr_inactive),
-			K(zone->present_pages)
+			K(zone->present_pages),
+			zone->pages_scanned,
+			(zone->all_unreclaimable ? "yes" : "no")
 			);
 		printk("protections[]:");
 		for (i = 0; i < MAX_NR_ZONES; i++)
@@ -1164,6 +1169,9 @@ static int __init build_zonelists_node(pg_data_t *pgdat, struct zonelist *zoneli
 		zone = pgdat->node_zones + ZONE_NORMAL;
 		if (zone->present_pages)
 			zonelist->zones[j++] = zone;
+#if defined(CONFIG_HIGHMEM64G) || defined(CONFIG_X86_64)
+		break;
+#endif
 	case ZONE_DMA:
 		zone = pgdat->node_zones + ZONE_DMA;
 		if (zone->present_pages)

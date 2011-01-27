@@ -22,8 +22,12 @@
  * Send feedback to <lxie@us.ibm.com>
  *
  */
+#include <linux/delay.h>
+#include <linux/notifier.h>
 #include <linux/pci.h>
+#include <asm/eeh.h>
 #include <asm/pci-bridge.h>
+#include <asm/prom.h>
 #include <asm/rtas.h>
 #include "../pci.h"		/* for pci_add_new_bus */
 
@@ -63,6 +67,7 @@ int rpaphp_claim_resource(struct pci_dev *dev, int resource)
 		    root ? "Address space collision on" :
 		    "No parent found for",
 		    resource, dtype, pci_name(dev), res->start, res->end);
+		dump_stack();
 	}
 	return err;
 }
@@ -185,6 +190,19 @@ rpaphp_fixup_new_pci_devices(struct pci_bus *bus, int fix_bus)
 
 static int rpaphp_pci_config_bridge(struct pci_dev *dev);
 
+static void rpaphp_eeh_add_bus_device(struct pci_bus *bus)
+{
+	struct pci_dev *dev;
+	list_for_each_entry(dev, &bus->devices, bus_list) {
+		eeh_add_device_late(dev);
+		if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE) {
+			struct pci_bus *subbus = dev->subordinate;
+			if (bus)
+				rpaphp_eeh_add_bus_device (subbus);
+		}
+	}
+}
+
 /*****************************************************************************
  rpaphp_pci_config_slot() will  configure all devices under the 
  given slot->dn and return the the first pci_dev.
@@ -212,6 +230,8 @@ rpaphp_pci_config_slot(struct device_node *dn, struct pci_bus *bus)
 		}
 		if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE) 
 			rpaphp_pci_config_bridge(dev);
+
+		rpaphp_eeh_add_bus_device(bus);
 	}
 	return dev;
 }
@@ -220,7 +240,6 @@ static int rpaphp_pci_config_bridge(struct pci_dev *dev)
 {
 	u8 sec_busno;
 	struct pci_bus *child_bus;
-	struct pci_dev *child_dev;
 
 	dbg("Enter %s:  BRIDGE dev=%s\n", __FUNCTION__, pci_name(dev));
 
@@ -237,11 +256,7 @@ static int rpaphp_pci_config_bridge(struct pci_dev *dev)
 	/* do pci_scan_child_bus */
 	pci_scan_child_bus(child_bus);
 
-	list_for_each_entry(child_dev, &child_bus->devices, bus_list) {
-		eeh_add_device_late(child_dev);
-	}
-
-	 /* fixup new pci devices without touching bus struct */
+	/* Fixup new pci devices without touching bus struct */
 	rpaphp_fixup_new_pci_devices(child_bus, 0);
 
 	/* Make the discovered devices available */
@@ -279,7 +294,7 @@ static void print_slot_pci_funcs(struct slot *slot)
 	return;
 }
 #else
-static void print_slot_pci_funcs(struct slot *slot)
+static inline void print_slot_pci_funcs(struct slot *slot)
 {
 	return;
 }
@@ -361,7 +376,6 @@ static void rpaphp_eeh_remove_bus_device(struct pci_dev *dev)
 			if (pdev)
 				rpaphp_eeh_remove_bus_device(pdev);
 		}
-
 	}
 	return;
 }
@@ -563,36 +577,175 @@ exit:
 	return retval;
 }
 
-struct hotplug_slot *rpaphp_find_hotplug_slot(struct pci_dev *dev)
+/**
+ * rpaphp_search_bus_for_dev - return 1 if device is under this bus, else 0
+ * @bus: the bus to search for this device.
+ * @dev: the pci device we are looking for.
+ */
+static int rpaphp_search_bus_for_dev (struct pci_bus *bus, struct pci_dev *dev)
 {
-	struct list_head	*tmp, *n;
-	struct slot		*slot;
+	struct list_head *ln;
+
+	if (!bus) return 0;
+	
+	for (ln = bus->devices.next; ln != &bus->devices; ln = ln->next) {
+		struct pci_dev *pdev = pci_dev_b(ln);
+		if (pdev == dev)
+			return 1;
+		if (pdev->subordinate) {
+			int rc;
+			rc = rpaphp_search_bus_for_dev (pdev->subordinate, dev);
+			if (rc)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+/**
+ * rpaphp_find_slot - find and return the slot holding the device
+ * @dev: pci device for which we want the slot structure.
+ */
+static struct slot *rpaphp_find_slot(struct pci_dev *dev)
+{
+	struct list_head *tmp, *n;
+	struct slot	*slot;
 
 	list_for_each_safe(tmp, n, &rpaphp_slot_head) {
 		struct pci_bus *bus;
 		struct list_head *ln;
 
 		slot = list_entry(tmp, struct slot, rpaphp_slot_list);
-		if (slot->bridge == NULL) {
-			if (slot->dev_type == PCI_DEV) {
-				printk(KERN_WARNING "PCI slot missing bridge %s %s \n", 
-				                    slot->name, slot->location);
-			}
+
+		/* PHB's don't have bridges. */
+		if (slot->bridge == NULL)
 			continue;
-		}
+
+		/* The PCI device could be the slot itself. */
+		if (slot->bridge == dev)
+			return slot;
 
 		bus = slot->bridge->subordinate;
 		if (!bus) {
+			printk (KERN_WARNING "PCI bridge is missing bus: %s %s\n",
+			       pci_name (slot->bridge), pci_pretty_name (slot->bridge));
 			continue;  /* should never happen? */
 		}
-		for (ln = bus->devices.next; ln != &bus->devices; ln = ln->next) {
-                                struct pci_dev *pdev = pci_dev_b(ln);
-				if (pdev == dev)
-					return slot->hotplug_slot;
-		}
+
+		if (rpaphp_search_bus_for_dev (bus, dev))
+			return slot;
 	}
 
 	return NULL;
 }
 
-EXPORT_SYMBOL_GPL(rpaphp_find_hotplug_slot);
+/* ------------------------------------------------------- */
+/**
+ * handle_eeh_events -- reset a PCI device after hard lockup.
+ *
+ * pSeries systems will isolate a PCI slot if the PCI-Host
+ * bridge detects address or data parity errors, DMA's 
+ * occuring to wild addresses (which usually happen due to
+ * bugs in device drivers or in PCI adapter firmware).
+ * Slot isolations also occur if #SERR, #PERR or other misc
+ * PCI-related errors are detected.
+ * 
+ * Recovery process consists of unplugging the device driver
+ * (which generated hotplug events to userspace), then issuing
+ * a PCI #RST to the device, then reconfiguring the PCI config 
+ * space for all bridges & devices under this slot, and then 
+ * finally restarting the device drivers (which cause a second
+ * set of hotplug events to go out to userspace).
+ */
+int handle_eeh_events (struct notifier_block *self, 
+                       unsigned long reason, void *ev)
+{
+	int freeze_count=0;
+	struct eeh_event *event = ev;
+	struct slot *frozen_slot;
+	struct eeh_cfg_tree * saved_bars;
+
+	frozen_slot = rpaphp_find_slot(event->dev);
+	if (!frozen_slot)
+	{
+		printk (KERN_ERR 
+			"EEH: Cannot find PCI slot for EEH error! dev=%p dn=%p\n", 
+			event->dev, event->dn);
+		if (event->dev)
+			printk("EEH: above message for pci device %s %s\n",
+			       pci_name(event->dev), pci_pretty_name (event->dev));
+		if (event->dn)
+			printk ("EEH: above message for dn %s\n", event->dn->full_name);
+		return 1;
+	}
+
+	/* Keep a copy of the config space registers */
+	saved_bars = eeh_save_bars(frozen_slot->dn);
+	of_node_get(event->dn);
+	pci_dev_get(event->dev);
+
+	if (frozen_slot->dn->child)
+		freeze_count = frozen_slot->dn->child->eeh_freeze_count;
+	rpaphp_unconfig_pci_adapter (frozen_slot);
+
+	freeze_count ++;
+	if (freeze_count > EEH_MAX_ALLOWED_FREEZES) {
+		/* 
+		 * About 90% of all real-life EEH failures in the field
+		 * are due to poorly seated PCI cards. Only 10% or so are
+		 * due to actual, failed cards 
+		 */
+		printk (KERN_ERR
+		   "EEH: device %s:%s has failed %d times \n"
+			"and has been permanently disabled.  Please try reseating\n"
+		   "this device or replacing it.\n",
+			pci_name (event->dev),
+			pci_pretty_name (event->dev),
+			freeze_count);
+		goto rdone;
+	}
+	printk (KERN_WARNING
+		"EEH: This device has failed %d times since last reboot: %s:%s\n",
+		freeze_count,
+		pci_name (event->dev),
+		pci_pretty_name (event->dev));
+
+	/* Reset the pci controller. (Asserts RST#; resets config space). 
+	 * Reconfigure bridges and devices */
+	rtas_set_slot_reset (event->dn);
+	rtas_configure_bridge(event->dn);
+	eeh_restore_bars(saved_bars);
+
+	/* Give the system 5 seconds to finish running the user-space
+	 * hotplug scripts, e.g. ifdown for ethernet.  Yes, this is a hack, 
+	 * but if we don't do this, weird things happen.
+	 */
+	ssleep (5);
+
+	rpaphp_enable_pci_slot (frozen_slot);
+
+	/* Store the freeze count with the pci adapter, and not the slot.
+	 * This way, if the device is replaced, the count is cleared.
+	 */
+	if (frozen_slot->dn->child)
+		frozen_slot->dn->child->eeh_freeze_count = freeze_count;
+
+rdone:
+	of_node_put(event->dn);
+	pci_dev_put(event->dev);
+	return 0;
+}
+
+static struct notifier_block eeh_block;
+
+void __init init_eeh_handler (void)
+{
+	eeh_block.notifier_call = handle_eeh_events;
+	eeh_register_notifier (&eeh_block);
+}
+
+void __exit exit_eeh_handler (void)
+{
+	eeh_unregister_notifier (&eeh_block);
+}
+

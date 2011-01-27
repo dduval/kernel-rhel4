@@ -234,17 +234,9 @@ int80_ret_end_marker:					\
 #define __RESTORE_IRET	\
 	addl $4, %esp;	\
 333:	iret;		\
-.section .fixup,"ax";   \
-666:	sti;		\
-	movl $(__USER_DS), %edx; \
-	movl %edx, %ds; \
-	movl %edx, %es; \
-	pushl $11;	\
-	call do_exit;	\
-.previous;		\
 .section __ex_table,"a";\
 	.align 4;	\
-	.long 333b,666b;\
+	.long 333b,iret_exc;\
 .previous
 
 #define SAVE_ALL \
@@ -256,6 +248,23 @@ int80_ret_end_marker:					\
 	__RESTORE_ALL;
 
 .section .entry.text,"ax"
+
+	/*
+	 * Traps in iret mean that userland tried to restore a bogus
+	 * cs, eip, ss, esp, or eflags.  Some kinds of bogosity just cause
+	 * a trap after the iret returns, but some will cause a trap in
+	 * iret itself.  We want to treat those as if the restored user
+	 * state is what caused that trap, i.e. produce the appropriate signal.
+	 * Since normal .fixup code doesn't have access to the trap info,
+	 * traps.c has a special case for iret.  It's already generated the
+	 * signal before we resume at iret_exc.  Now we just need to recover
+	 * the whole frame we were trying to restore, so it can be seen on
+	 * our stack by the debugger.
+	 */
+ENTRY(iret_exc)
+	pushl $0			# orig_eax was lost
+	__SAVE_ALL
+	jmp ret_from_exception
 
 ENTRY(lcall7)
 	pushfl			# We get a different stack layout with call
@@ -1056,7 +1065,7 @@ ENTRY(sys_call_table)
 	.long sys_mq_timedreceive	/* 280 */
 	.long sys_mq_notify
 	.long sys_mq_getsetattr
-	.long sys_kexec_load
+	.long sys_ni_syscall		/* reserved for kexec */
 	.long sys_waitid
 
 syscall_table_size=(.-sys_call_table)

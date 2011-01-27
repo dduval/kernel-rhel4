@@ -366,6 +366,46 @@ static inline unsigned long get_cr2(void)
 	return address;
 }
 
+/*
+ * When we get an exception in the iret instructions in entry.S, whatever
+ * fault it is really belongs to the user state we are restoring.  We want
+ * to turn it into a signal.  To make that signal's info exactly match what
+ * this same kind of fault in a user instruction would show, the fixup
+ * needs to know the trapno and error code.  But those are lost when we get
+ * back to the fixup entrypoint.  So we have a special case for the iret
+ * fixups, and generate the signal here like a normal user trap would.
+ * Then the fixup code restores the pt_regs on the base of the stack to
+ * the bogus user state it was trying to return to, before handling the signal.
+ */
+extern void iret_exc(void);	/* entry.S label for code in .fixup */
+static inline int is_iret(struct pt_regs *regs)
+{
+	return (regs->eip == (unsigned long)&iret_exc);
+}
+
+/*
+ * If the iret was actually trying to return to kernel mode,
+ * that should be an oops.
+ */
+static inline int iret_to_user(struct pt_regs *regs)
+{
+	/*
+	 * The frame being restored was all popped off and restored except
+	 * the last five words that iret pops.  Instead of popping, it
+	 * pushed another trap frame, clobbering the part of the old one
+	 * that we had already restored.  So the restored registers are now
+	 * all back in the new trap frame, but the eip et al show the
+	 * in-kernel state at the iret instruction.  The bad state we tried
+	 * to restore with iret is still on the stack, right below our
+	 * current trap frame.  The current trap frame was for an in-kernel
+	 * trap, and so doesn't include the esp and ss words--so &regs->esp
+	 * is where %esp was before the iret.
+	 */
+	struct pt_regs *oregs = container_of(&regs->esp, struct pt_regs, eip);
+
+	return likely((oregs->xcs & 3) == 3);
+}
+
 static inline void do_trap(int trapnr, int signr, char *str, int vm86,
 			   struct pt_regs * regs, long error_code, siginfo_t *info)
 {
@@ -390,8 +430,16 @@ static inline void do_trap(int trapnr, int signr, char *str, int vm86,
 	}
 
 	kernel_trap: {
-		if (!fixup_exception(regs))
+		if (!fixup_exception(regs)) {
+		die:
 			die(str, regs, error_code);
+		}
+		else if (is_iret(regs)) {
+			if (!iret_to_user(regs))
+				goto die;
+			local_irq_enable();
+			goto trap_signal;
+		}
 		return;
 	}
 
@@ -503,6 +551,7 @@ asmlinkage void do_general_protection(struct pt_regs * regs, long error_code)
 	if (!(regs->xcs & 3))
 		goto gp_in_kernel;
 
+gp_in_user:
 	/*
 	 * lazy-check for CS validity on exec-shield binaries:
 	 */
@@ -555,10 +604,17 @@ gp_in_vm86:
 
 gp_in_kernel:
 	if (!fixup_exception(regs)) {
+	die:
 		if (notify_die(DIE_GPF, "general protection fault", regs,
 				error_code, 13, SIGSEGV) == NOTIFY_STOP);
 			return;
 		die("general protection fault", regs, error_code);
+	}
+	else if (is_iret(regs)) {
+		if (!iret_to_user(regs))
+			goto die;
+		local_irq_enable();
+		goto gp_in_user;
 	}
 }
 

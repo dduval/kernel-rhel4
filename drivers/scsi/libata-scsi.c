@@ -34,8 +34,6 @@
 #include "libata.h"
 
 typedef unsigned int (*ata_xlat_func_t)(struct ata_queued_cmd *qc, u8 *scsicmd);
-static struct ata_device *
-ata_scsi_find_dev(struct ata_port *ap, struct scsi_device *scsidev);
 
 
 /**
@@ -156,6 +154,7 @@ struct ata_queued_cmd *ata_scsi_qc_new(struct ata_port *ap,
 /**
  *	ata_to_sense_error - convert ATA error to SCSI error
  *	@qc: Command that we are erroring out
+ *	@drv_stat: value contained in ATA status register
  *
  *	Converts an ATA error into a SCSI error. While we are at it
  *	we decode and dump the ATA error for the user so that they
@@ -201,7 +200,7 @@ void ata_to_sense_error(struct ata_queued_cmd *qc, u8 drv_stat)
 		{0x40, 		MEDIUM_ERROR, 0x11, 0x04}, 	// Uncorrectable ECC error      Unrecovered read error
 		/* BBD - block marked bad */
 		{0x80, 		MEDIUM_ERROR, 0x11, 0x04}, 	// Block marked bad		  Medium error, unrecovered read error
-		{0xFF, 0xFF, 0xFF, 0xFF}, // END mark 
+		{0xFF, 0xFF, 0xFF, 0xFF}, // END mark
 	};
 	static unsigned char stat_table[][4] = {
 		/* Must be first because BUSY means no other bits valid */
@@ -209,22 +208,22 @@ void ata_to_sense_error(struct ata_queued_cmd *qc, u8 drv_stat)
 		{0x20, 		HARDWARE_ERROR,  0x00, 0x00}, 	// Device fault
 		{0x08, 		ABORTED_COMMAND, 0x47, 0x00},	// Timed out in xfer, fake parity for now
 		{0x04, 		RECOVERED_ERROR, 0x11, 0x00},	// Recovered ECC error	  Medium error, recovered
-		{0xFF, 0xFF, 0xFF, 0xFF}, // END mark 
+		{0xFF, 0xFF, 0xFF, 0xFF}, // END mark
 	};
 	int i = 0;
 
 	cmd->result = SAM_STAT_CHECK_CONDITION;
-	
+
 	/*
 	 *	Is this an error we can process/parse
 	 */
-	 
+
 	if(drv_stat & ATA_ERR)
 		/* Read the err bits */
 		err = ata_chk_err(qc->ap);
 
 	/* Display the ATA level error info */
-	
+
 	printk(KERN_WARNING "ata%u: status=0x%02x { ", qc->ap->id, drv_stat);
 	if(drv_stat & 0x80)
 	{
@@ -241,7 +240,7 @@ void ata_to_sense_error(struct ata_queued_cmd *qc, u8 drv_stat)
 		if(drv_stat & 0x01)	printk("Error ");
 	}
 	printk("}\n");
-	
+
 	if(err)
 	{
 		printk(KERN_WARNING "ata%u: error=0x%02x { ", qc->ap->id, err);
@@ -258,11 +257,11 @@ void ata_to_sense_error(struct ata_queued_cmd *qc, u8 drv_stat)
 		if(err & 0x02)		printk("TrackZeroNotFound ");
 		if(err & 0x01)		printk("AddrMarkNotFound ");
 		printk("}\n");
-		
+
 		/* Should we dump sector info here too ?? */
 	}
-		
-	
+
+
 	/* Look for err */
 	while(sense_table[i][0] != 0xFF)
 	{
@@ -281,7 +280,8 @@ void ata_to_sense_error(struct ata_queued_cmd *qc, u8 drv_stat)
 	/* No immediate match */
 	if(err)
 		printk(KERN_DEBUG "ata%u: no sense translation for 0x%02x\n", qc->ap->id, err);
-	
+
+	i = 0;
 	/* Fall back to interpreting status bits */
 	while(stat_table[i][0] != 0xFF)
 	{
@@ -299,7 +299,7 @@ void ata_to_sense_error(struct ata_queued_cmd *qc, u8 drv_stat)
 	/* No error ?? */
 	printk(KERN_ERR "ata%u: called with no error (%02X)!\n", qc->ap->id, drv_stat);
 	/* additional-sense-code[-qualifier] */
-	
+
 	sb[0] = 0x70;
 	sb[2] = MEDIUM_ERROR;
 	sb[7] = 0x0A;
@@ -345,7 +345,10 @@ int ata_scsi_slave_config(struct scsi_device *sdev)
 		 */
 		if ((dev->flags & ATA_DFLAG_LBA48) &&
 		    ((dev->flags & ATA_DFLAG_LOCK_SECTORS) == 0)) {
-			sdev->host->max_sectors = 2048;
+			/*
+			 * do not overwrite sdev->host->max_sectors, since
+			 * other drives on this host may not support LBA48
+			 */
 			blk_queue_max_sectors(sdev->request_queue, 2048);
 		}
 	}
@@ -486,19 +489,24 @@ static unsigned int ata_scsi_verify_xlat(struct ata_queued_cmd *qc, u8 *scsicmd)
 	}
 
 	if (lba48) {
+		tf->command = ATA_CMD_VERIFY_EXT;
+
 		tf->hob_nsect = (n_sect >> 8) & 0xff;
 
 		tf->hob_lbah = (sect >> 40) & 0xff;
 		tf->hob_lbam = (sect >> 32) & 0xff;
 		tf->hob_lbal = (sect >> 24) & 0xff;
-	} else
+	} else {
+		tf->command = ATA_CMD_VERIFY;
+
 		tf->device |= (sect >> 24) & 0xf;
+	}
 
 	tf->nsect = n_sect & 0xff;
 
-	tf->hob_lbah = (sect >> 16) & 0xff;
-	tf->hob_lbam = (sect >> 8) & 0xff;
-	tf->hob_lbal = sect & 0xff;
+	tf->lbah = (sect >> 16) & 0xff;
+	tf->lbam = (sect >> 8) & 0xff;
+	tf->lbal = sect & 0xff;
 
 	return 0;
 }
@@ -598,7 +606,7 @@ static unsigned int ata_scsi_rw_xlat(struct ata_queued_cmd *qc, u8 *scsicmd)
 				return 1;
 
 			/* stores LBA27:24 in lower 4 bits of device reg */
-			tf->device |= scsicmd[2];
+			tf->device |= scsicmd[6];
 
 			qc->nsect = scsicmd[13];
 		}
@@ -678,7 +686,7 @@ static void ata_scsi_translate(struct ata_port *ap, struct ata_device *dev,
 			ata_sg_init_one(qc, cmd->request_buffer,
 					cmd->request_bufflen);
 
-		qc->pci_dma_dir = scsi_to_pci_dma_dir(cmd->sc_data_direction);
+		qc->dma_dir = cmd->sc_data_direction;
 	}
 
 	qc->complete_fn = ata_scsi_qc_complete;
@@ -694,6 +702,7 @@ static void ata_scsi_translate(struct ata_port *ap, struct ata_device *dev,
 	return;
 
 err_out:
+	ata_qc_free(qc);
 	ata_bad_cdb(cmd, done);
 	DPRINTK("EXIT - badcmd\n");
 }
@@ -735,6 +744,7 @@ static unsigned int ata_scsi_rbuf_get(struct scsi_cmnd *cmd, u8 **buf_out)
 /**
  *	ata_scsi_rbuf_put - Unmap response buffer.
  *	@cmd: SCSI command containing buffer to be unmapped.
+ *	@buf: buffer to unmap
  *
  *	Unmaps response buffer contained within @cmd.
  *
@@ -1292,6 +1302,11 @@ static unsigned int atapi_xlat(struct ata_queued_cmd *qc, u8 *scsicmd)
 	int using_pio = (dev->flags & ATA_DFLAG_PIO);
 	int nodata = (cmd->sc_data_direction == SCSI_DATA_NONE);
 
+	if (!using_pio)
+		/* Check whether ATAPI DMA is safe */
+		if (ata_check_atapi_dma(qc))
+			using_pio = 1;
+
 	memcpy(&qc->cdb, scsicmd, qc->ap->cdb_len);
 
 	qc->complete_fn = atapi_qc_complete;
@@ -1334,7 +1349,7 @@ static unsigned int atapi_xlat(struct ata_queued_cmd *qc, u8 *scsicmd)
 /**
  *	ata_scsi_find_dev - lookup ata_device from scsi_cmnd
  *	@ap: ATA port to which the device is attached
- *	@cmd: SCSI command to be sent to the device
+ *	@scsidev: SCSI device from which we derive the ATA device
  *
  *	Given various information provided in struct scsi_cmnd,
  *	map that onto an ATA bus, and using that mapping
@@ -1348,7 +1363,7 @@ static unsigned int atapi_xlat(struct ata_queued_cmd *qc, u8 *scsicmd)
  *	Associated ATA device, or %NULL if not found.
  */
 
-static struct ata_device *
+struct ata_device *
 ata_scsi_find_dev(struct ata_port *ap, struct scsi_device *scsidev)
 {
 	struct ata_device *dev;

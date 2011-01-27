@@ -188,6 +188,8 @@ default_idle (void)
 	while (!need_resched())
 		if (pal_halt && !pmu_active)
 			safe_halt();
+		else
+			cpu_relax();
 }
 
 #ifdef CONFIG_HOTPLUG_CPU

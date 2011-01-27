@@ -970,6 +970,10 @@ static void __devinit quirk_intel_ide_combined(struct pci_dev *pdev)
 	case 0x2653:
 		ich = 6;
 		break;
+	case 0x27c0:
+	case 0x27c4:
+		ich = 7;
+		break;
 	default:
 		/* we do not handle this PCI device */
 		return;
@@ -989,7 +993,7 @@ static void __devinit quirk_intel_ide_combined(struct pci_dev *pdev)
 		else
 			return;			/* not in combined mode */
 	} else {
-		WARN_ON(ich != 6);
+		WARN_ON((ich != 6) && (ich != 7));
 		tmp &= 0x3;  /* interesting bits 1:0 */
 		if (tmp & (1 << 0))
 			comb = (1 << 2);	/* PATA port 0, SATA port 1 */
@@ -1031,6 +1035,40 @@ static void __devinit quirk_pcie_mch(struct pci_dev *pdev)
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_E7520_MCH,	quirk_pcie_mch );
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_E7320_MCH,	quirk_pcie_mch );
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL,	PCI_DEVICE_ID_INTEL_E7525_MCH,	quirk_pcie_mch );
+
+static void __init quirk_nforce_network_class(struct pci_dev *pdev)
+{
+	/* Some implementations of the nVidia network controllers
+	 * show up as bridges, when we need to see them as network
+	 * devices.
+	 */
+
+	/* If this is already known as a network ctlr, do nothing. */
+	if ((pdev->class >> 8) == PCI_CLASS_NETWORK_ETHERNET)
+		return;
+
+	if ((pdev->class >> 8) == PCI_CLASS_BRIDGE_OTHER) {
+		char    c;
+
+		/* Clearing bit 6 of the register at 0xf8
+		 * selects Ethernet device class
+		 */
+		pci_read_config_byte(pdev, 0xf8, &c);
+		c &= 0xbf;
+		pci_write_config_byte(pdev, 0xf8, c);
+
+		/* sysfs needs pdev->class to be set correctly */
+		pdev->class &= 0x0000ff;
+		pdev->class |= (PCI_CLASS_NETWORK_ETHERNET << 8);
+	}
+}
+
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA,	PCI_DEVICE_ID_NVIDIA_NVENET_6,	quirk_nforce_network_class );
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA,	PCI_DEVICE_ID_NVIDIA_NVENET_7,	quirk_nforce_network_class );
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA,	PCI_DEVICE_ID_NVIDIA_NVENET_8,	quirk_nforce_network_class );
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA,	PCI_DEVICE_ID_NVIDIA_NVENET_9,	quirk_nforce_network_class );
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA,	PCI_DEVICE_ID_NVIDIA_NVENET_10,	quirk_nforce_network_class );
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_NVIDIA,	PCI_DEVICE_ID_NVIDIA_NVENET_11,	quirk_nforce_network_class );
 
 static void pci_do_fixups(struct pci_dev *dev, struct pci_fixup *f, struct pci_fixup *end)
 {

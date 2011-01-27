@@ -3322,6 +3322,26 @@ qeth_get_netdevice(enum qeth_card_types type, enum qeth_link_types linktype)
 	return dev;
 }
 
+/* hard_header fake function; used in case fake_ll is set */
+static int
+qeth_fake_header(struct sk_buff *skb, struct net_device *dev,
+		     unsigned short type, void *daddr, void *saddr,
+		     unsigned len)
+{
+	struct ethhdr *hdr;
+	struct qeth_card *card;
+
+	card = (struct qeth_card *)dev->priv;
+	hdr = (struct ethhdr *)skb_push(skb, QETH_FAKE_LL_LEN);
+	memcpy(hdr->h_source, card->dev->dev_addr, ETH_ALEN);
+	memcpy(hdr->h_dest, "FAKELL", ETH_ALEN);
+	if (type != ETH_P_802_3)
+		hdr->h_proto = htons(type);
+	else
+		hdr->h_proto = htons(len);
+	return QETH_FAKE_LL_LEN;
+}
+
 static inline int
 qeth_send_packet(struct qeth_card *, struct sk_buff *);
 
@@ -3887,6 +3907,14 @@ qeth_send_packet(struct qeth_card *card, struct sk_buff *skb)
 	QETH_DBF_TEXT(trace, 6, "sendpkt");
 
 	ipv = qeth_get_ip_version(skb);
+	if ((card->dev->hard_header == qeth_fake_header) && ipv) {
+		if ((skb = qeth_pskb_unshare(skb,GFP_ATOMIC)) == NULL) {
+			card->stats.tx_dropped++;
+			dev_kfree_skb_irq(skb);
+			return 0;
+		}
+		skb_pull(skb, QETH_FAKE_LL_LEN);
+	}
 	cast_type = qeth_get_cast_type(card, skb);
 	if ((cast_type == RTN_BROADCAST) && (card->info.broadcast_capable == 0)){
 		card->stats.tx_dropped++;
@@ -5240,9 +5268,12 @@ qeth_netdev_init(struct net_device *dev)
 	dev->vlan_rx_register = qeth_vlan_rx_register;
 	dev->vlan_rx_kill_vid = qeth_vlan_rx_kill_vid;
 #endif
+	dev->hard_header = card->orig_hard_header;
 	if (qeth_get_netdev_flags(card->info.type) & IFF_NOARP) {
 		dev->rebuild_header = NULL;
 		dev->hard_header = NULL;
+		if (card->options.fake_ll) 
+			dev->hard_header = qeth_fake_header;
 		dev->header_cache_update = NULL;
 		dev->hard_header_cache = NULL;
 	}
@@ -5354,22 +5385,26 @@ retry:
 		QETH_DBF_TEXT_(setup, 2, "5err%d", rc);
 		goto out;
 	}
-	/* at first set_online allocate netdev */
-	if (!card->dev){
-		card->dev = qeth_get_netdevice(card->info.type,
-					       card->info.link_type);
-		if (!card->dev){
-			qeth_qdio_clear_card(card, card->info.type ==
-					     QETH_CARD_TYPE_OSAE);
-			rc = -ENODEV;
-			QETH_DBF_TEXT_(setup, 2, "6err%d", rc);
-			goto out;
-		}
-		card->dev->priv = card;
-		card->dev->type = qeth_get_arphdr_type(card->info.type,
-						       card->info.link_type);
-		card->dev->init = qeth_netdev_init;
+	/* network device will be recovered */
+	if (card->dev) {
+		card->dev->hard_header = card->orig_hard_header;
+		return 0;
 	}
+	/* at first set_online allocate netdev */
+	card->dev = qeth_get_netdevice(card->info.type,
+				       card->info.link_type);
+	if (!card->dev) {
+		qeth_qdio_clear_card(card, card->info.type ==
+				     QETH_CARD_TYPE_OSAE);
+		rc = -ENODEV;
+		QETH_DBF_TEXT_(setup, 2, "6err%d", rc);
+		goto out;
+	}
+	card->dev->priv = card;
+	card->orig_hard_header = card->dev->hard_header;
+	card->dev->type = qeth_get_arphdr_type(card->info.type,
+					       card->info.link_type);
+	card->dev->init = qeth_netdev_init;
 	return 0;
 out:
 	PRINT_ERR("Initialization in hardsetup failed! rc=%d\n", rc);
@@ -6493,8 +6528,10 @@ qeth_register_netdev(struct qeth_card *card)
 	int rc;
 
 	QETH_DBF_TEXT(setup, 3, "regnetd");
-	if (card->dev->reg_state != NETREG_UNINITIALIZED)
+	if (card->dev->reg_state != NETREG_UNINITIALIZED) {
+		qeth_netdev_init(card->dev);
 		return 0;
+	}
 	/* sysfs magic */
 	SET_NETDEV_DEV(card->dev, &card->gdev->dev);
 	rc = register_netdev(card->dev);

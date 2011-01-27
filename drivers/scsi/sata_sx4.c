@@ -40,7 +40,7 @@
 #include "sata_promise.h"
 
 #define DRV_NAME	"sata_sx4"
-#define DRV_VERSION	"0.50"
+#define DRV_VERSION	"0.7"
 
 
 enum {
@@ -248,7 +248,7 @@ static void pdc20621_host_stop(struct ata_host_set *host_set)
 
 static int pdc_port_start(struct ata_port *ap)
 {
-	struct pci_dev *pdev = ap->host_set->pdev;
+	struct device *dev = ap->host_set->dev;
 	struct pdc_port_priv *pp;
 	int rc;
 
@@ -263,7 +263,7 @@ static int pdc_port_start(struct ata_port *ap)
 	}
 	memset(pp, 0, sizeof(*pp));
 
-	pp->pkt = pci_alloc_consistent(pdev, 128, &pp->pkt_dma);
+	pp->pkt = dma_alloc_coherent(dev, 128, &pp->pkt_dma, GFP_KERNEL);
 	if (!pp->pkt) {
 		rc = -ENOMEM;
 		goto err_out_kfree;
@@ -283,11 +283,11 @@ err_out:
 
 static void pdc_port_stop(struct ata_port *ap)
 {
-	struct pci_dev *pdev = ap->host_set->pdev;
+	struct device *dev = ap->host_set->dev;
 	struct pdc_port_priv *pp = ap->private_data;
 
 	ap->private_data = NULL;
-	pci_free_consistent(pdev, 128, pp->pkt, pp->pkt_dma);
+	dma_free_coherent(dev, 128, pp->pkt, pp->pkt_dma);
 	kfree(pp);
 	ata_port_stop(ap);
 }
@@ -1366,6 +1366,7 @@ static int pdc_sata_init_one (struct pci_dev *pdev, const struct pci_device_id *
 	void *mmio_base, *dimm_mmio = NULL;
 	struct pdc_host_priv *hpriv = NULL;
 	unsigned int board_idx = (unsigned int) ent->driver_data;
+	int pci_dev_busy = 0;
 	int rc;
 
 	if (!printed_version++)
@@ -1380,8 +1381,10 @@ static int pdc_sata_init_one (struct pci_dev *pdev, const struct pci_device_id *
 		return rc;
 
 	rc = pci_request_regions(pdev, DRV_NAME);
-	if (rc)
+	if (rc) {
+		pci_dev_busy = 1;
 		goto err_out;
+	}
 
 	rc = pci_set_dma_mask(pdev, ATA_DMA_MASK);
 	if (rc)
@@ -1397,7 +1400,7 @@ static int pdc_sata_init_one (struct pci_dev *pdev, const struct pci_device_id *
 	}
 
 	memset(probe_ent, 0, sizeof(*probe_ent));
-	probe_ent->pdev = pdev;
+	probe_ent->dev = pci_dev_to_dev(pdev);
 	INIT_LIST_HEAD(&probe_ent->node);
 
 	mmio_base = ioremap(pci_resource_start(pdev, 3),
@@ -1471,7 +1474,8 @@ err_out_free_ent:
 err_out_regions:
 	pci_release_regions(pdev);
 err_out:
-	pci_disable_device(pdev);
+	if (!pci_dev_busy)
+		pci_disable_device(pdev);
 	return rc;
 }
 

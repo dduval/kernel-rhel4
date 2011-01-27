@@ -26,7 +26,7 @@
 #define __LIBATA_H__
 
 #define DRV_NAME	"libata"
-#define DRV_VERSION	"1.02"	/* must be exactly four chars */
+#define DRV_VERSION	"1.10"	/* must be exactly four chars */
 
 struct ata_scsi_args {
 	u16			*id;
@@ -37,11 +37,14 @@ struct ata_scsi_args {
 /* libata-core.c */
 extern struct ata_queued_cmd *ata_qc_new_init(struct ata_port *ap,
 				      struct ata_device *dev);
+extern void ata_qc_free(struct ata_queued_cmd *qc);
 extern int ata_qc_issue(struct ata_queued_cmd *qc);
+extern int ata_check_atapi_dma(struct ata_queued_cmd *qc);
 extern void ata_dev_select(struct ata_port *ap, unsigned int device,
                            unsigned int wait, unsigned int can_sleep);
 extern void ata_tf_to_host_nolock(struct ata_port *ap, struct ata_taskfile *tf);
 extern void swap_buf_le16(u16 *buf, unsigned int buf_words);
+extern void ata_pio_task(void *_data);
 
 
 /* libata-scsi.c */
@@ -73,6 +76,8 @@ extern void ata_scsi_badcmd(struct scsi_cmnd *cmd,
 extern void ata_scsi_rbuf_fill(struct ata_scsi_args *args, 
                         unsigned int (*actor) (struct ata_scsi_args *args,
                                            u8 *rbuf, unsigned int buflen));
+extern struct ata_device *ata_scsi_find_dev(struct ata_port *ap,
+					    struct scsi_device *scsidev);
 
 static inline void ata_bad_scsiop(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 {

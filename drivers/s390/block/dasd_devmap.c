@@ -11,7 +11,7 @@
  * functions may not be called from interrupt context. In particular
  * dasd_get_device is a no-no from interrupt context.
  *
- * $Revision: 1.33 $
+ * $Revision: 1.30 $
  */
 
 #include <linux/config.h>
@@ -239,6 +239,8 @@ dasd_parse_keyword( char *parsestring ) {
                 return residual_str;
         }
         if (strncmp ("fixedbuffers", parsestring, length) == 0) {
+		if (dasd_page_cache)
+			return residual_str;
 		dasd_page_cache =
 			kmem_cache_create("dasd_page_cache", PAGE_SIZE, 0,
 					  SLAB_CACHE_DMA, NULL, NULL );

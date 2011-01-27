@@ -565,7 +565,7 @@ struct kioctx *lookup_ioctx(unsigned long ctx_id)
  *	(Note: this routine is intended to be called only
  *	from a kernel thread context)
  */
-void use_mm(struct mm_struct *mm)
+static void use_mm(struct mm_struct *mm)
 {
 	struct mm_struct *active_mm;
 	struct task_struct *tsk = current;
@@ -1284,6 +1284,7 @@ asmlinkage long sys_io_setup(unsigned nr_events, aio_context_t __user *ctxp)
 		if (!ret)
 			return 0;
 
+		get_ioctx(ioctx); /* io_destroy() expects us to hold a ref */
 		io_destroy(ioctx);
 	}
 

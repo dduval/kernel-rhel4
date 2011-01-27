@@ -35,8 +35,8 @@
 #include <linux/module.h>
 
 #include "ieee80211.h"
-static const char ieee80211_modes[] = {
-	'a', 'b', 'g', '?'
+static const char *ieee80211_modes[] = {
+	"?", "a", "b", "ab", "g", "ag", "bg", "abg"
 };
 
 #if 0
@@ -92,7 +92,7 @@ static inline char *ipw2100_translate_scan(struct ieee80211_device *ieee,
 
 	/* Add the protocol name */
 	iwe.cmd = SIOCGIWNAME;
-	snprintf(iwe.u.name, IFNAMSIZ, "IEEE 802.11%c", ieee80211_modes[network->mode]);
+	snprintf(iwe.u.name, IFNAMSIZ, "IEEE 802.11%s", ieee80211_modes[network->mode]);
 	start = iwe_stream_add_event(start, stop, &iwe, IW_EV_CHAR_LEN);
 	
         /* Add mode */
@@ -161,7 +161,6 @@ static inline char *ipw2100_translate_scan(struct ieee80211_device *ieee,
 	if (iwe.u.data.length)
 		start = iwe_stream_add_point(start, stop, &iwe, custom);
 
-#if 0
 	/* Add quality statistics */
 	/* TODO: Fix these values... */
 	iwe.cmd = IWEVQUAL;
@@ -169,12 +168,19 @@ static inline char *ipw2100_translate_scan(struct ieee80211_device *ieee,
 	iwe.u.qual.level = network->stats.rssi;
 	iwe.u.qual.noise = network->stats.noise;
 	iwe.u.qual.updated = network->stats.mask & IEEE80211_STATMASK_WEMASK;
+	if (!(network->stats.mask & IEEE80211_STATMASK_RSSI))
+		iwe.u.qual.updated |= IW_QUAL_LEVEL_INVALID;
+	if (!(network->stats.mask & IEEE80211_STATMASK_NOISE))
+		iwe.u.qual.updated |= IW_QUAL_NOISE_INVALID;
+	if (!(network->stats.mask & IEEE80211_STATMASK_SIGNAL))
+		iwe.u.qual.updated |= IW_QUAL_QUAL_INVALID;
 
 	start = iwe_stream_add_event(start, stop, &iwe, IW_EV_QUAL_LEN);
-#endif
+
 	iwe.cmd = IWEVCUSTOM;
 	p = custom;
 
+#if 0
 	if (network->stats.mask & IEEE80211_STATMASK_RSSI) 
 		p += snprintf(p, MAX_CUSTOM_LEN - (p - custom), 
 			      " RSSI: %-4d dBm ", 
@@ -189,6 +195,7 @@ static inline char *ipw2100_translate_scan(struct ieee80211_device *ieee,
 		p += snprintf(p, MAX_CUSTOM_LEN - (p - custom), 
 			      " Signal: %-4d dBm ", 
 			      (s8)network->stats.signal);
+#endif
 
 	iwe.u.data.length = p - custom;
 	if (iwe.u.data.length)
@@ -343,6 +350,8 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 
 		goto done;
 	}
+
+	
 	
 	sec.enabled = 1;
 	sec.flags |= SEC_ENABLED;
@@ -377,7 +386,7 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 			new_crypt = NULL;
 
 			printk(KERN_WARNING "%s: could not initialize WEP: "
-			       "load module ieee80211_crypt_wep.o\n",
+			       "load module ieee80211_crypt_wep\n",
 			       dev->name);
 			return -EOPNOTSUPP;
 		}
@@ -418,6 +427,8 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 
 		/* No key data - just set the default TX key index */
 		if (key_provided) {
+			IEEE80211_DEBUG_WX(
+				"Setting key %d to default Tx key.\n", key);
 			ieee->tx_keyidx = key;
 			sec.active_key = key;
 			sec.flags |= SEC_ACTIVE_KEY;
@@ -436,8 +447,8 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 	sec.flags |= SEC_LEVEL;
 	sec.level = SEC_LEVEL_1; /* 40 and 104 bit WEP */
 
-	if (ieee->func && ieee->func->set_security)
-		ieee->func->set_security(ieee, &sec);
+	if (ieee->set_security)
+		ieee->set_security(dev, &sec);
 
 	/* Do not reset port if card is in Managed mode since resetting will
 	 * generate new IEEE 802.11 authentication which may end up in looping
@@ -446,8 +457,7 @@ int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
 	 * the callbacks structures used to initialize the 802.11 stack. */
 	if (ieee->reset_on_keychange &&
 	    ieee->iw_mode != IW_MODE_INFRA && 
-	    ieee->func->reset_port &&
-	    ieee->func->reset_port(dev)) {
+	    ieee->reset_port && ieee->reset_port(dev)) {
 		printk(KERN_DEBUG "%s: reset_port failed\n", dev->name);
 		return -EINVAL;
 	}

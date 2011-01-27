@@ -2592,7 +2592,7 @@ pfm_task_incompatible(pfm_context_t *ctx, struct task_struct *task)
 		return -EINVAL;
 	}
 
-	if (task->state == TASK_ZOMBIE) {
+	if (task->exit_state == EXIT_ZOMBIE) {
 		DPRINT(("cannot attach to  zombie task [%d]\n", task->pid));
 		return -EBUSY;
 	}

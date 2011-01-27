@@ -17,29 +17,76 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+#include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/list.h>
+#include <linux/notifier.h>
 #include <linux/pci.h>
 #include <linux/proc_fs.h>
-#include <linux/bootmem.h>
-#include <linux/mm.h>
 #include <linux/rbtree.h>
-#include <linux/spinlock.h>
 #include <linux/seq_file.h>
-#include <asm/paca.h>
-#include <asm/processor.h>
-#include <asm/naca.h>
+#include <asm/atomic.h>
+#include <asm/eeh.h>
 #include <asm/io.h>
 #include <asm/machdep.h>
-#include <asm/pgtable.h>
 #include <asm/rtas.h>
 #include "pci.h"
 
 #undef DEBUG
 
+/** Overview:
+ *  EEH, or "Extended Error Handling" is a PCI bridge technology for
+ *  dealing with PCI bus errors that can't be dealt with within the
+ *  usual PCI framework, except by check-stopping the CPU.  Systems
+ *  that are designed for high-availability/reliability cannot afford
+ *  to crash due to a "mere" PCI error, thus the need for EEH.
+ *  An EEH-capable bridge operates by converting a detected error
+ *  into a "slot freeze", taking the PCI adapter off-line, making
+ *  the slot behave, from the OS'es point of view, as if the slot
+ *  were "empty": all reads return 0xff's and all writes are silently
+ *  ignored.  EEH slot isolation events can be triggered by parity
+ *  errors on the address or data busses (e.g. during posted writes),
+ *  which in turn might be caused by dust, vibration, humidity,
+ *  radioactivity or plain-old failed hardware.
+ *
+ *  Note, however, that one of the leading causes of EEH slot
+ *  freeze events are buggy device drivers, buggy device microcode,
+ *  or buggy device hardware.  This is because any attempt by the
+ *  device to bus-master data to a memory address that is not
+ *  assigned to the device will trigger a slot freeze.   (The idea
+ *  is to prevent devices-gone-wild from corrupting system memory).
+ *  Buggy hardware/drivers will have a miserable time co-existing
+ *  with EEH.
+ *
+ *  Ideally, a PCI device driver, when suspecting that an isolation
+ *  event has occured (e.g. by reading 0xff's), will then ask EEH
+ *  whether this is the case, and then take appropriate steps to
+ *  reset the PCI slot, the PCI device, and then resume operations.
+ *  However, until that day,  the checking is done here, with the
+ *  eeh_check_failure() routine embedded in the MMIO macros.  If
+ *  the slot is found to be isolated, an "EEH Event" is synthesized
+ *  and sent out for processing.
+ */
+
+/** Bus Unit ID macros; get low and hi 32-bits of the 64-bit BUID */
 #define BUID_HI(buid) ((buid) >> 32)
 #define BUID_LO(buid) ((buid) & 0xffffffff)
-#define CONFIG_ADDR(busno, devfn) \
-		(((((busno) & 0xff) << 8) | ((devfn) & 0xf8)) << 8)
+
+/* EEH event workqueue setup. */
+static spinlock_t eeh_eventlist_lock = SPIN_LOCK_UNLOCKED;
+LIST_HEAD(eeh_eventlist);
+static void eeh_event_handler(void *);
+DECLARE_WORK(eeh_event_wq, eeh_event_handler, NULL);
+
+static struct notifier_block *eeh_notifier_chain;
+
+/*
+ * If a device driver keeps reading an MMIO register in an interrupt
+ * handler after a slot isolation event has occurred, we assume it
+ * is broken and panic.  This sets the threshold for how many read
+ * attempts we allow before panicking.
+ */
+#define EEH_MAX_FAILS	100000
 
 /* RTAS tokens */
 static int ibm_set_eeh_option;
@@ -59,13 +106,15 @@ static int eeh_error_buf_size;
 static DEFINE_PER_CPU(unsigned long, total_mmio_ffs);
 static DEFINE_PER_CPU(unsigned long, false_positives);
 static DEFINE_PER_CPU(unsigned long, ignored_failures);
+static DEFINE_PER_CPU(unsigned long, slot_resets);
 
 /**
  * The pci address cache subsystem.  This subsystem places
  * PCI device address resources into a red-black tree, sorted
  * according to the address range, so that given only an i/o
  * address, the corresponding PCI device can be **quickly**
- * found.
+ * found. It is safe to perform an address lookup in an interrupt
+ * context; this ability is an important feature.
  *
  * Currently, the only customer of this code is the EEH subsystem;
  * thus, this code has been somewhat tailored to suit EEH better.
@@ -172,9 +221,9 @@ pci_addr_cache_insert(struct pci_dev *dev, unsigned long alo,
 	while (*p) {
 		parent = *p;
 		piar = rb_entry(parent, struct pci_io_addr_range, rb_node);
-		if (alo < piar->addr_lo) {
+		if (ahi < piar->addr_lo) {
 			p = &parent->rb_left;
-		} else if (ahi > piar->addr_hi) {
+		} else if (alo > piar->addr_hi) {
 			p = &parent->rb_right;
 		} else {
 			if (dev != piar->pcidev ||
@@ -192,6 +241,11 @@ pci_addr_cache_insert(struct pci_dev *dev, unsigned long alo,
 	piar->addr_hi = ahi;
 	piar->pcidev = dev;
 	piar->flags = flags;
+	
+#ifdef DEBUG 
+	printk (KERN_DEBUG "PIAR: insert range=[%lx:%lx] dev=%s\n", 
+	               alo, ahi, pci_name (dev));
+#endif
 
 	rb_link_node(&piar->rb_node, parent, p);
 	rb_insert_color(&piar->rb_node, &pci_io_addr_cache_root.rb_root);
@@ -316,6 +370,7 @@ void pci_addr_cache_remove_device(struct pci_dev *dev)
  */
 void __init pci_addr_cache_build(void)
 {
+	struct device_node *dn;
 	struct pci_dev *dev = NULL;
 
 	spin_lock_init(&pci_io_addr_cache_root.piar_lock);
@@ -326,12 +381,154 @@ void __init pci_addr_cache_build(void)
 			continue;
 		}
 		pci_addr_cache_insert_device(dev);
+		
+		/* Save the BAR's; firmware doesn't restore these after EEH reset */
+		dn = pci_device_to_OF_node(dev);
+		if (dn) {
+			int i;
+			for (i = 0; i < 16; i++)
+				pci_read_config_dword(dev, i * 4, &dn->config_space[i]);
+		}
 	}
 
 #ifdef DEBUG
 	/* Verify tree built up above, echo back the list of addrs. */
 	pci_addr_cache_print(&pci_io_addr_cache_root);
 #endif
+}
+
+/* --------------------------------------------------------------- */
+/* Above lies the PCI Address Cache. Below lies the EEH event infrastructure */
+
+void eeh_slot_error_detail (struct device_node *dn, int severity)
+{
+	unsigned long flags;
+	int rc;
+
+	if (!dn) return;
+
+	/* Log the error with the rtas logger */
+	spin_lock_irqsave(&slot_errbuf_lock, flags);
+	memset(slot_errbuf, 0, eeh_error_buf_size);
+
+	rc = rtas_call(ibm_slot_error_detail,
+	               8, 1, NULL, dn->eeh_config_addr,
+	               BUID_HI(dn->phb->buid),
+	               BUID_LO(dn->phb->buid), NULL, 0,
+	               virt_to_phys(slot_errbuf),
+	               eeh_error_buf_size,
+	               severity);
+
+	if (rc == 0)
+		log_error(slot_errbuf, ERR_TYPE_RTAS_LOG, 0);
+	spin_unlock_irqrestore(&slot_errbuf_lock, flags);
+}
+
+EXPORT_SYMBOL(eeh_slot_error_detail);
+
+/**
+ * read_slot_reset_state - get the current state of a slot for a
+ * given device node. 
+ *
+ * @dn device node for the slot to check
+ * @rets array to return results in
+ */
+static int read_slot_reset_state(struct device_node *dn, unsigned int rets[])
+{
+	int token, outputs;
+	
+	if (ibm_read_slot_reset_state2 != RTAS_UNKNOWN_SERVICE) {
+		token = ibm_read_slot_reset_state2;
+		outputs = 4;
+	} else {
+		token = ibm_read_slot_reset_state;
+		outputs = 3;
+	}
+
+	return rtas_call(token, 3, outputs, rets, dn->eeh_config_addr,
+			 BUID_HI(dn->phb->buid), BUID_LO(dn->phb->buid));
+}
+
+/**
+ * eeh_register_notifier - Register to find out about EEH events.
+ * @nb: notifier block to callback on events
+ */
+int eeh_register_notifier(struct notifier_block *nb)
+{
+	return notifier_chain_register(&eeh_notifier_chain, nb);
+}
+
+/**
+ * eeh_unregister_notifier - Unregister to an EEH event notifier.
+ * @nb: notifier block to callback on events
+ */
+int eeh_unregister_notifier(struct notifier_block *nb)
+{
+	return notifier_chain_unregister(&eeh_notifier_chain, nb);
+}
+
+/**
+ * eeh_panic - call panic() for an eeh event that cannot be handled.
+ * The philosophy of this routine is that it is better to panic and
+ * halt the OS than it is to risk possible data corruption by
+ * oblivious device drivers that don't know better.
+ *
+ * @dev pci device that had an eeh event
+ * @reset_state current reset state of the device slot
+ */
+static void eeh_panic(struct pci_dev *dev, int reset_state)
+{
+	/*
+	 * XXX We should create a seperate sysctl for this.
+	 *
+	 * Since the panic_on_oops sysctl is used to halt the system
+	 * in light of potential corruption, we can use it here.
+	 */
+	if (panic_on_oops)
+		panic("EEH: MMIO failure (%d) on device:%s %s\n", reset_state,
+		      pci_name(dev), pci_pretty_name(dev));
+	else {
+		__get_cpu_var(ignored_failures)++;
+		printk(KERN_INFO "EEH: Ignored MMIO failure (%d) on device:%s %s\n",
+		       reset_state, pci_name(dev), pci_pretty_name(dev));
+	}
+}
+
+/**
+ * eeh_event_handler - dispatch EEH events.  The detection of a frozen
+ * slot can occur inside an interrupt, where it can be hard to do
+ * anything about it.  The goal of this routine is to pull these
+ * detection events out of the context of the interrupt handler, and
+ * re-dispatch them for processing at a later time in a normal context.
+ *
+ * @dummy - unused
+ */
+static void eeh_event_handler(void *dummy)
+{
+	unsigned long flags;
+	struct eeh_event	*event;
+
+	while (1) {
+		spin_lock_irqsave(&eeh_eventlist_lock, flags);
+		event = NULL;
+		if (!list_empty(&eeh_eventlist)) {
+			event = list_entry(eeh_eventlist.next, struct eeh_event, list);
+			list_del(&event->list);
+		}
+		spin_unlock_irqrestore(&eeh_eventlist_lock, flags);
+		if (event == NULL)
+			break;
+
+		printk(KERN_INFO "EEH: MMIO failure (%d), notifiying device "
+		       "%s %s\n", event->reset_state,
+		       pci_name(event->dev), pci_pretty_name(event->dev));
+
+		__get_cpu_var(slot_resets)++;
+		notifier_call_chain (&eeh_notifier_chain, EEH_NOTIFY_FREEZE, event);
+
+		pci_dev_put(event->dev);
+		kfree(event);
+	}
 }
 
 /**
@@ -351,6 +548,17 @@ static inline unsigned long eeh_token_to_phys(unsigned long token)
 	return pa | (token & (PAGE_SIZE-1));
 }
 
+static inline struct pci_dev * eeh_get_pci_dev(struct device_node *dn)
+{
+	struct pci_dev *dev = NULL;
+
+	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
+		if (pci_device_to_OF_node(dev) == dn)
+			return dev;
+	}
+	return NULL;
+}
+
 /**
  * eeh_dn_check_failure - check if all 1's data is due to EEH slot freeze
  * @dn device node
@@ -368,9 +576,10 @@ static inline unsigned long eeh_token_to_phys(unsigned long token)
  */
 int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 {
-	int ret;
-	int rets[3];
+	int ret, rets[3];
 	unsigned long flags;
+	int reset_state;
+	struct eeh_event  *event;
 
 	__get_cpu_var(total_mmio_ffs)++;
 
@@ -386,7 +595,24 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 		return 0;
 	}
 
-	if (!dn->eeh_config_addr) {
+	if (!dn->eeh_config_addr)
+		return 0;
+
+	/*
+	 * If we already have a pending isolation event for this
+	 * slot, we know it's bad already, we don't need to check...
+	 */
+	if (dn->eeh_mode & EEH_MODE_ISOLATED) {
+		dn->eeh_check_count ++;
+		if (dn->eeh_check_count >= EEH_MAX_FAILS) {
+			printk (KERN_ERR "EEH: Driver ignored %d bad reads, panicing\n",
+			        dn->eeh_check_count);
+			dump_stack();
+			/* re-read the slot reset state */
+			if (read_slot_reset_state(dn, rets))
+				rets[0] = -1;  /* reset state unknown */
+			eeh_panic(dev, rets[0]);
+		}
 		return 0;
 	}
 
@@ -399,46 +625,46 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 	 */
 	ret = read_slot_reset_state(dn, rets);
 
-	if (ret == 0 && rets[1] == 1 && (rets[0] == 2 || rets[0] == 4)) {
-		int log_event;
-
-		spin_lock_irqsave(&slot_errbuf_lock, flags);
-		memset(slot_errbuf, 0, eeh_error_buf_size);
-
-		log_event = rtas_call(ibm_slot_error_detail,
-		                      8, 1, NULL, dn->eeh_config_addr,
-		                      BUID_HI(dn->phb->buid),
-		                      BUID_LO(dn->phb->buid), NULL, 0,
-		                      virt_to_phys(slot_errbuf),
-		                      eeh_error_buf_size,
-		                      1 /* Temporary Error */);
-
-		if (log_event == 0)
-			log_error(slot_errbuf, ERR_TYPE_RTAS_LOG,
-				  1 /* Fatal */);
-
-		spin_unlock_irqrestore(&slot_errbuf_lock, flags);
-
-		printk(KERN_INFO "EEH: MMIO failure (%d) on device: %s %s\n",
-		       rets[0], dn->name, dn->full_name);
-		WARN_ON(1);
-
-		/*
-		 * XXX We should create a separate sysctl for this.
-		 *
-		 * Since the panic_on_oops sysctl is used to halt
-		 * the system in light of potential corruption, we
-		 * can use it here.
-		 */
-		if (panic_on_oops) {
-			panic("EEH: MMIO failure (%d) on device: %s %s\n",
-			      rets[0], dn->name, dn->full_name);
-		} else {
-			__get_cpu_var(ignored_failures)++;
-		}
-	} else {
+	if (!(ret == 0 && rets[1] == 1 && (rets[0] == 2 || rets[0] == 4))) {
 		__get_cpu_var(false_positives)++;
+		return 0;
 	}
+
+	/* Prevent repeated reports of this failure */
+	dn->eeh_mode |= EEH_MODE_ISOLATED;
+
+	reset_state = rets[0];
+
+	/* Log the error with the rtas logger */
+	if (dn->eeh_freeze_count < EEH_MAX_ALLOWED_FREEZES) {
+		eeh_slot_error_detail (dn, 1 /* Temporary Error */);
+	} else {
+		eeh_slot_error_detail (dn, 2 /* Permanent Error */);
+	}
+
+	event = kmalloc(sizeof(*event), GFP_ATOMIC);
+	if (event == NULL) {
+		printk (KERN_ERR "EEH: out of memory, event not handled\n");
+		eeh_panic(dev, reset_state);
+		return 1;
+	}
+
+	if (!dev)
+		dev = eeh_get_pci_dev (dn);
+	event->dev = dev;
+	event->dn = dn;
+	event->reset_state = reset_state;
+
+	/* We may or may not be called in an interrupt context */
+	spin_lock_irqsave(&eeh_eventlist_lock, flags);
+	list_add(&event->list, &eeh_eventlist);
+	spin_unlock_irqrestore(&eeh_eventlist_lock, flags);
+
+	/* Most EEH events are due to device driver bugs.  Having
+	 * a stack trace will help the device-driver authors figure
+	 * out what happened.  So print that out. */
+	dump_stack();
+	schedule_work(&eeh_event_wq);
 
 	return 0;
 }
@@ -446,34 +672,10 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 EXPORT_SYMBOL(eeh_dn_check_failure);
 
 /**
- * read_slot_reset_state - get the current state of a slot for a
- * given device node. 
- *
- * @dn device node for the slot to check
- * @rets array to return results in
- */
-static int read_slot_reset_state(struct device_node *dn, unsigned long rets[])
-{
-	int token, outputs;
-	
-	if (ibm_read_slot_reset_state2 != RTAS_UNKNOWN_SERVICE) {
-		token = ibm_read_slot_reset_state2;
-		outputs = 4;
-	} else {
-		token = ibm_read_slot_reset_state;
-		outputs = 3;
-	}
-
-	return rtas_call(token, 3, outputs, rets, dn->eeh_config_addr,
-			 BUID_HI(dn->phb->buid), BUID_LO(dn->phb->buid));
-}
-
-/**
  * eeh_check_failure - check if all 1's data is due to EEH slot freeze
  * @token i/o token, should be address in the form 0xA....
  * @val value, should be all 1's (XXX why do we need this arg??)
  *
- * Check for an eeh failure at the given token address.
  * Check for an EEH failure at the given token address.  Call this
  * routine if the result of a read was all 0xff's and you want to
  * find out if this is due to an EEH slot freeze event.  This routine
@@ -481,6 +683,7 @@ static int read_slot_reset_state(struct device_node *dn, unsigned long rets[])
  *
  * Note this routine is safe to call in an interrupt context.
  */
+
 unsigned long eeh_check_failure(const volatile void __iomem *token, unsigned long val)
 {
 	unsigned long addr;
@@ -490,7 +693,7 @@ unsigned long eeh_check_failure(const volatile void __iomem *token, unsigned lon
 	/* Finding the phys addr + pci device; this is pretty quick. */
 	addr = eeh_token_to_phys((unsigned long __force) token);
 	dev = pci_get_device_by_addr(addr);
-	if (!dev)
+	if (!dev) 
 		return val;
 
 	dn = pci_device_to_OF_node(dev);
@@ -501,6 +704,171 @@ unsigned long eeh_check_failure(const volatile void __iomem *token, unsigned lon
 }
 
 EXPORT_SYMBOL(eeh_check_failure);
+
+/* ------------------------------------------------------------- */
+/* The code below deals with error recovery */
+
+void
+rtas_set_slot_reset(struct device_node *dn)
+{
+	int token = rtas_token ("ibm,set-slot-reset");
+	int rc;
+
+	if (token == RTAS_UNKNOWN_SERVICE)
+		return;
+	rc = rtas_call(token,4,1, NULL,
+	               dn->eeh_config_addr,
+	               BUID_HI(dn->phb->buid),
+	               BUID_LO(dn->phb->buid),
+	               1);
+	if (rc) {
+		printk (KERN_WARNING "EEH: Unable to reset the failed slot\n");
+		return;
+	}
+	
+	/* The PCI bus requires that the reset be held high for at least
+	 * a 100 milliseconds. We wait a bit longer 'just in case'.
+	 */
+   msleep (200);
+	
+	rc = rtas_call(token,4,1, NULL,
+	               dn->eeh_config_addr,
+	               BUID_HI(dn->phb->buid),
+	               BUID_LO(dn->phb->buid),
+	               0);
+}
+
+EXPORT_SYMBOL(rtas_set_slot_reset);
+
+void
+rtas_configure_bridge(struct device_node *dn)
+{
+	int token = rtas_token ("ibm,configure-bridge");
+	int rc;
+
+	if (token == RTAS_UNKNOWN_SERVICE)
+		return;
+	rc = rtas_call(token,3,1, NULL,
+	               dn->eeh_config_addr,
+	               BUID_HI(dn->phb->buid),
+	               BUID_LO(dn->phb->buid));
+	if (rc) {
+		printk (KERN_WARNING "EEH: Unable to configure device bridge\n");
+	}
+}
+
+EXPORT_SYMBOL(rtas_configure_bridge);
+
+/* ------------------------------------------------------- */
+/** Save and restore of PCI BARs
+ * 
+ * Although firmware will set up BARs during boot, it doesn't
+ * set up device BAR's after a device reset, although it will,
+ * if requested, set up bridge configuration. Thus, we need to 
+ * configure the PCI devices ourselves.  Config-space setup is 
+ * stored in the PCI structures which are normally deleted during
+ * device removal.  Thus, the "save" routine references the
+ * structures so that they aren't deleted. 
+ */
+
+struct eeh_cfg_tree
+{
+	struct eeh_cfg_tree *sibling;
+	struct eeh_cfg_tree *child;
+	struct device_node *dn;
+	int is_bridge;
+};
+
+/** 
+ * eeh_save_bars - save the PCI config space info
+ */
+struct eeh_cfg_tree * eeh_save_bars(struct device_node *dn)
+{
+	struct pci_dev *dev;
+	struct eeh_cfg_tree *cnode;
+
+	dev = eeh_get_pci_dev(dn);
+	if (!dev)
+		return NULL;
+	
+	cnode = kmalloc(sizeof(struct eeh_cfg_tree), GFP_KERNEL);
+	if (!cnode) 
+		return NULL;
+	
+	cnode->is_bridge = 0;
+	
+	if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE) 
+		cnode->is_bridge = 1;
+			  
+	of_node_get(dn);
+	cnode->dn = dn;
+	
+	cnode->sibling = NULL;
+	cnode->child = NULL;
+
+	if (dn->child) {
+		cnode->child = eeh_save_bars (dn->child);
+	}
+	if (dn->sibling) {
+		cnode->sibling = eeh_save_bars (dn->sibling);
+	}
+
+	return cnode;
+}
+EXPORT_SYMBOL(eeh_save_bars);
+
+/**
+ * __restore_bars - Restore the Base Address Registers
+ * Loads the PCI configuration space base address registers, 
+ * the expansion ROM base address, the latency timer, and etc.
+ * from the saved values in the device node.
+ */
+static inline void __restore_bars (struct device_node *dn)
+{
+	int i;
+	for (i=4; i<10; i++) {
+		rtas_write_config(dn, i*4, 4, dn->config_space[i]);
+	}
+
+	/* 12 == Expansion ROM Address */
+	rtas_write_config(dn, 12*4, 4, dn->config_space[12]);
+	
+#define SAVED_BYTE(OFF) (((u8 *)(dn->config_space))[OFF])
+	
+	rtas_write_config (dn, PCI_CACHE_LINE_SIZE, 1, 
+	            SAVED_BYTE(PCI_CACHE_LINE_SIZE));
+	
+	rtas_write_config (dn, PCI_LATENCY_TIMER, 1, 
+	            SAVED_BYTE(PCI_LATENCY_TIMER));
+	
+	rtas_write_config (dn, PCI_INTERRUPT_LINE, 1, 
+	            SAVED_BYTE(PCI_INTERRUPT_LINE));
+}
+
+/** 
+ * eeh_restore_bars - restore the PCI config space info
+ */
+void eeh_restore_bars(struct eeh_cfg_tree *tree)
+{
+	if (!(tree->is_bridge))
+		__restore_bars (tree->dn);
+	
+	if (tree->child)
+		eeh_restore_bars (tree->child);
+
+	if (tree->sibling)
+		eeh_restore_bars (tree->sibling);
+
+	of_node_put (tree->dn);
+	kfree (tree);
+}
+EXPORT_SYMBOL(eeh_restore_bars);
+
+/* ------------------------------------------------------------- */
+/* The code below deals with enabling EEH for devices during  the
+ * early boot sequence.  EEH must be enabled before any PCI probing
+ * can be done.
+ */
 
 struct eeh_early_enable_info {
 	unsigned int buid_hi;
@@ -623,7 +991,7 @@ void __init eeh_init(void)
 	}
 	if (eeh_error_buf_size > RTAS_ERROR_LOG_MAX) {
 		printk(KERN_WARNING "EEH: rtas-error-log-max is bigger than allocated "
-		      "buffer ! (%d vs %d)", eeh_error_buf_size, RTAS_ERROR_LOG_MAX);
+		       "buffer ! (%d vs %d)", eeh_error_buf_size, RTAS_ERROR_LOG_MAX);
 		eeh_error_buf_size = RTAS_ERROR_LOG_MAX;
 	}
 
@@ -687,6 +1055,9 @@ EXPORT_SYMBOL(eeh_add_device_early);
  */
 void eeh_add_device_late(struct pci_dev *dev)
 {
+	int i;
+	struct device_node *dn;
+
 	if (!dev || !eeh_subsystem_enabled)
 		return;
 
@@ -696,6 +1067,11 @@ void eeh_add_device_late(struct pci_dev *dev)
 #endif
 
 	pci_addr_cache_insert_device (dev);
+
+	/* Save the BAR's; firmware doesn't restore these after EEH reset */
+	dn = pci_device_to_OF_node(dev);
+	for (i = 0; i < 16; i++)
+		pci_read_config_dword(dev, i * 4, &dn->config_space[i]);
 }
 EXPORT_SYMBOL(eeh_add_device_late);
 
@@ -724,11 +1100,13 @@ static int proc_eeh_show(struct seq_file *m, void *v)
 {
 	unsigned int cpu;
 	unsigned long ffs = 0, positives = 0, failures = 0;
+	unsigned long resets = 0;
 
 	for_each_cpu(cpu) {
 		ffs += per_cpu(total_mmio_ffs, cpu);
 		positives += per_cpu(false_positives, cpu);
 		failures += per_cpu(ignored_failures, cpu);
+		resets += per_cpu(slot_resets, cpu);
 	}
 
 	if (0 == eeh_subsystem_enabled) {
@@ -738,8 +1116,9 @@ static int proc_eeh_show(struct seq_file *m, void *v)
 		seq_printf(m, "EEH Subsystem is enabled\n");
 		seq_printf(m, "eeh_total_mmio_ffs=%ld\n"
 			   "eeh_false_positives=%ld\n"
-			   "eeh_ignored_failures=%ld\n",
-			   ffs, positives, failures);
+			   "eeh_ignored_failures=%ld\n"
+			   "eeh_slot_resets=%ld\n",
+			   ffs, positives, failures, resets);
 	}
 
 	return 0;

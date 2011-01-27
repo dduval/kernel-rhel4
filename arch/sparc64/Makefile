@@ -69,9 +69,6 @@ drivers-$(CONFIG_OPROFILE)	+= arch/sparc64/oprofile/
 
 boot := arch/sparc64/boot
 
-bzImage: image
-	cp $(boot)/image $(boot)/bzImage
-
 image tftpboot.img vmlinux.aout: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 

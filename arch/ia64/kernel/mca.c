@@ -75,6 +75,7 @@
 
 #include <asm/irq.h>
 #include <asm/hw_irq.h>
+#include <asm/crashdump.h>
 
 #if defined(IA64_MCA_DEBUG_INFO)
 # define IA64_MCA_DEBUG(fmt...)	printk(fmt)
@@ -89,7 +90,8 @@ u64				ia64_mca_proc_state_dump[512];
 u64				ia64_mca_stack[1024] __attribute__((aligned(16)));
 u64				ia64_mca_stackframe[32];
 u64				ia64_mca_bspstore[1024];
-u64				ia64_init_stack[KERNEL_STACK_SIZE/8] __attribute__((aligned(16)));
+u64				ia64_init_stack[NR_CPUS*KERNEL_STACK_SIZE/8] __attribute__((aligned(16)));
+u64				ia64_init_stack_addr[NR_CPUS];
 u64				ia64_mca_serialize;
 
 /* In mca_asm.S */
@@ -466,6 +468,9 @@ fetch_min_state (pal_min_state_area_t *ms, struct pt_regs *pt, struct switch_sta
 	PUT_NAT_BIT(sw->caller_unat, &pt->r30);	PUT_NAT_BIT(sw->caller_unat, &pt->r31);
 }
 
+static spinlock_t init_dump_lock = SPIN_LOCK_UNLOCKED;
+static spinlock_t show_stack_lock = SPIN_LOCK_UNLOCKED;
+
 static void
 init_handler_platform (pal_min_state_area_t *ms,
 		       struct pt_regs *pt, struct switch_stack *sw)
@@ -482,12 +487,25 @@ init_handler_platform (pal_min_state_area_t *ms,
 	 */
 	printk("Delaying for 5 seconds...\n");
 	udelay(5*1000000);
+	spin_lock(&show_stack_lock);
 	show_min_state(ms);
 
 	printk("Backtrace of current task (pid %d, %s)\n", current->pid, current->comm);
 	fetch_min_state(ms, pt, sw);
 	unw_init_from_interruption(&info, current, pt, sw);
 	ia64_do_show_stack(&info, NULL);
+	spin_unlock(&show_stack_lock);
+
+	if (crashdump_func() || system_state == SYSTEM_DUMPING) {
+		if (spin_trylock(&init_dump_lock)) {
+#ifdef CONFIG_SMP
+			/* Wait until other cpus call ia64_freeze_cpu */
+			udelay(3*1000000);
+#endif
+			try_crashdump(pt);
+		}
+		unw_init_running(ia64_freeze_cpu, NULL);
+	}
 
 #ifdef CONFIG_SMP
 	/* read_trylock() would be handy... */
@@ -686,6 +704,7 @@ ia64_mca_wakeup_ipi_wait(void)
 			irr = ia64_getreg(_IA64_REG_CR_IRR3);
 			break;
 		}
+		cpu_relax();
 	} while (!(irr & (1UL << irr_bit))) ;
 }
 
@@ -1144,6 +1163,7 @@ ia64_init_handler (struct pt_regs *pt, struct switch_stack *sw)
 	ms = (pal_min_state_area_t *)(ia64_sal_to_os_handoff_state.pal_min_state | (6ul<<61));
 
 	init_handler_platform(ms, pt, sw);	/* call platform specific routines */
+	bust_spinlocks(0);
 }
 
 static int __init
@@ -1217,7 +1237,7 @@ void __init
 ia64_mca_init(void)
 {
 	ia64_fptr_t *mon_init_ptr = (ia64_fptr_t *)ia64_monarch_init_handler;
-	ia64_fptr_t *slave_init_ptr = (ia64_fptr_t *)ia64_slave_init_handler;
+	ia64_fptr_t *slave_init_ptr = (ia64_fptr_t *)ia64_monarch_init_handler;
 	ia64_fptr_t *mca_hldlr_ptr = (ia64_fptr_t *)ia64_os_mca_dispatch;
 	int i;
 	s64 rc;
@@ -1302,6 +1322,11 @@ ia64_mca_init(void)
 
 	IA64_MCA_DEBUG("%s: OS INIT handler at %lx\n", __FUNCTION__,
 		       ia64_mc_info.imi_monarch_init_handler);
+
+	/* Register stack for os init handler */
+	for(i = 0 ; i < NR_CPUS; i++)
+		ia64_init_stack_addr[i] =
+			(u64)&ia64_init_stack[i*KERNEL_STACK_SIZE/8]; 
 
 	/* Register the os init handler with SAL */
 	if ((rc = ia64_sal_set_vectors(SAL_VECTOR_OS_INIT,

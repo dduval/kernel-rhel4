@@ -21,6 +21,16 @@
 #ifndef IEEE80211_H
 #define IEEE80211_H
 #include <linux/if_ether.h> /* ETH_ALEN */
+#include <linux/kernel.h>   /* ARRAY_SIZE */
+
+#if WIRELESS_EXT < 17
+#define IW_QUAL_QUAL_INVALID   0x10
+#define IW_QUAL_LEVEL_INVALID  0x20
+#define IW_QUAL_NOISE_INVALID  0x40
+#define IW_QUAL_QUAL_UPDATED   0x1
+#define IW_QUAL_LEVEL_UPDATED  0x2
+#define IW_QUAL_NOISE_UPDATED  0x4
+#endif
 
 #define IEEE80211_DATA_LEN		2304
 /* Maximum size for the MA-UNITDATA primitive, 802.11 standard section
@@ -45,11 +55,41 @@ struct ieee80211_hdr {
 	u8 addr4[ETH_ALEN];
 } __attribute__ ((packed));
 
-#define IEEE80211_3ADDR_SIZE (24)
-#define IEEE80211_4ADDR_SIZE (30)
+struct ieee80211_hdr_3addr {
+	u16 frame_ctl;
+	u16 duration_id;
+	u8 addr1[ETH_ALEN];
+	u8 addr2[ETH_ALEN];
+	u8 addr3[ETH_ALEN];
+	u16 seq_ctl;
+} __attribute__ ((packed));
+
+static const char *eap_types[] = {
+	"EAP-Packet", "EAPOL-Start", "EAPOL-Logoff", "EAPOL-Key", 
+	"EAPOL-Encap-ASF-Alert", "Unknown"
+};
+
+static inline const char *eap_get_type(int type)
+{
+	if (type > ARRAY_SIZE(eap_types))
+		type = ARRAY_SIZE(eap_types) - 1;
+	return eap_types[type];
+}
+
+struct eapol {
+	u8 snap[6];
+	u16 ethertype;
+	u8 version;
+	u8 type;
+	u16 length;
+} __attribute__ ((packed));
+
+#define IEEE80211_3ADDR_LEN (24)
+#define IEEE80211_4ADDR_LEN (30)
+#define IEEE80211_FCS_LEN    (4)
 
 #define MIN_FRAG_THRESHOLD     256U
-#define	MAX_FRAG_THRESHOLD     2342U
+#define	MAX_FRAG_THRESHOLD     2346U
 
 /* Frame control field constants */
 #define IEEE80211_FCTL_VERS		0x0002
@@ -149,6 +189,9 @@ do { if (ieee80211_debug_level & (level)) \
 #define IEEE80211_DL_FRAG          BIT(5)
 #define IEEE80211_DL_EAP           BIT(6)
 
+#define IEEE80211_DL_TX            BIT(8)
+#define IEEE80211_DL_RX            BIT(9)
+
 #define IEEE80211_ERROR(f, a...) printk(KERN_ERR "ieee80211: " f, ## a)
 #define IEEE80211_WARNING(f, a...) printk(KERN_WARNING "ieee80211: " f, ## a)
 #define IEEE80211_DEBUG_INFO(f, a...)   IEEE80211_DEBUG(IEEE80211_DL_INFO, f, ## a)
@@ -159,6 +202,8 @@ do { if (ieee80211_debug_level & (level)) \
 #define IEEE80211_DEBUG_MGMT(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_MGMT, f, ## a)
 #define IEEE80211_DEBUG_FRAG(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_FRAG, f, ## a)
 #define IEEE80211_DEBUG_EAP(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_EAP, f, ## a)
+#define IEEE80211_DEBUG_TX(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_TX, f, ## a)
+#define IEEE80211_DEBUG_RX(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_RX, f, ## a)
 #include <linux/netdevice.h>
 #include <linux/wireless.h>
 #include <linux/if_arp.h> /* ARPHRD_ETHER */
@@ -169,7 +214,6 @@ do { if (ieee80211_debug_level & (level)) \
 #include <net/iw_handler.h>	// new driver API
 
 #define BIT(x) (1 << (x))
-
 #ifndef ETH_P_PAE
 #define ETH_P_PAE 0x888E /* Port Access Entity (IEEE 802.1X) */
 #endif /* ETH_P_PAE */
@@ -275,12 +319,12 @@ struct ieee80211_snap_hdr {
 #define IEEE80211_24GHZ_BAND     BIT(0)
 #define IEEE80211_52GHZ_BAND     BIT(1)
 
-#define IEEE80211_CCK_RATE_1MB		0x02	
-#define IEEE80211_CCK_RATE_2MB		0x04	
-#define IEEE80211_CCK_RATE_5MB		0x0B
-#define IEEE80211_CCK_RATE_11MB		0x16
-#define IEEE80211_OFDM_RATE_6MB		0x0C	
-#define IEEE80211_OFDM_RATE_9MB		0x12
+#define IEEE80211_CCK_RATE_1MB		        0x02	
+#define IEEE80211_CCK_RATE_2MB		        0x04	
+#define IEEE80211_CCK_RATE_5MB		        0x0B
+#define IEEE80211_CCK_RATE_11MB		        0x16
+#define IEEE80211_OFDM_RATE_6MB		        0x0C	
+#define IEEE80211_OFDM_RATE_9MB		        0x12
 #define IEEE80211_OFDM_RATE_12MB		0x18	
 #define IEEE80211_OFDM_RATE_18MB		0x24
 #define IEEE80211_OFDM_RATE_24MB		0x30
@@ -323,8 +367,8 @@ struct ieee80211_snap_hdr {
                                 IEEE80211_CCK_DEFAULT_RATES_MASK)
 
 #define IEEE80211_NUM_OFDM_RATES	    8
-#define IEEE80211_NUM_CCK_RATES	    4
-#define IEEE80211_OFDM_SHIFT_MASK_A       4
+#define IEEE80211_NUM_CCK_RATES	            4
+#define IEEE80211_OFDM_SHIFT_MASK_A         4
 
 
 
@@ -334,7 +378,7 @@ struct ieee80211_snap_hdr {
  *       any adverse affects. */
 struct ieee80211_rx_stats {
 	u32 mac_time;
-	u8 rssi;
+	s8 rssi;
 	u8 signal;
 	u8 noise;
 	u16 rate; /* in 100 kbps */
@@ -408,7 +452,7 @@ struct ieee80211_device;
 #define WEP_KEY_LEN 13
 
 struct ieee80211_security {
-	u16 active_key:1, 
+	u16 active_key:2, 
             enabled:1, 
 	    auth_mode:2, 
             auth_algo:4, 
@@ -511,35 +555,14 @@ struct ieee80211_assoc_request_frame {
 	struct ieee80211_info_element info_element;
 } __attribute__ ((packed));
 
-struct ieee80211_helper_functions {
-	void (*set_security)(struct ieee80211_device *ieee, 
-			     struct ieee80211_security *sec);
-
-	/* these functions are defined in hardware model specific files
-	 * (hostap_{cs,plx,pci}.c */
-	int (*card_present)(struct ieee80211_device *ieee);
-	void (*cor_sreset)(struct ieee80211_device *ieee);
-	int (*dev_open)(struct ieee80211_device *ieee);
-	int (*dev_close)(struct ieee80211_device *ieee);
-	void (*genesis_reset)(struct ieee80211_device *ieee, int hcr);
-
-	
-	/* Turn on unencrypted packet filtering at the HW level */
-	void (*set_unencrypted_filter)(struct ieee80211_device *ieee, int flag);
-
-	/* the following functions are from hostap_hw.c, but they may have some
-	 * hardware model specific code */
-
-	int (*hw_enable)(struct net_device *dev, int initial);
-	int (*hw_config)(struct net_device *dev, int initial);
-	void (*hw_reset)(struct net_device *dev);
-	void (*hw_shutdown)(struct net_device *dev, int no_disable);
-	int (*reset_port)(struct net_device *dev);
-	int (*tx)(struct sk_buff *skb, struct net_device *dev);
-	void (*schedule_reset)(struct ieee80211_device *ieee);
-	int (*tx_80211)(struct sk_buff *skb, struct net_device *dev);
+struct ieee80211_txb {
+	u8 nr_frags;
+	u8 encrypted;
+	u16 reserved;
+	u16 frag_size;
+	u16 payload_size;
+	struct sk_buff *fragments[0];
 };
-
 
 
 /* SWEEP TABLE ENTRIES NUMBER*/
@@ -559,13 +582,19 @@ struct ieee80211_helper_functions {
 
 #define NETWORK_EMPTY_ESSID BIT(0)
 #define NETWORK_HAS_OFDM    BIT(1)
+#define NETWORK_HAS_CCK     BIT(2)
 
 struct ieee80211_network {
+	/* These entries are used to identify a unique network */
 	u8 bssid[ETH_ALEN];
+	u8 channel;
+	/* Ensure null-terminated for any debug msgs */
+	u8 ssid[IW_ESSID_MAX_SIZE + 1];
 	u8 ssid_len;
+
+	/* These are network statistics */
 	struct ieee80211_rx_stats stats;
 	u16 capability;
-	u8 channel;
 	u8 rates[MAX_RATES_LENGTH];
 	u8 rates_len;
 	u8 rates_ex[MAX_RATES_EX_LENGTH];
@@ -574,8 +603,6 @@ struct ieee80211_network {
 	u8 mode;
 	u8 flags;
 	u32 last_associate;
-	/* Ensure null-terminated for any debug msgs */
-	u8 ssid[IW_ESSID_MAX_SIZE + 1];
 	u32 time_stamp[2];
 	u16 beacon_interval;
 	u16 listen_interval;
@@ -600,7 +627,7 @@ enum ieee80211_state {
 };
 
 #define DEFAULT_MAX_SCAN_AGE (15 * HZ) 
-#define DEFAULT_FTS 2342
+#define DEFAULT_FTS 2346
 #define MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MAC_ARG(x) ((u8*)(x))[0],((u8*)(x))[1],((u8*)(x))[2],((u8*)(x))[3],((u8*)(x))[4],((u8*)(x))[5]
 
@@ -616,6 +643,8 @@ extern inline int is_broadcast_ether_addr(const u8 *addr)
 		(addr[3] == 0xff) && (addr[4] == 0xff) && (addr[5] == 0xff));
 }
 
+#define CFG_IEEE80211_RESERVE_FCS BIT(0)
+#define CFG_IEEE80211_COMPUTE_FCS BIT(1)
 
 struct ieee80211_device {
 	struct net_device *dev;
@@ -623,7 +652,6 @@ struct ieee80211_device {
 	/* Bookkeeping structures */
 	struct net_device_stats stats;
 	struct ieee80211_stats ieee_stats;
-	void *priv;
 
 	/* Probe / Beacon management */
 	struct list_head network_free_list;
@@ -636,11 +664,9 @@ struct ieee80211_device {
 
 	spinlock_t lock;
 
-	int tx_payload_only; /* set to 1 if HW only expects the Tx SKB 
-			      * to contain the payload (vs. a fully configured
-			      * 802.11 header for a data frame) */
 	int tx_headroom; /* Set to size of any additional room needed at front
 			  * of allocated Tx SKBs */
+	u32 config;
 
 	/* WEP and other encryption related settings at the device level */
 	int open_wep; /* Set to 1 to allow unencrypted frames */
@@ -651,13 +677,13 @@ struct ieee80211_device {
 	/* If the host performs {en,de}cryption, then set to 1 */
 	int host_encrypt;
 	int host_decrypt;
+	int ieee802_1x; /* is IEEE 802.1X used */
 
 #ifdef CONFIG_IEEE80211_WPA
 	/* WPA data */
 	int wpa_enabled;
 	int drop_unencrypted;
 	int tkip_countermeasures;
-	int ieee_802_1x; /* is IEEE 802.1X used */
 	int privacy_invoked;
 	size_t wpa_ie_len;
 	u8 *wpa_ie;
@@ -679,21 +705,34 @@ struct ieee80211_device {
 	/* Association info */
 	u8 bssid[ETH_ALEN];
 
-	/* Callback vtable */
-	struct ieee80211_helper_functions *func;
-
 	enum ieee80211_state state;
 
 	int mode;       /* A, B, G */
 	int modulation; /* CCK, OFDM */
 	int freq_band;  /* 2.4Ghz, 5.2Ghz, Mixed */
 	int abg_ture;   /* ABG flag              */
+
+	/* Callback functions */
+	void (*set_security)(struct net_device *dev,
+			     struct ieee80211_security *sec);
+	int (*hard_start_xmit)(struct ieee80211_txb *txb, 
+			       struct net_device *dev);
+	int (*reset_port)(struct net_device *dev);
+
+	/* This must be the last item so that it points to the data 
+	 * allocated beyond this structure by alloc_ieee80211 */
+	u8 priv[0];
 };
 
-#define IEEE_A            0
-#define IEEE_B            1
-#define IEEE_G            2
-#define IEEE_MASK         (BIT(IEEE_A) | BIT(IEEE_B) | BIT(IEEE_G))
+#define IEEE_A            BIT(0)
+#define IEEE_B            BIT(1)
+#define IEEE_G            BIT(2)
+#define IEEE_MODE_MASK    (IEEE_A|IEEE_B|IEEE_G)
+
+extern inline void *ieee80211_priv(struct net_device *dev)
+{
+	return ((struct ieee80211_device *)netdev_priv(dev))->priv;
+}
 
 extern inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
 {
@@ -711,30 +750,30 @@ extern inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
 	return 1;
 }
 
-
 extern inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mode)
 {
-	int rc = 1;
-	switch(mode) {
-	case IEEE_A:
-		if (!(ieee->modulation & IEEE80211_OFDM_MODULATION) ||
-		    !(ieee->freq_band & IEEE80211_52GHZ_BAND))
-			rc = 0;
-		break;
+	/*
+	 * It is possible for both access points and our device to support
+	 * combinations of modes, so as long as there is one valid combination
+	 * of ap/device supported modes, then return success
+	 *
+	 */
+	if ((mode & IEEE_A) && 
+	    (ieee->modulation & IEEE80211_OFDM_MODULATION) &&
+	    (ieee->freq_band & IEEE80211_52GHZ_BAND))
+		return 1;
 
-	case IEEE_B:
-		if (!(ieee->modulation & IEEE80211_CCK_MODULATION) ||
-		    !(ieee->freq_band & IEEE80211_24GHZ_BAND))
-			rc = 0;
-		break;
+	if ((mode & IEEE_G) && 
+	    (ieee->modulation & IEEE80211_OFDM_MODULATION) &&
+	    (ieee->freq_band & IEEE80211_24GHZ_BAND))
+		return 1;
 
-	case IEEE_G:
-		if (!(ieee->modulation & IEEE80211_OFDM_MODULATION) ||
-		    !(ieee->freq_band & IEEE80211_24GHZ_BAND))
-			rc = 0;
-		break;
-	}
-	return rc;
+	if ((mode & IEEE_B) && 
+	    (ieee->modulation & IEEE80211_CCK_MODULATION) &&
+	    (ieee->freq_band & IEEE80211_24GHZ_BAND))
+		return 1;
+
+	return 0;
 }
 
 extern inline int ieee80211_get_hdrlen(u16 fc)
@@ -765,25 +804,16 @@ extern inline int ieee80211_get_hdrlen(u16 fc)
 
 
 /* ieee80211.c */
-extern struct ieee80211_device * ieee80211_alloc(struct net_device *dev,
-						 void *priv);
-extern void ieee80211_free(struct ieee80211_device *ieee);
+extern void free_ieee80211(struct net_device *dev);
+extern struct net_device *alloc_ieee80211(int sizeof_priv);
 
 extern int ieee80211_set_encryption(struct ieee80211_device *ieee);
 
 /* ieee80211_tx.c */
 
-struct ieee80211_txb {
-	u8 nr_frags;
-	u8 encrypted;
-	u16 reserved;
-	u16 frag_size;
-	u16 payload_size;
-	struct sk_buff *fragments[0];
-};
 
-extern struct ieee80211_txb *ieee80211_skb_to_txb(struct ieee80211_device *ieee, 
-						  struct sk_buff *skb);
+extern int ieee80211_xmit(struct sk_buff *skb,
+			  struct net_device *dev);
 extern void ieee80211_txb_free(struct ieee80211_txb *);
 
 

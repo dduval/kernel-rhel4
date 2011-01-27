@@ -356,7 +356,7 @@ static void netpoll_start_netdump(struct pt_regs *regs)
 	local_irq_save(flags);
 	preempt_disable();
 
-	smp_call_function(freeze_cpu, NULL, 1, -1);
+	dump_smp_call_function(freeze_cpu, NULL);
 	netdump_mdelay(3000);
 	for (i = 0; i < NR_CPUS; i++) {
 		if (cpus_frozen[i])

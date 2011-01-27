@@ -133,7 +133,7 @@ static inline void free_one_pgd(struct mmu_gather *tlb, pgd_t * dir,
 	pmd = pmd_offset(dir, 0);
 	pgd_clear(dir);
 	for (j = 0; j < PTRS_PER_PMD ; j++) {
-		if (pgd_idx * PGDIR_SIZE + j * PMD_SIZE >= TASK_SIZE)
+		if (pgd_idx * PGDIR_SIZE + j * PMD_SIZE >= MM_VM_SIZE(tlb->mm))
 			break;
 		free_one_pmd(tlb, pmd+j);
 	}

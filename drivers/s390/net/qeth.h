@@ -723,6 +723,8 @@ struct qeth_card {
 	struct qeth_perf_stats perf_stats;
 #endif /* CONFIG_QETH_PERF_STATS */
 	int use_hard_stop;
+	int (*orig_hard_header)(struct sk_buff *,struct net_device *,
+				unsigned short,void *,void *,unsigned);
 };
 
 struct qeth_card_list_struct {
@@ -752,6 +754,17 @@ qeth_get_ipa_adp_type(enum qeth_link_types link_type)
 	default:
 		return 1;
 	}
+}
+
+static inline struct sk_buff *
+qeth_pskb_unshare(struct sk_buff *skb, int pri)
+{
+	struct sk_buff *nskb;
+	if (!skb_cloned(skb))
+		return skb;
+	nskb = skb_copy(skb, pri);
+	kfree_skb(skb); /* free our shared copy */
+	return nskb;
 }
 
 inline static int

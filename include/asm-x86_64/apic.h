@@ -111,7 +111,6 @@ extern unsigned int nmi_watchdog;
 
 #endif /* CONFIG_X86_LOCAL_APIC */
 
-#define clustered_apic_mode 0
 #define esr_disable 0
 extern unsigned boot_cpu_id;
 

@@ -672,14 +672,14 @@ static inline int de_thread(struct task_struct *tsk)
 	if (current->pid != current->tgid) {
 		struct task_struct *leader = current->group_leader, *parent;
 		struct dentry *proc_dentry1, *proc_dentry2;
-		unsigned long state, ptrace;
+		unsigned long exit_state, ptrace;
 
 		/*
 		 * Wait for the thread group leader to be a zombie.
 		 * It should already be zombie at this point, most
 		 * of the time.
 		 */
-		while (leader->state != TASK_ZOMBIE)
+		while (leader->exit_state != EXIT_ZOMBIE)
 			yield();
 
 		spin_lock(&leader->proc_lock);
@@ -700,6 +700,14 @@ static inline int de_thread(struct task_struct *tsk)
 		 */
 		ptrace = leader->ptrace;
 		parent = leader->parent;
+		if (unlikely(ptrace) && unlikely(parent == current)) {
+			/*
+			 * Joker was ptracing his own group leader,
+			 * and now he wants to be his own parent!
+			 * We can't have that.
+			 */
+			ptrace = 0;
+		}
 
 		ptrace_unlink(current);
 		ptrace_unlink(leader);
@@ -723,7 +731,7 @@ static inline int de_thread(struct task_struct *tsk)
 		list_del(&current->tasks);
 		list_add_tail(&current->tasks, &init_task.tasks);
 		current->exit_signal = SIGCHLD;
-		state = leader->state;
+		exit_state = leader->exit_state;
 
 		write_unlock_irq(&tasklist_lock);
 		spin_unlock(&leader->proc_lock);
@@ -731,7 +739,7 @@ static inline int de_thread(struct task_struct *tsk)
 		proc_pid_flush(proc_dentry1);
 		proc_pid_flush(proc_dentry2);
 
-		if (state != TASK_ZOMBIE)
+		if (exit_state != EXIT_ZOMBIE)
 			BUG();
 		release_task(leader);
         }
@@ -1346,6 +1354,7 @@ static void zap_threads (struct mm_struct *mm)
 	struct task_struct *g, *p;
 	struct task_struct *tsk = current;
 	struct completion *vfork_done = tsk->vfork_done;
+	int traced = 0;
 
 	/*
 	 * Make sure nobody is waiting for us to release the VM,
@@ -1361,10 +1370,30 @@ static void zap_threads (struct mm_struct *mm)
 		if (mm == p->mm && p != tsk) {
 			force_sig_specific(SIGKILL, p);
 			mm->core_waiters++;
+			if (unlikely(p->ptrace) &&
+			    unlikely(p->parent->mm == mm))
+				traced = 1;
 		}
 	while_each_thread(g,p);
 
 	read_unlock(&tasklist_lock);
+
+	if (unlikely(traced)) {
+		/*
+		 * We are zapping a thread and the thread it ptraces.
+		 * If the tracee went into a ptrace stop for exit tracing,
+		 * we could deadlock since the tracer is waiting for this
+		 * coredump to finish.  Detach them so they can both die.
+		 */
+		write_lock_irq(&tasklist_lock);
+		do_each_thread(g,p) {
+			if (mm == p->mm && p != tsk &&
+			    p->ptrace && p->parent->mm == mm) {
+				__ptrace_unlink(p);
+			}
+		} while_each_thread(g,p);
+		write_unlock_irq(&tasklist_lock);
+	}
 }
 
 static void coredump_wait(struct mm_struct *mm)

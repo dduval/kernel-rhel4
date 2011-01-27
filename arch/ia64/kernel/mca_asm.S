@@ -107,6 +107,7 @@
 	.global	ia64_mca_stackframe
 	.global	ia64_mca_bspstore
 	.global ia64_init_stack
+	.global ia64_init_stack_addr
 
 	.text
 	.align 16

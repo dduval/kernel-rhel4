@@ -457,7 +457,7 @@ static void freeze_other_cpus(void)
 #if CONFIG_SMP
 	int	i;
 
-	smp_call_function(freeze_cpu, NULL, 1, -1);
+	dump_smp_call_function(freeze_cpu, NULL);
 	diskdump_mdelay(3000);
 	printk("CPU frozen: ");
 	for (i = 0; i < NR_CPUS; i++) {

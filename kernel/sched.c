@@ -1006,7 +1006,7 @@ void wait_task_inactive(task_t * p)
 repeat:
 	rq = task_rq_lock(p, &flags);
 	/* Must be off runqueue entirely, not preempted. */
-	if (unlikely(p->array)) {
+	if (unlikely(p->array || task_running(rq, p))) {
 		/* If it's preempted, we yield.  It could be a while. */
 		preempted = !task_running(rq, p);
 		task_rq_unlock(rq, &flags);
@@ -1468,10 +1468,10 @@ static void finish_task_switch(task_t *prev)
 
 	/*
 	 * A task struct has one reference for the use as "current".
-	 * If a task dies, then it sets TASK_ZOMBIE in tsk->state and calls
-	 * schedule one last time. The schedule call will never return,
+	 * If a task dies, then it sets EXIT_ZOMBIE in tsk->exit_state and
+	 * calls schedule one last time. The schedule call will never return,
 	 * and the scheduled task must drop that reference.
-	 * The test for TASK_ZOMBIE must occur while the runqueue locks are
+	 * The test for EXIT_ZOMBIE must occur while the runqueue locks are
 	 * still held, otherwise prev could be scheduled on another cpu, die
 	 * there before we look at prev->state, and then the reference would
 	 * be dropped twice.
@@ -2625,7 +2625,7 @@ asmlinkage void __sched schedule(void)
 	 * schedule() atomically, we ignore that path for now.
 	 * Otherwise, whine if we are scheduling when we should not be.
 	 */
-	if (likely(!(current->state & (TASK_DEAD | TASK_ZOMBIE)))) {
+	if (likely(!(current->exit_state & (EXIT_DEAD | EXIT_ZOMBIE)))) {
 		if (unlikely(in_atomic())) {
 			printk(KERN_ERR "bad: scheduling while atomic!\n");
 			dump_stack();
@@ -2664,6 +2664,8 @@ need_resched:
 
 	spin_lock_irq(&rq->lock);
 
+	if (unlikely(current->flags & PF_DEAD))
+		current->state = EXIT_DEAD;
 	/*
 	 * if entering off of a kernel preemption go straight
 	 * to picking the next task.
@@ -4083,7 +4085,7 @@ static void migrate_dead(unsigned int dead_cpu, task_t *tsk)
 	struct runqueue *rq = cpu_rq(dead_cpu);
 
 	/* Must be exiting, otherwise would be on tasklist. */
-	BUG_ON(tsk->state != TASK_ZOMBIE && tsk->state != TASK_DEAD);
+	BUG_ON(tsk->exit_state != EXIT_ZOMBIE && tsk->exit_state != EXIT_DEAD);
 
 	/* Cannot have done final schedule yet: would have vanished. */
 	BUG_ON(tsk->flags & PF_DEAD);

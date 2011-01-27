@@ -50,6 +50,7 @@
 #include <linux/wireless.h>
 #include <linux/etherdevice.h>
 #include <asm/uaccess.h>
+#include <net/arp.h>
 
 #include "ieee80211.h"
 
@@ -97,22 +98,30 @@ static inline void ieee80211_networks_initialize(struct ieee80211_device *ieee)
 		list_add_tail(&ieee->networks[i].list, &ieee->network_free_list);
 }
 
-struct ieee80211_device *ieee80211_alloc(struct net_device *dev,
-					 void *priv)
+
+struct net_device *alloc_ieee80211(int sizeof_priv)
 {
-	struct ieee80211_device *ieee = kmalloc(
-		sizeof(struct ieee80211_device), GFP_KERNEL);
+	struct ieee80211_device *ieee;
+	struct net_device *dev;
 	int err;
-	if (ieee == NULL)
-		return NULL;
-	memset(ieee, 0, sizeof(*ieee));
+
+	IEEE80211_DEBUG_INFO("Initializing...\n");
+
+	dev = alloc_etherdev(sizeof(struct ieee80211_device) + sizeof_priv);
+	if (!dev) {
+		IEEE80211_ERROR("Unable to network device.\n");
+		goto failed;
+	}
+	ieee = netdev_priv(dev);
+	dev->hard_start_xmit = ieee80211_xmit;
+
 	ieee->dev = dev;
-	ieee->priv = priv;
 
 	err = ieee80211_networks_allocate(ieee);
 	if (err) {
-		IEEE80211_ERROR("Unable to allocate beacon storage\n");
-		goto error;
+		IEEE80211_ERROR("Unable to allocate beacon storage: %d\n",
+				err);
+		goto failed;
 	}
 	ieee80211_networks_initialize(ieee);
 
@@ -125,6 +134,7 @@ struct ieee80211_device *ieee80211_alloc(struct net_device *dev,
 	/* Default to enabling full open WEP with host based encrypt/decrypt */
 	ieee->host_encrypt = 1;
 	ieee->host_decrypt = 1;
+	ieee->ieee802_1x = 1; /* Default to supporting 802.1x */
 
 	INIT_LIST_HEAD(&ieee->crypt_deinit_list);
 	init_timer(&ieee->crypt_deinit_timer);
@@ -134,22 +144,25 @@ struct ieee80211_device *ieee80211_alloc(struct net_device *dev,
 
 	spin_lock_init(&ieee->lock);
 
-	return ieee;
+	return dev;
 
- error:
-	if (ieee) 
-		kfree(ieee);
+ failed:
+	if (dev)
+		free_netdev(dev);
 	return NULL;
 }
 
-void ieee80211_free(struct ieee80211_device *ieee)
+
+void free_ieee80211(struct net_device *dev)
 {
+	struct ieee80211_device *ieee = netdev_priv(dev);
+
 #ifdef CONFIG_IEEE80211_CRYPT
 	int i;
 
 	del_timer_sync(&ieee->crypt_deinit_timer);
 	ieee80211_crypt_deinit_entries(ieee, 1);
-
+	
 	for (i = 0; i < WEP_KEYS; i++) {
 		struct ieee80211_crypt_data *crypt = ieee->crypt[i];
 		if (crypt) {
@@ -162,8 +175,9 @@ void ieee80211_free(struct ieee80211_device *ieee)
 		}
 	}
 #endif
+		
 	ieee80211_networks_free(ieee);
-	kfree(ieee);
+	free_netdev(dev);
 }
 
 #ifdef CONFIG_IEEE80211_DEBUG
@@ -248,5 +262,5 @@ module_exit(ieee80211_exit);
 module_init(ieee80211_init);
 #endif
 
-EXPORT_SYMBOL(ieee80211_alloc);
-EXPORT_SYMBOL(ieee80211_free);
+EXPORT_SYMBOL(alloc_ieee80211);
+EXPORT_SYMBOL(free_ieee80211);

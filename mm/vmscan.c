@@ -584,7 +584,7 @@ static void shrink_cache(struct zone *zone, struct scan_control *sc)
 			nr_taken++;
 		}
 		zone->nr_inactive -= nr_taken;
-		zone->pages_scanned += nr_taken;
+		zone->pages_scanned += nr_scan;
 		spin_unlock_irq(&zone->lru_lock);
 
 		if (nr_taken == 0)
@@ -877,6 +877,22 @@ shrink_caches(struct zone **zones, struct scan_control *sc)
 		shrink_zone(zone, sc);
 	}
 }
+
+static int free_below_min(struct zone **zones)
+{
+	unsigned long free = 0;
+	unsigned long min = 0;
+	int i;
+
+	for (i = 0; zones[i] != NULL; i++) {
+		struct zone *zone = zones[i];
+ 
+		free += zone->free_pages;
+		min += zone->pages_min;
+	}
+	
+	return (min > free);
+}
  
 /*
  * This is the main entry point to direct page reclaim.
@@ -950,7 +966,8 @@ int try_to_free_pages(struct zone **zones,
 			blk_congestion_wait(WRITE, HZ/10);
 	}
 	if ((gfp_mask & __GFP_FS) && !(gfp_mask & __GFP_NORETRY) &&
-			sc.nr_congested < SWAP_CLUSTER_MAX)
+	     !total_reclaimed && sc.nr_congested < SWAP_CLUSTER_MAX &&
+	     free_below_min(zones))
 		out_of_memory(gfp_mask);
 out:
 	for (i = 0; zones[i] != 0; i++)

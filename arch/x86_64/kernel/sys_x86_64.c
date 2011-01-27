@@ -66,7 +66,7 @@ out:
 	return error;
 }
 
-static void find_start_end(unsigned long flags, unsigned long *begin,
+void find_start_end(unsigned long flags, unsigned long *begin,
 			   unsigned long *end)
 {
 #ifdef CONFIG_IA32_EMULATION

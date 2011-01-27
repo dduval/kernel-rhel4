@@ -28,7 +28,7 @@ int reboot_override;
 EXPORT_SYMBOL(reboot_override);
 
 void (*machine_reset)(void);
-EXPORT_SYMBOL(machine_reset);
+EXPORT_SYMBOL_GPL(machine_reset);
 
 /* reboot=b[ios] | t[riple] | k[bd] [, [w]arm | [c]old] | [a]cpi
    bios	  Use the CPU reboot vector for warm reset
@@ -96,6 +96,31 @@ static void reboot_warm(void)
 		      [target] "b" (WARMBOOT_TRAMP));
 }
 
+#ifdef CONFIG_SMP
+static void smp_halt(void)
+{
+	int cpuid = safe_smp_processor_id(); 
+		static int first_entry = 1;
+
+		if (first_entry) { 
+			first_entry = 0;
+			smp_call_function((void *)machine_restart, NULL, 1, 0);
+		} 
+			
+	smp_stop_cpu(); 
+
+	/* AP calling this. Just halt */
+	if (cpuid != boot_cpu_id) { 
+		for (;;) 
+			asm("hlt");
+	}
+
+	/* Wait for all other CPUs to have run smp_stop_cpu */
+	while (!cpus_empty(cpu_online_map))
+		rep_nop(); 
+}
+#endif
+
 static inline void kb_wait(void)
 {
 	int i;
@@ -105,47 +130,25 @@ static inline void kb_wait(void)
 			break;
 }
 
-void machine_shutdown(void)
+void machine_restart(char * __unused)
 {
-	/* Stop the cpus and apics */
+	int i;
+
 #ifdef CONFIG_SMP
-	int reboot_cpu_id;
-
-	/* The boot cpu is always logical cpu 0 */
-	reboot_cpu_id = 0;
-
-	/* Make certain the cpu I'm about to reboot on is online */
-	if (!cpu_isset(reboot_cpu_id, cpu_online_map)) {
-		reboot_cpu_id = smp_processor_id();
-	}
-
-	/* Make certain I only run on the appropriate processor */
-	set_cpus_allowed(current, cpumask_of_cpu(reboot_cpu_id));
-
-	/* O.K Now that I'm on the appropriate processor,
-	 * stop all of the others.
-	 */
 	if (!crashdump_mode())
-		smp_send_stop();
+		smp_halt();
 #endif
 
 	local_irq_disable();
-
+       
 #ifndef CONFIG_SMP
 	disable_local_APIC();
 #endif
 
 	disable_IO_APIC();
+	
 	if (!crashdump_mode())
 		local_irq_enable();
-}
-
-void machine_restart(char * __unused)
-{
-	int i;
-
-	if (!crashdump_mode())      /* temporary? */
-		machine_shutdown();
 	
 	/* Tell the BIOS if we want cold or warm reboot */
 	*((unsigned short *)__va(0x472)) = reboot_mode;

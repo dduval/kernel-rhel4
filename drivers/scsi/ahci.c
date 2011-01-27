@@ -179,6 +179,7 @@ static void ahci_port_stop(struct ata_port *ap);
 static void ahci_host_stop(struct ata_host_set *host_set);
 static void ahci_qc_prep(struct ata_queued_cmd *qc);
 static u8 ahci_check_status(struct ata_port *ap);
+static u8 ahci_check_err(struct ata_port *ap);
 static inline int ahci_host_intr(struct ata_port *ap, struct ata_queued_cmd *qc);
 
 static Scsi_Host_Template ahci_sht = {
@@ -204,6 +205,8 @@ static struct ata_port_operations ahci_ops = {
 	.port_disable		= ata_port_disable,
 
 	.check_status		= ahci_check_status,
+	.check_altstatus	= ahci_check_status,
+	.check_err		= ahci_check_err,
 	.dev_select		= ata_noop_dev_select,
 
 	.phy_reset		= ahci_phy_reset,
@@ -239,9 +242,19 @@ static struct ata_port_info ahci_port_info[] = {
 
 static struct pci_device_id ahci_pci_tbl[] = {
 	{ PCI_VENDOR_ID_INTEL, 0x2652, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
-	  board_ahci },
+	  board_ahci }, /* ICH6 */
 	{ PCI_VENDOR_ID_INTEL, 0x2653, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
-	  board_ahci },
+	  board_ahci }, /* ICH6M */
+	{ PCI_VENDOR_ID_INTEL, 0x27c1, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	  board_ahci }, /* ICH7 */
+	{ PCI_VENDOR_ID_INTEL, 0x27c5, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	  board_ahci }, /* ICH7M */
+	{ PCI_VENDOR_ID_INTEL, 0x27c2, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	  board_ahci }, /* ICH7R */
+	{ PCI_VENDOR_ID_INTEL, 0x27c3, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	  board_ahci }, /* ICH7R */
+	{ PCI_VENDOR_ID_AL, 0x5288, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	  board_ahci }, /* ULi M5288 */
 	{ }	/* terminate list */
 };
 
@@ -272,7 +285,7 @@ static void ahci_host_stop(struct ata_host_set *host_set)
 
 static int ahci_port_start(struct ata_port *ap)
 {
-	struct pci_dev *pdev = ap->host_set->pdev;
+	struct device *dev = ap->host_set->dev;
 	struct ahci_host_priv *hpriv = ap->host_set->private_data;
 	struct ahci_port_priv *pp;
 	int rc;
@@ -291,7 +304,7 @@ static int ahci_port_start(struct ata_port *ap)
 	}
 	memset(pp, 0, sizeof(*pp));
 
-	mem = pci_alloc_consistent(pdev, AHCI_PORT_PRIV_DMA_SZ, &mem_dma);
+	mem = dma_alloc_coherent(dev, AHCI_PORT_PRIV_DMA_SZ, &mem_dma, GFP_KERNEL);
 	if (!mem) {
 		rc = -ENOMEM;
 		goto err_out_kfree;
@@ -355,7 +368,7 @@ err_out:
 
 static void ahci_port_stop(struct ata_port *ap)
 {
-	struct pci_dev *pdev = ap->host_set->pdev;
+	struct device *dev = ap->host_set->dev;
 	struct ahci_port_priv *pp = ap->private_data;
 	void *mmio = ap->host_set->mmio_base;
 	void *port_mmio = ahci_port_base(mmio, ap->port_no);
@@ -372,8 +385,8 @@ static void ahci_port_stop(struct ata_port *ap)
 	msleep(500);
 
 	ap->private_data = NULL;
-	pci_free_consistent(pdev, AHCI_PORT_PRIV_DMA_SZ,
-			    pp->cmd_slot, pp->cmd_slot_dma);
+	dma_free_coherent(dev, AHCI_PORT_PRIV_DMA_SZ,
+			  pp->cmd_slot, pp->cmd_slot_dma);
 	kfree(pp);
 	ata_port_stop(ap);
 }
@@ -442,6 +455,13 @@ static u8 ahci_check_status(struct ata_port *ap)
 	return readl(mmio + PORT_TFDATA) & 0xFF;
 }
 
+static u8 ahci_check_err(struct ata_port *ap)
+{
+	void *mmio = (void *) ap->ioaddr.cmd_addr;
+
+	return (readl(mmio + PORT_TFDATA) >> 8) & 0xFF;
+}
+
 static void ahci_fill_sg(struct ata_queued_cmd *qc)
 {
 	struct ahci_port_priv *pp = qc->ap->private_data;
@@ -507,15 +527,6 @@ static void ahci_qc_prep(struct ata_queued_cmd *qc)
 		return;
 
 	ahci_fill_sg(qc);
-}
-
-static inline void ahci_dma_complete (struct ata_port *ap,
-                                     struct ata_queued_cmd *qc,
-				     int have_err)
-{
-	/* get drive status; clear intr; complete txn */
-	ata_qc_complete(ata_qc_from_tag(ap, ap->active_tag),
-			have_err ? ATA_ERR : 0);
 }
 
 static void ahci_intr_error(struct ata_port *ap, u32 irq_stat)
@@ -705,7 +716,7 @@ static void ahci_setup_port(struct ata_ioports *port, unsigned long base,
 static int ahci_host_init(struct ata_probe_ent *probe_ent)
 {
 	struct ahci_host_priv *hpriv = probe_ent->private_data;
-	struct pci_dev *pdev = probe_ent->pdev;
+	struct pci_dev *pdev = to_pci_dev(probe_ent->dev);
 	void __iomem *mmio = probe_ent->mmio_base;
 	u32 tmp, cap_save;
 	u16 tmp16;
@@ -863,7 +874,7 @@ static void pci_enable_intx(struct pci_dev *pdev)
 static void ahci_print_info(struct ata_probe_ent *probe_ent)
 {
 	struct ahci_host_priv *hpriv = probe_ent->private_data;
-	struct pci_dev *pdev = probe_ent->pdev;
+	struct pci_dev *pdev = to_pci_dev(probe_ent->dev);
 	void *mmio = probe_ent->mmio_base;
 	u32 vers, cap, impl, speed;
 	const char *speed_s;
@@ -939,6 +950,7 @@ static int ahci_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	unsigned long base;
 	void *mmio_base;
 	unsigned int board_idx = (unsigned int) ent->driver_data;
+	int pci_dev_busy = 0;
 	int rc;
 
 	VPRINTK("ENTER\n");
@@ -946,17 +958,15 @@ static int ahci_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!printed_version++)
 		printk(KERN_DEBUG DRV_NAME " version " DRV_VERSION "\n");
 
-	/*
-	 * If this driver happens to only be useful on Apple's K2, then
-	 * we should check that here as it has a normal Serverworks ID
-	 */
 	rc = pci_enable_device(pdev);
 	if (rc)
 		return rc;
 
 	rc = pci_request_regions(pdev, DRV_NAME);
-	if (rc)
+	if (rc) {
+		pci_dev_busy = 1;
 		goto err_out;
+	}
 
 	pci_enable_intx(pdev);
 
@@ -967,7 +977,7 @@ static int ahci_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	memset(probe_ent, 0, sizeof(*probe_ent));
-	probe_ent->pdev = pdev;
+	probe_ent->dev = pci_dev_to_dev(pdev);
 	INIT_LIST_HEAD(&probe_ent->node);
 
 	mmio_base = ioremap(pci_resource_start(pdev, AHCI_PCI_BAR),
@@ -1018,7 +1028,8 @@ err_out_free_ent:
 err_out_regions:
 	pci_release_regions(pdev);
 err_out:
-	pci_disable_device(pdev);
+	if (!pci_dev_busy)
+		pci_disable_device(pdev);
 	return rc;
 }
 

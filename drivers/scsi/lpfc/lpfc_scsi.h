@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsi.h 1.68 2004/11/10 11:40:43EST sf_support Exp  $
+ * $Id: lpfc_scsi.h 1.70 2005/01/13 18:39:10EST sf_support Exp  $
  */
 
 #ifndef _H_LPFC_SCSI
@@ -39,14 +39,14 @@ struct lpfc_target {
 	uint32_t  iodonecnt;
 	uint32_t  errorcnt;
 	uint32_t  slavecnt;
-#if defined(FC_TRANS_VER1) || defined(FC_TRANS_265_BLKPATCH)
+#if defined(RHEL_FC) || defined(SLES_FC)
 	uint16_t  blocked;
 #endif
-#ifdef FC_TRANS_VER1
+#ifdef RHEL_FC
 	struct scsi_target *starget;		/* Pointer to midlayer target
 						   structure. */
 #endif
-#if defined(FC_TRANS_265_BLKPATCH)
+#ifdef SLES_FC
 	struct timer_list dev_loss_timer;
 #endif
 };

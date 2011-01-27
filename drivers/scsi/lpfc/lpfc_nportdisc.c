@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_nportdisc.c 1.146 2004/11/18 14:53:54EST sf_support Exp  $
+ * $Id: lpfc_nportdisc.c 1.155 2005/03/02 12:35:42EST sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -28,6 +28,7 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <scsi/scsi_device.h>
+#include <scsi/scsi_host.h>
 #include "lpfc_sli.h"
 #include "lpfc_disc.h"
 #include "lpfc_scsi.h"
@@ -151,14 +152,16 @@ lpfc_check_elscmpl_iocb(struct lpfc_hba * phba,
  * associated with a LPFC_NODELIST entry. This
  * routine effectively results in a "software abort".
  */
-static int
+int
 lpfc_els_abort(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 	int send_abts)
 {
 	struct lpfc_sli *psli;
 	struct lpfc_sli_ring *pring;
-	struct lpfc_iocbq *iocb, *next_iocb;
+	struct lpfc_iocbq *iocb, *next_iocb, *saveq;
 	IOCB_t *icmd;
+	int found = 0;
+	LPFC_DISC_EVT_t  *evtp, *next_evtp;
 
 	/* Abort outstanding I/O on NPort <nlp_DID> */
 	lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
@@ -170,59 +173,97 @@ lpfc_els_abort(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 	psli = &phba->sli;
 	pring = &psli->ring[LPFC_ELS_RING];
 
+	/* Abort all the ELS iocbs in the dpc thread. */
+	list_for_each_entry_safe(evtp, next_evtp, &phba->dpc_disc,evt_listp) {
+		if (evtp->evt != LPFC_EVT_SOL_IOCB)
+			continue;
+
+		iocb = (struct lpfc_iocbq *)(evtp->evt_arg1);
+		saveq = (struct lpfc_iocbq *)(evtp->evt_arg2);
+
+		if (lpfc_check_sli_ndlp(phba, pring, iocb, ndlp) == 0)
+			continue;
+
+		list_del_init(&evtp->evt_listp);
+		icmd = &iocb->iocb;
+		icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
+		icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
+		(iocb->iocb_cmpl) (phba, iocb, saveq);
+		lpfc_evt_iocb_free(phba, saveq);
+		kfree(evtp);
+	}
+
 	/* First check the txq */
-	list_for_each_entry_safe(iocb, next_iocb, &pring->txq, list) {
-		/* Check to see if iocb matches the nport we are looking for */
-		if ((lpfc_check_sli_ndlp(phba, pring, iocb, ndlp))) {
-			/* It matches, so deque and call compl with an error */
-			list_del(&iocb->list);
-			pring->txq_cnt--;
-			if (iocb->iocb_cmpl) {
-				icmd = &iocb->iocb;
-				icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
-				icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
-				(iocb->iocb_cmpl) (phba, iocb, iocb);
-			} else {
-				mempool_free(iocb, phba->iocb_mem_pool);
+	do {
+		found = 0;
+		list_for_each_entry_safe(iocb, next_iocb, &pring->txq, list) {
+			/* Check to see if iocb matches the nport we are looking for */
+			if ((lpfc_check_sli_ndlp(phba, pring, iocb, ndlp))) {
+				found = 1;
+				/* It matches, so deque and call compl with an error */
+				list_del(&iocb->list);
+				pring->txq_cnt--;
+				if (iocb->iocb_cmpl) {
+					icmd = &iocb->iocb;
+					icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
+					icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
+					(iocb->iocb_cmpl) (phba, iocb, iocb);
+				} else {
+					mempool_free(iocb, phba->iocb_mem_pool);
+				}
+				break;
 			}
 		}
-	}
+
+	} while (found);
 
 	/* Everything on txcmplq will be returned by firmware
  	* with a no rpi / linkdown / abort error.  For ring 0,
 	* ELS discovery, we want to get rid of it right here.
  	*/
 	/* Next check the txcmplq */
-	list_for_each_entry_safe(iocb, next_iocb, &pring->txcmplq, list) {
-		/* Check to see if iocb matches the nport we are looking for */
-		if ((lpfc_check_sli_ndlp (phba, pring, iocb, ndlp))) {
-			/* It matches, so deque and call compl with an error */
-			list_del(&iocb->list);
-			pring->txcmplq_cnt--;
+	do {
+		found = 0;
+		list_for_each_entry_safe(iocb, next_iocb, &pring->txcmplq, list) {
+			/* Check to see if iocb matches the nport we are looking for */
+			if ((lpfc_check_sli_ndlp (phba, pring, iocb, ndlp))) {
+				found = 1;
+				/* It matches, so deque and call compl with an error */
+				list_del(&iocb->list);
+				pring->txcmplq_cnt--;
 
-			icmd = &iocb->iocb;
-			/* If the driver is completing an ELS
-			 * command early, flush it out of the firmware.
-			 */
-			if (send_abts &&
-			   (icmd->ulpCommand == CMD_ELS_REQUEST64_CR) &&
-			   (icmd->un.elsreq64.bdl.ulpIoTag32)) {
-				lpfc_sli_issue_abort_iotag32(phba, pring, iocb);
-			}
-			if (iocb->iocb_cmpl) {
-				icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
-				icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
-				(iocb->iocb_cmpl) (phba, iocb, iocb);
-			} else {
-				mempool_free(iocb, phba->iocb_mem_pool);
+				icmd = &iocb->iocb;
+				/* If the driver is completing an ELS
+				 * command early, flush it out of the firmware.
+				 */
+				if (send_abts &&
+				    (icmd->ulpCommand == CMD_ELS_REQUEST64_CR) &&
+				    (icmd->un.elsreq64.bdl.ulpIoTag32)) {
+					lpfc_sli_issue_abort_iotag32(phba, pring, iocb);
+				}
+				if (iocb->iocb_cmpl) {
+					icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
+					icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
+					(iocb->iocb_cmpl) (phba, iocb, iocb);
+				} else {
+					mempool_free(iocb, phba->iocb_mem_pool);
+				}
+				break;
 			}
 		}
-	}
+	} while (found);
 
+	
 	/* If we are delaying issuing an ELS command, cancel it */
 	if(ndlp->nlp_flag & NLP_DELAY_TMO) {
 		ndlp->nlp_flag &= ~NLP_DELAY_TMO;
+		spin_unlock_irq(phba->host->host_lock);
 		del_timer_sync(&ndlp->nlp_delayfunc);
+		spin_lock_irq(phba->host->host_lock);
+		if (!list_empty(&ndlp->els_retry_evt.
+				evt_listp))
+			list_del_init(&ndlp->els_retry_evt.
+				      evt_listp);
 	}
 	return (0);
 }
@@ -297,6 +338,9 @@ lpfc_rcv_plogi(struct lpfc_hba * phba,
 
 	/* no need to reg_login if we are already in one of these states */
 	switch(ndlp->nlp_state) {
+	case  NLP_STE_NPR_NODE:
+		if (!(ndlp->nlp_flag & NLP_NPR_ADISC))
+			break;
 	case  NLP_STE_REG_LOGIN_ISSUE:
 	case  NLP_STE_PRLI_ISSUE:
 	case  NLP_STE_UNMAPPED_NODE:
@@ -316,6 +360,7 @@ lpfc_rcv_plogi(struct lpfc_hba * phba,
 		/* rcv'ed PLOGI decides what our NPortId will be */
 		phba->fc_myDID = icmd->un.rcvels.parmRo;
 		lpfc_config_link(phba, mbox);
+		mbox->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 		if (lpfc_sli_issue_mbox
 		    (phba, mbox, (MBX_NOWAIT | MBX_STOP_IOCB))
 		    == MBX_NOT_FINISHED) {
@@ -593,27 +638,24 @@ lpfc_consistent_bind_get(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 		}
 	}
 
-	if (phba->cfg_automap) {
-		while (1) {
-			if ((lpfc_binding_useid(phba, phba->sid_cnt))
-			     || (lpfc_mapping_useid (phba, phba->sid_cnt))) {
+	while (1) {
+		if ((lpfc_binding_useid(phba, phba->sid_cnt))
+		     || (lpfc_mapping_useid (phba, phba->sid_cnt))) {
+
+			phba->sid_cnt++;
+		} else {
+			if ((blp =
+			     lpfc_create_binding(phba, ndlp,
+						 phba->sid_cnt,
+						 phba->fcp_mapping))) {
+				blp->nlp_bind_type |= FCP_SEED_AUTO;
 
 				phba->sid_cnt++;
-			} else {
-				if ((blp =
-				     lpfc_create_binding(phba, ndlp,
-							 phba->sid_cnt,
-							 phba->fcp_mapping))) {
-					blp->nlp_bind_type |= FCP_SEED_AUTO;
-
-					phba->sid_cnt++;
-					return (blp);
-				}
-				goto errid;
+				return (blp);
 			}
+			goto errid;
 		}
 	}
-	/* if automap on */
 errid:
 	/* Cannot assign scsi id on NPort <nlp_DID> */
 	lpfc_printf_log(phba,
@@ -685,7 +727,8 @@ lpfc_disc_set_adisc(struct lpfc_hba * phba,
 	/* Check config parameter use-adisc or FCP-2 */
 	if ((phba->cfg_use_adisc == 0) &&
 		!(phba->fc_flag & FC_RSCN_MODE)) {
-		return (0);
+		if (!(ndlp->nlp_fcp_info & NLP_FCP_2_DEVICE))
+			return (0);
 	}
 	ndlp->nlp_flag |= NLP_NPR_ADISC;
 	return (1);
@@ -1864,8 +1907,14 @@ lpfc_rcv_prlo_npr_node(struct lpfc_hba * phba,
 		if (ndlp->nlp_last_elscmd == (unsigned long)ELS_CMD_PLOGI) {
 			return (ndlp->nlp_state);
 		} else {
-			del_timer_sync(&ndlp->nlp_delayfunc);
 			ndlp->nlp_flag &= ~NLP_DELAY_TMO;
+			spin_unlock_irq(phba->host->host_lock);
+			del_timer_sync(&ndlp->nlp_delayfunc);
+			spin_lock_irq(phba->host->host_lock);
+			if (!list_empty(&ndlp->els_retry_evt.
+					evt_listp))
+				list_del_init(&ndlp->els_retry_evt.
+					      evt_listp);
 		}
 	}
 

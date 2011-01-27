@@ -60,6 +60,10 @@ typedef void irqreturn_t;
 #define IRQ_RETVAL(x)
 #endif
 
+#if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9) )
+#define __iomem
+#endif
+
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(2,6,5) )
 #define pci_dma_sync_single_for_cpu	pci_dma_sync_single
 #define pci_dma_sync_single_for_device	pci_dma_sync_single
@@ -67,12 +71,6 @@ typedef void irqreturn_t;
 
 #ifndef HAVE_FREE_NETDEV
 #define free_netdev(x) kfree(x)
-#endif
-
-#if WIRELESS_EXT < 17
-#define IW_QUAL_QUAL_UPDATED   0x1
-#define IW_QUAL_LEVEL_UPDATED  0x2
-#define IW_QUAL_NOISE_INVALID  0x40
 #endif
 
 /* Authentication  and Association States */
@@ -93,6 +91,13 @@ enum connection_manager_assoc_states
 	CMAS_ASSOCIATED,
 	CMAS_LAST
 };
+
+
+#define IPW_NORMAL                   0
+#define IPW_NOWAIT                   0
+#define IPW_WAIT                     BIT(0)
+#define IPW_QUIET                    BIT(1)
+#define IPW_ROAMING                  BIT(2)
 
 #define IPW_POWER_MODE_CAM           0x00	//(always on)
 #define IPW_POWER_INDEX_1            0x01
@@ -169,6 +174,11 @@ enum connection_manager_assoc_states
 #define DINO_CMD_TX                        0x0B
 #define DCT_ANTENNA_A                      0x01
 #define DCT_ANTENNA_B                      0x02
+
+#define IPW_A_MODE                         0
+#define IPW_B_MODE                         1
+#define IPW_G_MODE                         2
+
 /* 
  * TX Queue Flag Definitions 
  */
@@ -212,7 +222,7 @@ enum connection_manager_assoc_states
 
 #define HOST_CMD_DINO_CONFIG               30
 
-#define HOST_NOTIFICATION_STATUS_ASSOCIATED         10
+#define HOST_NOTIFICATION_STATUS_ASSOCIATED             10
 #define HOST_NOTIFICATION_STATUS_AUTHENTICATE           11
 #define HOST_NOTIFICATION_STATUS_SCAN_CHANNEL_RESULT    12
 #define HOST_NOTIFICATION_STATUS_SCAN_COMPLETED         13
@@ -264,8 +274,7 @@ struct clx2_queue {
 
 struct machdr32
 {
-	u8 ctrl1;
-	u8 ctrl2;
+	u16 frame_ctl;
 	u16 duration;     // watch out for endians!
 	u8 addr1[ MACADRR_BYTE_LEN ];
 	u8 addr2[ MACADRR_BYTE_LEN ];
@@ -277,8 +286,7 @@ struct machdr32
 
 struct machdr30
 {
-	u8 ctrl1;
-	u8 ctrl2;
+	u16 frame_ctl;
 	u16 duration;     // watch out for endians!
 	u8 addr1[ MACADRR_BYTE_LEN ];
 	u8 addr2[ MACADRR_BYTE_LEN ];
@@ -289,8 +297,7 @@ struct machdr30
 
 struct machdr26
 {
-	u8 ctrl1;
-	u8 ctrl2;
+	u16 frame_ctl;
 	u16 duration;     // watch out for endians!
 	u8 addr1[ MACADRR_BYTE_LEN ];
 	u8 addr2[ MACADRR_BYTE_LEN ];
@@ -301,8 +308,7 @@ struct machdr26
 
 struct machdr24
 {
-	u8 ctrl1;
-	u8 ctrl2;
+	u16 frame_ctl;
 	u16 duration;     // watch out for endians!
 	u8 addr1[ MACADRR_BYTE_LEN ];
 	u8 addr2[ MACADRR_BYTE_LEN ];
@@ -432,6 +438,7 @@ struct clx2_tx_queue {
 #define RX_FREE_BUFFERS 32
 #define RX_LOW_WATERMARK 8
 
+#define SUP_RATE_11A_MAX_NUM_CHANNELS  (8)
 #define SUP_RATE_11B_MAX_NUM_CHANNELS  (4)
 #define SUP_RATE_11G_MAX_NUM_CHANNELS  (12)
 
@@ -439,10 +446,12 @@ struct clx2_tx_queue {
 struct rate_histogram
 {
 	union {
+		u32 a[SUP_RATE_11A_MAX_NUM_CHANNELS];
 		u32 b[SUP_RATE_11B_MAX_NUM_CHANNELS];
 		u32 g[SUP_RATE_11G_MAX_NUM_CHANNELS];
 	} success;
 	union {
+		u32 a[SUP_RATE_11A_MAX_NUM_CHANNELS];
 		u32 b[SUP_RATE_11B_MAX_NUM_CHANNELS];
 		u32 g[SUP_RATE_11G_MAX_NUM_CHANNELS];
 	} failed;
@@ -534,6 +543,10 @@ struct notif_calibration {
 	u8 data[104];
 } __attribute__ ((packed));
 
+struct notif_noise {
+	u32 value;
+} __attribute__ ((packed));
+
 struct ipw_rx_notification {
 	u8 reserved[8];
 	u8 subtype;
@@ -549,6 +562,7 @@ struct ipw_rx_notification {
 		struct notif_tgi_tx_key tgi_tx_key;
 		struct notif_link_deterioration link_deterioration;
 		struct notif_calibration calibration;
+		struct notif_noise noise;
 		u8 raw[0];
 	} u;
 } __attribute__ ((packed));
@@ -564,7 +578,7 @@ struct ipw_rx_frame {
 	u8 rate;
 	u8 rssi;
 	u8 agc;
-	u8 reserved2;
+	u8 rssi_dbm;
 	u16 signal;
 	u16 noise;
 	u8 antennaAndPhy;
@@ -613,7 +627,9 @@ struct ipw_rx_queue {
 	/* Each of these lists is used as a FIFO for ipw_rx_mem_buffers */
 	struct list_head rx_free;  /* Own an SKBs */
 	struct list_head rx_used;  /* No SKB allocated */
+	spinlock_t lock;
 }; /* Not transferred over network, so not  __attribute__ ((packed)) */
+
 
 struct alive_command_responce {
 	u8 alive_command;
@@ -640,8 +656,8 @@ struct ipw_rates {
 struct command_block
 {
 	unsigned int control;
-	void *source_addr;
-	void *dest_addr;
+	u32 source_addr;
+	u32 dest_addr;
 	unsigned int status;
 } __attribute__ ((packed));
 
@@ -857,6 +873,7 @@ struct ipw_channel_tx_power
 	s8 tx_power;
 } __attribute__ ((packed));
 
+#define SCAN_ASSOCIATED_INTERVAL (HZ)
 #define SCAN_INTERVAL (HZ / 10)
 #define MAX_A_CHANNELS  37
 #define MAX_B_CHANNELS  14
@@ -918,42 +935,41 @@ struct ipw_cmd {
   u32 param[0];
 } __attribute__ ((packed));
 
-#define STATUS_FW_DOWNLOAD      BIT(0)  /**< fw download in progress */
-#define STATUS_HCMD_ACTIVE      BIT(1)  /**< host command in progress */
-#define STATUS_HCMD_DONE        BIT(2)  /**< host command reply received */
-#define STATUS_HCMD_TIMEOUT     BIT(3)  /**< host command timed out */
-#define STATUS_FW_READY         BIT(4)  /**< FW is ready (got INIT_DONE IRQ ) */
-#define STATUS_HOST_COMPLETE    BIT(5)  /**< Ready to Tx/Rx (HostComplete)  */
-#define STATUS_WEP              BIT(7)  /**< use WEP */
-#define STATUS_ERROR            BIT(8)  /**< Error state.  Needs restart. */
-#define STATUS_SNIF_DINO        BIT(9)  /**< Pass DINO header to sniffer */
+#define STATUS_HCMD_ACTIVE      BIT(0)  /**< host command in progress */
 
-#define STATUS_INT_ENABLED      BIT(11)
-#define STATUS_RF_KILL_HW       BIT(12)
-#define STATUS_RF_KILL_SW       BIT(13)
+#define STATUS_INT_ENABLED      BIT(1)
+#define STATUS_RF_KILL_HW       BIT(2)
+#define STATUS_RF_KILL_SW       BIT(3)
 #define STATUS_RF_KILL_MASK     (STATUS_RF_KILL_HW | STATUS_RF_KILL_SW)
-#define STATUS_EXIT_PENDING     BIT(14)
+
+#define STATUS_INIT             BIT(5)
+#define STATUS_AUTH             BIT(6)
+#define STATUS_ASSOCIATED       BIT(7)
+#define STATUS_STATE_MASK       (STATUS_INIT | STATUS_AUTH | STATUS_ASSOCIATED)
+
+#define STATUS_ASSOCIATING      BIT(8)
+#define STATUS_DISASSOCIATING   BIT(9)
+#define STATUS_ROAMING          BIT(10)
+#define STATUS_EXIT_PENDING     BIT(11)
+#define STATUS_DISASSOC_PENDING BIT(12)
+#define STATUS_STATE_PENDING    BIT(13)
 
 #define STATUS_SCAN_PENDING     BIT(20)
 #define STATUS_SCANNING         BIT(21) 
 #define STATUS_SCAN_ABORTING    BIT(22) 
-#define STATUS_AUTH             BIT(23) /**< Authenticated */
-#define STATUS_ASSOCIATING      BIT(24)
-#define STATUS_ASSOCIATED       BIT(25) /**< Associated */
-#define STATUS_DISASSOCIATING   BIT(26)
 
-#define STATUS_INDIRECT_BYTE    BIT(27) /* sysfs entry configured for access */
-#define STATUS_INDIRECT_DWORD   BIT(28) /* sysfs entry configured for access */
-#define STATUS_DIRECT_DWORD     BIT(29) /* sysfs entry configured for access */
+#define STATUS_INDIRECT_BYTE    BIT(28) /* sysfs entry configured for access */
+#define STATUS_INDIRECT_DWORD   BIT(29) /* sysfs entry configured for access */
+#define STATUS_DIRECT_DWORD     BIT(30) /* sysfs entry configured for access */
 
-#define STATUS_SECURITY_UPDATED BIT(30) /* Security sync needed */
+#define STATUS_SECURITY_UPDATED BIT(31) /* Security sync needed */
 
 #define CFG_STATIC_CHANNEL      BIT(0) /* Restrict assoc. to single channel */
 #define CFG_STATIC_ESSID        BIT(1) /* Restrict assoc. to single SSID */
 #define CFG_STATIC_BSSID        BIT(2) /* Restrict assoc. to single BSSID */
 #define CFG_CUSTOM_MAC          BIT(3)
 #define CFG_PREAMBLE            BIT(4)
-/* free bit */
+#define CFG_ADHOC_PERSIST       BIT(5)
 #define CFG_ASSOCIATE           BIT(6)
 #define CFG_FIXED_RATE          BIT(7)
 #define CFG_ADHOC_CREATE        BIT(8)
@@ -970,6 +986,14 @@ struct ipw_station_entry {
 	u8 support_mode;
 };
 
+#define AVG_ENTRIES 8
+struct average {
+	s16 entries[AVG_ENTRIES];
+	u8 pos;
+	u8 init;
+	s32 sum;
+};
+
 struct ipw_priv {
 	/* ieee device used by generic ieee processing code */
 	struct ieee80211_device *ieee;
@@ -982,8 +1006,8 @@ struct ipw_priv {
 	struct pci_dev *pci_dev;
 	struct net_device *net_dev;
 
-	/* pci harware address support */
-	unsigned long hw_base;	/* (virt) */
+	/* pci hardware address support */
+	void __iomem *hw_base;
 	unsigned long hw_len;
 	
 	struct fw_image_desc sram_desc;
@@ -992,17 +1016,21 @@ struct ipw_priv {
 	struct alive_command_responce dino_alive;
 
   	wait_queue_head_t wait_command_queue;
+  	wait_queue_head_t wait_state;
 
 	/* Rx and Tx DMA processing queues */
 	struct ipw_rx_queue *rxq;
 	struct clx2_tx_queue txq_cmd;
 	struct clx2_tx_queue txq[4];
-	unsigned long status;
-	unsigned long config;
-	unsigned long capability;
+	u32 status;
+	u32 config;
+	u32 capability;
 
-	u8 last_rx_rate;
 	u8 last_rx_rssi;
+	u8 last_noise;
+	struct average average_missed_beacons;
+	struct average average_rssi;
+	struct average average_noise;
 	u32 port_type;
 	int rx_bufs_min;          /**< minimum number of bufs in Rx queue */
 	int rx_pend_max;          /**< maximum pending buffers for one IRQ */
@@ -1011,6 +1039,7 @@ struct ipw_priv {
 	u32 roaming_threshold; 
 
 	struct ipw_associate assoc_request;
+	struct ieee80211_network *assoc_network;
 
 	unsigned long ts_scan_abort;
 	struct ipw_supported_rates rates;
@@ -1048,10 +1077,21 @@ struct ipw_priv {
 	u8 num_stations;
 	u8 stations[MAX_STATIONS][ETH_ALEN]; 
 
+	u32 notif_missed_beacons;
 
-	/* Statistics and counters reset with each association */
+	/* Statistics and counters normalized with each association */
+	u32 last_missed_beacons;
+	u32 last_tx_packets;
+	u32 last_rx_packets;
+	u32 last_tx_failures;
+	u32 last_rx_err;
+	u32 last_rate;
+
+	u32 missed_adhoc_beacons;
 	u32 missed_beacons;
+	u32 rx_packets;
 	u32 tx_packets;
+	u32 quality;
 
         /* eeprom */
 	u8 eeprom[0x100];  /* 256 bytes of eeprom */  
@@ -1061,6 +1101,7 @@ struct ipw_priv {
 
 	struct workqueue_struct *workqueue;
 	
+	struct work_struct adhoc_check;
 	struct work_struct associate;
 	struct work_struct disassociate;
 	struct work_struct rx_replenish;
@@ -1069,6 +1110,11 @@ struct ipw_priv {
 	struct work_struct rf_kill;
 	struct work_struct up;
 	struct work_struct down;
+	struct work_struct gather_stats;
+	struct work_struct abort_scan;
+	struct work_struct roam;
+	struct work_struct scan_check;
+
 	struct tasklet_struct irq_tasklet;
 
 
@@ -1101,7 +1147,7 @@ struct ipw_priv {
 #define IPW_DEBUG(level, fmt, args...) \
 do { if (ipw_debug_level & (level)) \
   printk(KERN_DEBUG DRV_NAME": %c %s " fmt, \
-         in_interrupt() ? 'I' : 'U', __FUNCTION__, ## args); } while (0)
+         in_interrupt() ? 'I' : 'U', __FUNCTION__ , ## args); } while (0)
 #else
 #define IPW_DEBUG(level, fmt, args...) do {} while (0)
 #endif				/* CONFIG_IPW_DEBUG */
@@ -1148,6 +1194,7 @@ do { if (ipw_debug_level & (level)) \
 #define IPW_DL_MANAGE        BIT(15)
 #define IPW_DL_FW            BIT(16)
 #define IPW_DL_RF_KILL       BIT(17)
+#define IPW_DL_FW_ERRORS     BIT(18)
 
 
 #define IPW_DL_ORD           BIT(20)
@@ -1160,6 +1207,8 @@ do { if (ipw_debug_level & (level)) \
 #define IPW_DL_FW_INFO       BIT(26)
 #define IPW_DL_IO            BIT(27)
 #define IPW_DL_TRACE         BIT(28)
+
+#define IPW_DL_STATS         BIT(29)
 
 
 #define IPW_ERROR(f, a...) printk(KERN_ERR DRV_NAME ": " f, ## a)
@@ -1186,6 +1235,8 @@ do { if (ipw_debug_level & (level)) \
 #define IPW_DEBUG_NOTIF(f, a...) IPW_DEBUG(IPW_DL_NOTIF, f, ## a)
 #define IPW_DEBUG_STATE(f, a...) IPW_DEBUG(IPW_DL_STATE | IPW_DL_ASSOC | IPW_DL_INFO, f, ## a)
 #define IPW_DEBUG_ASSOC(f, a...) IPW_DEBUG(IPW_DL_ASSOC | IPW_DL_INFO, f, ## a)
+#define IPW_DEBUG_STATS(f, a...) IPW_DEBUG(IPW_DL_STATS, f, ## a)
+
 #include <linux/ctype.h>
 
 /*

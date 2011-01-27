@@ -74,6 +74,11 @@ extern acpi_interrupt_flags	acpi_sci_flags;
 int __initdata acpi_force = 0;
 #endif
 
+#ifdef CONFIG_NUMA
+extern int acpi_numa;
+extern int __initdata numa_off;
+#endif
+
 /* For PCI or other memory-mapped resources */
 unsigned long pci_mem_start = 0x10000000;
 
@@ -311,6 +316,13 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 		if (!memcmp(from,"oops=panic", 10))
 			panic_on_oops = 1;
 
+#ifdef CONFIG_NUMA
+		if (!memcmp(from,"numa=off", 8))
+			numa_off = 1;
+		if (!memcmp(from,"numa=on", 7))
+			numa_off = 0;
+#endif
+
 	next_char:
 		c = *(from++);
 		if (!c)
@@ -472,7 +484,25 @@ void __init setup_arch(char **cmdline_p)
 	data_resource.start = virt_to_phys(&_etext);
 	data_resource.end = virt_to_phys(&_edata)-1;
 
+#ifdef CONFIG_NUMA
+	numa_off = -1;	// indicate unspecified
+#endif
 	parse_cmdline_early(cmdline_p);
+
+#ifdef CONFIG_NUMA
+	// If we didn't explicitly specify NUMA on or off, figure
+	// out our default here.  For this release only, dual-core
+	// AMD CPUs default to OFF, all others default to ON.
+	if (numa_off < 0) {
+		if((cpuid_ecx(0) == 0x444d4163) &&
+		   ((cpuid_ecx(0x80000008) & 0xff) > 0)) {
+			printk("Disabling NUMA for this system.  Use numa=on to force NUMA to be enabled\n");
+			numa_off = 1;
+		}
+		else
+			numa_off = 0;
+	}
+#endif
 
 	/*
 	 * partially used pages are not usable - thus
@@ -483,6 +513,50 @@ void __init setup_arch(char **cmdline_p)
 	check_efer();
 
 	init_memory_mapping(); 
+
+#ifdef CONFIG_ACPI_BOOT
+	/*
+	 * Initialize the ACPI boot-time table parser (gets the RSDP and SDT).
+	 * Call this early for SRAT node setup.
+	 */
+	acpi_boot_table_init();
+
+#ifdef CONFIG_ACPI_NUMA
+	/* Choose the default for acpi_numa.  If we're a multi-core
+	 * AMD CPU then default is ON, else the default is OFF
+	 * (to prevent possible regressions in legacy systems).
+	 * Only set the default if a choice hasn't been made by
+	 * the user.
+	 */
+
+	if (acpi_numa < 0) {
+		int eax, ebx, ecx, edx;
+
+		/* this is called so early that c->vendor_id and
+		 * smp_num_siblings have not been set up yet.
+		 * Compute them here
+		 */
+
+		/* default is off */
+		acpi_numa = 0;
+
+		cpuid(0, &eax, &ebx, &ecx, &edx);
+		
+		/* ebx/edx/ecx should contain "AuthenticAMD" */
+		if (ebx==0x68747541 && edx==0x69746e65 && ecx==0x444d4163) {
+			if (!numa_off && ((cpuid_ecx(0x80000008) & 0xff) > 0)) {
+				printk("Enabling SRAT NUMA discovery\n");
+				acpi_numa = 1;
+			}
+		}
+	}	
+
+	/*
+	 * Parse SRAT to discover nodes.
+	 */
+	acpi_numa_init();
+#endif
+#endif
 
 #ifdef CONFIG_DISCONTIGMEM
 	numa_initmem_init(0, end_pfn); 
@@ -661,6 +735,7 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 {
 	int r;
 	int level;
+	int cpu;
 
 	/* Bit 31 in normal CPUID used for nonstandard 3DNow ID;
 	   3DNow is IDd by bit 31 in extended CPUID (1*32+31) anyway */
@@ -692,13 +767,16 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 		/* On a dual core setup the lower bits of apic id
 		   distingush the cores. Fix up the CPU<->node mappings
 		   here based on that.
-		   Assumes number of cores is a power of two. */
-		if (c->x86_num_cores > 1) {
-			int cpu = c->x86_apicid;
+		   Assumes number of cores is a power of two.
+		   When using SRAT use mapping from SRAT. */
+		cpu = c->x86_apicid;
+		if (acpi_numa <= 0 && c->x86_num_cores > 1) {
 			cpu_to_node[cpu] = cpu >> hweight32(c->x86_num_cores - 1);
-			printk(KERN_INFO "CPU %d -> Node %d\n",
-			       cpu, cpu_to_node[cpu]);
+			if (!node_online(cpu_to_node[cpu]))
+				cpu_to_node[cpu] = find_first_bit(node_online_map, MAX_NUMNODES);
 		}
+		printk(KERN_INFO "CPU %d(%d) -> Node %d\n",
+				cpu, c->x86_num_cores, cpu_to_node[cpu]);
 #endif
 	}
 

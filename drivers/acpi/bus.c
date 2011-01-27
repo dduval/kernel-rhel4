@@ -655,7 +655,7 @@ acpi_early_init (void)
 		goto error0;
 	}
 
-#if defined(CONFIG_X86_64)
+#if defined(CONFIG_X86_64) || defined(CONFIG_X86)
 	/*
 	 * Set up system reset via ACPI if defined in FADT.
 	 */
@@ -665,8 +665,10 @@ acpi_early_init (void)
 			/* if no 8042 KBD controller exists, use ACPI reset */
 			if (!(acpi_fadt.iapc_boot_arch & BAF_8042_KEYBOARD_CONTROLLER)) {
 				machine_reset = acpi_machine_reset;
+#ifdef CONFIG_X86_64
 				if (!reboot_override)
 					reboot_type = BOOT_ACPI;
+#endif
 			}
 		}
 	}

@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_crtn.h 1.140 2004/11/17 19:00:57EST sf_support Exp  $
+ * $Id: lpfc_crtn.h 1.147 2005/02/28 18:24:25EST sf_support Exp  $
  */
 
 #ifndef _H_LPFC_CRTN
@@ -35,7 +35,7 @@
 #include "lpfc_sli.h"
 
 
-void lpfc_dump_mem(struct lpfc_hba *, LPFC_MBOXQ_t *);
+void lpfc_dump_mem(struct lpfc_hba *, LPFC_MBOXQ_t *, uint16_t);
 void lpfc_read_nv(struct lpfc_hba *, LPFC_MBOXQ_t *);
 int lpfc_read_la(struct lpfc_hba *, LPFC_MBOXQ_t *);
 void lpfc_clear_la(struct lpfc_hba *, LPFC_MBOXQ_t *);
@@ -94,6 +94,7 @@ void lpfc_addnode_rpi(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 
 int lpfc_discq_post_event(struct lpfc_hba *, void *, void *, uint32_t);
 int lpfc_do_dpc(void *);
+void lpfc_evt_iocb_free(struct lpfc_hba *, struct lpfc_iocbq *);
 int lpfc_disc_state_machine(struct lpfc_hba *, struct lpfc_nodelist *, void *,
 			    uint32_t);
 
@@ -105,6 +106,8 @@ uint32_t lpfc_cmpl_plogi_prli_issue(struct lpfc_hba *, struct lpfc_nodelist *,
 
 int lpfc_check_sparm(struct lpfc_hba *, struct lpfc_nodelist *,
 		     struct serv_parm *, uint32_t);
+int lpfc_els_abort(struct lpfc_hba *, struct lpfc_nodelist * ndlp,
+		   int);
 int lpfc_els_abort_flogi(struct lpfc_hba *);
 int lpfc_initial_flogi(struct lpfc_hba *);
 int lpfc_issue_els_plogi(struct lpfc_hba *, struct lpfc_nodelist *, uint8_t);
@@ -122,6 +125,7 @@ int lpfc_els_rsp_adisc_acc(struct lpfc_hba *, struct lpfc_iocbq *,
 int lpfc_els_rsp_prli_acc(struct lpfc_hba *, struct lpfc_iocbq *,
 			  struct lpfc_nodelist *);
 void lpfc_els_retry_delay(unsigned long);
+void lpfc_els_retry_delay_handler(struct lpfc_nodelist *);
 void lpfc_els_unsol_event(struct lpfc_hba *, struct lpfc_sli_ring *,
 			  struct lpfc_iocbq *);
 int lpfc_els_handle_rscn(struct lpfc_hba *);
@@ -130,13 +134,15 @@ int lpfc_rscn_payload_check(struct lpfc_hba *, uint32_t);
 void lpfc_els_flush_cmd(struct lpfc_hba *);
 int lpfc_els_disc_adisc(struct lpfc_hba *);
 int lpfc_els_disc_plogi(struct lpfc_hba *);
-void lpfc_els_timeout_handler(unsigned long ptr);
+void lpfc_els_timeout(unsigned long);
+void lpfc_els_timeout_handler(struct lpfc_hba *);
 
 void lpfc_ct_unsol_event(struct lpfc_hba *, struct lpfc_sli_ring *,
 			 struct lpfc_iocbq *);
 int lpfc_ns_cmd(struct lpfc_hba *, struct lpfc_nodelist *, int);
 int lpfc_fdmi_cmd(struct lpfc_hba *, struct lpfc_nodelist *, int);
 void lpfc_fdmi_tmo(unsigned long);
+void lpfc_fdmi_tmo_handler(struct lpfc_hba *);
 
 int lpfc_config_port_prep(struct lpfc_hba *);
 int lpfc_config_port_post(struct lpfc_hba *);
@@ -152,7 +158,6 @@ uint8_t *lpfc_get_lpfchba_info(struct lpfc_hba *, uint8_t *);
 int lpfc_fcp_abort(struct lpfc_hba *, int, int, int);
 int lpfc_put_event(struct lpfc_hba *, uint32_t, uint32_t, void *,
 		       uint32_t, uint32_t);
-void lpfc_get_hba_model_desc(struct lpfc_hba *, uint8_t *, uint8_t *);
 int lpfc_online(struct lpfc_hba *);
 int lpfc_offline(struct lpfc_hba *);
 
@@ -184,6 +189,7 @@ int lpfc_sli_hba_setup(struct lpfc_hba *);
 int lpfc_sli_hba_down(struct lpfc_hba *);
 int lpfc_sli_intr(struct lpfc_hba *);
 int lpfc_sli_issue_mbox(struct lpfc_hba *, LPFC_MBOXQ_t *, uint32_t);
+void lpfc_sli_def_mbox_cmpl(struct lpfc_hba *, LPFC_MBOXQ_t *);
 int lpfc_sli_issue_iocb(struct lpfc_hba *, struct lpfc_sli_ring *,
 			struct lpfc_iocbq *, uint32_t);
 void lpfc_sli_pcimem_bcopy(uint32_t *, uint32_t *, uint32_t);
@@ -206,7 +212,7 @@ int lpfc_sli_abort_iocb_lun(struct lpfc_hba *, struct lpfc_sli_ring *, uint16_t,
 int lpfc_sli_abort_iocb_tgt(struct lpfc_hba *, struct lpfc_sli_ring *,
 			    uint16_t, int);
 void lpfc_mbox_timeout(unsigned long);
-
+void lpfc_mbox_timeout_handler(struct lpfc_hba *);
 void lpfc_map_fcp_cmnd_to_bpl(struct lpfc_hba *, struct lpfc_scsi_buf *);
 void lpfc_free_scsi_cmd(struct lpfc_scsi_buf *);
 uint32_t lpfc_os_timeout_transform(struct lpfc_hba *, uint32_t);
@@ -219,8 +225,6 @@ lpfc_findnode_wwnn(struct lpfc_hba * phba, uint32_t order,
 		   struct lpfc_name * wwnn);
 struct lpfc_nodelist *lpfc_findnode_did(struct lpfc_hba * phba, uint32_t order,
 					uint32_t did);
-
-void lpfc_get_hba_sym_node_name(struct lpfc_hba * phba, uint8_t * symbp);
 
 int lpfc_sli_issue_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq,
 			 uint32_t timeout);
@@ -251,7 +255,7 @@ int lpfc_abort_handler(struct scsi_cmnd *);
 int lpfc_reset_bus_handler(struct scsi_cmnd *);
 int lpfc_reset_lun_handler(struct scsi_cmnd *);
 
-#if defined(FC_TRANS_VER1) || defined(FC_TRANS_265_BLKPATCH)
+#if defined(RHEL_FC) || defined(SLES_FC)
 void lpfc_target_unblock(struct lpfc_hba *, struct lpfc_target *);
 void lpfc_target_block(struct lpfc_hba *, struct lpfc_target *);
 int lpfc_target_remove(struct lpfc_hba *, struct lpfc_target *);

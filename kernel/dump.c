@@ -94,8 +94,11 @@ static struct gendisk *device_to_gendisk(struct device *dev)
 	nd.last_type = LAST_ROOT;
 	nd.depth = 0;
 	rc = link_path_walk("block", &nd);
-	if (rc < 0)
+	if (rc < 0) {
+		if (rc == -ENOENT)
+			return NULL;
 		goto err;
+	}
 	dentry = nd.dentry;
 	if (!dentry)
 		goto err;

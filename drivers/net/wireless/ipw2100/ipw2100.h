@@ -439,12 +439,12 @@ struct ipw2100_notification {
 #define IPW2100_WEP_ENABLE     BIT(1)
 #define IPW2100_WEP_DROP_CLEAR BIT(2)
 
-#define IPW_NONE_CIPHER   BIT(0) 
-#define IPW_WEP40_CIPHER  BIT(1) 
-#define IPW_WEP104_CIPHER BIT(5) 
-#define IPW_TKIP_CIPHER   BIT(2) 
-#define IPW_CKIP_CIPHER   BIT(6)
+#define IPW_NONE_CIPHER   BIT(0)
+#define IPW_WEP40_CIPHER  BIT(1)
+#define IPW_TKIP_CIPHER   BIT(2)
 #define IPW_CCMP_CIPHER   BIT(4)
+#define IPW_WEP104_CIPHER BIT(5)
+#define IPW_CKIP_CIPHER   BIT(6)
 
 #define	IPW_AUTH_OPEN     0
 #define	IPW_AUTH_SHARED   1
@@ -488,7 +488,8 @@ enum {
 #define STATUS_ENABLED          BIT(3)  /* Card enabled -- can scan,Tx,Rx */
 #define STATUS_STOPPING         BIT(4)  /* Card is in shutdown phase */
 #define STATUS_INITIALIZED      BIT(5)  /* Card is ready for external calls */
-#define STATUS_ASSOCIATED       BIT(9)
+#define STATUS_ASSOCIATING      BIT(9)  /* Associated, but no BSSID yet */
+#define STATUS_ASSOCIATED       BIT(10) /* Associated and BSSID valid */
 #define STATUS_INT_ENABLED      BIT(11)
 #define STATUS_RF_KILL_HW       BIT(12)
 #define STATUS_RF_KILL_SW       BIT(13)
@@ -559,6 +560,7 @@ struct ipw2100_priv {
 
 	unsigned long connect_start;
 	unsigned long last_reset;
+	unsigned long start_rx;
 
 	u32 channel_mask; 
 	u32 fatal_error;
@@ -636,6 +638,7 @@ struct ipw2100_priv {
 	struct work_struct wx_event_work;
 	struct work_struct hang_check;
 	struct work_struct rf_kill;
+	struct work_struct hw_kick;
 	
 	u32 interrupts;
 	int tx_interrupts;
@@ -643,6 +646,8 @@ struct ipw2100_priv {
 	int inta_other;
 	
 	spinlock_t low_lock;
+	struct semaphore action_sem;
+	struct semaphore adapter_sem;
 
 	wait_queue_head_t wait_command_queue;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)

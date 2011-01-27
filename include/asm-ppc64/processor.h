@@ -515,6 +515,10 @@ extern struct task_struct *last_task_used_altivec;
 #define TASK_SIZE (test_thread_flag(TIF_32BIT) ? \
 		TASK_SIZE_USER32 : TASK_SIZE_USER64)
 
+/* We can't actually tell the TASK_SIZE given just the mm, but default
+ * to the 64-bit case to make sure that enough gets cleaned up. */
+#define MM_VM_SIZE(mm)	TASK_SIZE_USER64
+
 /* This decides where the kernel will search for a free chunk of vm
  * space during mmap's.
  */
@@ -536,7 +540,13 @@ struct thread_struct {
 	double		fpr[32];	/* Complete floating point set */
 	unsigned long	fpscr;		/* Floating point status (plus pad) */
 	unsigned long	fpexc_mode;	/* Floating-point exception mode */
+#ifdef __GENKSYMS__
 	unsigned long	pad[3];		/* was saved_msr, saved_softe */
+#else
+	unsigned long	start_tb;	/* Start purr when proc switched in */
+	unsigned long	accum_tb;	/* Total accumilated purr for process */
+	unsigned long	pad;		/* was saved_msr, saved_softe */
+#endif
 #ifdef CONFIG_ALTIVEC
 	/* Complete AltiVec register set */
 	vector128	vr[32] __attribute((aligned(16)));

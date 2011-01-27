@@ -27,11 +27,18 @@
  */
 extern struct auth_ops svcauth_null;
 extern struct auth_ops svcauth_unix;
+extern struct auth_clients svcauth_clnt_unix;
 
 static spinlock_t authtab_lock = SPIN_LOCK_UNLOCKED;
 static struct auth_ops	*authtab[RPC_AUTH_MAXFLAVOR] = {
 	[0] = &svcauth_null,
 	[1] = &svcauth_unix,
+};
+
+static spinlock_t authclnttab_lock = SPIN_LOCK_UNLOCKED;
+static struct auth_clients	*authclnts[RPC_AUTH_MAXFLAVOR] = {
+	[0] = &svcauth_clnt_unix,
+	[1] = &svcauth_clnt_unix,
 };
 
 int
@@ -57,6 +64,21 @@ svc_authenticate(struct svc_rqst *rqstp, u32 *authp)
 
 	rqstp->rq_authop = aops;
 	return aops->accept(rqstp, authp);
+}
+
+int svc_set_client(struct svc_rqst *rqstp)
+{
+	int flavor = rqstp->rq_authop->flavour;
+	struct auth_clients	*cops;
+
+	spin_lock(&authclnttab_lock);
+	if (flavor >= RPC_AUTH_MAXFLAVOR || !(cops = authclnts[flavor])) {
+		spin_unlock(&authclnttab_lock);
+		return SVC_DENIED;
+	}
+	spin_unlock(&authclnttab_lock);
+
+	return cops->set_client(rqstp);
 }
 
 /* A request, which was authenticated, has now executed.
@@ -89,6 +111,18 @@ svc_auth_register(rpc_authflavor_t flavor, struct auth_ops *aops)
 	spin_unlock(&authtab_lock);
 	return rv;
 }
+int
+svc_auth_client_register(rpc_authflavor_t flavor, struct auth_clients *cops)
+{
+	int rv = -EINVAL;
+	spin_lock(&authclnttab_lock);
+	if (flavor < RPC_AUTH_MAXFLAVOR && authclnts[flavor] == NULL) {
+		authclnts[flavor] = cops;
+		rv = 0;
+	}
+	spin_unlock(&authclnttab_lock);
+	return rv;
+}
 
 void
 svc_auth_unregister(rpc_authflavor_t flavor)
@@ -99,6 +133,16 @@ svc_auth_unregister(rpc_authflavor_t flavor)
 	spin_unlock(&authtab_lock);
 }
 EXPORT_SYMBOL(svc_auth_unregister);
+void
+svc_auth_client_unregister(rpc_authflavor_t flavor)
+{
+	spin_lock(&authclnttab_lock);
+	if (flavor < RPC_AUTH_MAXFLAVOR)
+		authclnts[flavor] = NULL;
+	spin_unlock(&authclnttab_lock);
+}
+EXPORT_SYMBOL(svc_auth_client_unregister);
+
 
 /**************************************************
  * cache for domain name to auth_domain

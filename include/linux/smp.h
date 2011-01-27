@@ -53,6 +53,7 @@ extern void smp_cpus_done(unsigned int max_cpus);
  */
 extern int smp_call_function (void (*func) (void *info), void *info,
 			      int retry, int wait);
+extern void dump_smp_call_function (void (*func) (void *info), void *info);
 
 /*
  * Call a function on all processors
@@ -100,6 +101,7 @@ void smp_prepare_boot_cpu(void);
 #define hard_smp_processor_id()			0
 #define smp_threads_ready			1
 #define smp_call_function(func,info,retry,wait)	({ 0; })
+static inline void dump_smp_call_function(void (*func) (void *info), void *info) { }
 #define on_each_cpu(func,info,retry,wait)	({ func(info); 0; })
 static inline void smp_send_reschedule(int cpu) { }
 #define num_booting_cpus()			1

@@ -30,6 +30,7 @@
 #include <linux/nfs_xdr.h>
 #include <linux/rwsem.h>
 #include <linux/workqueue.h>
+#include <linux/mempool.h>
 
 /*
  * Enable debugging support for nfs client.
@@ -424,6 +425,44 @@ static inline int nfs_wb_page(struct inode *inode, struct page* page)
 	return nfs_wb_page_priority(inode, page, 0);
 }
 
+/*
+ * Allocate and free nfs_write_data structures
+ */
+extern mempool_t *nfs_wdata_mempool;
+extern mempool_t *nfs_commit_mempool;
+
+static inline struct nfs_write_data *nfs_writedata_alloc(void)
+{
+	struct nfs_write_data *p = mempool_alloc(nfs_wdata_mempool, SLAB_NOFS);
+	if (p) {
+		memset(p, 0, sizeof(*p));
+		INIT_LIST_HEAD(&p->pages);
+	}
+	return p;
+}
+
+static inline void nfs_writedata_free(struct nfs_write_data *p)
+{
+	mempool_free(p, nfs_wdata_mempool);
+}
+
+extern void  nfs_writedata_release(struct rpc_task *task);
+
+static inline struct nfs_write_data *nfs_commit_alloc(void)
+{
+	struct nfs_write_data *p = mempool_alloc(nfs_commit_mempool, SLAB_NOFS);
+	if (p) {
+		memset(p, 0, sizeof(*p));
+		INIT_LIST_HEAD(&p->pages);
+	}
+	return p;
+}
+
+static inline void nfs_commit_free(struct nfs_write_data *p)
+{
+	mempool_free(p, nfs_commit_mempool);
+}
+
 /* Hack for future NFS swap support */
 #ifndef IS_SWAPFILE
 # define IS_SWAPFILE(inode)	(0)
@@ -437,6 +476,26 @@ extern int  nfs_readpages(struct file *, struct address_space *,
 		struct list_head *, unsigned);
 extern int  nfs_pagein_list(struct list_head *, int);
 extern void nfs_readpage_result(struct rpc_task *);
+
+/*
+ * Allocate and free nfs_read_data structures
+ */
+extern mempool_t *nfs_rdata_mempool;
+
+static inline struct nfs_read_data *nfs_readdata_alloc(void)
+{
+	struct nfs_read_data *p = mempool_alloc(nfs_rdata_mempool, SLAB_NOFS);
+	if (p)
+		memset(p, 0, sizeof(*p));
+	return p;
+}
+
+static inline void nfs_readdata_free(struct nfs_read_data *p)
+{
+	mempool_free(p, nfs_rdata_mempool);
+}
+
+extern void  nfs_readdata_release(struct rpc_task *task);
 
 /*
  * linux/fs/mount_clnt.c

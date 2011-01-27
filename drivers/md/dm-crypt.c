@@ -40,8 +40,8 @@ struct convert_context {
 	struct bio *bio_out;
 	unsigned int offset_in;
 	unsigned int offset_out;
-	int idx_in;
-	int idx_out;
+	unsigned int idx_in;
+	unsigned int idx_out;
 	sector_t sector;
 	int write;
 };
@@ -67,8 +67,8 @@ struct crypt_config {
 	struct crypto_tfm *tfm;
 	sector_t iv_offset;
 	int (*iv_generator)(struct crypt_config *cc, u8 *iv, sector_t sector);
-	int iv_size;
-	int key_size;
+	unsigned int iv_size;
+	unsigned int key_size;
 	u8 key[0];
 };
 
@@ -97,10 +97,8 @@ static void mempool_free_page(void *page, void *data)
  */
 static int crypt_iv_plain(struct crypt_config *cc, u8 *iv, sector_t sector)
 {
+	memset(iv, 0, cc->iv_size);
 	*(u32 *)iv = cpu_to_le32(sector & 0xffffffff);
-	if (cc->iv_size > sizeof(u32) / sizeof(u8))
-		memset(iv + (sizeof(u32) / sizeof(u8)), 0,
-		       cc->iv_size - (sizeof(u32) / sizeof(u8)));
 
 	return 0;
 }
@@ -200,13 +198,13 @@ static int crypt_convert(struct crypt_config *cc,
  */
 static struct bio *
 crypt_alloc_buffer(struct crypt_config *cc, unsigned int size,
-                   struct bio *base_bio, int *bio_vec_idx)
+                   struct bio *base_bio, unsigned int *bio_vec_idx)
 {
 	struct bio *bio;
-	int nr_iovecs = dm_div_up(size, PAGE_SIZE);
+	unsigned int nr_iovecs = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	int gfp_mask = GFP_NOIO | __GFP_HIGHMEM;
-	int flags = current->flags;
-	int i;
+	unsigned long flags = current->flags;
+	unsigned int i;
 
 	/*
 	 * Tell VM to act less aggressively and fail earlier.
@@ -280,9 +278,8 @@ crypt_alloc_buffer(struct crypt_config *cc, unsigned int size,
 static void crypt_free_buffer_pages(struct crypt_config *cc,
                                     struct bio *bio, unsigned int bytes)
 {
-	unsigned int start, end;
+	unsigned int i, start, end;
 	struct bio_vec *bv;
-	int i;
 
 	/*
 	 * This is ugly, but Jens Axboe thinks that using bi_idx in the
@@ -366,11 +363,11 @@ static void kcryptd_queue_io(struct crypt_io *io)
 /*
  * Decode key from its hex representation
  */
-static int crypt_decode_key(u8 *key, char *hex, int size)
+static int crypt_decode_key(u8 *key, char *hex, unsigned int size)
 {
 	char buffer[3];
 	char *endp;
-	int i;
+	unsigned int i;
 
 	buffer[2] = '\0';
 
@@ -393,9 +390,9 @@ static int crypt_decode_key(u8 *key, char *hex, int size)
 /*
  * Encode key into its hex representation
  */
-static void crypt_encode_key(char *hex, u8 *key, int size)
+static void crypt_encode_key(char *hex, u8 *key, unsigned int size)
 {
-	int i;
+	unsigned int i;
 
 	for(i = 0; i < size; i++) {
 		sprintf(hex, "%02x", *key);
@@ -415,8 +412,8 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	char *tmp;
 	char *cipher;
 	char *mode;
-	int crypto_flags;
-	int key_size;
+	unsigned int crypto_flags;
+	unsigned int key_size;
 
 	if (argc != 5) {
 		ti->error = PFX "Not enough arguments";
@@ -464,9 +461,9 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	if (tfm->crt_cipher.cit_decrypt_iv && tfm->crt_cipher.cit_encrypt_iv)
-		/* at least a 32 bit sector number should fit in our buffer */
+		/* at least a 64 bit sector number should fit in our buffer */
 		cc->iv_size = max(crypto_tfm_alg_ivsize(tfm),
-		                  (unsigned int)(sizeof(u32) / sizeof(u8)));
+		                  (unsigned int)(sizeof(u64) / sizeof(u8)));
 	else {
 		cc->iv_size = 0;
 		if (cc->iv_generator) {
@@ -577,7 +574,8 @@ static int crypt_endio(struct bio *bio, unsigned int done, int error)
 
 static inline struct bio *
 crypt_clone(struct crypt_config *cc, struct crypt_io *io, struct bio *bio,
-            sector_t sector, int *bvec_idx, struct convert_context *ctx)
+            sector_t sector, unsigned int *bvec_idx,
+	    struct convert_context *ctx)
 {
 	struct bio *clone;
 
@@ -630,7 +628,7 @@ static int crypt_map(struct dm_target *ti, struct bio *bio,
 	struct bio *clone;
 	unsigned int remaining = bio->bi_size;
 	sector_t sector = bio->bi_sector - ti->begin;
-	int bvec_idx = 0;
+	unsigned int bvec_idx = 0;
 
 	io->target = ti;
 	io->bio = bio;
@@ -693,7 +691,7 @@ static int crypt_status(struct dm_target *ti, status_type_t type,
 	char buffer[32];
 	const char *cipher;
 	const char *mode = NULL;
-	int offset;
+	unsigned int offset;
 
 	switch (type) {
 	case STATUSTYPE_INFO:

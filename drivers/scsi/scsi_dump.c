@@ -58,6 +58,9 @@
 /* blocks to 512byte sectors */
 #define BLOCK_SECTOR(s)	((s) << (DUMP_BLOCK_SHIFT - 9))
 
+static int set_wce = 1;
+module_param_named(set_wce, set_wce, bool, S_IRUGO|S_IWUSR);
+
 static int quiesce_ok = 0;
 static struct scsi_cmnd scsi_dump_cmnd;
 static struct request scsi_dump_req;
@@ -503,7 +506,7 @@ scsi_dump_quiesce(struct disk_dump_device *dump_device)
 	if ((ret = scsi_dump_reset(sdev)) < 0)
 		return ret;
 
-	if (sdev->scsi_level >= SCSI_2)
+	if (set_wce && sdev->scsi_level >= SCSI_2)
 		enable_write_cache(sdev);
 
 	quiesce_ok = 1;

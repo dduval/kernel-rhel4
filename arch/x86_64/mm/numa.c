@@ -14,6 +14,7 @@
 #include <asm/proto.h>
 #include <asm/dma.h>
 #include <asm/numa.h>
+#include <asm/acpi.h>
 
 #ifndef Dprintk
 #define Dprintk(x...)
@@ -25,10 +26,11 @@ bootmem_data_t plat_node_bdata[MAX_NUMNODES];
 int memnode_shift;
 u8  memnodemap[NODEMAPSIZE];
 
-unsigned char cpu_to_node[NR_CPUS];  
+#define NUMA_NO_NODE 0xff
+unsigned char cpu_to_node[NR_CPUS] = { [0 ... NR_CPUS-1] = NUMA_NO_NODE };
 cpumask_t     node_to_cpumask[MAXNODE]; 
 
-static int numa_off __initdata; 
+int numa_off __initdata;
 
 unsigned long nodes_present; 
 
@@ -151,6 +153,8 @@ void __init numa_init_array(void)
 	for (i = 0; i < MAXNODE; i++) {
 		if (node_online(i))
 			continue;
+		if (cpu_to_node[i] != NUMA_NO_NODE)
+			continue;
 		rr = find_next_bit(node_online_map, MAX_NUMNODES, rr);
 		if (rr == MAX_NUMNODES)
 			rr = find_first_bit(node_online_map, MAX_NUMNODES);
@@ -214,6 +218,12 @@ void __init numa_initmem_init(unsigned long start_pfn, unsigned long end_pfn)
 	if (numa_fake && !numa_emulation(start_pfn, end_pfn))
  		return;
 
+#ifdef CONFIG_ACPI_NUMA
+	if (!numa_off && !acpi_scan_nodes(start_pfn << PAGE_SHIFT,
+					  end_pfn << PAGE_SHIFT))
+ 		return;
+#endif
+
 #ifdef CONFIG_K8_NUMA
 	if (!numa_off && !k8_scan_nodes(start_pfn<<PAGE_SHIFT, end_pfn<<PAGE_SHIFT))
 		return;
@@ -231,7 +241,7 @@ void __init numa_initmem_init(unsigned long start_pfn, unsigned long end_pfn)
 	for (i = 0; i < NR_CPUS; i++)
 		cpu_to_node[i] = 0;
 	node_to_cpumask[0] = cpumask_of_cpu(0);
-	setup_node_bootmem(0, start_pfn<<PAGE_SHIFT, end_pfn<<PAGE_SHIFT);
+	setup_node_bootmem(0, start_pfn << PAGE_SHIFT, end_pfn << PAGE_SHIFT);
 }
 
 __init void numa_add_cpu(int cpu)
@@ -264,11 +274,19 @@ __init int numa_setup(char *opt)
 { 
 	if (!strcmp(opt,"off"))
 		numa_off = 1;
+	if (!strcmp(opt,"on"))
+		numa_off = 0;
 	if(!strncmp(opt, "fake=", 5)) {
 		numa_fake = simple_strtoul(opt+5,NULL,0); ;
 		if (numa_fake >= MAX_NUMNODES)
 			numa_fake = MAX_NUMNODES;
 	}
+#ifdef CONFIG_ACPI_NUMA
+	if (!strncmp(opt,"acpi",4))
+		acpi_numa = 1;
+	else if (!strncmp(opt, "noacpi", 6))
+		acpi_numa = 0;
+#endif
 	return 1;
 } 
 

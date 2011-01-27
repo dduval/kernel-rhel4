@@ -17,9 +17,6 @@ static spinlock_t _lock = SPIN_LOCK_UNLOCKED;
 
 int dm_register_dirty_log_type(struct dirty_log_type *type)
 {
-	if (!try_module_get(type->module))
-		return -EINVAL;
-
 	spin_lock(&_lock);
 	type->use_count = 0;
 	list_add(&type->list, &_log_types);
@@ -34,10 +31,8 @@ int dm_unregister_dirty_log_type(struct dirty_log_type *type)
 
 	if (type->use_count)
 		DMWARN("Attempt to unregister a log type that is still in use");
-	else {
+	else
 		list_del(&type->list);
-		module_put(type->module);
-	}
 
 	spin_unlock(&_lock);
 
@@ -51,6 +46,10 @@ static struct dirty_log_type *get_type(const char *type_name)
 	spin_lock(&_lock);
 	list_for_each_entry (type, &_log_types, list)
 		if (!strcmp(type_name, type->name)) {
+			if (!type->use_count && !try_module_get(type->module)){
+				spin_unlock(&_lock);
+				return NULL;
+			}
 			type->use_count++;
 			spin_unlock(&_lock);
 			return type;
@@ -63,7 +62,8 @@ static struct dirty_log_type *get_type(const char *type_name)
 static void put_type(struct dirty_log_type *type)
 {
 	spin_lock(&_lock);
-	type->use_count--;
+	if (!--type->use_count)
+		module_put(type->module);
 	spin_unlock(&_lock);
 }
 
@@ -129,7 +129,7 @@ struct log_header {
 struct log_c {
 	struct dm_target *ti;
 	int touched;
-	sector_t region_size;
+	uint32_t region_size;
 	unsigned int region_count;
 	region_t sync_count;
 
@@ -292,7 +292,7 @@ static int core_ctr(struct dirty_log *log, struct dm_target *ti,
 	enum sync sync = DEFAULTSYNC;
 
 	struct log_c *lc;
-	sector_t region_size;
+	uint32_t region_size;
 	unsigned int region_count;
 	size_t bitset_size;
 
@@ -313,12 +313,12 @@ static int core_ctr(struct dirty_log *log, struct dm_target *ti,
 		}
 	}
 
-	if (sscanf(argv[0], SECTOR_FORMAT, &region_size) != 1) {
+	if (sscanf(argv[0], "%u", &region_size) != 1) {
 		DMWARN("invalid region size string");
 		return -EINVAL;
 	}
 
-	region_count = dm_div_up(ti->len, region_size);
+	region_count = dm_sector_div_up(ti->len, region_size);
 
 	lc = kmalloc(sizeof(*lc), GFP_KERNEL);
 	if (!lc) {
@@ -616,7 +616,7 @@ static int core_status(struct dirty_log *log, status_type_t status,
 		break;
 
 	case STATUSTYPE_TABLE:
-		DMEMIT("%s %u " SECTOR_FORMAT " ", log->type->name,
+		DMEMIT("%s %u %u ", log->type->name,
 		       lc->sync == DEFAULTSYNC ? 1 : 2, lc->region_size);
 		DMEMIT_SYNC;
 	}
@@ -637,7 +637,7 @@ static int disk_status(struct dirty_log *log, status_type_t status,
 
 	case STATUSTYPE_TABLE:
 		format_dev_t(buffer, lc->log_dev->bdev->bd_dev);
-		DMEMIT("%s %u %s " SECTOR_FORMAT " ", log->type->name,
+		DMEMIT("%s %u %s %u ", log->type->name,
 		       lc->sync == DEFAULTSYNC ? 2 : 3, buffer,
 		       lc->region_size);
 		DMEMIT_SYNC;

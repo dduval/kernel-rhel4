@@ -125,6 +125,11 @@ int __init hpet_enable(void)
 	cfg |= HPET_TN_ENABLE | HPET_TN_PERIODIC |
 	       HPET_TN_SETVAL | HPET_TN_32BIT;
 	hpet_writel(cfg, HPET_T0_CFG);
+	/*
+	 * Some systems seems to need two writes to HPET_T0_CMP,
+	 * to get interrupts working
+	 */
+	hpet_writel(hpet_tick, HPET_T0_CMP);
 	hpet_writel(hpet_tick, HPET_T0_CMP);
 
 	/*

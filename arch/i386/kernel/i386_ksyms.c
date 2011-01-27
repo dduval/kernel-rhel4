@@ -149,6 +149,7 @@ EXPORT_SYMBOL(__read_lock_failed);
 
 /* Global SMP stuff */
 EXPORT_SYMBOL(synchronize_irq);
+EXPORT_SYMBOL(dump_smp_call_function);
 EXPORT_SYMBOL(smp_call_function);
 
 /* TLB flushing */

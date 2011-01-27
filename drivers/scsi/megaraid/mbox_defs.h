@@ -785,6 +785,39 @@ typedef struct {
 	uint32_t	length;
 } __attribute__ ((packed)) mbox_sgl32;
 
+
+#undef	wait_event
+#define	wait_event		mraid_mm_diskdump_wait_event
+#undef  wake_up
+#define wake_up			mraid_mm_diskdump_wake_up
+extern void mraid_mm_diskdump_schedule(void);
+extern void mraid_mm_diskdump_wake_up(wait_queue_head_t *q);
+
+
+#define __mraid_mm_diskdump_wait_event(wq, condition)			\
+do {									\
+	wait_queue_t __wait;						\
+	init_waitqueue_entry(&__wait, current);				\
+									\
+	add_wait_queue(&wq, &__wait);					\
+	for (;;) {							\
+		set_current_state(TASK_UNINTERRUPTIBLE);		\
+		if (condition)						\
+			break;						\
+		mraid_mm_diskdump_schedule();				\
+	}								\
+	current->state = TASK_RUNNING;					\
+	remove_wait_queue(&wq, &__wait);				\
+} while (0)
+
+#define mraid_mm_diskdump_wait_event(wq, condition)			\
+do {									\
+	if (condition)							\
+		break;							\
+	__mraid_mm_diskdump_wait_event(wq, condition);			\
+} while (0)
+
+
 #endif		// _MRAID_MBOX_DEFS_H_
 
 /* vim: set ts=8 sw=8 tw=78: */

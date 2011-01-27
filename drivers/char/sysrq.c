@@ -98,7 +98,9 @@ static struct sysrq_key_op sysrq_unraw_op = {
 static void sysrq_handle_reboot(int key, struct pt_regs *pt_regs,
 				struct tty_struct *tty) 
 {
-	machine_restart(NULL);
+	static struct work_struct reboot_work;
+	INIT_WORK(&reboot_work, machine_restart, NULL);
+	schedule_work(&reboot_work);
 }
 
 static struct sysrq_key_op sysrq_reboot_op = {

@@ -97,9 +97,6 @@ setup_serial_console(int rev, struct pcdp_uart *uart)
 	port.flags = UPF_SKIP_TEST | UPF_BOOT_AUTOCONF;
 
 	if (uart_irq_supported(rev, uart)) {
-		port.irq = acpi_register_gsi(uart->gsi,
-			uart_active_high_low(rev, uart),
-			uart_edge_level(rev, uart));
 		port.flags |= UPF_AUTO_IRQ;  /* some FW reported wrong GSI */
 		if (uart_pci(rev, uart))
 			port.flags |= UPF_SHARE_IRQ;

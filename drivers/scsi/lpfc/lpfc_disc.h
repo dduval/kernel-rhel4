@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_disc.h 1.45 2004/11/10 11:40:40EST sf_support Exp  $
+ * $Id: lpfc_disc.h 1.49 2005/03/04 11:10:24EST sf_support Exp  $
  */
 
 #ifndef  _H_LPFC_DISC
@@ -69,6 +69,23 @@ struct lpfc_bindlist {
 	uint32_t              nlp_DID;		/* FibreChannel D_ID of entry */
 };
 
+/* structure used to queue event to the discovery tasklet */
+struct lpfc_disc_evt {
+	struct list_head      evt_listp;
+	void                * evt_arg1;
+	void                * evt_arg2;
+	uint32_t              evt;
+};
+typedef struct lpfc_disc_evt LPFC_DISC_EVT_t;
+
+#define LPFC_EVT_MBOX		0x1
+#define LPFC_EVT_SOL_IOCB	0x2
+#define LPFC_EVT_UNSOL_IOCB	0x3
+#define LPFC_EVT_NODEV_TMO	0x4
+#define LPFC_EVT_SCAN		0x5
+#define LPFC_EVT_ERR_ATTN       0x6
+#define LPFC_EVT_ELS_RETRY      0x7
+
 struct lpfc_nodelist {
 	struct list_head nlp_listp;
 	struct lpfc_name nlp_portname;		/* port name */
@@ -86,6 +103,8 @@ struct lpfc_nodelist {
 	uint16_t        nlp_state;		/* state transition indicator */
 	uint16_t        nlp_xri;		/* output exchange id for RPI */
 	uint16_t        nlp_sid;		/* scsi id */
+#define NLP_NO_SID              0xffff
+
 	uint8_t         nlp_retry;		/* used for ELS retries */
 	uint8_t         nlp_disc_refcnt;	/* used for DSM */
 	uint8_t         nlp_fcp_info;	        /* class info, bits 0-3 */
@@ -100,6 +119,8 @@ struct lpfc_nodelist {
 						   ports */
 	struct lpfc_nodelist *nlp_rpi_hash_next;
 	struct lpfc_hba      *nlp_phba;
+	LPFC_DISC_EVT_t nodev_timeout_evt;
+	LPFC_DISC_EVT_t els_retry_evt;
 };
 
 /*++
@@ -248,20 +269,6 @@ struct lpfc_node_farp_pend {
 #define NLP_EVT_DEVICE_RECOVERY   0xc	/* Device existence unknown */
 #define NLP_EVT_MAX_EVENT         0xd
 
-/* structure used to queue event to the discovery tasklet */
-struct lpfc_disc_evt {
-	struct list_head      evt_listp;
-	void                * evt_arg1;
-	void                * evt_arg2;
-	uint32_t              evt;
-};
-typedef struct lpfc_disc_evt LPFC_DISC_EVT_t;
-
-#define LPFC_EVT_MBOX		0x1
-#define LPFC_EVT_SOL_IOCB	0x2
-#define LPFC_EVT_UNSOL_IOCB	0x3
-#define LPFC_EVT_NODEV_TMO	0x4
-#define LPFC_EVT_SCAN		0x5
 
 /* Definitions for Binding Entry Type for lpfc_parse_binding_entry()  */
 #define LPFC_BIND_WW_NN_PN   0

@@ -645,6 +645,24 @@ ide_init_sgiioc4(ide_hwif_t * hwif)
 	hwif->INB = &sgiioc4_INB;
 }
 
+
+/* PB XXX FIXME ... this is a temporary workaround
+for the SGI IOC4 IDE DMA timeout issue */
+void
+sgiioc4_ide_setup_fixup(ide_hwif_t *hwif)
+{
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		ide_drive_t *drive = &(hwif->drives[i]);
+
+		if (drive->present) {
+			(void) ide_do_reset(drive);
+		}
+	}
+}
+
+
 static int __init
 sgiioc4_ide_setup_pci_device(struct pci_dev *dev, ide_pci_device_t * d)
 {
@@ -701,6 +719,8 @@ sgiioc4_ide_setup_pci_device(struct pci_dev *dev, ide_pci_device_t * d)
 		       hwif->name, d->name);
 
 	probe_hwif_init(hwif);
+
+	sgiioc4_ide_setup_fixup(hwif);
 
 	/* Create /proc/ide entries */
 	create_proc_ide_interfaces(); 

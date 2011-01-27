@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hw.h 1.29 2004/11/18 17:28:05EST sf_support Exp  $
+ * $Id: lpfc_hw.h 1.32 2005/02/02 16:30:57EST sf_support Exp  $
  */
 
 #ifndef  _H_LPFC_HW
@@ -2095,7 +2095,9 @@ typedef struct {
 #define  DMP_NV_PARAMS           0x2
 
 #define  DMP_REGION_VPD          0xe
-#define  DMP_VPD_SIZE            0x100
+#define  DMP_VPD_SIZE            0x400  /* maximum amount of VPD */
+#define  DMP_RSP_OFFSET          0x14   /* word 5 contains first word of rsp */
+#define  DMP_RSP_SIZE            0x6C   /* maximum of 27 words of rsp data */
 
 /* Structure for MB Command CONFIG_PORT (0x88) */
 

@@ -57,7 +57,7 @@ struct dm_table {
 /*
  * Similar to ceiling(log_size(n))
  */
-static unsigned int int_log(unsigned long n, unsigned long base)
+static unsigned int int_log(unsigned int n, unsigned int base)
 {
 	int result = 0;
 
@@ -454,6 +454,8 @@ static int __table_get_device(struct dm_table *t, struct dm_target *ti,
 			return r;
 		}
 
+		format_dev_t(dd->name, dev);
+
 		atomic_set(&dd->count, 0);
 		list_add(&dd->list, &t->devices);
 
@@ -575,7 +577,7 @@ static char **realloc_argv(unsigned *array_size, char **old_argv)
 /*
  * Destructively splits up the argument list to pass to ctr.
  */
-static int split_args(int *argc, char ***argvp, char *input)
+int dm_split_args(int *argc, char ***argvp, char *input)
 {
 	char *start, *end = input, *out, **argv = NULL;
 	unsigned array_size = 0;
@@ -663,14 +665,14 @@ int dm_table_add_target(struct dm_table *t, const char *type,
 
 	if (!len) {
 		tgt->error = "zero-length target";
-		DMERR(": %s\n", tgt->error);
+		DMERR("%s", tgt->error);
 		return -EINVAL;
 	}
 
 	tgt->type = dm_get_target_type(type);
 	if (!tgt->type) {
 		tgt->error = "unknown target type";
-		DMERR(": %s\n", tgt->error);
+		DMERR("%s", tgt->error);
 		return -EINVAL;
 	}
 
@@ -688,7 +690,7 @@ int dm_table_add_target(struct dm_table *t, const char *type,
 		goto bad;
 	}
 
-	r = split_args(&argc, &argv, params);
+	r = dm_split_args(&argc, &argv, params);
 	if (r) {
 		tgt->error = "couldn't split parameters (insufficient memory)";
 		goto bad;
@@ -707,7 +709,7 @@ int dm_table_add_target(struct dm_table *t, const char *type,
 	return 0;
 
  bad:
-	DMERR(": %s\n", tgt->error);
+	DMERR("%s", tgt->error);
 	dm_put_target_type(tgt->type);
 	return r;
 }
@@ -848,16 +850,30 @@ int dm_table_get_mode(struct dm_table *t)
 	return t->mode;
 }
 
-void dm_table_suspend_targets(struct dm_table *t)
+static void suspend_targets(struct dm_table *t, unsigned postsuspend)
 {
-	int i;
+	int i = t->num_targets;
+	struct dm_target *ti = t->targets;
 
-	for (i = 0; i < t->num_targets; i++) {
-		struct dm_target *ti = t->targets + i;
+	while (i--) {
+		if (postsuspend) {
+			if (ti->type->postsuspend)
+				ti->type->postsuspend(ti);
+		} else if (ti->type->presuspend)
+			ti->type->presuspend(ti);
 
-		if (ti->type->suspend)
-			ti->type->suspend(ti);
+		ti++;
 	}
+}
+
+void dm_table_presuspend_targets(struct dm_table *t)
+{
+	return suspend_targets(t, 0);
+}
+
+void dm_table_postsuspend_targets(struct dm_table *t)
+{
+	return suspend_targets(t, 1);
 }
 
 void dm_table_resume_targets(struct dm_table *t)

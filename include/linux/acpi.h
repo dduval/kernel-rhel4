@@ -379,6 +379,7 @@ typedef int (*acpi_madt_entry_handler) (acpi_table_entry_header *header, const u
 char * __acpi_map_table (unsigned long phys_addr, unsigned long size);
 unsigned long acpi_find_rsdp (void);
 int acpi_boot_init (void);
+int acpi_boot_table_init (void);
 int acpi_numa_init (void);
 
 int acpi_table_init (void);

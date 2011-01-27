@@ -53,9 +53,6 @@ all: image
 
 boot := arch/sparc/boot
 
-bzImage: image
-	cp $(boot)/image $(boot)/bzImage
-
 image tftpboot.img: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 

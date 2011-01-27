@@ -27,6 +27,7 @@
 #include <linux/list.h>
 #include <linux/version.h>
 #include <linux/moduleparam.h>
+#include <linux/diskdump.h>
 #include <asm/semaphore.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -220,6 +221,9 @@ typedef struct {
  **/
 #define MRAID_IS_LOGICAL(adp, scp)	\
 	(SCP2CHANNEL(scp) == (adp)->max_channel) ? 1 : 0
+
+#define MRAID_IS_LOGICAL_SDEV(adp, sdev)	\
+	(sdev->channel == (adp)->max_channel) ? 1 : 0
 
 #define MRAID_GET_DEVICE_MAP(adp, scp, p_chan, target, islogical)	\
 	/*								\

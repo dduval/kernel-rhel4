@@ -38,6 +38,8 @@
 #include <linux/acpi.h>
 #include <acpi/processor.h>
 
+#include "speedstep-est-common.h"
+
 #define ACPI_PROCESSOR_COMPONENT	0x01000000
 #define ACPI_PROCESSOR_CLASS		"processor"
 #define ACPI_PROCESSOR_DRIVER_NAME	"ACPI Processor P-States Driver"
@@ -58,6 +60,7 @@ struct cpufreq_acpi_io {
 
 static struct cpufreq_acpi_io	*acpi_io_data[NR_CPUS];
 
+static struct cpufreq_driver acpi_cpufreq_driver;
 
 static int
 acpi_processor_write_port(
@@ -380,6 +383,10 @@ acpi_cpufreq_cpu_init (
 
 	if (result)
 		goto err_free;
+
+	if (is_const_loops_cpu(cpu)) {
+		acpi_cpufreq_driver.flags |= CPUFREQ_CONST_LOOPS;
+	}
 
 	/* capability check */
 	if (data->acpi_data.state_count <= 1) {

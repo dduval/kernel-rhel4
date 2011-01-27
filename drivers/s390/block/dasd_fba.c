@@ -4,7 +4,7 @@
  * Bugreports.to..: <Linux390@de.ibm.com>
  * (C) IBM Corporation, IBM Deutschland Entwicklung GmbH, 1999,2000
  *
- * $Revision: 1.36 $
+ * $Revision: 1.34 $
  */
 
 #include <linux/config.h>
@@ -313,7 +313,7 @@ dasd_fba_build_cp(struct dasd_device * device, struct request *req)
 		dst = page_address(bv->bv_page) + bv->bv_offset;
 		if (dasd_page_cache) {
 			char *copy = kmem_cache_alloc(dasd_page_cache,
-					SLAB_ATOMIC | SLAB_DMA | __GFP_NOWARN);
+						      SLAB_DMA | __GFP_NOWARN);
 			if (copy && rq_data_dir(req) == WRITE)
 				memcpy(copy + bv->bv_offset, dst, bv->bv_len);
 			if (copy)

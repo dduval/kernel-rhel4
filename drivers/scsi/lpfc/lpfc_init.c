@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_init.c 1.168 2004/11/15 11:01:33EST sf_support Exp  $
+ * $Id: lpfc_init.c 1.179 2005/02/23 10:40:44EST sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -44,6 +44,7 @@
 #include "lpfc_compat.h"
 
 static int lpfc_parse_vpd(struct lpfc_hba *, uint8_t *);
+static void lpfc_get_hba_model_desc(struct lpfc_hba *, uint8_t *, uint8_t *);
 static int lpfc_post_rcv_buf(struct lpfc_hba *);
 static int lpfc_rdrev_wd30 = 0;
 
@@ -65,7 +66,8 @@ lpfc_config_port_prep(struct lpfc_hba * phba)
 	int i = 0;
 	LPFC_MBOXQ_t *pmb;
 	MAILBOX_t *mb;
-
+	uint32_t *lpfc_vpd_data = 0;
+	uint16_t offset = 0;
 
 	/* Get a Mailbox buffer to setup mailbox commands for HBA
 	   initialization */
@@ -105,6 +107,7 @@ lpfc_config_port_prep(struct lpfc_hba * phba)
 					"mbxStatus x%x\n",
 					phba->brd_no,
 					mb->mbxCommand, mb->mbxStatus);
+			mempool_free( pmb, phba->mbox_mem_pool);
 			return -ERESTART;
 		}
 		memcpy(phba->wwnn, (char *)mb->un.varRDnvp.nodename,
@@ -173,22 +176,46 @@ lpfc_config_port_prep(struct lpfc_hba * phba)
 		memcpy(phba->RandomData, (char *)&mb->un.varWords[24],
 			sizeof (phba->RandomData));
 
+	/* Get the default values for Model Name and Description */
+	lpfc_get_hba_model_desc(phba, phba->ModelName, phba->ModelDesc);
+
 	/* Get adapter VPD information */
-	lpfc_dump_mem(phba, pmb);
-	if (lpfc_sli_issue_mbox(phba, pmb, MBX_POLL) != MBX_SUCCESS) {
-		/* Let it go through even if failed. */
-		/* Adapter failed to init, mbxCmd <cmd> DUMP VPD,
-		   mbxStatus <status> */
-		lpfc_printf_log(phba,
-				KERN_INFO,
-				LOG_INIT,
-				"%d:0441 VPD not present on adapter, mbxCmd "
-				"x%x DUMP VPD, mbxStatus x%x\n",
-				phba->brd_no,
-				mb->mbxCommand, mb->mbxStatus);
-	} else if (mb->un.varDmp.ra == 1) {
-		lpfc_parse_vpd(phba, (uint8_t *)&mb->un.varDmp.resp_offset);
-	}
+	pmb->context2 = kmalloc(DMP_RSP_SIZE, GFP_ATOMIC);
+	lpfc_vpd_data = kmalloc(DMP_VPD_SIZE, GFP_ATOMIC);
+
+	do {
+		lpfc_dump_mem(phba, pmb, offset);
+		if (lpfc_sli_issue_mbox(phba, pmb, MBX_POLL) != MBX_SUCCESS) {
+			/* Let it go through even if failed. */
+			/* Adapter failed to init, mbxCmd <cmd> DUMP VPD,
+			   mbxStatus <status> */
+			lpfc_printf_log(phba,
+					KERN_INFO,
+					LOG_INIT,
+					"%d:0441 VPD not present on adapter, mbxCmd "
+					"x%x DUMP VPD, mbxStatus x%x\n",
+					phba->brd_no,
+					mb->mbxCommand, mb->mbxStatus);
+			kfree(lpfc_vpd_data);
+			lpfc_vpd_data = 0;
+			break;
+		}
+
+		lpfc_sli_pcimem_bcopy((uint32_t *)pmb->context2,
+                                      (uint32_t*)((uint8_t*)lpfc_vpd_data + offset),
+                                      mb->un.varDmp.word_cnt);
+
+		offset += mb->un.varDmp.word_cnt;
+	} while (mb->un.varDmp.word_cnt);
+
+	lpfc_parse_vpd(phba, (uint8_t *)lpfc_vpd_data);
+
+	if(pmb->context2)
+		kfree(pmb->context2);
+	if (lpfc_vpd_data)
+		kfree(lpfc_vpd_data);
+
+	pmb->context2 = 0;
 	mempool_free(pmb, phba->mbox_mem_pool);
 	return 0;
 }
@@ -250,6 +277,9 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 				phba->brd_no,
 				mb->mbxCommand, mb->mbxStatus);
 		phba->hba_state = LPFC_HBA_ERROR;
+		mp = (struct lpfc_dmabuf *) pmb->context1;
+		lpfc_mbuf_free(phba, mp->virt, mp->phys);
+		kfree(mp);
 		mempool_free( pmb, phba->mbox_mem_pool);
 		return -EIO;
 	}
@@ -331,7 +361,7 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	don't let link speed ask for it */
 	if ((((phba->lmt & LMT_4250_10bit) != LMT_4250_10bit) &&
 		(phba->cfg_link_speed > LINK_SPEED_2G)) ||
-		(((phba->lmt & LMT_2125_10bit) != LMT_2125_10bit) && 
+		(((phba->lmt & LMT_2125_10bit) != LMT_2125_10bit) &&
 		(phba->cfg_link_speed > LINK_SPEED_1G))) {
 		/* Reset link speed to auto. 1G/2GB HBA cfg'd for 4G */
 		lpfc_printf_log(phba,
@@ -403,6 +433,7 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	isr_cnt = psli->slistat.sliIntr;
 	clk_cnt = jiffies;
 
+	pmb->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 	if (lpfc_sli_issue_mbox(phba, pmb, MBX_NOWAIT) != MBX_SUCCESS) {
 		lpfc_printf_log(phba,
 				KERN_ERR,
@@ -570,6 +601,12 @@ lpfc_handle_eratt(struct lpfc_hba * phba, uint32_t status)
 				continue;
 			}
 
+			/* Clear fast_lookup entry */
+			if (cmd->ulpIoTag &&
+			    (cmd->ulpIoTag <
+			     psli->sliinit.ringinit[pring->ringno].fast_iotag))
+				*(pring->fast_lookup + cmd->ulpIoTag) = NULL;
+			
 			list_del(&iocb->list);
 			pring->txcmplq_cnt--;
 
@@ -687,10 +724,13 @@ static int
 lpfc_parse_vpd(struct lpfc_hba * phba, uint8_t * vpd)
 {
 	uint8_t lenlo, lenhi;
-	uint8_t *Length;
+	uint32_t Length;
 	int i, j;
 	int finished = 0;
 	int index = 0;
+
+	if(!vpd)
+		return 0;
 
 	/* Vital Product */
 	lpfc_printf_log(phba,
@@ -717,43 +757,177 @@ lpfc_parse_vpd(struct lpfc_hba * phba, uint8_t * vpd)
 			index += 1;
 			lenhi = vpd[index];
 			index += 1;
-			i = ((((unsigned short)lenhi) << 8) + lenlo);
-			do {
-				/* Look for Serial Number */
-				if ((vpd[index] == 'S')
-				    && (vpd[index + 1] == 'N')) {
-					index += 2;
-					Length = &vpd[index];
-					index += 1;
-					i = *Length;
-					j = 0;
-					while (i--) {
-						phba->SerialNumber[j++] =
-						    vpd[index++];
-						if (j == 31)
-							break;
-					}
-					phba->SerialNumber[j] = 0;
-					return (1);
-				} else {
-					index += 2;
-					Length = &vpd[index];
-					index += 1;
-					j = (int)(*Length);
-					index += j;
-					i -= (3 + j);
+			Length = ((((unsigned short)lenhi) << 8) + lenlo);
+
+			while (Length > 0) {
+			/* Look for Serial Number */
+			if ((vpd[index] == 'S') && (vpd[index+1] == 'N')) {
+				index += 2;
+				i = vpd[index];
+				index += 1;
+				j = 0;
+				Length -= (3+i);
+				while(i--) {
+					phba->SerialNumber[j++] = vpd[index++];
+					if(j == 31)
+						break;
 				}
-			} while (i > 0);
-			finished = 0;
-			break;
+				phba->SerialNumber[j] = 0;
+				continue;
+			}
+			else if ((vpd[index] == 'V') && (vpd[index+1] == '1')) {
+				phba->vpd_flag |= VPD_MODEL_DESC;
+				index += 2;
+				i = vpd[index];
+				index += 1;
+				j = 0;
+				Length -= (3+i);
+				while(i--) {
+					phba->ModelDesc[j++] = vpd[index++];
+					if(j == 255)
+						break;
+				}
+				phba->ModelDesc[j] = 0;
+				continue;
+			}
+			else if ((vpd[index] == 'V') && (vpd[index+1] == '2')) {
+				phba->vpd_flag |= VPD_MODEL_NAME;
+				index += 2;
+				i = vpd[index];
+				index += 1;
+				j = 0;
+				Length -= (3+i);
+				while(i--) {
+					phba->ModelName[j++] = vpd[index++];
+					if(j == 79)
+						break;
+				}
+				phba->ModelName[j] = 0;
+				continue;
+			}
+			else if ((vpd[index] == 'V') && (vpd[index+1] == '3')) {
+				phba->vpd_flag |= VPD_PROGRAM_TYPE;
+				index += 2;
+				i = vpd[index];
+				index += 1;
+				j = 0;
+				Length -= (3+i);
+				while(i--) {
+					phba->ProgramType[j++] = vpd[index++];
+					if(j == 255)
+						break;
+				}
+				phba->ProgramType[j] = 0;
+				continue;
+			}
+			else if ((vpd[index] == 'V') && (vpd[index+1] == '4')) {
+				phba->vpd_flag |= VPD_PORT;
+				index += 2;
+				i = vpd[index];
+				index += 1;
+				j = 0;
+				Length -= (3+i);
+				while(i--) {
+				phba->Port[j++] = vpd[index++];
+				if(j == 19)
+					break;
+				}
+				phba->Port[j] = 0;
+				continue;
+			}
+			else {
+				index += 2;
+				i = vpd[index];
+				index += 1;
+				index += i;
+				Length -= (3 + i);
+			}
+		}
+		finished = 0;
+		break;
 		case 0x78:
 			finished = 1;
 			break;
 		default:
-			return (0);
+			index ++;
+			break;
 		}
-	} while (!finished);
-	return (1);
+	} while (!finished && (index < 108));
+
+	return(1);
+}
+
+static void
+lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
+{
+	lpfc_vpd_t *vp;
+	uint32_t id;
+	char str[16];
+
+	vp = &phba->vpd;
+	pci_read_config_dword(phba->pcidev, PCI_VENDOR_ID, &id);
+
+	switch ((id >> 16) & 0xffff) {
+	case PCI_DEVICE_ID_SUPERFLY:
+		if (vp->rev.biuRev >= 1 && vp->rev.biuRev <= 3)
+			strcpy(str, "LP7000 1");
+		else
+			strcpy(str, "LP7000E 1");
+		break;
+	case PCI_DEVICE_ID_DRAGONFLY:
+		strcpy(str, "LP8000 1");
+		break;
+	case PCI_DEVICE_ID_CENTAUR:
+		if (FC_JEDEC_ID(vp->rev.biuRev) == CENTAUR_2G_JEDEC_ID)
+			strcpy(str, "LP9002 2");
+		else
+			strcpy(str, "LP9000 1");
+		break;
+	case PCI_DEVICE_ID_RFLY:
+		strcpy(str, "LP952 2");
+		break;
+	case PCI_DEVICE_ID_PEGASUS:
+		strcpy(str, "LP9802 2");
+		break;
+	case PCI_DEVICE_ID_THOR:
+		strcpy(str, "LP10000 2");
+		break;
+	case PCI_DEVICE_ID_VIPER:
+		strcpy(str, "LPX1000 10");
+		break;
+	case PCI_DEVICE_ID_PFLY:
+		strcpy(str, "LP982 2");
+		break;
+	case PCI_DEVICE_ID_TFLY:
+		strcpy(str, "LP1050 2");
+		break;
+	case PCI_DEVICE_ID_HELIOS:
+		strcpy(str, "LP11000 4");
+		break;
+	case PCI_DEVICE_ID_BMID:
+		strcpy(str, "LP1150 4");
+		break;
+	case PCI_DEVICE_ID_BSMB:
+		strcpy(str, "LP111 4");
+		break;
+	case PCI_DEVICE_ID_ZEPHYR:
+		strcpy(str, "LP11000e 4");
+		break;
+	case PCI_DEVICE_ID_ZMID:
+		strcpy(str, "LP1150e 4");
+		break;
+	case PCI_DEVICE_ID_ZSMB:
+		strcpy(str, "LP111e 4");
+		break;
+	case PCI_DEVICE_ID_LP101:
+		strcpy(str, "LP101 2");
+		break;
+	}
+	if (mdp)
+		sscanf(str, "%s", mdp);
+	if (descp)
+		sprintf(descp, "Emulex LightPulse %s Gigabit PCI Fibre "
+			"Channel Adapter", str);
 }
 
 /**************************************************/
@@ -803,7 +977,7 @@ lpfc_post_buffer(struct lpfc_hba * phba, struct lpfc_sli_ring * pring, int cnt,
 		INIT_LIST_HEAD(&mp1->list);
 		/* Allocate buffer to post */
 		if (cnt > 1) {
-			mp2 = kmalloc(sizeof (struct lpfc_dmabuf), GFP_KERNEL);
+			mp2 = kmalloc(sizeof (struct lpfc_dmabuf), GFP_ATOMIC);
 			if (mp2)
 				mp2->virt = lpfc_mbuf_alloc(phba, MEM_PRI,
 							    &mp2->phys);
@@ -842,9 +1016,11 @@ lpfc_post_buffer(struct lpfc_hba * phba, struct lpfc_sli_ring * pring, int cnt,
 		if (lpfc_sli_issue_iocb(phba, pring, iocb, 0) == IOCB_ERROR) {
 			lpfc_mbuf_free(phba, mp1->virt, mp1->phys);
 			kfree(mp1);
+			cnt++;
 			if (mp2) {
 				lpfc_mbuf_free(phba, mp2->virt, mp2->phys);
 				kfree(mp2);
+				cnt++;
 			}
 			mempool_free( iocb, phba->iocb_mem_pool);
 			pring->missbufcnt = cnt;
@@ -972,7 +1148,7 @@ lpfc_hba_init(struct lpfc_hba *phba, uint32_t *hbainit)
 	HashWorking = kmalloc(80 * sizeof(uint32_t), GFP_ATOMIC);
 	if (!HashWorking)
 		return;
-	
+
 	memset(HashWorking, 0, (80 * sizeof(uint32_t)));
 	HashWorking[0] = HashWorking[78] = *pwwnn++;
 	HashWorking[1] = HashWorking[79] = *pwwnn;
@@ -1142,7 +1318,9 @@ lpfc_offline(struct lpfc_hba * phba)
 	psli = &phba->sli;
 	pring = &psli->ring[psli->fcp_ring];
 
+	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_linkdown(phba);
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
 	/* The linkdown event takes 30 seconds to timeout. */
 	while (pring->txcmplq_cnt) {
@@ -1154,6 +1332,7 @@ lpfc_offline(struct lpfc_hba * phba)
 	/* stop all timers associated with this hba */
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_stop_timer(phba);
+	phba->work_hba_events = 0;
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
 	lpfc_printf_log(phba,
@@ -1164,9 +1343,11 @@ lpfc_offline(struct lpfc_hba * phba)
 
 	/* Bring down the SLI Layer and cleanup.  The HBA is offline
 	   now.  */
+	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_sli_hba_down(phba);
 	lpfc_cleanup(phba, 1);
 	phba->fc_flag |= FC_OFFLINE_MODE;
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	return 0;
 }
 

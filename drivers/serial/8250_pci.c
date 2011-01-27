@@ -1029,6 +1029,7 @@ enum pci_board_num_t {
 
 	pbn_b1_bt_2_921600,
 
+	pbn_b1_1_1382400,
 	pbn_b1_2_1382400,
 	pbn_b1_4_1382400,
 	pbn_b1_8_1382400,
@@ -1256,6 +1257,12 @@ static struct pci_board pci_boards[] __devinitdata = {
 		.uart_offset	= 8,
 	},
 
+	[pbn_b1_1_1382400] = {
+		.flags		= FL_BASE1,
+		.num_ports	= 1,
+		.base_baud	= 1382400,
+		.uart_offset	= 8,
+	},
 	[pbn_b1_2_1382400] = {
 		.flags		= FL_BASE1,
 		.num_ports	= 2,
@@ -2108,6 +2115,20 @@ static struct pci_device_id serial_pci_tbl[] = {
 	{	PCI_VENDOR_ID_LAVA, PCI_DEVICE_ID_LAVA_PORT_650,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 		pbn_b0_bt_1_460800 },
+
+	/*
+	 * Dell Remote Access Card 4 - Tim_T_Murphy@Dell.com
+	 */
+	{	PCI_VENDOR_ID_DELL, PCI_DEVICE_ID_DELL_RAC4,
+		PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		pbn_b1_1_1382400 },
+
+	/*
+	 * Dell Remote Access Card III - Tim_T_Murphy@Dell.com
+	 */
+	{	PCI_VENDOR_ID_DELL, PCI_DEVICE_ID_DELL_RACIII,
+		PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+		pbn_b1_1_1382400 },
 
 	/*
 	 * RAStel 2 port modem, gerg@moreton.com.au

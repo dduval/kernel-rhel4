@@ -310,6 +310,7 @@ struct lcs_card {
 	__u16 ip_assists_enabled;
 	__s8 lan_type;
 	__u16 sequence_no;
+	__u32 pkt_seq;
 	__s16 portno;
 	/* Some info copied from probeinfo */
 	u8 device_forced;

@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_logmsg.h 1.31 2004/08/26 19:17:52EDT sf_support Exp  $
+ * $Id: lpfc_logmsg.h 1.32 2005/01/13 18:38:59EST sf_support Exp  $
  */
 
 #ifndef _H_LPFC_LOGMSG

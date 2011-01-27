@@ -51,6 +51,7 @@
 #include <asm/system.h>
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
+#include <asm/errno.h>
 
 #if 1
 # define PSR_DEFAULT_BITS	psr.ac
@@ -732,10 +733,12 @@ ENTRY(break_fault)
 	ssm psr.ic | PSR_DEFAULT_BITS
 	;;
 	srlz.i					// guarantee that interruption collection is on
+	mov r3=NR_syscalls - 1
 	;;
 (p15)	ssm psr.i				// restore psr.i
+	// p10==true means out registers are more than 8 or r15's Nat is true
+(p10)	br.cond.spnt.many ia64_ret_from_syscall
 	;;
-	mov r3=NR_syscalls - 1
 	movl r16=sys_call_table
 
 	adds r15=-1024,r15			// r15 contains the syscall number---subtract 1024
@@ -836,8 +839,11 @@ END(interrupt)
 	 * On exit:
 	 *	- executing on bank 1 registers
 	 *	- psr.ic enabled, interrupts restored
+	 *	-  p10: TRUE if syscall is invoked with more than 8 out
+	 *		registers or r15's Nat is true
 	 *	-  r1: kernel's gp
 	 *	-  r3: preserved (same as on entry)
+	 *	-  r8: -EINVAL if p10 is true
 	 *	- r12: points to kernel stack
 	 *	- r13: points to current task
 	 *	- p15: TRUE if interrupts need to be re-enabled
@@ -860,12 +866,15 @@ GLOBAL_ENTRY(ia64_syscall_setup)
 (pKStk)	mov r18=r0				// make sure r18 isn't NaT
 	;;
 
+	st8 [r16]=r0,PT(AR_PFS)-PT(CR_IFS)	// clear cr.ifs
 	st8 [r17]=r28,PT(AR_UNAT)-PT(CR_IIP)	// save cr.iip
+	extr.u r11=r19,7,7			// get sol of ar.pfs
+	and r8=0x7f,r19				// get sof of ar.pfs
 	mov r28=b0				// save b0 (2 cyc)
 (p8)	mov in0=-1
 	;;
 
-	st8 [r16]=r0,PT(AR_PFS)-PT(CR_IFS)	// clear cr.ifs
+	add r11=8,r11
 	st8 [r17]=r25,PT(AR_RSC)-PT(AR_UNAT)	// save ar.unat
 (p9)	mov in1=-1
 	;;
@@ -911,17 +920,18 @@ GLOBAL_ENTRY(ia64_syscall_setup)
 	adds r12=-16,r1		// switch to kernel memory stack (with 16 bytes of scratch)
 (p14)	mov in6=-1
 
-	mov r13=r2				// establish `current'
+	cmp.lt p10,p9=r11,r8			// frame size can't be more than local+8
 	movl r1=__gp				// establish kernel global pointer
 	;;
 (p8)	mov in7=-1
-	tnat.nz p9,p0=r15
+(p9)	tnat.nz p10,p0=r15
 
+	mov r13=r2				// establish `current'
 	cmp.eq pSys,pNonSys=r0,r0		// set pSys=1, pNonSys=0
 	movl r17=FPSR_DEFAULT
 	;;
 	mov.m ar.fpsr=r17			// set ar.fpsr to kernel default value
-(p9)	mov r15=-1
+(p10)	mov r8=-EINVAL
 	br.ret.sptk.many b7
 END(ia64_syscall_setup)
 

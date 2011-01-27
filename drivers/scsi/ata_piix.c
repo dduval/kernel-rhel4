@@ -32,12 +32,13 @@
 #include <linux/libata.h>
 
 #define DRV_NAME	"ata_piix"
-#define DRV_VERSION	"1.02"
+#define DRV_VERSION	"1.03"
 
 enum {
 	PIIX_IOCFG		= 0x54, /* IDE I/O configuration register */
 	ICH5_PMR		= 0x90, /* port mapping register */
 	ICH5_PCS		= 0x92,	/* port control and status */
+	PIIX_SCC		= 0x0A, /* sub-class code register */
 
 	PIIX_FLAG_AHCI		= (1 << 28), /* AHCI possible */
 	PIIX_FLAG_CHECKINTR	= (1 << 29), /* make sure PCI INTx enabled */
@@ -60,6 +61,9 @@ enum {
 	piix4_pata		= 2,
 	ich6_sata		= 3,
 	ich6_sata_rm		= 4,
+	ich7_sata		= 5,
+
+	PIIX_AHCI_DEVICE	= 6,
 };
 
 static int piix_init_one (struct pci_dev *pdev,
@@ -90,6 +94,8 @@ static struct pci_device_id piix_pci_tbl[] = {
 	{ 0x8086, 0x2651, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich6_sata },
 	{ 0x8086, 0x2652, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich6_sata_rm },
 	{ 0x8086, 0x2653, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich6_sata_rm },
+	{ 0x8086, 0x27c0, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich7_sata },
+	{ 0x8086, 0x27c4, PCI_ANY_ID, PCI_ANY_ID, 0, 0, ich7_sata },
 
 	{ }	/* terminate list */
 };
@@ -118,6 +124,9 @@ static Scsi_Host_Template piix_sht = {
 	.dma_boundary		= ATA_DMA_BOUNDARY,
 	.slave_configure	= ata_scsi_slave_config,
 	.bios_param		= ata_std_bios_param,
+	.dump_sanity_check	= ata_scsi_dump_sanity_check,
+	.dump_quiesce		= ata_scsi_dump_quiesce,
+	.dump_poll		= ata_scsi_dump_poll,
 };
 
 static struct ata_port_operations piix_pata_ops = {
@@ -135,6 +144,8 @@ static struct ata_port_operations piix_pata_ops = {
 
 	.bmdma_setup		= ata_bmdma_setup,
 	.bmdma_start		= ata_bmdma_start,
+	.bmdma_stop		= ata_bmdma_stop,
+	.bmdma_status		= ata_bmdma_status,
 	.qc_prep		= ata_qc_prep,
 	.qc_issue		= ata_qc_issue_prot,
 
@@ -160,6 +171,8 @@ static struct ata_port_operations piix_sata_ops = {
 
 	.bmdma_setup		= ata_bmdma_setup,
 	.bmdma_start		= ata_bmdma_start,
+	.bmdma_stop		= ata_bmdma_stop,
+	.bmdma_status		= ata_bmdma_status,
 	.qc_prep		= ata_qc_prep,
 	.qc_issue		= ata_qc_issue_prot,
 
@@ -236,6 +249,18 @@ static struct ata_port_info piix_port_info[] = {
 		.udma_mask	= 0x7f,	/* udma0-6 */
 		.port_ops	= &piix_sata_ops,
 	},
+
+	/* ich7_sata */
+	{
+		.sht		= &piix_sht,
+		.host_flags	= ATA_FLAG_SATA | ATA_FLAG_SRST |
+				  PIIX_FLAG_COMBINED | PIIX_FLAG_CHECKINTR |
+				  ATA_FLAG_SLAVE_POSS | PIIX_FLAG_AHCI,
+		.pio_mask	= 0x1f,	/* pio0-4 */
+		.mwdma_mask	= 0x07, /* mwdma0-2 */
+		.udma_mask	= 0x7f,	/* udma0-6 */
+		.port_ops	= &piix_sata_ops,
+	},
 };
 
 static struct pci_bits piix_enable_bits[] = {
@@ -261,7 +286,7 @@ MODULE_VERSION(DRV_VERSION);
  */
 static void piix_pata_cbl_detect(struct ata_port *ap)
 {
-	struct pci_dev *pdev = ap->host_set->pdev;
+	struct pci_dev *pdev = to_pci_dev(ap->host_set->dev);
 	u8 tmp, mask;
 
 	/* no 80c support in host controller? */
@@ -294,8 +319,9 @@ cbl40:
 
 static void piix_pata_phy_reset(struct ata_port *ap)
 {
-	if (!pci_test_config_bits(ap->host_set->pdev,
-				  &piix_enable_bits[ap->hard_port_no])) {
+	struct pci_dev *pdev = to_pci_dev(ap->host_set->dev);
+
+	if (!pci_test_config_bits(pdev, &piix_enable_bits[ap->hard_port_no])) {
 		ata_port_disable(ap);
 		printk(KERN_INFO "ata%u: port disabled. ignoring.\n", ap->id);
 		return;
@@ -323,7 +349,7 @@ static void piix_pata_phy_reset(struct ata_port *ap)
  */
 static int piix_sata_probe (struct ata_port *ap)
 {
-	struct pci_dev *pdev = ap->host_set->pdev;
+	struct pci_dev *pdev = to_pci_dev(ap->host_set->dev);
 	int combined = (ap->flags & ATA_FLAG_SLAVE_POSS);
 	int orig_mask, mask, i;
 	u8 pcs;
@@ -393,7 +419,7 @@ static void piix_sata_phy_reset(struct ata_port *ap)
 static void piix_set_piomode (struct ata_port *ap, struct ata_device *adev)
 {
 	unsigned int pio	= adev->pio_mode - XFER_PIO_0;
-	struct pci_dev *dev	= ap->host_set->pdev;
+	struct pci_dev *dev	= to_pci_dev(ap->host_set->dev);
 	unsigned int is_slave	= (adev->devno != 0);
 	unsigned int master_port= ap->hard_port_no ? 0x42 : 0x40;
 	unsigned int slave_port	= 0x44;
@@ -445,7 +471,7 @@ static void piix_set_piomode (struct ata_port *ap, struct ata_device *adev)
 static void piix_set_dmamode (struct ata_port *ap, struct ata_device *adev)
 {
 	unsigned int udma	= adev->dma_mode; /* FIXME: MWDMA too */
-	struct pci_dev *dev	= ap->host_set->pdev;
+	struct pci_dev *dev	= to_pci_dev(ap->host_set->dev);
 	u8 maslave		= ap->hard_port_no ? 0x42 : 0x40;
 	u8 speed		= udma;
 	unsigned int drive_dn	= (ap->hard_port_no ? 2 : 0) + adev->devno;
@@ -589,9 +615,13 @@ static int piix_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	port_info[1] = NULL;
 
 	if (port_info[0]->host_flags & PIIX_FLAG_AHCI) {
-		int rc = piix_disable_ahci(pdev);
-		if (rc)
-			return rc;
+		u8 tmp;
+		pci_read_config_byte(pdev, PIIX_SCC, &tmp);
+		if (tmp == PIIX_AHCI_DEVICE) {
+			int rc = piix_disable_ahci(pdev);
+			if (rc)
+				return rc;
+		}
 	}
 
 	if (port_info[0]->host_flags & PIIX_FLAG_COMBINED) {

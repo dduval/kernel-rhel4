@@ -10,7 +10,7 @@
  *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: megaraid_mm.c
- * Version	: v2.20.2.0-rh1 (Dec 10 2004)
+ * Version	: v2.20.2.5 (Jan 21 2005)
  *
  * Common management module
  */
@@ -58,20 +58,34 @@ MODULE_PARM_DESC(dlevel, "Debug level (default=0)");
 
 EXPORT_SYMBOL(mraid_mm_register_adp);
 EXPORT_SYMBOL(mraid_mm_unregister_adp);
+EXPORT_SYMBOL(mraid_mm_adapter_app_handle);
+void (*mraid_mm_poll_func)(struct scsi_device *device) = NULL;
+EXPORT_SYMBOL(mraid_mm_poll_func);
+struct scsi_device *mraid_mm_diskdump_poll_device = NULL;
+EXPORT_SYMBOL(mraid_mm_diskdump_poll_device);
 
 static int majorno;
-static uint32_t drvr_ver	= 0x02200100;
+static uint32_t drvr_ver	= 0x02200201;
 
 static int adapters_count_g;
 static struct list_head adapters_list_g;
 
-wait_queue_head_t wait_q;
+static wait_queue_head_t wait_q;
 
 static struct file_operations lsi_fops = {
 	.open	= mraid_mm_open,
 	.ioctl	= mraid_mm_ioctl,
 	.owner	= THIS_MODULE,
 };
+
+int mraid_mm_woken;
+EXPORT_SYMBOL(mraid_mm_woken);
+
+static void _mraid_mm_diskdump_schedule(void);
+static void _mraid_mm_diskdump_wake_up(wait_queue_head_t *q, unsigned int mode, int nr_exclusive);
+void mraid_mm_diskdump_schedule(void);
+void mraid_mm_diskdump_wake_up(wait_queue_head_t *q);
+
 
 /**
  * mraid_mm_open - open routine for char node interface
@@ -156,6 +170,17 @@ mraid_mm_ioctl(struct inode *inode, struct file *filep, unsigned int cmd,
 	}
 
 	/*
+	 * Check if adapter can accept ioctl. We may have marked it offline
+	 * if any previous kioc had timedout on this controller.
+	 */
+	if (!adp->quiescent) {
+		con_log(CL_ANN, (KERN_WARNING
+			"megaraid cmm: controller cannot accept cmds due to "
+			"earlier errors\n" ));
+		return -EFAULT;
+	}
+
+	/*
 	 * The following call will block till a kioc is available
 	 */
 	kioc = mraid_mm_alloc_kioc(adp);
@@ -171,10 +196,15 @@ mraid_mm_ioctl(struct inode *inode, struct file *filep, unsigned int cmd,
 	kioc->done = ioctl_done;
 
 	/*
-	 * Issue the IOCTL to the low level driver
+	 * Issue the IOCTL to the low level driver. After the IOCTL completes
+	 * release the kioc if and only if it was _not_ timedout. If it was
+	 * timedout, that means that resources are still with low level driver.
 	 */
 	if ((rval = lld_ioctl(adp, kioc))) {
-		mraid_mm_dealloc_kioc(adp, kioc);
+
+		if (!kioc->timedout)
+			mraid_mm_dealloc_kioc(adp, kioc);
+
 		return rval;
 	}
 
@@ -581,6 +611,7 @@ mraid_mm_alloc_kioc(mraid_mmadp_t *adp)
 	kioc->user_data		= NULL;
 	kioc->user_data_len	= 0;
 	kioc->user_pthru	= NULL;
+	kioc->timedout		= 0;
 
 	return kioc;
 }
@@ -671,6 +702,14 @@ lld_ioctl(mraid_mmadp_t *adp, uioc_t *kioc)
 		del_timer_sync(tp);
 	}
 
+	/*
+	 * If the command had timedout, we mark the controller offline
+	 * before returning
+	 */
+	if (kioc->timedout) {
+		adp->quiescent = 0;
+	}
+
 	return kioc->status;
 }
 
@@ -683,6 +722,10 @@ lld_ioctl(mraid_mmadp_t *adp, uioc_t *kioc)
 static void
 ioctl_done(uioc_t *kioc)
 {
+	uint32_t	adapno;
+	int		iterator;
+	mraid_mmadp_t*	adapter;
+
 	/*
 	 * When the kioc returns from driver, make sure it still doesn't
 	 * have ENODATA in status. Otherwise, driver will hang on wait_event
@@ -695,7 +738,32 @@ ioctl_done(uioc_t *kioc)
 		kioc->status = -EINVAL;
 	}
 
-	wake_up(&wait_q);
+	/*
+	 * Check if this kioc was timedout before. If so, nobody is waiting
+	 * on this kioc. We don't have to wake up anybody. Instead, we just
+	 * have to free the kioc
+	 */
+	if (kioc->timedout) {
+		iterator	= 0;
+		adapter		= NULL;
+		adapno		= kioc->adapno;
+
+		con_log(CL_ANN, ( KERN_WARNING "megaraid cmm: completed "
+					"ioctl that was timedout before\n"));
+
+		list_for_each_entry(adapter, &adapters_list_g, list) {
+			if (iterator++ == adapno) break;
+		}
+
+		kioc->timedout = 0;
+
+		if (adapter) {
+			mraid_mm_dealloc_kioc( adapter, kioc );
+		}
+	}
+	else {
+		wake_up(&wait_q);
+	}
 }
 
 
@@ -710,6 +778,7 @@ lld_timedout(unsigned long ptr)
 	uioc_t *kioc	= (uioc_t *)ptr;
 
 	kioc->status 	= -ETIME;
+	kioc->timedout	= 1;
 
 	con_log(CL_ANN, (KERN_WARNING "megaraid cmm: ioctl timed out\n"));
 
@@ -854,6 +923,7 @@ mraid_mm_register_adp(mraid_mmadp_t *lld_adp)
 	adapter->issue_uioc	= lld_adp->issue_uioc;
 	adapter->timeout	= lld_adp->timeout;
 	adapter->max_kioc	= lld_adp->max_kioc;
+	adapter->quiescent	= 1;
 
 	/*
 	 * Allocate single blocks of memory for all required kiocs,
@@ -950,6 +1020,40 @@ memalloc_error:
 
 	return rval;
 }
+
+
+/**
+ * mraid_mm_adapter_app_handle - return the application handle for this adapter
+ *
+ * For the given driver data, locate the adadpter in our global list and
+ * return the corresponding handle, which is also used by applications to
+ * uniquely identify an adapter.
+ *
+ * @param unique_id : adapter unique identifier
+ *
+ * @return adapter handle if found in the list
+ * @return 0 if adapter could not be located, should never happen though
+ */
+uint32_t
+mraid_mm_adapter_app_handle(uint32_t unique_id)
+{
+	mraid_mmadp_t	*adapter;
+	mraid_mmadp_t	*tmp;
+	int		index = 0;
+
+	list_for_each_entry_safe(adapter, tmp, &adapters_list_g, list) {
+
+		if (adapter->unique_id == unique_id) {
+
+			return MKADAP(index);
+		}
+
+		index++;
+	}
+
+	return 0;
+}
+
 
 /**
  * mraid_mm_setup_dma_pools - Set up dma buffer pools per adapter
@@ -1124,9 +1228,7 @@ mraid_mm_init(void)
 
 	INIT_LIST_HEAD(&adapters_list_g);
 
-#ifdef CONFIG_COMPAT
 	register_ioctl32_conversion(MEGAIOCCMD, mraid_mm_compat_ioctl);
-#endif
 
 	return 0;
 }
@@ -1156,6 +1258,57 @@ mraid_mm_exit(void)
 
 	unregister_chrdev(majorno, "megadev");
 	unregister_ioctl32_conversion(MEGAIOCCMD);
+}
+
+void mraid_mm_diskdump_schedule(void)
+{
+	if (crashdump_mode())
+		_mraid_mm_diskdump_schedule();
+	else
+		schedule();
+	return;	
+}
+EXPORT_SYMBOL(mraid_mm_diskdump_schedule);
+
+void mraid_mm_diskdump_wake_up(wait_queue_head_t *q)
+{
+	if (crashdump_mode())
+		_mraid_mm_diskdump_wake_up((q), TASK_UNINTERRUPTIBLE | TASK_INTERRUPTIBLE, 1);
+	else
+		__wake_up((q), TASK_UNINTERRUPTIBLE | TASK_INTERRUPTIBLE, 1, NULL);
+	return;	
+}
+EXPORT_SYMBOL(mraid_mm_diskdump_wake_up);
+
+static void _mraid_mm_diskdump_schedule(void)
+{
+	mraid_mm_woken = 0;
+
+	if (!mraid_mm_poll_func || !mraid_mm_diskdump_poll_device) {
+		return;
+	}
+
+	while (!mraid_mm_woken) {
+		mraid_mm_poll_func(mraid_mm_diskdump_poll_device);
+		udelay(100);
+		diskdump_update();
+	}
+}
+
+static void _mraid_mm_diskdump_wake_up(wait_queue_head_t *q, unsigned int mode, int nr_exclusive)
+{
+	struct list_head *tmp;
+	wait_queue_t *curr;
+	task_t *p;
+
+	list_for_each(tmp, &q->task_list) {
+		curr = list_entry(tmp, wait_queue_t, task_list);
+		p = curr->task;
+		if (p == current) {
+			if (p->state & mode)
+				mraid_mm_woken = 1;
+		}
+	}
 }
 
 module_init(mraid_mm_init);

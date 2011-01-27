@@ -154,8 +154,8 @@
 
 
 #define DRV_NAME		"e100"
-#define DRV_EXT			"-NAPI"
-#define DRV_VERSION		"3.0.27-k2"DRV_EXT
+#define DRV_EXT		"-NAPI"
+#define DRV_VERSION		"3.3.6-k2"DRV_EXT
 #define DRV_DESCRIPTION		"Intel(R) PRO/100 Network Driver"
 #define DRV_COPYRIGHT		"Copyright(c) 1999-2004 Intel Corporation"
 #define PFX			DRV_NAME ": "
@@ -201,6 +201,7 @@ static struct pci_device_id e100_id_table[] = {
 	INTEL_8255X_ETHERNET_DEVICE(0x1055, 5),
 	INTEL_8255X_ETHERNET_DEVICE(0x1056, 5),
 	INTEL_8255X_ETHERNET_DEVICE(0x1057, 5),
+	INTEL_8255X_ETHERNET_DEVICE(0x1059, 0),
 	INTEL_8255X_ETHERNET_DEVICE(0x1064, 6),
 	INTEL_8255X_ETHERNET_DEVICE(0x1065, 6),
 	INTEL_8255X_ETHERNET_DEVICE(0x1066, 6),
@@ -209,12 +210,17 @@ static struct pci_device_id e100_id_table[] = {
 	INTEL_8255X_ETHERNET_DEVICE(0x1069, 6),
 	INTEL_8255X_ETHERNET_DEVICE(0x106A, 6),
 	INTEL_8255X_ETHERNET_DEVICE(0x106B, 6),
-	INTEL_8255X_ETHERNET_DEVICE(0x1059, 0),
+	INTEL_8255X_ETHERNET_DEVICE(0x1091, 7),
+	INTEL_8255X_ETHERNET_DEVICE(0x1092, 7),
+	INTEL_8255X_ETHERNET_DEVICE(0x1093, 7),
+	INTEL_8255X_ETHERNET_DEVICE(0x1094, 7),
+	INTEL_8255X_ETHERNET_DEVICE(0x1095, 7),
 	INTEL_8255X_ETHERNET_DEVICE(0x1209, 0),
 	INTEL_8255X_ETHERNET_DEVICE(0x1229, 0),
 	INTEL_8255X_ETHERNET_DEVICE(0x2449, 2),
 	INTEL_8255X_ETHERNET_DEVICE(0x2459, 2),
 	INTEL_8255X_ETHERNET_DEVICE(0x245D, 2),
+	INTEL_8255X_ETHERNET_DEVICE(0x27DC, 7),
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, e100_id_table);
@@ -267,6 +273,12 @@ struct csr {
 enum scb_status {
 	rus_ready        = 0x10,
 	rus_mask         = 0x3C,
+};
+
+enum ru_state  {
+	RU_SUSPENDED = 0,
+	RU_RUNNING	 = 1,
+	RU_UNINITIALIZED = -1,
 };
 
 enum scb_stat_ack {
@@ -510,11 +522,11 @@ struct nic {
 	struct rx *rx_to_use;
 	struct rx *rx_to_clean;
 	struct rfd blank_rfd;
-	int ru_running;
+	enum ru_state ru_running;
 
 	spinlock_t cb_lock			____cacheline_aligned;
 	spinlock_t cmd_lock;
-	struct csr *csr;
+	struct csr __iomem *csr;
 	enum scb_cmd_lo cuc_cmd;
 	unsigned int cbs_avail;
 	struct cb *cbs;
@@ -539,6 +551,7 @@ struct nic {
 	struct timer_list watchdog;
 	struct timer_list blink_timer;
 	struct mii_if_info mii;
+	struct work_struct tx_timeout_task;
 	enum loopback loopback;
 
 	struct mem *mem;
@@ -605,16 +618,6 @@ static void e100_hw_reset(struct nic *nic)
 	writel(software_reset, &nic->csr->port);
 	e100_write_flush(nic); udelay(20);
 
-	/* TCO workaround - 82559 and greater */
-	if(nic->mac >= mac_82559_D101M) {
-		/* Issue a redundant CU load base without setting
-		 * general pointer, and without waiting for scb to
-		 * clear.  This gets us into post-driver.  Finally,
-		 * wait 20 msec for reset to take effect. */
-		writeb(cuc_load_base, &nic->csr->scb.cmd_lo);
-		mdelay(20);
-	}
-
 	/* Mask off our interrupt line - it's unmasked after reset */
 	e100_disable_irq(nic);
 }
@@ -632,8 +635,7 @@ static int e100_self_test(struct nic *nic)
 	writel(selftest | dma_addr, &nic->csr->port);
 	e100_write_flush(nic);
 	/* Wait 10 msec for self-test to complete */
-	set_current_state(TASK_UNINTERRUPTIBLE);
-	schedule_timeout(HZ / 100 + 1);
+	msleep(10);
 
 	/* Interrupts are enabled after self-test */
 	e100_disable_irq(nic);
@@ -681,8 +683,7 @@ static void e100_eeprom_write(struct nic *nic, u16 addr_len, u16 addr, u16 data)
 			e100_write_flush(nic); udelay(4);
 		}
 		/* Wait 10 msec for cmd to complete */
-		set_current_state(TASK_UNINTERRUPTIBLE);
-		schedule_timeout(HZ / 100 + 1);
+		msleep(10);
 
 		/* Chip deselect */
 		writeb(0, &nic->csr->eeprom_ctrl_lo);
@@ -1319,6 +1320,7 @@ static int e100_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 	switch(err) {
 	case -ENOSPC:
 		/* We queued the skb, but now we're out of space. */
+		DPRINTK(TX_ERR, DEBUG, "No space for CB\n");
 		netif_stop_queue(netdev);
 		break;
 	case -ENOMEM:
@@ -1427,26 +1429,30 @@ static int e100_alloc_cbs(struct nic *nic)
 	return 0;
 }
 
-static inline void e100_start_receiver(struct nic *nic)
+static inline void e100_start_receiver(struct nic *nic, struct rx *rx)
 {
+	if(!nic->rxs) return;
+	if(RU_SUSPENDED != nic->ru_running) return;
+
+	/* handle init time starts */
+	if(!rx) rx = nic->rxs;
+
 	/* (Re)start RU if suspended or idle and RFA is non-NULL */
-	if(!nic->ru_running && nic->rx_to_clean->skb) {
-		e100_exec_cmd(nic, ruc_start, nic->rx_to_clean->dma_addr);
-		nic->ru_running = 1;
+	if(rx->skb) {
+		e100_exec_cmd(nic, ruc_start, rx->dma_addr);
+		nic->ru_running = RU_RUNNING;
 	}
 }
 
 #define RFD_BUF_LEN (sizeof(struct rfd) + VLAN_ETH_FRAME_LEN)
 static inline int e100_rx_alloc_skb(struct nic *nic, struct rx *rx)
 {
-	unsigned int rx_offset = 2; /* u32 align protocol headers */
-
-	if(!(rx->skb = dev_alloc_skb(RFD_BUF_LEN + rx_offset)))
+	if(!(rx->skb = dev_alloc_skb(RFD_BUF_LEN + NET_IP_ALIGN)))
 		return -ENOMEM;
 
 	/* Align, init, and map the RFD. */
 	rx->skb->dev = nic->netdev;
-	skb_reserve(rx->skb, rx_offset);
+	skb_reserve(rx->skb, NET_IP_ALIGN);
 	memcpy(rx->skb->data, &nic->blank_rfd, sizeof(struct rfd));
 	rx->dma_addr = pci_map_single(nic->pdev, rx->skb->data,
 		RFD_BUF_LEN, PCI_DMA_BIDIRECTIONAL);
@@ -1485,7 +1491,7 @@ static inline int e100_rx_indicate(struct nic *nic, struct rx *rx,
 
 	/* If data isn't ready, nothing to indicate */
 	if(unlikely(!(rfd_status & cb_complete)))
-       		return -EAGAIN;
+		return -ENODATA;
 
 	/* Get actual data size */
 	actual_size = le16_to_cpu(rfd->actual_size) & 0x3FFF;
@@ -1495,6 +1501,10 @@ static inline int e100_rx_indicate(struct nic *nic, struct rx *rx,
 	/* Get data */
 	pci_unmap_single(nic->pdev, rx->dma_addr,
 		RFD_BUF_LEN, PCI_DMA_FROMDEVICE);
+
+	/* this allows for a fast restart without re-enabling interrupts */
+	if(le16_to_cpu(rfd->command) & cb_el)
+		nic->ru_running = RU_SUSPENDED;
 
 	/* Pull off the RFD and put the actual data (minus eth hdr) */
 	skb_reserve(skb, sizeof(struct rfd));
@@ -1528,12 +1538,31 @@ static inline void e100_rx_clean(struct nic *nic, unsigned int *work_done,
 	unsigned int work_to_do)
 {
 	struct rx *rx;
+	int restart_required = 0;
+	struct rx *rx_to_start = NULL;
+
+	/* are we already rnr? then pay attention!!! this ensures that
+	 * the state machine progression never allows a start with a 
+	 * partially cleaned list, avoiding a race between hardware
+	 * and rx_to_clean when in NAPI mode */
+	if(RU_SUSPENDED == nic->ru_running)
+		restart_required = 1;
 
 	/* Indicate newly arrived packets */
 	for(rx = nic->rx_to_clean; rx->skb; rx = nic->rx_to_clean = rx->next) {
-		if(e100_rx_indicate(nic, rx, work_done, work_to_do))
+		int err = e100_rx_indicate(nic, rx, work_done, work_to_do);
+		if(-EAGAIN == err) {
+			/* hit quota so have more work to do, restart once
+			 * cleanup is complete */
+			restart_required = 0;
+			break;
+		} else if(-ENODATA == err)
 			break; /* No more to clean */
 	}
+
+	/* save our starting point as the place we'll restart the receiver */
+	if(restart_required)
+		rx_to_start = nic->rx_to_clean;
 
 	/* Alloc new skbs to refill list */
 	for(rx = nic->rx_to_use; !rx->skb; rx = nic->rx_to_use = rx->next) {
@@ -1541,13 +1570,21 @@ static inline void e100_rx_clean(struct nic *nic, unsigned int *work_done,
 			break; /* Better luck next time (see watchdog) */
 	}
 
-	e100_start_receiver(nic);
+	if(restart_required) {
+		// ack the rnr?
+		writeb(stat_ack_rnr, &nic->csr->scb.stat_ack);
+		e100_start_receiver(nic, rx_to_start);
+		if(work_done)
+			(*work_done)++;
+	}
 }
 
 static void e100_rx_clean_list(struct nic *nic)
 {
 	struct rx *rx;
 	unsigned int i, count = nic->params.rfds.count;
+
+	nic->ru_running = RU_UNINITIALIZED;
 
 	if(nic->rxs) {
 		for(rx = nic->rxs, i = 0; i < count; rx++, i++) {
@@ -1562,7 +1599,6 @@ static void e100_rx_clean_list(struct nic *nic)
 	}
 
 	nic->rx_to_use = nic->rx_to_clean = NULL;
-	nic->ru_running = 0;
 }
 
 static int e100_rx_alloc_list(struct nic *nic)
@@ -1571,6 +1607,7 @@ static int e100_rx_alloc_list(struct nic *nic)
 	unsigned int i, count = nic->params.rfds.count;
 
 	nic->rx_to_use = nic->rx_to_clean = NULL;
+	nic->ru_running = RU_UNINITIALIZED;
 
 	if(!(nic->rxs = kmalloc(sizeof(struct rx) * count, GFP_ATOMIC)))
 		return -ENOMEM;
@@ -1586,6 +1623,7 @@ static int e100_rx_alloc_list(struct nic *nic)
 	}
 
 	nic->rx_to_use = nic->rx_to_clean = nic->rxs;
+	nic->ru_running = RU_SUSPENDED;
 
 	return 0;
 }
@@ -1607,7 +1645,7 @@ static irqreturn_t e100_intr(int irq, void *dev_id, struct pt_regs *regs)
 
 	/* We hit Receive No Resource (RNR); restart RU after cleaning */
 	if(stat_ack & stat_ack_rnr)
-		nic->ru_running = 0;
+		nic->ru_running = RU_SUSPENDED;
 
 	e100_disable_irq(nic);
 	netif_rx_schedule(netdev);
@@ -1623,6 +1661,7 @@ static int e100_poll(struct net_device *netdev, int *budget)
 	int tx_cleaned;
 
 	e100_rx_clean(nic, &work_done, work_to_do);
+	// should we be quota on tx?
 	tx_cleaned = e100_tx_clean(nic);
 
 	/* If no Rx and Tx cleanup work was done, exit polling mode. */
@@ -1696,7 +1735,7 @@ static int e100_up(struct nic *nic)
 	if((err = e100_hw_init(nic)))
 		goto err_clean_cbs;
 	e100_set_multicast_list(nic->netdev);
-	e100_start_receiver(nic);
+	e100_start_receiver(nic, 0);
 	mod_timer(&nic->watchdog, jiffies);
 	if((err = request_irq(nic->pdev->irq, e100_intr, SA_SHIRQ,
 		nic->netdev->name, nic->netdev)))
@@ -1726,6 +1765,15 @@ static void e100_down(struct nic *nic)
 }
 
 static void e100_tx_timeout(struct net_device *netdev)
+{
+	struct nic *nic = netdev_priv(netdev);
+
+	/* Reset outside of interrupt context, to avoid request_irq 
+	 * in interrupt context */
+	schedule_work(&nic->tx_timeout_task);
+}
+
+static void e100_tx_timeout_task(struct net_device *netdev)
 {
 	struct nic *nic = netdev_priv(netdev);
 
@@ -1762,7 +1810,7 @@ static int e100_loopback_test(struct nic *nic, enum loopback loopback_mode)
 		mdio_write(nic->netdev, nic->mii.phy_id, MII_BMCR,
 			BMCR_LOOPBACK);
 
-	e100_start_receiver(nic);
+	e100_start_receiver(nic, 0);
 
 	if(!(skb = dev_alloc_skb(ETH_DATA_LEN))) {
 		err = -ENOMEM;
@@ -1772,12 +1820,11 @@ static int e100_loopback_test(struct nic *nic, enum loopback loopback_mode)
 	memset(skb->data, 0xFF, ETH_DATA_LEN);
 	e100_xmit_frame(skb, nic->netdev);
 
-	set_current_state(TASK_UNINTERRUPTIBLE);
-	schedule_timeout(HZ / 100 + 1);
+	msleep(10);
 
 	if(memcmp(nic->rx_to_clean->skb->data + sizeof(struct rfd),
 	   skb->data, ETH_DATA_LEN))
-       		err = -EAGAIN;
+		err = -EAGAIN;
 
 err_loopback_none:
 	mdio_write(nic->netdev, nic->mii.phy_id, MII_BMCR, 0);
@@ -1859,8 +1906,7 @@ static void e100_get_regs(struct net_device *netdev,
 			mdio_read(netdev, nic->mii.phy_id, i);
 	memset(nic->mem->dump_buf, 0, sizeof(nic->mem->dump_buf));
 	e100_exec_cb(nic, NULL, e100_dump);
-	set_current_state(TASK_UNINTERRUPTIBLE);
-	schedule_timeout(HZ / 100 + 1);
+	msleep(10);
 	memcpy(&buff[2 + E100_PHY_REGS], nic->mem->dump_buf,
 		sizeof(nic->mem->dump_buf));
 }
@@ -1979,6 +2025,8 @@ static int e100_set_ringparam(struct net_device *netdev,
 	rfds->count = min(rfds->count, rfds->max);
 	cbs->count = max(ring->tx_pending, cbs->min);
 	cbs->count = min(cbs->count, cbs->max);
+	DPRINTK(DRV, INFO, "Ring Param settings: rx: %d, tx %d\n",
+	        rfds->count, cbs->count);
 	if(netif_running(netdev))
 		e100_up(nic);
 
@@ -2037,8 +2085,7 @@ static int e100_phys_id(struct net_device *netdev, u32 data)
 	if(!data || data > (u32)(MAX_SCHEDULE_TIMEOUT / HZ))
 		data = (u32)(MAX_SCHEDULE_TIMEOUT / HZ);
 	mod_timer(&nic->blink_timer, jiffies);
-	set_current_state(TASK_INTERRUPTIBLE);
-	schedule_timeout(data * HZ);
+	msleep_interruptible(data * 1000);
 	del_timer_sync(&nic->blink_timer);
 	mdio_write(netdev, nic->mii.phy_id, MII_LED_CONTROL, 0);
 
@@ -2190,6 +2237,7 @@ static int __devinit e100_probe(struct pci_dev *pdev,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	netdev->poll_controller = e100_netpoll;
 #endif
+	strcpy(netdev->name, pci_name(pdev));
 
 	nic = netdev_priv(netdev);
 	nic->netdev = netdev;
@@ -2214,8 +2262,6 @@ static int __devinit e100_probe(struct pci_dev *pdev,
 		goto err_out_disable_pdev;
 	}
 
-	pci_set_master(pdev);
-
 	if((err = pci_set_dma_mask(pdev, 0xFFFFFFFFULL))) {
 		DPRINTK(PROBE, ERR, "No usable DMA configuration, aborting.\n");
 		goto err_out_free_res;
@@ -2236,8 +2282,17 @@ static int __devinit e100_probe(struct pci_dev *pdev,
 	else
 		nic->flags &= ~ich;
 
+	e100_get_defaults(nic);
+
 	spin_lock_init(&nic->cb_lock);
 	spin_lock_init(&nic->cmd_lock);
+
+	/* Reset the device before pci_set_master() in case device is in some
+	 * funky state and has an interrupt pending - hint: we don't have the
+	 * interrupt handler registered yet. */
+	e100_hw_reset(nic);
+
+	pci_set_master(pdev);
 
 	init_timer(&nic->watchdog);
 	nic->watchdog.function = e100_watchdog;
@@ -2246,13 +2301,14 @@ static int __devinit e100_probe(struct pci_dev *pdev,
 	nic->blink_timer.function = e100_blink_led;
 	nic->blink_timer.data = (unsigned long)nic;
 
+	INIT_WORK(&nic->tx_timeout_task,
+		(void (*)(void *))e100_tx_timeout_task, netdev);
+
 	if((err = e100_alloc(nic))) {
 		DPRINTK(PROBE, ERR, "Cannot alloc driver memory, aborting.\n");
 		goto err_out_iounmap;
 	}
 
-	e100_get_defaults(nic);
-	e100_hw_reset(nic);
 	e100_phy_init(nic);
 
 	if((err = e100_eeprom_load(nic)))
@@ -2273,6 +2329,7 @@ static int __devinit e100_probe(struct pci_dev *pdev,
 
 	pci_enable_wake(pdev, 0, nic->flags & (wol_magic | e100_asf(nic)));
 
+	strcpy(netdev->name, "eth%d");
 	if((err = register_netdev(netdev))) {
 		DPRINTK(PROBE, ERR, "Cannot register net device, aborting.\n");
 		goto err_out_free;
@@ -2369,7 +2426,7 @@ static int __init e100_init_module(void)
 		printk(KERN_INFO PFX "%s, %s\n", DRV_DESCRIPTION, DRV_VERSION);
 		printk(KERN_INFO PFX "%s\n", DRV_COPYRIGHT);
 	}
-        return pci_module_init(&e100_driver);
+	return pci_module_init(&e100_driver);
 }
 
 static void __exit e100_cleanup_module(void)

@@ -20,18 +20,22 @@
 #include <asm/uaccess.h>
 #include <linux/version.h>
 #include <linux/module.h>
+#include <linux/delay.h>
 #include <linux/moduleparam.h>
 #include <linux/pci.h>
 #include <linux/list.h>
 #include <linux/ioctl32.h>
+#include <linux/diskdump.h>
+#include <scsi/scsi_device.h>
 
 #include "mbox_defs.h"
 #include "megaraid_ioctl.h"
 
 
-#define LSI_COMMON_MOD_VERSION	"2.20.2.0-rh1"
+#define LSI_COMMON_MOD_VERSION	"2.20.2.5"
 #define LSI_COMMON_MOD_EXT_VERSION	\
-		"(Release Date: Fri Dec 10 19:02:14 EST 2004)"
+		"(Release Date: Fri Jan 21 00:01:03 EST 2005)"
+
 
 #define LSI_DBGLVL			dbglevel
 

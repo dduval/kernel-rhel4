@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_els.c 1.152 2004/11/18 18:27:53EST sf_support Exp  $
+ * $Id: lpfc_els.c 1.160 2005/03/02 12:35:49EST sf_support Exp  $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -66,7 +66,7 @@ lpfc_els_chk_latt(struct lpfc_hba * phba)
 					phba->brd_no, phba->hba_state);
 
 			/* CLEAR_LA should re-enable link attention events and
-			 * we should then imediately take a LATT event. The 
+			 * we should then imediately take a LATT event. The
 			 * LATT processing should call lpfc_linkdown() which
 			 * will cleanup any left over in-progress discovery
 			 * events.
@@ -366,6 +366,7 @@ lpfc_cmpl_els_flogi(struct lpfc_hba * phba,
 				}
 				phba->hba_state = LPFC_FABRIC_CFG_LINK;
 				lpfc_config_link(phba, mbox);
+				mbox->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 				if (lpfc_sli_issue_mbox
 				    (phba, mbox, (MBX_NOWAIT | MBX_STOP_IOCB))
 				    == MBX_NOT_FINISHED) {
@@ -427,6 +428,7 @@ lpfc_cmpl_els_flogi(struct lpfc_hba * phba,
 						goto flogifail;
 					}
 					lpfc_config_link(phba, mbox);
+					mbox->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 					if (lpfc_sli_issue_mbox
 					    (phba, mbox,
 					     (MBX_NOWAIT | MBX_STOP_IOCB))
@@ -673,6 +675,8 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 	struct lpfc_sli *psli;
 	struct lpfc_nodelist *ndlp;
 	int disc, rc, did, type;
+	struct lpfc_nodelist *curr_ndlp, *next_ndlp;
+	int valid_ndlp = 0;
 
 	psli = &phba->sli;
 
@@ -681,6 +685,17 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 
 	irsp = &rspiocb->iocb;
 	ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+
+	list_for_each_entry_safe(curr_ndlp, next_ndlp, &phba->fc_plogi_list,
+				 nlp_listp) {
+		if (curr_ndlp == ndlp ) {
+			valid_ndlp =1;
+			break;
+		}
+	}
+	if (!valid_ndlp)
+		goto out;
+
 	ndlp->nlp_flag &= ~NLP_PLOGI_SND;
 
 	/* Since ndlp can be freed in the disc state machine, note if this node
@@ -750,6 +765,9 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		ndlp->nlp_flag &= ~NLP_NPR_2B_DISC;
 
 	if (phba->num_disc_nodes == 0) {
+		if(disc) {
+			phba->fc_flag &= ~FC_NDISC_ACTIVE;
+		}
 		lpfc_can_disctmo(phba);
 		if (phba->fc_flag & FC_RSCN_MODE) {
 			/* Check to see if more RSCNs came in while we were
@@ -757,7 +775,7 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 			 */
 			if ((phba->fc_rscn_id_cnt == 0) &&
 			    (!(phba->fc_flag & FC_RSCN_DISCOVERY))) {
-				lpfc_els_flush_rscn(phba);
+				phba->fc_flag &= ~FC_RSCN_MODE;
 			} else {
 				lpfc_els_handle_rscn(phba);
 			}
@@ -831,7 +849,8 @@ lpfc_cmpl_els_prli(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 {
 	IOCB_t *irsp;
 	struct lpfc_sli *psli;
-	struct lpfc_nodelist *ndlp;
+	struct lpfc_nodelist *ndlp, *curr_ndlp, *next_ndlp;
+	int valid_ndlp = 0;
 
 	psli = &phba->sli;
 	/* we pass cmdiocb to state machine which needs rspiocb as well */
@@ -839,6 +858,18 @@ lpfc_cmpl_els_prli(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 
 	irsp = &(rspiocb->iocb);
 	ndlp = (struct lpfc_nodelist *) cmdiocb->context1;
+	phba->fc_prli_sent--;
+	list_for_each_entry_safe(curr_ndlp, next_ndlp, &phba->fc_prli_list,
+                                 nlp_listp) {
+                if (curr_ndlp == ndlp ) {
+                        valid_ndlp =1;
+                        break;
+                }
+        }
+
+        if (!valid_ndlp)
+                goto out;
+
 	ndlp->nlp_flag &= ~NLP_PRLI_SND;
 
 	/* PRLI completes to NPort <nlp_DID> */
@@ -848,7 +879,6 @@ lpfc_cmpl_els_prli(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 			phba->brd_no, ndlp->nlp_DID, irsp->ulpStatus,
 			irsp->un.ulpWord[4], phba->num_disc_nodes);
 
-	phba->fc_prli_sent--;
 	/* Check to see if link went down during discovery */
 	if (lpfc_els_chk_latt(phba))
 		goto out;
@@ -979,8 +1009,8 @@ lpfc_rscn_disc(struct lpfc_hba * phba)
 	/* RSCN discovery */
 	/* go thru NPR list and issue ELS PLOGIs */
 	if (phba->fc_npr_cnt) {
-		lpfc_els_disc_plogi(phba);
-		return;
+		if (lpfc_els_disc_plogi(phba))
+			return;
 	}
 	if (phba->fc_flag & FC_RSCN_MODE) {
 		/* Check to see if more RSCNs came in while we were
@@ -988,7 +1018,7 @@ lpfc_rscn_disc(struct lpfc_hba * phba)
 		 */
 		if ((phba->fc_rscn_id_cnt == 0) &&
 		    (!(phba->fc_flag & FC_RSCN_DISCOVERY))) {
-			lpfc_els_flush_rscn(phba);
+			phba->fc_flag &= ~FC_RSCN_MODE;
 		} else {
 			lpfc_els_handle_rscn(phba);
 		}
@@ -1065,6 +1095,7 @@ lpfc_cmpl_els_adisc(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 
 		/* Check to see if we are done with ADISC authentication */
 		if (phba->num_disc_nodes == 0) {
+			lpfc_can_disctmo(phba);
 			/* If we get here, there is nothing left to wait for */
 			if ((phba->hba_state < LPFC_HBA_READY) &&
 			    (phba->hba_state != LPFC_CLEAR_LA)) {
@@ -1426,18 +1457,48 @@ lpfc_issue_els_farpr(struct lpfc_hba * phba, uint32_t nportid, uint8_t retry)
 void
 lpfc_els_retry_delay(unsigned long ptr)
 {
-	struct lpfc_hba *phba;
 	struct lpfc_nodelist *ndlp;
-	uint32_t cmd;
-	uint32_t did;
-	uint8_t retry;
+	struct lpfc_hba *phba;
 	unsigned long iflag;
+	LPFC_DISC_EVT_t  *evtp;
 
 	ndlp = (struct lpfc_nodelist *)ptr;
 	phba = ndlp->nlp_phba;
+	evtp = &ndlp->els_retry_evt;
+
 	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if (!list_empty(&evtp->evt_listp)) {
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
+		return;
+	}
+
+	evtp->evt_arg1  = ndlp;
+	evtp->evt       = LPFC_EVT_ELS_RETRY;
+	list_add_tail(&evtp->evt_listp, &phba->dpc_disc);
+	if (phba->dpc_wait)
+		up(phba->dpc_wait);
+
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	return;
+}
+
+void
+lpfc_els_retry_delay_handler(struct lpfc_nodelist *ndlp)
+{
+	struct lpfc_hba *phba;
+	uint32_t cmd;
+	uint32_t did;
+	uint8_t retry;
+
+	phba = ndlp->nlp_phba;
+	spin_lock_irq(phba->host->host_lock);
 	did = (uint32_t) (ndlp->nlp_DID);
 	cmd = (uint32_t) (ndlp->nlp_last_elscmd);
+
+	if (!(ndlp->nlp_flag & NLP_DELAY_TMO)) {
+		spin_unlock_irq(phba->host->host_lock);
+		return;
+	}
 
 	ndlp->nlp_flag &= ~NLP_DELAY_TMO;
 	retry = ndlp->nlp_retry;
@@ -1467,7 +1528,7 @@ lpfc_els_retry_delay(unsigned long ptr)
 		lpfc_issue_els_logo(phba, ndlp, retry);
 		break;
 	}
-	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	spin_unlock_irq(phba->host->host_lock);
 	return;
 }
 
@@ -2270,6 +2331,10 @@ lpfc_rscn_payload_check(struct lpfc_hba * phba, uint32_t did)
 	ns_did.un.word = did;
 	match = 0;
 
+	/* Never match fabric nodes for RSCNs */
+	if ((did & Fabric_DID_MASK) == Fabric_DID_MASK)
+		return(0);
+
 	/* If we are doing a FULL RSCN rediscovery, match everything */
 	if (phba->fc_flag & FC_RSCN_DISCOVERY) {
 		return (did);
@@ -2358,6 +2423,12 @@ lpfc_rscn_recovery_check(struct lpfc_hba * phba)
 				if(ndlp->nlp_flag & NLP_DELAY_TMO) {
 					ndlp->nlp_flag &= ~NLP_DELAY_TMO;
 					del_timer_sync(&ndlp->nlp_delayfunc);
+					
+					if (!list_empty(&ndlp->
+							els_retry_evt.evt_listp))
+						list_del_init(&ndlp->
+							      els_retry_evt.
+							      evt_listp);
 				}
 			}
 		}
@@ -2399,16 +2470,29 @@ lpfc_els_rcv_rscn(struct lpfc_hba * phba,
 			phba->brd_no,
 			phba->fc_flag, payload_len, *lp, phba->fc_rscn_id_cnt);
 
-	/* if we are already processing an RSCN, save the received
-	 * RSCN payload buffer, cmdiocb->context2 to process later.
-	 * If we zero, cmdiocb->context2, the calling routine will
-	 * not try to free it.
+	/* If we are about to begin discovery, just ACC the RSCN.
+	 * Discovery processing will satisfy it.
 	 */
-	if (phba->fc_flag & FC_RSCN_MODE) {
+	if (phba->hba_state < LPFC_NS_QRY) {
+		lpfc_els_rsp_acc(phba, ELS_CMD_ACC, cmdiocb, ndlp, NULL,
+								newnode);
+		return (0);
+	}
+
+	/* If we are already processing an RSCN, save the received
+	 * RSCN payload buffer, cmdiocb->context2 to process later.
+	 */
+	if (phba->fc_flag & (FC_RSCN_MODE | FC_NDISC_ACTIVE)) {
 		if ((phba->fc_rscn_id_cnt < FC_MAX_HOLD_RSCN) &&
 		    !(phba->fc_flag & FC_RSCN_DISCOVERY)) {
+			phba->fc_flag |= FC_RSCN_MODE;
 			phba->fc_rscn_id_list[phba->fc_rscn_id_cnt++] = pcmd;
+
+			/* If we zero, cmdiocb->context2, the calling
+			 * routine will not try to free it.
+			 */
 			cmdiocb->context2 = NULL;
+
 			/* Deferred RSCN */
 			lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
 					"%d:0235 Deferred RSCN "
@@ -2572,6 +2656,7 @@ lpfc_els_rcv_flogi(struct lpfc_hba * phba,
 				       phba->cfg_topology,
 				       phba->cfg_link_speed);
 			mbox->mb.un.varInitLnk.lipsr_AL_PA = 0;
+			mbox->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 			if (lpfc_sli_issue_mbox
 			    (phba, mbox, (MBX_NOWAIT | MBX_STOP_IOCB))
 			    == MBX_NOT_FINISHED) {
@@ -2847,9 +2932,27 @@ lpfc_els_rcv_fan(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 }
 
 void
-lpfc_els_timeout_handler(unsigned long ptr)
+lpfc_els_timeout(unsigned long ptr)
 {
 	struct lpfc_hba *phba;
+	unsigned long iflag;
+
+	phba = (struct lpfc_hba *)ptr;
+	if (phba == 0)
+		return;
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if (!(phba->work_hba_events & WORKER_ELS_TMO)) {
+		phba->work_hba_events |= WORKER_ELS_TMO;
+		if (phba->dpc_wait)
+			up(phba->dpc_wait);
+	}
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	return;
+}
+
+void
+lpfc_els_timeout_handler(struct lpfc_hba *phba)
+{
 	struct lpfc_sli *psli;
 	struct lpfc_sli_ring *pring;
 	struct lpfc_iocbq *tmp_iocb, *piocb;
@@ -2860,12 +2963,16 @@ lpfc_els_timeout_handler(unsigned long ptr)
 	uint32_t els_command;
 	uint32_t timeout;
 	uint32_t remote_ID;
-	unsigned long iflag;
 
-	phba = (struct lpfc_hba *)ptr;
 	if(phba == 0)
 		return;
-	spin_lock_irqsave(phba->host->host_lock, iflag);
+	spin_lock_irq(phba->host->host_lock);
+	/* If the timer is already canceled do nothing */
+	if (!(phba->work_hba_events & WORKER_ELS_TMO)) {
+		spin_unlock_irq(phba->host->host_lock);
+		return;
+	}
+
 	timeout = (uint32_t)(phba->fc_ratov << 1);
 
 	psli = &phba->sli;
@@ -2933,7 +3040,7 @@ lpfc_els_timeout_handler(unsigned long ptr)
 
 	phba->els_tmofunc.expires = jiffies + HZ * timeout;
 	add_timer(&phba->els_tmofunc);
-	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	spin_unlock_irq(phba->host->host_lock);
 }
 
 void
@@ -3050,6 +3157,20 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 
 	psli = &phba->sli;
 	icmd = &elsiocb->iocb;
+
+	if ((icmd->ulpStatus == IOSTAT_LOCAL_REJECT) &&
+		((icmd->un.ulpWord[4] & 0xff) == IOERR_RCV_BUFFER_WAITING)) {
+		/* Not enough posted buffers; Try posting more buffers */
+		phba->fc_stat.NoRcvBuf++;
+		lpfc_post_buffer(phba, pring, 0, 1);
+		return;
+	}
+
+	/* If there are no BDEs associated with this IOCB,
+	 * there is nothing to do.
+	 */
+	if (icmd->ulpBdeCount == 0)
+		return;
 
 	/* type of ELS cmd is first 32bit word in packet */
 	mp = lpfc_sli_ringpostbuf_get(phba, pring, getPaddr(icmd->un.

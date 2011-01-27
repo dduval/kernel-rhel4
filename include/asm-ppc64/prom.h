@@ -203,6 +203,11 @@ struct device_node {
 	struct  proc_dir_entry *addr_link; /* addr symlink */
 	atomic_t _users;                 /* reference count */
 	unsigned long _flags;
+#ifndef __GENKSYMS__
+	int	eeh_freeze_count;	/* number of times this device froze up. */
+	int	eeh_check_count;	/* number of times device driver ignored error */
+	u32	config_space[16];	/* saved PCI config space */
+#endif
 };
 
 extern struct device_node *of_chosen;

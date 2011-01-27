@@ -38,6 +38,32 @@ void __ptrace_link(task_t *child, task_t *new_parent)
 	SET_LINKS(child);
 }
  
+static inline int pending_resume_signal(struct sigpending *pending)
+{
+#define M(sig) (1UL << ((sig)-1))
+	return sigtestsetmask(&pending->signal, M(SIGCONT) | M(SIGKILL));
+}
+
+/*
+ * Turn a tracing stop into a normal stop now, since with no tracer there
+ * would be no way to wake it up with SIGCONT or SIGKILL.  If there was a
+ * signal sent that would resume the child, but didn't because it was in
+ * TASK_TRACED, resume it now.
+ */
+void ptrace_untrace(task_t *child)
+{
+	spin_lock(&child->sighand->siglock);
+	if (child->state == TASK_TRACED) {
+		if (pending_resume_signal(&child->pending) ||
+		    pending_resume_signal(&child->signal->shared_pending)) {
+			signal_wake_up(child, 1);
+		} else {
+			child->state = TASK_STOPPED;
+		}
+	}
+	spin_unlock(&child->sighand->siglock);
+}
+
 /*
  * unptrace a task: move it back to its original parent and
  * remove it from the ptrace list.
@@ -49,21 +75,15 @@ void __ptrace_unlink(task_t *child)
 	if (!child->ptrace)
 		BUG();
 	child->ptrace = 0;
-	if (list_empty(&child->ptrace_list))
-		return;
-	list_del_init(&child->ptrace_list);
-	REMOVE_LINKS(child);
-	child->parent = child->real_parent;
-	SET_LINKS(child);
-
-	if (child->state == TASK_TRACED) {
-		/*
-		 * Turn a tracing stop into a normal stop now,
-		 * since with no tracer there would be no way
-		 * to wake it up with SIGCONT or SIGKILL.
-		 */
-		child->state = TASK_STOPPED;
+	if (!list_empty(&child->ptrace_list)) {
+		list_del_init(&child->ptrace_list);
+		REMOVE_LINKS(child);
+		child->parent = child->real_parent;
+		SET_LINKS(child);
 	}
+
+	if (child->state == TASK_TRACED)
+		ptrace_untrace(child);
 }
 
 /*
@@ -82,7 +102,8 @@ int ptrace_check_attach(struct task_struct *child, int kill)
 	 */
 	read_lock(&tasklist_lock);
 	if ((child->ptrace & PT_PTRACED) && child->parent == current &&
-	    child->signal != NULL) {
+	    (!(child->ptrace & PT_ATTACHED) || child->real_parent != current)
+	    && child->signal != NULL) {
 		ret = 0;
 		spin_lock_irq(&child->sighand->siglock);
 		if (child->state == TASK_STOPPED) {
@@ -131,7 +152,8 @@ int ptrace_attach(struct task_struct *task)
 		goto bad;
 
 	/* Go */
-	task->ptrace |= PT_PTRACED;
+	task->ptrace |= PT_PTRACED | ((task->real_parent != current)
+				      ? PT_ATTACHED : 0);
 	if (capable(CAP_SYS_PTRACE))
 		task->ptrace |= PT_PTRACE_CAP;
 	task_unlock(task);
@@ -162,7 +184,7 @@ int ptrace_detach(struct task_struct *child, unsigned int data)
 	write_lock_irq(&tasklist_lock);
 	__ptrace_unlink(child);
 	/* .. and wake it up. */
-	if (child->state != TASK_ZOMBIE)
+	if (child->exit_state != EXIT_ZOMBIE)
 		wake_up_process(child);
 	write_unlock_irq(&tasklist_lock);
 
@@ -303,18 +325,45 @@ static int ptrace_setoptions(struct task_struct *child, long data)
 
 static int ptrace_getsiginfo(struct task_struct *child, siginfo_t __user * data)
 {
-	if (child->last_siginfo == NULL)
-		return -EINVAL;
-	return copy_siginfo_to_user(data, child->last_siginfo);
+	siginfo_t lastinfo;
+	int error = -ESRCH;
+
+	read_lock(&tasklist_lock);
+	if (likely(child->sighand != NULL)) {
+		error = -EINVAL;
+		spin_lock_irq(&child->sighand->siglock);
+		if (likely(child->last_siginfo != NULL)) {
+			lastinfo = *child->last_siginfo;
+			error = 0;
+		}
+		spin_unlock_irq(&child->sighand->siglock);
+	}
+	read_unlock(&tasklist_lock);
+	if (!error)
+		return copy_siginfo_to_user(data, &lastinfo);
+	return error;
 }
 
 static int ptrace_setsiginfo(struct task_struct *child, siginfo_t __user * data)
 {
-	if (child->last_siginfo == NULL)
-		return -EINVAL;
-	if (copy_from_user(child->last_siginfo, data, sizeof (siginfo_t)) != 0)
+	siginfo_t newinfo;
+	int error = -ESRCH;
+
+	if (copy_from_user(&newinfo, data, sizeof (siginfo_t)))
 		return -EFAULT;
-	return 0;
+
+	read_lock(&tasklist_lock);
+	if (likely(child->sighand != NULL)) {
+		error = -EINVAL;
+		spin_lock_irq(&child->sighand->siglock);
+		if (likely(child->last_siginfo != NULL)) {
+			*child->last_siginfo = newinfo;
+			error = 0;
+		}
+		spin_unlock_irq(&child->sighand->siglock);
+	}
+	read_unlock(&tasklist_lock);
+	return error;
 }
 
 int ptrace_request(struct task_struct *child, long request,

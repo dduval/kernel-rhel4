@@ -279,16 +279,14 @@ config HAVE_DEC_LOCK
 	depends on SMP
 	default y
 
-# actually 64 maximum, but you need to fix the APIC code first
-# to use clustered mode or whatever your big iron needs
 config NR_CPUS
-	int "Maximum number of CPUs (2-8)"
-	range 2 8
+	int "Maximum number of CPUs (2-64)"
+	range 2 64
 	depends on SMP
 	default "8"
 	help
 	  This allows you to specify the maximum number of CPUs which this
-	  kernel will support.  The maximum supported value is 32 and the
+	  kernel will support.  The maximum supported value is 64 and the
 	  minimum value which makes sense is 2.
 
 	  This is purely to save memory - each supported CPU requires
@@ -406,23 +404,6 @@ config UID16
 	bool
 	depends on IA32_EMULATION
 	default y
-
-config KEXEC
-	bool "kexec system call (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
-	help
-	  kexec is a system call that implements the ability to shutdown your
-	  current kernel, and to start another kernel.  It is like a reboot
-	  but it is indepedent of the system firmware.   And like a reboot
-	  you can start any kernel with it, not just Linux.
-
-	  The name comes from the similiarity to the exec system call.
-
-	  It is an ongoing process to be certain the hardware in a machine
-	  is properly shutdown, so do not be surprised if this code does not
-	  initially work for you.  It may help to enable device hotplugging
-	  support.  As of this writing the exact hardware interface is
-	  strongly in flux, so no good recommendation can be made.
 
 endmenu
 

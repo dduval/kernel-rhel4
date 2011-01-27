@@ -3,7 +3,7 @@
  * Enterprise Fibre Channel Host Bus Adapters.                     *
  * Refer to the README file included with this package for         *
  * driver version and adapter support.                             *
- * Copyright (C) 2004 Emulex Corporation.                          *
+ * Copyright (C) 2005 Emulex Corporation.                          *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mem.c 1.69 2004/09/28 07:54:24EDT sf_support Exp  $
+ * $Id: lpfc_mem.c 1.71 2005/01/13 18:39:03EST sf_support Exp  $
  */
 
 #include <linux/mempool.h>
@@ -133,16 +133,28 @@ lpfc_mem_free(struct lpfc_hba * phba)
 	struct lpfc_sli *psli = &phba->sli;
 	struct lpfc_dma_pool *pool = &phba->lpfc_mbuf_safety_pool;
 	LPFC_MBOXQ_t *mbox, *next_mbox;
+	struct lpfc_dmabuf   *mp;
 	int i;
 
 	list_for_each_entry_safe(mbox, next_mbox, &psli->mboxq, list) {
+		mp = (struct lpfc_dmabuf *) (mbox->context1);
+		if (mp) {
+			lpfc_mbuf_free(phba, mp->virt, mp->phys);
+			kfree(mp);
+		}
 		list_del(&mbox->list);
 		mempool_free(mbox, phba->mbox_mem_pool);
 	}
 
 	psli->sliinit.sli_flag &= ~LPFC_SLI_MBOX_ACTIVE;
 	if (psli->mbox_active) {
-		mempool_free(psli->mbox_active, phba->mbox_mem_pool);
+		mbox = psli->mbox_active;
+		mp = (struct lpfc_dmabuf *) (mbox->context1);
+		if (mp) {
+			lpfc_mbuf_free(phba, mp->virt, mp->phys);
+			kfree(mp);
+		}
+		mempool_free(mbox, phba->mbox_mem_pool);
 		psli->mbox_active = NULL;
 	}
 
