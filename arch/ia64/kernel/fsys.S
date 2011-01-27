@@ -10,6 +10,8 @@
  *			probably broke it along the way... ;-)
  * 13-Jul-04 clameter   Implement fsys_clock_gettime and revise fsys_gettimeofday to make
  *                      it capable of using memory based clocks without falling back to C code.
+ * 08-Feb-07 Fenghua Yu Implement fsys_getcpu.
+ *
  */
 
 #include <asm/asmmacro.h>
@@ -245,6 +247,9 @@ ENTRY(fsys_gettimeofday)
 .time_redo:
 	.pred.rel.mutex p8,p9,p10
 	ld4.acq r28 = [r29]	// xtime_lock.sequence. Must come first for locking purposes
+	;;
+	and r28 = ~1,r28	// Make sequence even to force retry if odd
+	;;
 (p8)	mov r2 = ar.itc		// CPU_TIMER. 36 clocks latency!!!
 	add r22 = IA64_TIME_INTERPOLATOR_LAST_COUNTER_OFFSET,r20
 (p9)	ld8 r2 = [r30]		// readq(ti->address). Could also have latency issues..
@@ -282,7 +287,6 @@ EX(.fail_efault, probe.w.fault r31, 3)	// This takes 5 cycles and we have spare 
 (p15)	ld8 r17 = [r19],-IA64_TIMESPEC_TV_NSEC_OFFSET
 (p7)	cmp.ne p7,p0 = r25,r3	// if cmpxchg not successful redo
 	// simulate tbit.nz.or p7,p0 = r28,0
-	and r28 = ~1,r28	// Make sequence even to force retry if odd
 	getf.sig r2 = f8
 	mf
 	add r8 = r8,r18		// Add time interpolator offset
@@ -504,6 +508,59 @@ EX(.fail_efault, (p15) st8 [r34]=r3)
 	br.sptk.many fsys_fallback_syscall
 #endif
 END(fsys_rt_sigprocmask)
+
+/*
+ * fsys_getcpu doesn't use the third parameter in this implementation. It reads
+ * current_thread_info()->cpu and corresponding node in cpu_to_node_map.
+ */
+ENTRY(fsys_getcpu)
+	.prologue
+	.altrp b6
+	.body
+	;;
+	add r2=TI_FLAGS+IA64_TASK_SIZE,r16
+	tnat.nz p6,p0 = r32			// guard against NaT argument
+	add r3=TI_CPU+IA64_TASK_SIZE,r16
+	;;
+	ld4 r3=[r3]				// M r3 = thread_info->cpu
+	ld4 r2=[r2]				// M r2 = thread_info->flags
+(p6)    br.cond.spnt.few .fail_einval		// B
+	;;
+	tnat.nz p7,p0 = r33			// I guard against NaT argument
+(p7)    br.cond.spnt.few .fail_einval		// B
+#ifdef CONFIG_NUMA
+	movl r17=cpu_to_node_map
+	;;
+EX(.fail_efault, probe.w.fault r32, 3)		// M This takes 5 cycles
+EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
+	shladd r18=r3,1,r17
+	;;
+	ld2 r20=[r18]				// r20 = cpu_to_node_map[cpu]
+	and r2 = TIF_ALLWORK_MASK,r2
+	;;
+	cmp.ne p8,p0=0,r2
+(p8)	br.spnt.many fsys_fallback_syscall
+	;;
+	;;
+EX(.fail_efault, st4 [r32] = r3)
+EX(.fail_efault, st2 [r33] = r20)
+	mov r8=0
+	;;
+#else
+EX(.fail_efault, probe.w.fault r32, 3)		// M This takes 5 cycles
+EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
+	and r2 = TIF_ALLWORK_MASK,r2
+	;;
+	cmp.ne p8,p0=0,r2
+(p8)	br.spnt.many fsys_fallback_syscall
+	;;
+EX(.fail_efault, st4 [r32] = r3)
+EX(.fail_efault, st2 [r33] = r0)
+	mov r8=0
+	;;
+#endif
+	FSYS_RETURN
+END(fsys_getcpu)
 
 ENTRY(fsys_fallback_syscall)
 	.prologue
@@ -882,5 +939,30 @@ fsyscall_table:
 	data8 0
 	data8 0
 	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 0
+	data8 fsys_getcpu			// getcpu 		//1304
 
 	.org fsyscall_table + 8*NR_syscalls	// guard against failures to increase NR_syscalls

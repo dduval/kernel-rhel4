@@ -38,14 +38,10 @@
 #include <linux/completion.h>
 #include <linux/dma-mapping.h>
 #include <linux/blkdev.h>
+#include <linux/delay.h> /* ssleep prototype */
+#include <linux/kthread.h>
 #include <asm/semaphore.h>
 #include <asm/uaccess.h>
-#include <scsi/scsi.h>
-#include <scsi/scsi_cmnd.h>
-#include <scsi/scsi_host.h>
-#include <scsi/scsi_device.h>
-#include <scsi/scsi_eh.h>
-#include <linux/delay.h> /* ssleep prototype */
 
 #include "aacraid.h"
 
@@ -69,17 +65,20 @@ static int ioctl_send_fib(struct aac_dev * dev, void __user *arg)
 	unsigned size;
 	int retval;
 
-	fibptr = fib_alloc(dev);
+	if (dev->in_reset) {
+		return -EBUSY;
+	}
+	fibptr = aac_fib_alloc(dev);
 	if(fibptr == NULL) {
 		return -ENOMEM;
 	}
 		
-	kfib = fibptr->hw_fib;
+	kfib = fibptr->hw_fib_va;
 	/*
 	 *	First copy in the header so that we can check the size field.
 	 */
 	if (copy_from_user((void *)kfib, arg, sizeof(struct aac_fibhdr))) {
-		fib_free(fibptr);
+		aac_fib_free(fibptr);
 		return -EFAULT;
 	}
 	/*
@@ -96,9 +95,9 @@ static int ioctl_send_fib(struct aac_dev * dev, void __user *arg)
 			goto cleanup;
 		}
 		/* Highjack the hw_fib */
-		hw_fib = fibptr->hw_fib;
+		hw_fib = fibptr->hw_fib_va;
 		hw_fib_pa = fibptr->hw_fib_pa;
-		fibptr->hw_fib = kfib = pci_alloc_consistent(dev->pdev, size, &fibptr->hw_fib_pa);
+		fibptr->hw_fib_va = kfib = pci_alloc_consistent(dev->pdev, size, &fibptr->hw_fib_pa);
 		memset(((char *)kfib) + dev->max_fib_size, 0, size - dev->max_fib_size);
 		memcpy(kfib, hw_fib, dev->max_fib_size);
 	}
@@ -116,13 +115,13 @@ static int ioctl_send_fib(struct aac_dev * dev, void __user *arg)
 		 */
 		kfib->header.XferState = 0;
 	} else {
-		retval = fib_send(le16_to_cpu(kfib->header.Command), fibptr,
+		retval = aac_fib_send(le16_to_cpu(kfib->header.Command), fibptr,
 				le16_to_cpu(kfib->header.Size) , FsaNormal,
 				1, 1, NULL, NULL);
 		if (retval) {
 			goto cleanup;
 		}
-		if (fib_complete(fibptr) != 0) {
+		if (aac_fib_complete(fibptr) != 0) {
 			retval = -EINVAL;
 			goto cleanup;
 		}
@@ -142,9 +141,10 @@ cleanup:
 	if (hw_fib) {
 		pci_free_consistent(dev->pdev, size, kfib, fibptr->hw_fib_pa);
 		fibptr->hw_fib_pa = hw_fib_pa;
-		fibptr->hw_fib = hw_fib;
+		fibptr->hw_fib_va = hw_fib;
 	}
-	fib_free(fibptr);
+	if (retval != -EINTR)
+		aac_fib_free(fibptr);
 	return retval;
 }
 
@@ -286,30 +286,29 @@ return_fib:
 		fib = list_entry(entry, struct fib, fiblink);
 		fibctx->count--;
 		spin_unlock_irqrestore(&dev->fib_lock, flags);
-		if (copy_to_user(f.fib, fib->hw_fib, sizeof(struct hw_fib))) {
-			kfree(fib->hw_fib);
+		if (copy_to_user(f.fib, fib->hw_fib_va, sizeof(struct hw_fib))) {
+			kfree(fib->hw_fib_va);
 			kfree(fib);
 			return -EFAULT;
 		}	
 		/*
 		 *	Free the space occupied by this copy of the fib.
 		 */
-		kfree(fib->hw_fib);
+		kfree(fib->hw_fib_va);
 		kfree(fib);
 		status = 0;
 	} else {
+		spin_unlock_irqrestore(&dev->fib_lock, flags);
 		/* If someone killed the AIF aacraid thread, restart it */
 		status = !dev->aif_thread;
-		if (status && dev->queues && dev->fsa_dev) {
+		if (status && !dev->in_reset && dev->queues && dev->fsa_dev) {
 			/* Be paranoid, be very paranoid! */
-			kill_proc(dev->thread_pid, SIGKILL, 0);
+			kthread_stop(dev->thread);
 			ssleep(1);
 			dev->aif_thread = 0;
-			dev->thread_pid = kernel_thread(
-			  (int (*)(void *))aac_command_thread, dev, 0);
+			dev->thread = kthread_run(aac_command_thread, dev, dev->name);
 			ssleep(1);
 		}
-		spin_unlock_irqrestore(&dev->fib_lock, flags);
 		if (f.wait) {
 			if(down_interruptible(&fibctx->wait_sem) < 0) {
 				status = -EINTR;
@@ -345,7 +344,7 @@ int aac_close_fib_context(struct aac_dev * dev, struct aac_fib_context * fibctx)
 		/*
 		 *	Free the space occupied by this copy of the fib.
 		 */
-		kfree(fib->hw_fib);
+		kfree(fib->hw_fib_va);
 		kfree(fib);
 	}
 	/*
@@ -474,6 +473,10 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 	int i;
 
 
+	if (dev->in_reset) {
+		dprintk((KERN_DEBUG"aacraid: send raw srb -EBUSY\n"));
+		return -EBUSY;
+	}
 	if (!capable(CAP_SYS_ADMIN)){
 		dprintk((KERN_DEBUG"aacraid: No permission to send raw srb\n")); 
 		return -EPERM;
@@ -481,10 +484,10 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 	/*
 	 *	Allocate and initialize a Fib then setup a BlockWrite command
 	 */
-	if (!(srbfib = fib_alloc(dev))) {
+	if (!(srbfib = aac_fib_alloc(dev))) {
 		return -ENOMEM;
 	}
-	fib_init(srbfib);
+	aac_fib_init(srbfib);
 
 	srbcmd = (struct aac_srb*) fib_data(srbfib);
 
@@ -540,7 +543,7 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 	default:
 		data_dir = DMA_NONE;
 	}
-	if (user_srbcmd->sg.count > (sizeof(sg_list)/sizeof(sg_list[0]))) {
+	if (user_srbcmd->sg.count > ARRAY_SIZE(sg_list)) {
 		dprintk((KERN_DEBUG"aacraid: too many sg entries %d\n",
 		  le32_to_cpu(srbcmd->sg.count)));
 		rcode = -EINVAL;
@@ -618,7 +621,7 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 
 		srbcmd->count = cpu_to_le32(byte_count);
 		psg->count = cpu_to_le32(sg_indx+1);
-		status = fib_send(ScsiPortCommand64, srbfib, actual_fibsize, FsaNormal, 1, 1,NULL,NULL);
+		status = aac_fib_send(ScsiPortCommand64, srbfib, actual_fibsize, FsaNormal, 1, 1,NULL,NULL);
 	} else {
 		struct user_sgmap* upsg = &user_srbcmd->sg;
 		struct sgmap* psg = &srbcmd->sg;
@@ -672,7 +675,11 @@ static int aac_send_raw_srb(struct aac_dev* dev, void __user * arg)
 		}
 		srbcmd->count = cpu_to_le32(byte_count);
 		psg->count = cpu_to_le32(sg_indx+1);
-		status = fib_send(ScsiPortCommand, srbfib, actual_fibsize, FsaNormal, 1, 1, NULL, NULL);
+		status = aac_fib_send(ScsiPortCommand, srbfib, actual_fibsize, FsaNormal, 1, 1, NULL, NULL);
+	}
+	if (status == -EINTR) {
+		rcode = -EINTR;
+		goto cleanup;
 	}
 
 	if (status != 0){
@@ -707,8 +714,10 @@ cleanup:
 	for(i=0; i <= sg_indx; i++){
 		kfree(sg_list[i]);
 	}
-	fib_complete(srbfib);
-	fib_free(srbfib);
+	if (rcode != -EINTR) {
+		aac_fib_complete(srbfib);
+		aac_fib_free(srbfib);
+	}
 
 	return rcode;
 }
@@ -743,9 +752,8 @@ int aac_do_ioctl(struct aac_dev * dev, int cmd, void __user *arg)
 	 */
 	 
 	status = aac_dev_ioctl(dev, cmd, arg);
-	if(status != -ENOTTY) {
+	if(status != -ENOTTY)
 		return status;
-	}
 
 	switch (cmd) {
 	case FSACTL_MINIPORT_REV_CHECK:

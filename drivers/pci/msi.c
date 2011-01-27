@@ -94,10 +94,16 @@ static void set_msi_affinity(unsigned int vector, cpumask_t cpu_mask)
 	struct msi_desc *entry;
 	struct msg_address address;
 	unsigned int dest_cpu = first_cpu(cpu_mask);
+	unsigned long flags;
+
+	spin_lock_irqsave(&msi_lock, flags);
 
 	entry = (struct msi_desc *)msi_desc[vector];
 	if (!entry || !entry->dev)
-		return;
+		goto out_unlock;
+
+	if (entry->msi_attrib.state == 0)
+		goto out_unlock;
 
 	switch (entry->msi_attrib.type) {
 	case PCI_CAP_ID_MSI:
@@ -105,7 +111,7 @@ static void set_msi_affinity(unsigned int vector, cpumask_t cpu_mask)
 		int pos;
 
    		if (!(pos = pci_find_capability(entry->dev, PCI_CAP_ID_MSI)))
-			return;
+			goto out_unlock;
 
 		pci_read_config_dword(entry->dev, msi_lower_address_reg(pos),
 			&address.lo_address.value);
@@ -133,6 +139,9 @@ static void set_msi_affinity(unsigned int vector, cpumask_t cpu_mask)
 	default:
 		break;
 	}
+
+out_unlock:
+	spin_unlock_irqrestore(&msi_lock, flags);
 }
 
 #ifdef CONFIG_IRQBALANCE

@@ -472,6 +472,19 @@ enum pci_mmap_state {
 	pci_mmap_mem
 };
 
+typedef unsigned int __bitwise pcie_reset_state_t;
+
+enum pcie_reset_state {
+	/* Reset is NOT asserted (Use to deassert reset) */
+	pci_reset_normal = (__force pcie_reset_state_t) 1,
+
+	/* Use #PERST to reset PCI-E device */
+	pci_reset_pcie_warm_reset = (__force pcie_reset_state_t) 2,
+
+	/* Use PCI-E Hot Reset to reset device */
+	pci_reset_pcie_hot_reset = (__force pcie_reset_state_t) 3
+};
+
 /* This defines the direction arg to the DMA mapping routines. */
 #define PCI_DMA_BIDIRECTIONAL	0
 #define PCI_DMA_TODEVICE	1
@@ -482,6 +495,8 @@ enum pci_mmap_state {
 #define DEVICE_COUNT_RESOURCE	12
 
 #define PCI_BUS_FLAGS_NO_MSI 1
+#define PCI_BUS_FLAGS_NO_MMRBC 2
+
 /*
  * The pci_dev structure is used to describe PCI devices.
  */
@@ -778,12 +793,17 @@ int pci_enable_device(struct pci_dev *dev);
 int pci_enable_device_bars(struct pci_dev *dev, int mask);
 void pci_disable_device(struct pci_dev *dev);
 void pci_set_master(struct pci_dev *dev);
+int pci_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state);
 #define HAVE_PCI_SET_MWI
 int pci_set_mwi(struct pci_dev *dev);
 void pci_clear_mwi(struct pci_dev *dev);
 int __must_check pci_set_dma_mask(struct pci_dev *dev, u64 mask);
 int pci_dac_set_dma_mask(struct pci_dev *dev, u64 mask);
 int __must_check pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask);
+int pcix_get_max_mmrbc(struct pci_dev *dev);
+int pcix_get_mmrbc(struct pci_dev *dev);
+int pcix_set_mmrbc(struct pci_dev *dev, int mmrbc);
+int pcie_set_readrq(struct pci_dev *dev, int rq);
 int pci_assign_resource(struct pci_dev *dev, int i);
 
 /* Power management related routines */
@@ -1018,20 +1038,29 @@ struct pci_fixup {
 };
 
 enum pci_fixup_pass {
-	pci_fixup_header,	/* Called immediately after reading configuration header */
+	pci_fixup_early,	/* Called immediately after reading
+				   device/vendor IDs and class code */
+	pci_fixup_header,	/* Called after reading the entire
+				   configuration header (including BARs) */
 	pci_fixup_final,	/* Final phase of device fixups */
 };
 
 /* Anonymous variables would be nice... */
-#define DECLARE_PCI_FIXUP_HEADER(vendor, device, hook)					\
-	static struct pci_fixup __pci_fixup_##vendor##device##hook __attribute_used__	\
-	__attribute__((__section__(".pci_fixup_header"))) = {				\
-		vendor, device, hook };
+#define DECLARE_PCI_FIXUP_SECTION(section, name, vendor, device, hook)	\
+	static struct pci_fixup __pci_fixup_##name __attribute_used__	\
+	__attribute__((__section__( #section ))) = { vendor, device, hook };
 
-#define DECLARE_PCI_FIXUP_FINAL(vendor, device, hook)				\
-	static struct pci_fixup __pci_fixup_##vendor##device##hook __attribute_used__	\
-	__attribute__((__section__(".pci_fixup_final"))) = {				\
-		vendor, device, hook };
+#define DECLARE_PCI_FIXUP_EARLY(vendor, device, hook)			\
+	 DECLARE_PCI_FIXUP_SECTION(.pci_fixup_early,			\
+			vendor##device##hook, vendor, device, hook)
+
+#define DECLARE_PCI_FIXUP_HEADER(vendor, device, hook)			\
+	 DECLARE_PCI_FIXUP_SECTION(.pci_fixup_header,			\
+			vendor##device##hook, vendor, device, hook)
+
+#define DECLARE_PCI_FIXUP_FINAL(vendor, device, hook)			\
+	 DECLARE_PCI_FIXUP_SECTION(.pci_fixup_final,			\
+			vendor##device##hook, vendor, device, hook)
 
 void pci_fixup_device(enum pci_fixup_pass pass, struct pci_dev *dev);
 

@@ -1387,7 +1387,7 @@ dasd_eckd_release(struct block_device *bdev, int no, long args)
 	cqr->device = device;
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
 	set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
-	cqr->retries = 0;
+	cqr->retries = 2;	/* set retry counter to enable basic ERP */
 	cqr->expires = 2 * HZ;
 	cqr->buildclk = get_clock();
 	cqr->status = DASD_CQR_FILLED;
@@ -1432,7 +1432,7 @@ dasd_eckd_reserve(struct block_device *bdev, int no, long args)
 	cqr->device = device;
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
 	set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
-	cqr->retries = 0;
+	cqr->retries = 2;	/* set retry counter to enable basic ERP */
 	cqr->expires = 2 * HZ;
 	cqr->buildclk = get_clock();
 	cqr->status = DASD_CQR_FILLED;
@@ -1476,7 +1476,7 @@ dasd_eckd_steal_lock(struct block_device *bdev, int no, long args)
 	cqr->device = device;
 	clear_bit(DASD_CQR_FLAGS_USE_ERP, &cqr->flags);
 	set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
-	cqr->retries = 0;
+	cqr->retries = 2;	/* set retry counter to enable basic ERP */
 	cqr->expires = 2 * HZ;
 	cqr->buildclk = get_clock();
 	cqr->status = DASD_CQR_FILLED;

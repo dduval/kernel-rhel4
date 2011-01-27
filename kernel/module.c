@@ -592,6 +592,8 @@ sys_delete_module(const char __user *name_user, unsigned int flags)
 
 	/* Stop the machine so refcounts can't move and disable module. */
 	ret = try_stop_module(mod, flags, &forced);
+	if (ret)
+		goto out;
 
 	/* Never wait if forced. */
 	if (!forced && module_refcount(mod) != 0)
@@ -1533,6 +1535,8 @@ static struct module *load_module(void __user *umod,
 	/* verify the module (validates ELF and checks signature) */
 	gpgsig_ok = 0;
 	err = module_verify(hdr, len);
+	if (err < 0)
+		goto free_hdr;
 	if (err == 1)
 		gpgsig_ok = 1;
 

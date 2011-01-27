@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -21,8 +21,8 @@ extern void qla4xxx_start_io(scsi_qla_host_t *ha);
 extern srb_t *del_from_active_array(scsi_qla_host_t *ha, uint32_t index);
 extern uint8_t qla4xxx_complete_request(scsi_qla_host_t *ha, srb_t *srb);
 extern uint8_t qla4xxx_reset_lun(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry, lun_entry_t *lun_entry);
-extern void qla4xxx_hw_reset(scsi_qla_host_t *);
 extern uint8_t qla4xxx_soft_reset(scsi_qla_host_t *);
+extern void qla4xxx_hw_reset(scsi_qla_host_t *);
 extern const char *host_sts_msg[];
 extern void qla4xxx_delete_timer_from_cmd(srb_t *srb);
 extern scsi_qla_host_t *qla4xxx_get_adapter_handle(uint16_t instance);
@@ -102,8 +102,6 @@ extern uint8_t qla4xxx_isns_disable(scsi_qla_host_t *);
 extern uint8_t qla4xxx_get_flash(scsi_qla_host_t *, dma_addr_t, uint32_t,
     uint32_t);
 
-extern uint8_t qla4xxx_initialize_fw_cb(scsi_qla_host_t *);
-
 extern uint8_t qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *);
 
 extern uint8_t qla4xxx_get_firmware_state(scsi_qla_host_t *);
@@ -122,6 +120,10 @@ extern uint8_t qla4xxx_restore_factory_defaults(scsi_qla_host_t *ha, uint32_t, u
 extern uint8_t qla4xxx_get_firmware_status(scsi_qla_host_t *ha);
 
 extern void qla4xxx_get_conn_event_log(scsi_qla_host_t *ha);
+
+extern uint8_t qla4xxx_get_ifcb(scsi_qla_host_t *, uint32_t *, uint32_t *, dma_addr_t);
+
+extern uint8_t qla4xxx_set_ifcb(scsi_qla_host_t *, uint32_t *, uint32_t *, dma_addr_t);
 
 
 /*

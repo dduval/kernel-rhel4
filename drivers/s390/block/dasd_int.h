@@ -16,9 +16,6 @@
 
 #include <asm/types.h>
 
-/* erp debugging in dasd.c and dasd_3990_erp.c */
-#define ERP_DEBUG
-
 /*
  * Unique identifier for dasd device.
  */
@@ -347,6 +344,7 @@ struct dasd_device {
 /* per device flags */
 #define DASD_FLAG_DSC_ERROR	2	/* return -EIO when disconnected */
 #define DASD_FLAG_OFFLINE	3	/* device is in offline processing */
+#define DASD_FLAG_ERPLOG	4	/* erp-related logging is active */
 
 void dasd_put_device_wake(struct dasd_device *);
 

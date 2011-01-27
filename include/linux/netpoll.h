@@ -48,22 +48,39 @@ int __netpoll_rx(struct sk_buff *skb);
 void netpoll_reset_locks(struct netpoll *np);
 
 #ifdef CONFIG_NETPOLL
+extern struct net_device *skb_bond(struct sk_buff *);
 static inline int netpoll_rx(struct sk_buff *skb)
 {
-	struct net_device_wrapper *ndw = dev_wrapper(skb->dev);
+	struct net_device *orig_dev = skb_bond(skb);
+	struct net_device_wrapper *ndw;
 	struct netpoll_info *npinfo;
 	unsigned long flags;
 	int ret = 0;
 
+	/*
+	 * If orig_dev is NULL then 
+	 * tell the caller that we consumed this
+	 * frame since skb_bond did it for us
+	 */
+	if (!orig_dev)
+		return 1;
+
+	ndw = dev_wrapper(skb->dev);
+
 	if (!ndw || !(npinfo = ndw->npinfo) ||
-	    (!npinfo->rx_np && !npinfo->rx_flags))
+	    (!npinfo->rx_np && !npinfo->rx_flags)) {
+		skb->dev = orig_dev;
 		return 0;
+	}
 
 	spin_lock_irqsave(&npinfo->rx_lock, flags);
 	/* check rx_flags again with the lock held */
 	if (npinfo->rx_flags && __netpoll_rx(skb))
 		ret = 1;
 	spin_unlock_irqrestore(&npinfo->rx_lock, flags);
+
+	if (!ret)
+		skb->dev = orig_dev;
 
 	return ret;
 }

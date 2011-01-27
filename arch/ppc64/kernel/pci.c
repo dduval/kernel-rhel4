@@ -651,8 +651,9 @@ void __devinit pci_process_bridge_OF_ranges(struct pci_controller *hose,
 
 		switch (ranges[0] >> 24) {
 		case 1:		/* I/O space */
-			hose->io_base_phys = cpu_phys_addr;
-			hose->pci_io_size = size;
+			hose->io_base_phys = cpu_phys_addr - pci_addr;
+			/* handle from 0 to top of I/O window */
+			hose->pci_io_size = pci_addr + size;
 
 			res = &hose->io_resource;
 			res->flags = IORESOURCE_IO;
@@ -917,3 +918,18 @@ int pci_read_irq_line(struct pci_dev *pci_dev)
 EXPORT_SYMBOL(pci_read_irq_line);
 
 #endif /* CONFIG_PPC_MULTIPLATFORM */
+
+int pcibios_vaddr_is_ioport(void __iomem *address)
+{
+	int ret = 0;
+	struct pci_controller *hose;
+
+	list_for_each_entry(hose, &hose_list, list_node) {
+		if (address >= hose->io_base_virt &&
+		    address < (hose->io_base_virt + hose->pci_io_size)) {
+			ret = 1;
+			break;
+		}
+	}
+	return ret;
+}

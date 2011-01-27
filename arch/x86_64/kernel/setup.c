@@ -40,6 +40,7 @@
 #include <linux/acpi.h>
 #include <linux/kallsyms.h>
 #include <linux/edd.h>
+#include <linux/cpufreq.h>
 #include <linux/dmi.h>
 #include <asm/mtrr.h>
 #include <asm/uaccess.h>
@@ -867,6 +868,12 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 	if (cpuid_eax(0x80000000) >= 0x80000008) {
 		amd_detect_cmp(c);
 
+	if (cpuid_eax(0x80000000) >= 0x80000006 &&
+		(cpuid_edx(0x80000006) & 0xf000))
+		num_cache_leaves = 4;
+	else
+		num_cache_leaves = 3;
+
 #ifdef CONFIG_NUMA
 		/* On a dual core setup the lower bits of apic id
 		   distingush the cores. Fix up the CPU<->node mappings
@@ -1085,6 +1092,12 @@ void __init early_identify_cpu(struct cpuinfo_x86 *c)
 #ifdef CONFIG_SMP
 	phys_proc_id[smp_processor_id()] = (cpuid_ebx(1) >> 24) & 0xff;
 #endif
+
+	/* power flags are 8000_0007 edx. Bit 8 is constant TSC */
+	if ((c->x86_vendor == X86_VENDOR_AMD) &&
+	    (cpuid_eax(0x80000000) >= 0x80000007) &&
+	    (cpuid_edx(0x80000007) & (1<<8)))
+		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
 }
 
 /*
@@ -1198,7 +1211,8 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, "syscall", NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, "nx", NULL, "mmxext", NULL,
-		NULL, NULL, NULL, NULL, NULL, "lm", "3dnowext", "3dnow",
+		NULL, "fxsr_opt", "pdpe1gb", "rdtscp", NULL, "lm", 
+		"3dnowext", "3dnow",
 
 		/* Transmeta-defined */
 		"recovery", "longrun", NULL, "lrti", NULL, NULL, NULL, NULL,
@@ -1215,12 +1229,13 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", NULL, NULL, "est",
 		"tm2", NULL, "cid", NULL, NULL, "cx16", "xtpr", NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, "popcnt",
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* AMD-defined (#2) */
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"lahf_lm", "cmp_legacy", "svm", "extapic", "cr8_legacy",
+		"altmovcr8", "abm", "sse4a",
+		"misalignsse", "3dnowprefetch", "osvw", "ibs", NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 	};
@@ -1229,6 +1244,13 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"fid",  /* frequency id control */
 		"vid",  /* voltage id control */
 		"ttp",  /* thermal trip */
+ 		"tm",
+ 		"stc",
+		"100mhzsteps",
+		"hwpstate",
+		NULL,   /* tsc invariant mapped to constant_tsc */
+ 		NULL,
+ 		/* nothing */	/* constant_tsc - moved to flags */
 	};
 
 
@@ -1254,8 +1276,11 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		seq_printf(m, "stepping\t: unknown\n");
 	
 	if (cpu_has(c,X86_FEATURE_TSC)) {
+		unsigned int freq = cpufreq_quick_get((unsigned)(c-cpu_data));
+		if (!freq)
+			freq = cpu_khz;
 		seq_printf(m, "cpu MHz\t\t: %u.%03u\n",
-			     cpu_khz / 1000, (cpu_khz % 1000));
+			     freq / 1000, (freq % 1000));
 	}
 
 	/* Cache size */

@@ -180,6 +180,7 @@ extern void swap_setup(void);
 extern int try_to_free_pages(struct zone **, unsigned int, unsigned int, int, int);
 extern int shrink_all_memory(int);
 extern int vm_swappiness;
+extern int vm_inactive_percent;
 
 #ifdef CONFIG_MMU
 /* linux/mm/shmem.c */

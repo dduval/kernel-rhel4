@@ -48,6 +48,8 @@ extern void qla2x00_tgt_free(scsi_qla_host_t *ha, uint16_t t);
 
 extern int qla2x00_abort_isp(scsi_qla_host_t *);
 
+extern void qla2x00_try_to_stop_firmware(scsi_qla_host_t *);
+
 /*
  * Global Data in qla_os.c source file.
  */
@@ -71,6 +73,8 @@ extern int ql2xprocessrscn;
 extern int extended_error_logging;
 extern int ql2xfwloadbin;
 extern int ql2xfdmienable;
+extern int ql2xqfullrampup;
+extern int ql2xcmdtimermin;
 
 extern int ConfigRequired;
 
@@ -102,6 +106,8 @@ extern void qla23xx_blink_led(scsi_qla_host_t *);
 extern void qla24xx_blink_led(scsi_qla_host_t *);
 
 extern int qla2x00_down_timeout(struct semaphore *, unsigned long);
+extern void sp_put(struct scsi_qla_host *, srb_t *);
+extern void sp_get(struct scsi_qla_host *, srb_t *);
 
 /*
  * Global Function Prototypes in qla_iocb.c source file.
@@ -217,6 +223,12 @@ qla2x00_set_serdes_params(scsi_qla_host_t *, uint16_t, uint16_t, uint16_t);
 extern int
 qla2x00_stop_firmware(scsi_qla_host_t *);
 
+extern int
+qla2x00_get_idma_speed(scsi_qla_host_t *, uint16_t, uint16_t *, uint16_t *);
+
+extern int
+qla2x00_set_idma_speed(scsi_qla_host_t *, uint16_t, uint16_t, uint16_t *);
+
 /*
  * Global Function Prototypes in qla_isr.c source file.
  */
@@ -266,6 +278,8 @@ extern int qla2x00_rff_id(scsi_qla_host_t *);
 extern int qla2x00_rnn_id(scsi_qla_host_t *);
 extern int qla2x00_rsnn_nn(scsi_qla_host_t *);
 extern int qla2x00_fdmi_register(scsi_qla_host_t *);
+extern int qla2x00_gfpn_id(scsi_qla_host_t *, sw_info_t *);
+extern int qla2x00_gpsc(scsi_qla_host_t *, sw_info_t *);
 
 /*
  * Global Function Prototypes in qla_rscn.c source file.

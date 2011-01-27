@@ -68,11 +68,6 @@ int syscall32_setup_pages(struct linux_binprm *bprm, int exstack)
 	if (!vma)
 		return -ENOMEM;
 
-	if (security_vm_enough_memory(npages)) {
-		kmem_cache_free(vm_area_cachep, vma);
-		return -ENOMEM;
-	}
-
 	memset(vma, 0, sizeof(struct vm_area_struct));
 	/* Could randomize here */
 	vma->vm_start = VSYSCALL32_BASE;

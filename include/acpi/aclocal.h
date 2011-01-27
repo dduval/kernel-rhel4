@@ -741,7 +741,8 @@ struct acpi_parse_state
  *
  ****************************************************************************/
 
-#define PCI_ROOT_HID_STRING         "PNP0A03"
+#define PCI_ROOT_HID_STRING             "PNP0A03"
+#define PCI_EXPRESS_ROOT_HID_STRING     "PNP0A08"
 
 struct acpi_bit_register_info
 {

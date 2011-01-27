@@ -690,6 +690,8 @@ struct netdev_private {
 	/* Based on MTU+slack. */
 	unsigned int rx_buf_sz;
 	int oom;
+	/* Interrupt status */
+	u32 intr_status;
 	/* Do not touch the nic registers */
 	int hands_off;
 	/* external phy that is used: only valid if dev->if_port != PORT_TP */
@@ -877,6 +879,7 @@ static int __devinit natsemi_probe1 (struct pci_dev *pdev,
 	spin_lock_init(&np->lock);
 	np->msg_enable = (debug >= 0) ? (1<<debug)-1 : NATSEMI_DEF_MSG;
 	np->hands_off = 0;
+	np->intr_status = 0;
 
 	/* Initial port:
 	 * - If the nic was configured to use an external phy and if find_mii
@@ -1478,6 +1481,31 @@ static void natsemi_reset(struct net_device *dev)
 	}
 	/* restore RFCR */
 	writel(rfcr, ioaddr + RxFilterAddr);
+}
+
+static void reset_rx(struct net_device *dev)
+{
+	int i;
+	struct netdev_private *np = netdev_priv(dev);
+	void __iomem *ioaddr = ns_ioaddr(dev);
+
+	np->intr_status &= ~RxResetDone;
+
+	writel(RxReset, ioaddr + ChipCmd);
+
+	for (i=0;i<NATSEMI_HW_TIMEOUT;i++) {
+		np->intr_status |= readl(ioaddr + IntrStatus);
+		if (np->intr_status & RxResetDone)
+			break;
+		udelay(15);
+	}
+	if (i==NATSEMI_HW_TIMEOUT) {
+		printk(KERN_WARNING "%s: RX reset did not complete in %d usec.\n",
+		       dev->name, i*15);
+	} else if (netif_msg_hw(np)) {
+		printk(KERN_WARNING "%s: RX reset took %d usec.\n",
+		       dev->name, i*15);
+	}
 }
 
 static void natsemi_reload_eeprom(struct net_device *dev)
@@ -2168,25 +2196,25 @@ static irqreturn_t intr_handler(int irq, void *dev_instance, struct pt_regs *rgs
 		return IRQ_NONE;
 	do {
 		/* Reading automatically acknowledges all int sources. */
-		u32 intr_status = readl(ioaddr + IntrStatus);
+		np->intr_status = readl(ioaddr + IntrStatus);
 
 		if (netif_msg_intr(np))
 			printk(KERN_DEBUG
 				"%s: Interrupt, status %#08x, mask %#08x.\n",
-				dev->name, intr_status,
+				dev->name, np->intr_status,
 				readl(ioaddr + IntrMask));
 
-		if (intr_status == 0)
+		if (np->intr_status == 0)
 			break;
 		handled = 1;
 
-		if (intr_status &
+		if (np->intr_status &
 		   (IntrRxDone | IntrRxIntr | RxStatusFIFOOver |
 		    IntrRxErr | IntrRxOverrun)) {
 			netdev_rx(dev);
 		}
 
-		if (intr_status &
+		if (np->intr_status &
 		   (IntrTxDone | IntrTxIntr | IntrTxIdle | IntrTxErr)) {
 			spin_lock(&np->lock);
 			netdev_tx_done(dev);
@@ -2194,15 +2222,15 @@ static irqreturn_t intr_handler(int irq, void *dev_instance, struct pt_regs *rgs
 		}
 
 		/* Abnormal error summary/uncommon events handlers. */
-		if (intr_status & IntrAbnormalSummary)
-			netdev_error(dev, intr_status);
+		if (np->intr_status & IntrAbnormalSummary)
+			netdev_error(dev, np->intr_status);
 
 		if (--boguscnt < 0) {
 			if (netif_msg_intr(np))
 				printk(KERN_WARNING
 					"%s: Too much work at interrupt, "
 					"status=%#08x.\n",
-					dev->name, intr_status);
+					dev->name, np->intr_status);
 			break;
 		}
 	} while (1);
@@ -2244,6 +2272,23 @@ static void netdev_rx(struct net_device *dev)
 						"status %#08x.\n", dev->name,
 						np->cur_rx, desc_status);
 				np->stats.rx_length_errors++;
+
+				/* The RX state machine has probably
+				 * locked up beneath us.  Follow the
+				 * reset procedure documented in
+				 * AN-1287. */
+
+				spin_lock_irq(&np->lock);
+				reset_rx(dev);
+				reinit_rx(dev);
+				writel(np->ring_dma, ioaddr + RxRingPtr);
+				check_link(dev);
+				spin_unlock_irq(&np->lock);
+
+				/* We'll enable RX on exit from this
+				 * function. */
+				break;
+
 			} else {
 				/* There was an error. */
 				np->stats.rx_errors++;

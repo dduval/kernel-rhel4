@@ -31,14 +31,13 @@ static void flush_ldt(void *null)
 
 static int alloc_ldt(mm_context_t *pc, int mincount, int reload)
 {
-	int oldsize, newsize, i;
+	int newsize, i;
 
 	if (mincount <= pc->size)
 		return 0;
 	/*
 	 * LDT got larger - reallocate if necessary.
 	 */
-	oldsize = pc->size;
 	mincount = (mincount+511)&(~511);
 	newsize = mincount*LDT_ENTRY_SIZE;
 	for (i = 0; i < newsize; i += PAGE_SIZE) {

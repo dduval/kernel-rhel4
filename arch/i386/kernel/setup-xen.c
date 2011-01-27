@@ -292,7 +292,7 @@ static void __init probe_roms(void)
 	int	      i;
 
 	/* Nothing to do if not running in dom0. */
-	if (!(xen_start_info->flags & SIF_INITDOMAIN))
+	if (!is_initial_xendomain())
 		return;
 
 	/* video rom */
@@ -370,37 +370,6 @@ EXPORT_SYMBOL(phys_to_machine_mapping);
 start_info_t *xen_start_info;
 EXPORT_SYMBOL(xen_start_info);
 
-static void __init limit_regions(unsigned long long size)
-{
-	unsigned long long current_addr = 0;
-	int i;
-
-	if (efi_enabled) {
-		for (i = 0; i < memmap.nr_map; i++) {
-			current_addr = memmap.map[i].phys_addr +
-				       (memmap.map[i].num_pages << 12);
-			if (memmap.map[i].type == EFI_CONVENTIONAL_MEMORY) {
-				if (current_addr >= size) {
-					memmap.map[i].num_pages -=
-						(((current_addr-size) + PAGE_SIZE-1) >> PAGE_SHIFT);
-					memmap.nr_map = i + 1;
-					return;
-				}
-			}
-		}
-	}
-	for (i = 0; i < e820.nr_map; i++) {
-		if (e820.map[i].type == E820_RAM) {
-			current_addr = e820.map[i].addr + e820.map[i].size;
-			if (current_addr >= size) {
-				e820.map[i].size -= current_addr-size;
-				e820.nr_map = i + 1;
-				return;
-			}
-		}
-	}
-}
-
 static void __init add_memory_region(unsigned long long start,
                                   unsigned long long size, int type)
 {
@@ -439,6 +408,75 @@ static void __init add_memory_region(unsigned long long start,
 	}
 } /* add_memory_region */
 
+int __init e820_mapped(unsigned long start, unsigned long end, unsigned type)
+{
+        int i;
+        for (i = 0; i < e820.nr_map; i++) {
+                struct e820entry *ei = &e820.map[i];
+                if (type && ei->type != type)
+                        continue;
+                if (ei->addr >= end || ei->addr + ei->size < start)
+                        continue;
+                return 1;
+        }
+        return 0;
+}
+EXPORT_SYMBOL_GPL(e820_mapped);
+
+static void __init limit_regions(unsigned long long size)
+{
+	unsigned long long current_addr = 0;
+	int i;
+
+	if (efi_enabled) {
+		for (i = 0; i < memmap.nr_map; i++) {
+			current_addr = memmap.map[i].phys_addr +
+				       (memmap.map[i].num_pages << 12);
+			if (memmap.map[i].type == EFI_CONVENTIONAL_MEMORY) {
+				if (current_addr >= size) {
+					memmap.map[i].num_pages -=
+						(((current_addr-size) + PAGE_SIZE-1) >> PAGE_SHIFT);
+					memmap.nr_map = i + 1;
+					return;
+				}
+			}
+		}
+	}
+	for (i = 0; i < e820.nr_map; i++) {
+		current_addr = e820.map[i].addr + e820.map[i].size;
+		if (current_addr < size)
+			continue;
+
+		if (e820.map[i].type != E820_RAM)
+			continue;
+
+		if (e820.map[i].addr >= size) {
+			/*
+			 * This region starts past the end of the
+			 * requested size, skip it completely.
+			 */
+			e820.nr_map = i;
+		} else {
+			e820.nr_map = i + 1;
+			e820.map[i].size -= current_addr - size;
+		}
+		return;
+	}
+#ifdef CONFIG_XEN
+	if (i==e820.nr_map && current_addr < size) {
+		/*
+                 * The e820 map finished before our requested size so
+                 * extend the final entry to the requested address.
+                 */
+		--i;
+		if (e820.map[i].type == E820_RAM)
+			e820.map[i].size -= current_addr - size;
+		else
+			add_memory_region(current_addr, size - current_addr, E820_RAM);
+	}
+#endif
+}
+
 #define E820_DEBUG	1
 
 static void __init print_memory_map(char *who)
@@ -467,7 +505,6 @@ static void __init print_memory_map(char *who)
 	}
 }
 
-#if 0
 /*
  * Sanitize the BIOS e820 map.
  *
@@ -655,9 +692,13 @@ static int __init sanitize_e820_map(struct e820entry * biosmap, char * pnr_map)
  */
 static int __init copy_e820_map(struct e820entry * biosmap, int nr_map)
 {
+#ifndef CONFIG_XEN
 	/* Only one memory region (or negative)? Ignore it */
 	if (nr_map < 2)
 		return -1;
+#else
+	BUG_ON(nr_map < 1);
+#endif
 
 	do {
 		unsigned long long start = biosmap->addr;
@@ -669,6 +710,7 @@ static int __init copy_e820_map(struct e820entry * biosmap, int nr_map)
 		if (start > end)
 			return -1;
 
+#ifndef CONFIG_XEN
 		/*
 		 * Some BIOSes claim RAM in the 640k - 1M region.
 		 * Not right. Fix it up.
@@ -683,11 +725,11 @@ static int __init copy_e820_map(struct e820entry * biosmap, int nr_map)
 				size = end - start;
 			}
 		}
+#endif
 		add_memory_region(start, size, type);
 	} while (biosmap++,--nr_map);
 	return 0;
 }
-#endif
 
 #if defined(CONFIG_EDD) || defined(CONFIG_EDD_MODULE)
 struct edd edd;
@@ -905,7 +947,6 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 	}
 }
 
-#if 0 /* !XEN */
 /*
  * Callback for efi_memory_walk.
  */
@@ -949,38 +990,6 @@ void __init find_max_pfn(void)
 			max_pfn = end;
 	}
 }
-#else
-/* We don't use the fake e820 because we need to respond to user override. */
-void __init find_max_pfn(void)
-{
-	int rc;
-	struct xen_memory_map memmap;
-	/*
-	 * This is rather large for a stack variable but this early in
-	 * the boot process we know we have plenty slack space.
-	 */
-	struct e820entry map[E820MAX];
-
-	memmap.nr_entries = E820MAX;
-	set_xen_guest_handle(memmap.buffer, map);
-
-	if (xen_override_max_pfn == 0) {
-		rc = HYPERVISOR_memory_op(XENMEM_memory_map, &memmap);
-		if ( rc == -ENOSYS ) {
-			max_pfn = xen_start_info->nr_pages;
-			/* Default 8MB slack (to balance backend allocations). */
-			max_pfn += 8 << (20 - PAGE_SHIFT);
-		} else {
-			/* xenU guests get only one e820 region */
-			max_pfn = map[0].size >> PAGE_SHIFT;
-		}
-	} else if (xen_override_max_pfn > xen_start_info->nr_pages) {
-		max_pfn = xen_override_max_pfn;
-	} else {
-		max_pfn = xen_start_info->nr_pages;
-	}
-}
-#endif /* XEN */
 
 /*
  * Determine low and high memory ranges:
@@ -1089,6 +1098,15 @@ static void __init register_bootmem_low_pages(unsigned long max_low_pfn)
 		 * ... and at the end of the usable range downwards:
 		 */
 		last_pfn = PFN_DOWN(e820.map[i].addr + e820.map[i].size);
+
+#ifdef CONFIG_XEN
+		/*
+                 * Truncate to the number of actual pages currently
+                 * present.
+                 */
+		if (last_pfn > xen_start_info->nr_pages)
+			last_pfn = xen_start_info->nr_pages;
+#endif
 
 		if (last_pfn > max_low_pfn)
 			last_pfn = max_low_pfn;
@@ -1329,7 +1347,7 @@ static void __init register_memory(void)
 	int	      i;
 
 	/* Nothing to do if not running in dom0. */
-	if (!(xen_start_info->flags & SIF_INITDOMAIN))
+	if (!is_initial_xendomain())
 		return;
 
 	if (efi_enabled)
@@ -1476,7 +1494,7 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Force a quick death if the kernel panics (not domain 0). */
 	extern int panic_timeout;
-	if (!panic_timeout && !(xen_start_info->flags & SIF_INITDOMAIN))
+	if (!panic_timeout && !is_initial_xendomain())
 		panic_timeout = 1;
 
 	/* Register a call for panic conditions. */
@@ -1518,7 +1536,7 @@ void __init setup_arch(char **cmdline_p)
 		BIOS_revision = SYS_DESC_TABLE.table[2];
 	}
 
-	if (xen_start_info->flags & SIF_INITDOMAIN) {
+	if (is_initial_xendomain()) {
 	     /* This is drawn from a dump from vgacon:startup in
 	      * standard Linux. */
 	     screen_info.orig_video_mode = 3; 
@@ -1644,7 +1662,7 @@ void __init setup_arch(char **cmdline_p)
 	}
 #endif
 
-	if (xen_start_info->flags & SIF_INITDOMAIN)
+	if (is_initial_xendomain())
 		dmi_scan_machine();
 
 #ifdef CONFIG_X86_GENERICARCH
@@ -1657,7 +1675,7 @@ void __init setup_arch(char **cmdline_p)
 	HYPERVISOR_physdev_op(PHYSDEVOP_set_iopl, &set_iopl);
 
 #ifdef CONFIG_ACPI_BOOT
-	if (!(xen_start_info->flags & SIF_INITDOMAIN)) {
+	if (!is_initial_xendomain()) {
 		printk(KERN_INFO "ACPI in unprivileged domain disabled\n");
 		acpi_disabled = 1;
 		acpi_ht = 0;
@@ -1683,7 +1701,7 @@ void __init setup_arch(char **cmdline_p)
 
 	register_memory();
 
-	if (xen_start_info->flags & SIF_INITDOMAIN) {
+	if (is_initial_xendomain()) {
 		if (!(xen_start_info->flags & SIF_PRIVILEGED))
 			panic("Xen granted us console access "
 			      "but not privileged status");

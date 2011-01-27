@@ -780,9 +780,7 @@ long sys32_rt_sigreturn(int r3, int r4, int r5, int r6, int r7, int r8,
 	 */
        	sys32_sigaltstack((u32)(u64)&rt_sf->uc.uc_stack, 0, 0, 0, 0, 0, regs);
 
-	ret = regs->result;
-
-	return ret;
+	return 0;
 
  bad:
 	force_sig(SIGSEGV, current);
@@ -884,8 +882,7 @@ long sys32_sigreturn(int r3, int r4, int r5, int r6, int r7, int r8,
 	    || restore_user_regs(regs, sr, 1))
 		goto badframe;
 
-	ret = regs->result;
-	return ret;
+	return 0;
 
 badframe:
 	force_sig(SIGSEGV, current);

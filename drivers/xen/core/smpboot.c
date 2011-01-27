@@ -45,8 +45,6 @@ extern void cpu_idle(void);
 
 extern void fixup_irqs(cpumask_t);
 
-extern cpumask_t cpu_initialized;
-
 /* Number of siblings per CPU package */
 int smp_num_siblings = 1;
 int phys_proc_id[NR_CPUS]; /* Package ID of each logical CPU */
@@ -58,6 +56,7 @@ cpumask_t cpu_online_map;
 EXPORT_SYMBOL(cpu_online_map);
 cpumask_t cpu_possible_map;
 EXPORT_SYMBOL(cpu_possible_map);
+cpumask_t cpu_initialized_map;
 
 struct cpuinfo_x86 cpu_data[NR_CPUS] __cacheline_aligned;
 EXPORT_SYMBOL(cpu_data);
@@ -173,7 +172,7 @@ static void cpu_bringup_and_idle(void)
 	cpu_idle();
 }
 
-void cpu_initialize_context(unsigned int cpu)
+static void cpu_initialize_context(unsigned int cpu)
 {
 	vcpu_guest_context_t ctxt;
 	struct task_struct *idle = idle_task(cpu);
@@ -183,7 +182,7 @@ void cpu_initialize_context(unsigned int cpu)
 	struct Xgt_desc_struct *gdt_descr = &cpu_gdt_descr[cpu];
 #endif
 
-	if (cpu == 0)
+	if (cpu_test_and_set(cpu, cpu_initialized_map))
 		return;
 
 	memset(&ctxt, 0, sizeof(ctxt));
@@ -269,6 +268,8 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 
 	xen_smp_intr_init(0);
 
+	cpu_initialized_map = cpumask_of_cpu(0);
+
 	/* Restrict the possible_map according to max_cpus. */
 	while ((num_possible_cpus() > 1) && (num_possible_cpus() > max_cpus)) {
 		for (cpu = NR_CPUS-1; !cpu_isset(cpu, cpu_possible_map); cpu--)
@@ -276,8 +277,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 		cpu_clear(cpu, cpu_possible_map);
 	}
 
-//	for_each_possible_cpu (cpu) {
-	for_each_cpu (cpu) {
+	for_each_possible_cpu (cpu) {
 		if (cpu == 0)
 			continue;
 
@@ -320,13 +320,11 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 		irq_ctx_init(cpu);
 
 #ifdef CONFIG_HOTPLUG_CPU
-//		if (xen_start_info->flags & SIF_INITDOMAIN)
+		if (is_initial_xendomain())
 			cpu_set(cpu, cpu_present_map);
 #else
 		cpu_set(cpu, cpu_present_map);
 #endif
-
-		cpu_initialize_context(cpu);
 	}
 
 	init_xenbus_allowed_cpumask();
@@ -430,6 +428,8 @@ int __devinit __cpu_up(unsigned int cpu)
 	rc = cpu_up_check(cpu);
 	if (rc)
 		return rc;
+
+	cpu_initialize_context(cpu);
 
 #ifdef CONFIG_SMP_ALTERNATIVES
 	if (num_online_cpus() == 1)

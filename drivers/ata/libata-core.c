@@ -1501,7 +1501,7 @@ int ata_dev_read_id(struct ata_device *dev, unsigned int *p_class,
 
 	/* sanity check */
 	rc = -EINVAL;
-	reason = "device reports illegal type";
+	reason = "device reports invalid type";
 
 	if (class == ATA_DEV_ATA) {
 		if (!ata_id_is_ata(id) && !ata_id_is_cfa(id))
@@ -3337,12 +3337,32 @@ static const struct ata_blacklist_entry ata_device_blacklist [] = {
 	{ "ATAPI CD-ROM DRIVE 40X MAXIMUM",NULL,ATA_HORKAGE_NODMA },
 	{ "_NEC DV5800A", 	NULL,		ATA_HORKAGE_NODMA },
 	{ "SAMSUNG CD-ROM SN-124","N001",	ATA_HORKAGE_NODMA },
+	{ "Seagate STT20000A", NULL,		ATA_HORKAGE_NODMA },
+	{ "IOMEGA  ZIP 250       ATAPI", NULL,	ATA_HORKAGE_NODMA }, /* temporary fix */
 
 	/* Devices we expect to fail diagnostics */
 
 	/* Devices where NCQ should be avoided */
 	/* NCQ is slow */
         { "WDC WD740ADFD-00",   NULL,		ATA_HORKAGE_NONCQ },
+	/* http://thread.gmane.org/gmane.linux.ide/14907 */
+	{ "FUJITSU MHT2060BH",	NULL,		ATA_HORKAGE_NONCQ },
+	/* NCQ is broken */
+	{ "Maxtor *",	        "BANC*",	ATA_HORKAGE_NONCQ },
+	{ "HITACHI HDS7250SASUN500G*", NULL,    ATA_HORKAGE_NONCQ },
+	{ "HITACHI HDS7225SBSUN250G*", NULL,    ATA_HORKAGE_NONCQ },
+
+	/* Blacklist entries taken from Silicon Image 3124/3132
+	   Windows driver .inf file - also several Linux problem reports */
+	{ "HTS541060G9SA00",    "MB3OC60D",     ATA_HORKAGE_NONCQ, },
+	{ "HTS541080G9SA00",    "MB4OC60D",     ATA_HORKAGE_NONCQ, },
+	{ "HTS541010G9SA00",    "MBZOC60D",     ATA_HORKAGE_NONCQ, },
+	/* Drives which do spurious command completion */
+	{ "HTS541680J9SA00",	"SB2IC7EP",	ATA_HORKAGE_NONCQ, },
+	{ "HTS541612J9SA00",	"SBDIC7JP",	ATA_HORKAGE_NONCQ, },
+	{ "Hitachi HTS541616J9SA00", "SB4OC70P", ATA_HORKAGE_NONCQ, },
+	{ "WDC WD740ADFD-00NLR1", NULL,		ATA_HORKAGE_NONCQ, },
+	{ "FUJITSU MHV2080BH",	"00840028",	ATA_HORKAGE_NONCQ, },
 
 	/* Devices with NCQ limits */
 
@@ -3362,25 +3382,45 @@ static int ata_strim(char *s, size_t len)
 	return len;
 }
 
+int strn_pattern_cmp(const char *patt, const char *name, int wildchar)
+{
+	const char *p;
+	int len;
+
+	/*
+	 * check for trailing wildcard: *\0
+	 */
+	p = strchr(patt, wildchar);
+	if (p && ((*(p + 1)) == 0))
+		len = p - patt;
+	else {
+		len = strlen(name);
+		if (!len) {
+			if (!*patt)
+				return 0;
+			return -1;
+		}
+	}
+
+	return strncmp(patt, name, len);
+}
+
 unsigned long ata_device_blacklisted(const struct ata_device *dev)
 {
 	unsigned char model_num[40];
 	unsigned char model_rev[16];
-	unsigned int nlen, rlen;
 	const struct ata_blacklist_entry *ad = ata_device_blacklist;
 
 	ata_id_string(dev->id, model_num, ATA_ID_PROD_OFS,
 			  sizeof(model_num));
 	ata_id_string(dev->id, model_rev, ATA_ID_FW_REV_OFS,
 			  sizeof(model_rev));
-	nlen = ata_strim(model_num, sizeof(model_num));
-	rlen = ata_strim(model_rev, sizeof(model_rev));
 
 	while (ad->model_num) {
-		if (!strncmp(ad->model_num, model_num, nlen)) {
+		if (!strn_pattern_cmp(ad->model_num, model_num, '*')) {
 			if (ad->model_rev == NULL)
 				return ad->horkage;
-			if (!strncmp(ad->model_rev, model_rev, rlen))
+			if (!strn_pattern_cmp(ad->model_rev, model_rev, '*'))
 				return ad->horkage;
 		}
 		ad++;
@@ -5897,7 +5937,8 @@ int ata_device_add(const struct ata_probe_ent *ent)
 		/* init sata_spd_limit to the current value */
 		if (sata_scr_read(ap, SCR_CONTROL, &scontrol) == 0) {
 			int spd = (scontrol >> 4) & 0xf;
-			ap->hw_sata_spd_limit &= (1 << spd) - 1;
+			if (spd)
+				ap->hw_sata_spd_limit &= (1 << spd) - 1;
 		}
 		ap->sata_spd_limit = ap->hw_sata_spd_limit;
 

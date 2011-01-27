@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hbadisc.c 2905 2006-04-13 17:11:39Z sf_support $
+ * $Id: lpfc_hbadisc.c 3039 2007-05-22 14:40:23Z sf_support $
  */
 
 #include <linux/version.h>
@@ -84,6 +84,7 @@ lpfc_process_nodev_timeout(struct lpfc_hba *phba, struct lpfc_nodelist *ndlp)
 {
 	struct lpfc_target *targetp;
 	int scsid, warn_user = 0;
+	uint8_t name[sizeof (struct lpfc_name)];
 
 	/* If the nodev_timeout is cancelled do nothing */
 	if (!(ndlp->nlp_flag & NLP_NODEV_TMO))
@@ -119,21 +120,58 @@ lpfc_process_nodev_timeout(struct lpfc_hba *phba, struct lpfc_nodelist *ndlp)
 		}
 	}
 
+	memcpy (&name[0], &ndlp->nlp_portname, sizeof (struct lpfc_name));
 	if (warn_user) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY,
-				"%d:0203 Nodev timeout on NPort x%x "
-				"Data: x%x x%x x%x\n",
-				phba->brd_no, ndlp->nlp_DID, ndlp->nlp_flag,
+				"%d:0203 Nodev timeout on WWPN %x:%x:%x:%x:%x:%x:%x:%x "
+				"NPort x%x Data: x%x x%x x%x\n",
+				phba->brd_no,
+				name[0], name[1], name[2], name[3],
+				name[4], name[5], name[6], name[7],
+				ndlp->nlp_DID, ndlp->nlp_flag,
 				ndlp->nlp_state, ndlp->nlp_rpi);
 	} else {
 		lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
-				"%d:0206 Nodev timeout on NPort x%x "
-				"Data: x%x x%x x%x\n",
-				phba->brd_no, ndlp->nlp_DID, ndlp->nlp_flag,
+				"%d:0203 Nodev timeout on WWPN %x:%x:%x:%x:%x:%x:%x:%x "
+				"NPort x%x Data: x%x x%x x%x\n",
+				phba->brd_no,
+				name[0], name[1], name[2], name[3],
+				name[4], name[5], name[6], name[7],
+				ndlp->nlp_DID, ndlp->nlp_flag,
 				ndlp->nlp_state, ndlp->nlp_rpi);
 	}
 
 	lpfc_disc_state_machine(phba, ndlp, NULL, NLP_EVT_DEVICE_RM);
+	return;
+}
+
+void
+lpfc_linkdown_timeout_handler(struct lpfc_hba *phba)
+{
+	struct lpfc_nodelist *ndlp, *next_ndlp;
+
+	lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY,
+			"%d:0265 Linkdown timeout\n", phba->brd_no);
+
+	spin_lock_irq(phba->host->host_lock);
+	list_for_each_entry_safe(ndlp, next_ndlp, &phba->fc_npr_list,
+					nlp_listp) {
+		/* stop nodev tmo if running */
+		if (ndlp->nlp_flag & NLP_NODEV_TMO) {
+			ndlp->nlp_flag &= ~NLP_NODEV_TMO;
+			spin_unlock_irq_dump(phba->host->host_lock);
+			del_timer_sync(&ndlp->nlp_tmofunc);
+			spin_lock_irq(phba->host->host_lock);
+			if (!list_empty(&ndlp->nodev_timeout_evt.
+					evt_listp))
+				list_del_init(&ndlp->nodev_timeout_evt.
+					      evt_listp);
+		}
+		/* Turn on NLP_NODEV_TMO to setup function call */
+		ndlp->nlp_flag |= NLP_NODEV_TMO;
+		lpfc_process_nodev_timeout(phba, ndlp);
+	}
+	spin_unlock_irq_dump(phba->host->host_lock);
 	return;
 }
 
@@ -156,18 +194,27 @@ lpfc_disc_done(struct lpfc_hba * phba)
 
 	if (work_hba_events & WORKER_DISC_TMO)
 		lpfc_disc_timeout_handler(phba);
-	
+
 	if (work_hba_events & WORKER_ELS_TMO)
 		lpfc_els_timeout_handler(phba);
-	
+
 	if (work_hba_events & WORKER_MBOX_TMO)
 		lpfc_mbox_timeout_handler(phba);
 
 	if (work_hba_events & WORKER_FDMI_TMO)
 		lpfc_fdmi_tmo_handler(phba);
 
+	if (work_hba_events & WORKER_LNKDWN_TMO)
+		lpfc_linkdown_timeout_handler(phba);
+
 	spin_lock_irq(phba->host->host_lock);
 	phba->work_hba_events &= ~work_hba_events;
+	spin_unlock_irq_dump(phba->host->host_lock);
+
+	if (work_hba_events & WORKER_HB_TMO)
+		lpfc_hb_timeout_handler(phba);
+
+	spin_lock_irq(phba->host->host_lock);
 
 	/* check discovery event list */
 	while(!list_empty(&phba->dpc_disc)) {
@@ -183,7 +230,8 @@ lpfc_disc_done(struct lpfc_hba * phba)
 			else {
 				mp = (struct lpfc_dmabuf *) (pmb->context1);
 				if (mp) {
-					lpfc_mbuf_free(phba, mp->virt, mp->phys);
+					lpfc_mbuf_free(phba, mp->virt,
+						mp->phys);
 					kfree(mp);
 				}
 				mempool_free( pmb, phba->mbox_mem_pool);
@@ -325,7 +373,11 @@ lpfc_linkdown(struct lpfc_hba * phba)
 	}
 
 	psli = &phba->sli;
-	phba->hba_state = LPFC_LINK_DOWN;
+
+	/* sysfs or selective reset may call this routine to clean up */
+	if (phba->hba_state > LPFC_LINK_DOWN)
+		phba->hba_state = LPFC_LINK_DOWN;
+
 	phba->fc_linkspeed = LA_UNKNW_LINK;
 
 	lpfc_put_event(phba, HBA_EVENT_LINK_DOWN, phba->fc_myDID, NULL, 0, 0);
@@ -356,6 +408,15 @@ lpfc_linkdown(struct lpfc_hba * phba)
 		lpfc_disc_done(phba);
 	}
 
+	/* Sanity check the value of lpfc_linkdown_tmo */
+	if (phba->cfg_nodev_tmo < phba->cfg_linkdown_tmo)
+		phba->cfg_linkdown_tmo = 0;
+
+	if (phba->cfg_linkdown_tmo) {
+		mod_timer(&phba->fc_lnkdwntmo,
+			jiffies + (phba->cfg_linkdown_tmo * HZ));
+	}
+
 	/* Issue a LINK DOWN event to all nodes */
 	node_list[0] = &phba->fc_npr_list;  /* MUST do this list first */
 	node_list[1] = &phba->fc_nlpmap_list;
@@ -370,35 +431,24 @@ lpfc_linkdown(struct lpfc_hba * phba)
 			continue;
 
 		list_for_each_entry_safe(ndlp, next_ndlp, listp, nlp_listp) {
-			/* Fabric nodes are not handled thru state machine for
-			   link down */
-			if (ndlp->nlp_type & NLP_FABRIC) {
-				/* Remove ALL Fabric nodes except Fabric_DID */
-				if (ndlp->nlp_DID != Fabric_DID) {
-					/* Take it off current list and free */
-					lpfc_nlp_list(phba, ndlp,
-						NLP_NO_LIST);
-				}
-			}
-			else {
-				lpfc_set_failmask(phba, ndlp,
-						  LPFC_DEV_LINK_DOWN,
-						  LPFC_SET_BITMASK);
+			lpfc_set_failmask(phba, ndlp,
+					  LPFC_DEV_LINK_DOWN,
+					  LPFC_SET_BITMASK);
 
-				rc = lpfc_disc_state_machine(phba, ndlp, NULL,
-						     NLP_EVT_DEVICE_RECOVERY);
+			rc = lpfc_disc_state_machine(phba, ndlp, NULL,
+					     NLP_EVT_DEVICE_RECOVERY);
 
-				/* Check config parameter use-adisc or FCP-2 */
-				if ((rc != NLP_STE_FREED_NODE) &&
-					(phba->cfg_use_adisc == 0) &&
-					!(ndlp->nlp_fcp_info &
-						NLP_FCP_2_DEVICE)) {
-					/* We know we will have to relogin, so
-					 * unreglogin the rpi right now to fail
-					 * any outstanding I/Os quickly.
-					 */
-					lpfc_unreg_rpi(phba, ndlp);
-				}
+			/* Check config parameter use-adisc or FCP-2 */
+			if ((rc != NLP_STE_FREED_NODE) &&
+				(phba->cfg_use_adisc == 0) &&
+				!(ndlp->nlp_type & NLP_FABRIC) &&
+				!(ndlp->nlp_fcp_info & NLP_FCP_2_DEVICE)) {
+				/* We know we will have to relogin, so
+				 * unreglogin the rpi right now to fail
+				 * any outstanding I/Os quickly.
+				 */
+				lpfc_unreg_rpi(phba, ndlp);
+				ndlp->nlp_flag &= ~NLP_NPR_ADISC;
 			}
 		}
 	}
@@ -451,22 +501,11 @@ lpfc_linkup(struct lpfc_hba * phba)
 			(void *)(unsigned long)(phba->fc_topology),
 			0, phba->fc_linkspeed);
 
-	/*
-	 * Clean up old Fabric NLP_FABRIC logins.
-	 */
-	list_for_each_entry_safe(ndlp, next_ndlp, &phba->fc_nlpunmap_list,
-				nlp_listp) {
-		if (ndlp->nlp_DID == Fabric_DID) {
-			/* Take it off current list and free */
-			lpfc_nlp_list(phba, ndlp, NLP_NO_LIST);
-		}
-	}
-
-	/* free any ndlp's on unused list */
-	list_for_each_entry_safe(ndlp, next_ndlp, &phba->fc_unused_list,
-				nlp_listp) {
-		lpfc_nlp_list(phba, ndlp, NLP_NO_LIST);
-	}
+	/* Cancel linkdown timeout condition */
+	spin_unlock_irq_dump(phba->host->host_lock);
+	del_timer_sync(&phba->fc_lnkdwntmo);
+	spin_lock_irq(phba->host->host_lock);
+	phba->work_hba_events &= ~WORKER_LNKDWN_TMO;
 
 	/* Mark all nodes for LINK UP */
 	node_list[0] = &phba->fc_plogi_list;
@@ -481,12 +520,33 @@ lpfc_linkup(struct lpfc_hba * phba)
 		if (list_empty(listp))
 			continue;
 
-		list_for_each_entry(ndlp, listp, nlp_listp) {
+		list_for_each_entry_safe(ndlp, next_ndlp, listp, nlp_listp) {
 			lpfc_set_failmask(phba, ndlp, LPFC_DEV_DISCOVERY_INP,
 					  LPFC_SET_BITMASK);
 			lpfc_set_failmask(phba, ndlp, LPFC_DEV_LINK_DOWN,
 					  LPFC_CLR_BITMASK);
+			if (phba->fc_flag & FC_LBIT) {
+				if (ndlp->nlp_type & NLP_FABRIC) {
+					/* Now its safe to clean up old ndlp
+					 * Fabric connections.
+					 */
+					lpfc_nlp_list(phba, ndlp,
+						NLP_UNUSED_LIST);
+				}
+				else if (!(ndlp->nlp_flag & NLP_NPR_ADISC)) {
+					/* Fail outstanding IO now since device
+					 * is marked for PLOGI.
+					 */
+					lpfc_unreg_rpi(phba, ndlp);
+				}
+			}
 		}
+	}
+
+	/* free any ndlp's on unused list */
+	list_for_each_entry_safe(ndlp, next_ndlp, &phba->fc_unused_list,
+				nlp_listp) {
+		lpfc_nlp_list(phba, ndlp, NLP_NO_LIST);
 	}
 
 	return 0;
@@ -508,7 +568,7 @@ lpfc_mbx_cmpl_clear_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	psli = &phba->sli;
 	mb = &pmb->mb;
 	/* Since we don't do discovery right now, turn these off here */
-	psli->ring[psli->ip_ring].flag &= ~LPFC_STOP_IOCB_EVENT;
+	psli->ring[psli->extra_ring].flag &= ~LPFC_STOP_IOCB_EVENT;
 	psli->ring[psli->fcp_ring].flag &= ~LPFC_STOP_IOCB_EVENT;
 	psli->ring[psli->next_ring].flag &= ~LPFC_STOP_IOCB_EVENT;
 	/* Check for error */
@@ -588,6 +648,19 @@ lpfc_mbx_cmpl_config_link(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	}
 
 	if (phba->hba_state == LPFC_LOCAL_CFG_LINK) {
+		if (phba->fc_topology == TOPOLOGY_LOOP) {
+			if ((phba->fc_flag & FC_PUBLIC_LOOP) &&
+			    !(phba->fc_flag & FC_LBIT)) {
+				/* Need to wait for FAN - use discovery timer
+				 * for timeout. The hba_state is
+				 * LPFC_LOCAL_CFG_LINK while waiting for FAN.
+				 */
+				lpfc_set_disctmo(phba);
+				mempool_free( pmb, phba->mbox_mem_pool);
+				return;
+			}
+		}
+
 		/* Start discovery by sending a FLOGI hba_state is identically
 		 * LPFC_FLOGI while waiting for FLOGI cmpl (same on FAN)
 		 */
@@ -617,7 +690,7 @@ out:
 		    == MBX_NOT_FINISHED) {
 			mempool_free( pmb, phba->mbox_mem_pool);
 			lpfc_disc_flush_list(phba);
-			psli->ring[(psli->ip_ring)].flag &=
+			psli->ring[(psli->extra_ring)].flag &=
 				~LPFC_STOP_IOCB_EVENT;
 			psli->ring[(psli->fcp_ring)].flag &=
 				~LPFC_STOP_IOCB_EVENT;
@@ -654,6 +727,8 @@ lpfc_mbx_cmpl_read_sparam(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 
 	memcpy((uint8_t *) & phba->fc_sparam, (uint8_t *) mp->virt,
 	       sizeof (struct serv_parm));
+	if (phba->cfg_soft_wwpn)
+		lpfc_u64_to_wwn(phba->cfg_soft_wwpn, (uint8_t *)&phba->fc_sparam.portName);
 	memcpy((uint8_t *) & phba->fc_nodename,
 	       (uint8_t *) & phba->fc_sparam.nodeName,
 	       sizeof (struct lpfc_name));
@@ -676,7 +751,7 @@ out:
 		    == MBX_NOT_FINISHED) {
 			mempool_free( pmb, phba->mbox_mem_pool);
 			lpfc_disc_flush_list(phba);
-			psli->ring[(psli->ip_ring)].flag &=
+			psli->ring[(psli->extra_ring)].flag &=
 			    ~LPFC_STOP_IOCB_EVENT;
 			psli->ring[(psli->fcp_ring)].flag &=
 			    ~LPFC_STOP_IOCB_EVENT;
@@ -741,6 +816,13 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		memset(&phba->alpa_map[0], 0, 128);
 	}
 
+	if (la->pb) {
+		phba->fc_flag |= FC_BYPASSED_MODE;
+	}
+	else {
+		phba->fc_flag &= ~FC_BYPASSED_MODE;
+	}
+
 	if (((phba->fc_eventTag + 1) < la->eventTag) ||
 	    (phba->fc_eventTag == la->eventTag)) {
 		phba->fc_stat.LinkMultiEvent++;
@@ -773,6 +855,9 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 			break;
 			case LA_4GHZ_LINK:
 				phba->fc_linkspeed = LA_4GHZ_LINK;
+			break;
+			case LA_8GHZ_LINK:
+				phba->fc_linkspeed = LA_8GHZ_LINK;
 			break;
 			default:
 				phba->fc_linkspeed = LA_UNKNW_LINK;
@@ -958,32 +1043,37 @@ lpfc_mbx_cmpl_fabric_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		 */
 		lpfc_issue_els_scr(phba, SCR_DID, 0);
 
-		/* Allocate a new node instance.  If the pool is empty, just
-		 * start the discovery process and skip the Nameserver login
-		 * process.  This is attempted again later on.  Otherwise, issue
-		 * a Port Login (PLOGI) to the NameServer
-		 */
-		if ((ndlp = mempool_alloc(phba->nlp_mem_pool, GFP_ATOMIC))
-		    == 0) {
-			lpfc_disc_start(phba);
-		} else {
-			lpfc_nlp_init(phba, ndlp, NameServer_DID);
-			ndlp->nlp_type |= NLP_FABRIC;
-			ndlp->nlp_state = NLP_STE_PLOGI_ISSUE;
-			lpfc_nlp_list(phba, ndlp, NLP_PLOGI_LIST);
-			lpfc_issue_els_plogi(phba, ndlp, 0);
-			if (phba->cfg_fdmi_on) {
-				if ((ndlp_fdmi = mempool_alloc(
-						       phba->nlp_mem_pool,
-						       GFP_ATOMIC))) {
-					lpfc_nlp_init(phba, ndlp_fdmi,
-						FDMI_DID);
-					ndlp_fdmi->nlp_type |= NLP_FABRIC;
-					ndlp_fdmi->nlp_state =
-					    NLP_STE_PLOGI_ISSUE;
-					lpfc_issue_els_plogi(phba, ndlp_fdmi,
-							     0);
-				}
+		if((ndlp = lpfc_findnode_did(phba, NLP_SEARCH_ALL,
+		    NameServer_DID)) == 0) {
+			/* Allocate a new node instance. If the pool is empty,
+			 * just start the discovery process and skip the
+			 * Nameserver login process.  This is attempted again
+			 * later on.  Otherwise, issue a Port Login (PLOGI) to
+			 * the NameServer
+			 */
+			if ((ndlp = mempool_alloc(phba->nlp_mem_pool,
+					GFP_ATOMIC)) == 0) {
+				lpfc_disc_start(phba);
+				lpfc_mbuf_free(phba, mp->virt, mp->phys);
+				kfree(mp);
+				mempool_free( pmb, phba->mbox_mem_pool);
+				return;
+			} else {
+				lpfc_nlp_init(phba, ndlp, NameServer_DID);
+				ndlp->nlp_type |= NLP_FABRIC;
+			}
+		}
+		ndlp->nlp_state = NLP_STE_PLOGI_ISSUE;
+		lpfc_nlp_list(phba, ndlp, NLP_PLOGI_LIST);
+		lpfc_issue_els_plogi(phba, NameServer_DID, 0);
+		if (phba->cfg_fdmi_on) {
+			if ((ndlp_fdmi = mempool_alloc(
+				       phba->nlp_mem_pool, GFP_ATOMIC))) {
+				lpfc_nlp_init(phba, ndlp_fdmi, FDMI_DID);
+				ndlp_fdmi->nlp_type |= NLP_FABRIC;
+				ndlp_fdmi->nlp_state = NLP_STE_PLOGI_ISSUE;
+				lpfc_nlp_list(phba, ndlp_fdmi, NLP_PLOGI_LIST);
+				lpfc_issue_els_plogi(phba, FDMI_DID, 0);
 			}
 		}
 	}
@@ -991,7 +1081,6 @@ lpfc_mbx_cmpl_fabric_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	lpfc_mbuf_free(phba, mp->virt, mp->phys);
 	kfree(mp);
 	mempool_free( pmb, phba->mbox_mem_pool);
-
 	return;
 }
 
@@ -1042,6 +1131,7 @@ lpfc_mbx_cmpl_ns_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		lpfc_ns_cmd(phba, ndlp, SLI_CTNS_RNN_ID);
 		lpfc_ns_cmd(phba, ndlp, SLI_CTNS_RSNN_NN);
 		lpfc_ns_cmd(phba, ndlp, SLI_CTNS_RFT_ID);
+		lpfc_ns_cmd(phba, ndlp, SLI_CTNS_RFF_ID);
 	}
 
 	phba->fc_ns_retry = 0;
@@ -1156,8 +1246,7 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 		/* Stop delay tmo if taking node off NPR list */
 		if ((nlp->nlp_flag & NLP_DELAY_TMO) &&
 		   (list != NLP_NPR_LIST))
-			lpfc_cancel_retry_delay_tmo(phba,nlp);
-
+			lpfc_cancel_retry_delay_tmo(phba, nlp);
 		break;
 	}
 
@@ -1175,7 +1264,7 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 	case NLP_NO_LIST: /* No list, just remove it */
 #ifdef SLES_FC
 		targetp = NULL;
-		if (((nlp->nlp_DID & Fabric_DID_MASK) != Fabric_DID_MASK) && 
+		if (((nlp->nlp_DID & Fabric_DID_MASK) != Fabric_DID_MASK) &&
 		    (nlp->nlp_sid != NLP_NO_SID)) {
 			targetp = phba->device_queue_hash[nlp->nlp_sid];
 		}
@@ -1236,6 +1325,7 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 				list_del_init(&nlp->nodev_timeout_evt.
 					      evt_listp);
 		}
+		nlp->nlp_flag &= ~NLP_NODEV_REMOVE;
 	  	nlp->nlp_type |= NLP_FC_NODE;
 		lpfc_set_failmask(phba, nlp, LPFC_DEV_DISCOVERY_INP,
 				  LPFC_CLR_BITMASK);
@@ -1257,6 +1347,7 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 				list_del_init(&nlp->nodev_timeout_evt.
 					      evt_listp);
 		}
+		nlp->nlp_flag &= ~NLP_NODEV_REMOVE;
 	  	nlp->nlp_type |= NLP_FCP_TARGET;
 		lpfc_set_failmask(phba, nlp, LPFC_DEV_DISAPPEARED,
 			  LPFC_CLR_BITMASK);
@@ -1281,18 +1372,11 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 		list_add_tail(&nlp->nlp_listp, &phba->fc_npr_list);
 		phba->fc_npr_cnt++;
 
-		/*
-		 * Sanity check for Fabric entity.
-		 * Set nodev_tmo for NPR state, for Fabric use 1 sec.
-		 */
-		if (nlp->nlp_type & NLP_FABRIC) {
-			mod_timer(&nlp->nlp_tmofunc, jiffies + HZ);
-		}
-		else {
+		if (!(nlp->nlp_flag & NLP_NODEV_TMO)) {
 			mod_timer(&nlp->nlp_tmofunc,
 			    jiffies + HZ * phba->cfg_nodev_tmo);
+			nlp->nlp_flag |= NLP_NODEV_TMO;
 		}
-		nlp->nlp_flag |= NLP_NODEV_TMO;
 		nlp->nlp_flag &= ~NLP_RCV_PLOGI;
 		break;
 	case NLP_JUST_DQ:
@@ -1315,7 +1399,14 @@ lpfc_set_disctmo(struct lpfc_hba * phba)
 {
 	uint32_t tmo;
 
-	tmo = ((phba->fc_ratov * 2) + LPFC_DRVR_TIMEOUT + 3);
+	if (phba->hba_state == LPFC_LOCAL_CFG_LINK) {
+		/* FAN timeout should be greater then edtov */
+		tmo = (((phba->fc_edtov + 999) / 1000) + LPFC_DRVR_TIMEOUT);
+	}
+	else {
+		/* This timeout should be greater then els timeout */
+		tmo = ((phba->fc_ratov * 3) + LPFC_DRVR_TIMEOUT + 3);
+	}
 
 	mod_timer(&phba->fc_disctmo, jiffies + HZ * tmo);
 	phba->fc_flag |= FC_DISC_TMO;
@@ -1376,18 +1467,15 @@ lpfc_check_sli_ndlp(struct lpfc_hba * phba,
 			if (icmd->ulpContext == (volatile ushort)ndlp->nlp_rpi)
 				return (1);
 		case CMD_ELS_REQUEST64_CR:
+			if (icmd->un.elsreq64.remoteID == ndlp->nlp_DID)
+				return (1);
 		case CMD_XMIT_ELS_RSP64_CX:
 			if (iocb->context1 == (uint8_t *) ndlp)
 				return (1);
 		}
-	} else if (pring->ringno == psli->ip_ring) {
+	} else if (pring->ringno == psli->extra_ring) {
 
 	} else if (pring->ringno == psli->fcp_ring) {
-		/* Skip match check if waiting to relogin to FCP target */
-	  	if ((ndlp->nlp_type & NLP_FCP_TARGET) &&
-		  (ndlp->nlp_flag & NLP_DELAY_TMO)) {
-			return (0);
-		}
 		if (icmd->ulpContext == (volatile ushort)ndlp->nlp_rpi) {
 			return (1);
 		}
@@ -1517,7 +1605,7 @@ lpfc_freenode(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 			mb->context2 = NULL;
 			mb->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
 		}
-        }
+	}
 	list_for_each_entry_safe(mb, nextmb, &psli->mboxq, list) {
 		if ((mb->mb.mbxCommand == MBX_REG_LOGIN64) &&
 		   (ndlp == (struct lpfc_nodelist *) mb->context2)) {
@@ -1676,63 +1764,6 @@ lpfc_matchdid(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, uint32_t did)
 	return (0);
 }
 
-/* Search for a nodelist entry on a specific list */
-struct lpfc_nodelist *
-lpfc_findnode_wwpn(struct lpfc_hba * phba, uint32_t order,
-		   struct lpfc_name * wwpn)
-{
-	struct lpfc_nodelist *ndlp, *next_ndlp;
-	uint32_t data1;
-
-	if (order & NLP_SEARCH_UNMAPPED) {
-		list_for_each_entry_safe(ndlp, next_ndlp,
-					 &phba->fc_nlpunmap_list, nlp_listp) {
-			if (memcmp(&ndlp->nlp_portname, wwpn,
-				   sizeof(struct lpfc_name)) == 0) {
-
-				data1 = (((uint32_t) ndlp->nlp_state << 24) |
-					 ((uint32_t) ndlp->nlp_xri << 16) |
-					 ((uint32_t) ndlp->nlp_type << 8) |
-					 ((uint32_t) ndlp->nlp_rpi & 0xff));
-				/* FIND node DID unmapped */
-				lpfc_printf_log(phba,
-						KERN_INFO,
-						LOG_NODE,
-						"%d:0911 FIND node DID unmapped"
-						" Data: x%p x%x x%x x%x\n",
-						phba->brd_no,
-						ndlp, ndlp->nlp_DID,
-						ndlp->nlp_flag, data1);
-				return (ndlp);
-			}
-		}
-	}
-
-	if (order & NLP_SEARCH_MAPPED) {
-		list_for_each_entry_safe(ndlp, next_ndlp, &phba->fc_nlpmap_list,
-					nlp_listp) {
-			if (memcmp(&ndlp->nlp_portname, wwpn,
-				   sizeof(struct lpfc_name)) == 0) {
-
-				data1 = (((uint32_t) ndlp->nlp_state << 24) |
-					 ((uint32_t) ndlp->nlp_xri << 16) |
-					 ((uint32_t) ndlp->nlp_type << 8) |
-					 ((uint32_t) ndlp->nlp_rpi & 0xff));
-				/* FIND node DID mapped */
-				lpfc_printf_log(phba, KERN_INFO, LOG_NODE,
-						"%d:0901 FIND node DID mapped "
-						"Data: x%p x%x x%x x%x\n",
-						phba->brd_no,
-						ndlp, ndlp->nlp_DID,
-						ndlp->nlp_flag, data1);
-				return (ndlp);
-			}
-		}
-	}
-
-	/* no match found */
-	return ((struct lpfc_nodelist *) 0);
-}
 /* Search for a nodelist entry on a specific list */
 struct lpfc_nodelist *
 lpfc_findnode_wwnn(struct lpfc_hba * phba, uint32_t order,
@@ -1986,7 +2017,7 @@ lpfc_setup_disc_node(struct lpfc_hba * phba, uint32_t did)
 	uint32_t flg;
 
 	if((ndlp = lpfc_findnode_did(phba, NLP_SEARCH_ALL, did)) == 0) {
-		if ((phba->hba_state == LPFC_HBA_READY) &&
+		if ((phba->fc_flag & FC_RSCN_MODE) &&
 		   ((lpfc_rscn_payload_check(phba, did) == 0)))
 			return NULL;
 		ndlp = (struct lpfc_nodelist *)
@@ -1999,20 +2030,24 @@ lpfc_setup_disc_node(struct lpfc_hba * phba, uint32_t did)
 		ndlp->nlp_flag |= NLP_NPR_2B_DISC;
 		return ndlp;
 	}
-	if ((phba->hba_state == LPFC_HBA_READY) &&
-	    (phba->fc_flag & FC_RSCN_MODE)) {
+	if (phba->fc_flag & FC_RSCN_MODE) {
 		if(lpfc_rscn_payload_check(phba, did)) {
 			ndlp->nlp_flag |= NLP_NPR_2B_DISC;
+
+			/* Since this node is marked for discovery,
+			 * delay timeout is not needed.
+			 */
+			if (ndlp->nlp_flag & NLP_DELAY_TMO) {
+				lpfc_cancel_retry_delay_tmo(phba, ndlp);
+			}
 		}
-		else {
-			ndlp->nlp_flag &= ~NLP_NPR_2B_DISC;
+		else
 			ndlp = NULL;
-		}
 	}
 	else {
 		flg = ndlp->nlp_flag & NLP_LIST_MASK;
 		if ((flg == NLP_ADISC_LIST) ||
-	    	(flg == NLP_PLOGI_LIST)) {
+		    (flg == NLP_PLOGI_LIST)) {
 			return NULL;
 		}
 		ndlp->nlp_state = NLP_STE_NPR_NODE;
@@ -2133,7 +2168,7 @@ lpfc_disc_start(struct lpfc_hba * phba)
 			    == MBX_NOT_FINISHED) {
 				mempool_free( mbox, phba->mbox_mem_pool);
 				lpfc_disc_flush_list(phba);
-				psli->ring[(psli->ip_ring)].flag &=
+				psli->ring[(psli->extra_ring)].flag &=
 				    ~LPFC_STOP_IOCB_EVENT;
 				psli->ring[(psli->fcp_ring)].flag &=
 				    ~LPFC_STOP_IOCB_EVENT;
@@ -2311,6 +2346,7 @@ lpfc_disc_timeout_handler(struct lpfc_hba *phba)
 {
 	struct lpfc_sli *psli;
 	struct lpfc_nodelist *ndlp;
+	struct lpfc_nodelist *next_ndlp;
 	LPFC_MBOXQ_t *mbox;
 
 	if (!phba) {
@@ -2333,10 +2369,22 @@ lpfc_disc_timeout_handler(struct lpfc_hba *phba)
 				 "%d:0221 FAN timeout\n",
 				 phba->brd_no);
 
-		/* Forget about FAN, Start discovery by sending a FLOGI
-		 * hba_state is identically LPFC_FLOGI while waiting for FLOGI
-		 * cmpl
-		 */
+		/* Start discovery by sending FLOGI, clean up old rpis */
+		list_for_each_entry_safe(ndlp, next_ndlp, &phba->fc_npr_list,
+					nlp_listp) {
+			if (ndlp->nlp_type & NLP_FABRIC) {
+				/* Now its safe to clean up old ndlp
+				 * Fabric connections.
+				 */
+				lpfc_nlp_list(phba, ndlp, NLP_NO_LIST);
+			}
+			else if (!(ndlp->nlp_flag & NLP_NPR_ADISC)) {
+				/* Fail outstanding IO now since device
+				 * is marked for PLOGI.
+				 */
+				lpfc_unreg_rpi(phba, ndlp);
+			}
+		}
 		phba->hba_state = LPFC_FLOGI;
 		lpfc_set_disctmo(phba);
 		lpfc_initial_flogi(phba);
@@ -2477,7 +2525,7 @@ lpfc_disc_timeout_handler(struct lpfc_hba *phba)
 				 phba->brd_no);
 clrlaerr:
 		lpfc_disc_flush_list(phba);
-		psli->ring[(psli->ip_ring)].flag &= ~LPFC_STOP_IOCB_EVENT;
+		psli->ring[(psli->extra_ring)].flag &= ~LPFC_STOP_IOCB_EVENT;
 		psli->ring[(psli->fcp_ring)].flag &= ~LPFC_STOP_IOCB_EVENT;
 		psli->ring[(psli->next_ring)].flag &= ~LPFC_STOP_IOCB_EVENT;
 		phba->hba_state = LPFC_HBA_READY;
@@ -2539,7 +2587,27 @@ lpfc_scan_timeout(unsigned long ptr)
 	return;
 }
 
-static void
+void
+lpfc_linkdown_timeout(unsigned long ptr)
+{
+	struct lpfc_hba *phba;
+	unsigned long iflag;
+
+	phba = (struct lpfc_hba *)ptr;
+	if (!phba) {
+		return;
+	}
+	spin_lock_irqsave(phba->host->host_lock, iflag);
+	if (!(phba->work_hba_events & WORKER_LNKDWN_TMO)) {
+		phba->work_hba_events |= WORKER_LNKDWN_TMO;
+		if (phba->dpc_wait)
+			up(phba->dpc_wait);
+	}
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	return;
+}
+
+void
 lpfc_nodev_timeout(unsigned long ptr)
 {
 	struct lpfc_hba *phba;
@@ -2604,7 +2672,7 @@ lpfc_find_target(struct lpfc_hba * phba, uint32_t tgt,
 		node_list[3] = &phba->fc_reglogin_list;
 		node_list[4] = &phba->fc_adisc_list;
 		node_list[5] = &phba->fc_plogi_list;
-		
+
 		for (i=0; i < 6 && !found; i++) {
 			listp = node_list[i];
 			if (list_empty(listp))
@@ -2783,6 +2851,46 @@ lpfc_findnode_rpi(struct lpfc_hba * phba, uint16_t rpi)
 			if (ndlp->nlp_rpi == rpi)
 				return (ndlp);
 
+	return NULL;
+}
+
+/*
+ * This routine looks up the ndlp  lists
+ * for the given WWPN. If WWPN found
+ * it returns the node list pointer
+ * else return NULL.
+ */
+struct lpfc_nodelist *
+lpfc_findnode_wwpn(struct lpfc_hba * phba, uint32_t order,
+		   struct lpfc_name * wwpn)
+{
+	struct lpfc_nodelist *ndlp;
+	struct list_head * lists[]={&phba->fc_nlpunmap_list,
+				    &phba->fc_nlpmap_list,
+				    &phba->fc_npr_list,
+				    &phba->fc_plogi_list,
+				    &phba->fc_adisc_list,
+				    &phba->fc_reglogin_list,
+				    &phba->fc_prli_list};
+	uint32_t search[]={NLP_SEARCH_UNMAPPED,
+			   NLP_SEARCH_MAPPED,
+			   NLP_SEARCH_NPR,
+			   NLP_SEARCH_PLOGI,
+			   NLP_SEARCH_ADISC,
+			   NLP_SEARCH_REGLOGIN,
+			   NLP_SEARCH_PRLI};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(lists); i++ ) {
+		if (!(order & search[i]))
+			continue;
+		list_for_each_entry(ndlp, lists[i], nlp_listp) {
+			if (memcmp(&ndlp->nlp_portname, wwpn,
+				   sizeof(struct lpfc_name)) == 0) {
+				return (ndlp);
+			}
+		}
+	}
 	return NULL;
 }
 

@@ -328,6 +328,16 @@ int nfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 
 	nfs_inc_stats(inode, NFSIOS_VFSWRITEPAGES);
 
+	/*
+	 * Send a high priority commit for non blocking writes
+	 * as the are most commonly due to the VM trying to clean
+	 * memory.
+	 */
+	if (wbc->nonblocking) {
+		err = nfs_commit_inode(inode, FLUSH_HIGHPRI);
+		if (err < 0)
+			return err;
+	}
 	err = generic_writepages(mapping, wbc);
 	if (err)
 		return err;
@@ -346,7 +356,7 @@ int nfs_writepages(struct address_space *mapping, struct writeback_control *wbc)
 		if (err < 0)
 			goto out;
 	}
-	err = nfs_commit_inode(inode, 0, 0, wb_priority(wbc));
+	err = nfs_commit_inode(inode, wb_priority(wbc));
 	if (err > 0) {
 		wbc->nr_to_write -= err;
 		err = 0;
@@ -440,6 +450,8 @@ nfs_mark_request_dirty(struct nfs_page *req)
 	struct nfs_inode *nfsi = NFS_I(inode);
 
 	spin_lock(&nfsi->req_lock);
+	radix_tree_tag_set(&nfsi->nfs_page_tree,
+			req->wb_index, NFS_PAGE_TAG_DIRTY);
 	nfs_list_add_request(req, &nfsi->dirty);
 	nfsi->ndirty++;
 	spin_unlock(&nfsi->req_lock);
@@ -497,13 +509,12 @@ nfs_wait_on_requests(struct inode *inode, unsigned long idx_start, unsigned int 
 
 	spin_lock(&nfsi->req_lock);
 	next = idx_start;
-	while (radix_tree_gang_lookup(&nfsi->nfs_page_tree, (void **)&req, next, 1)) {
+	while (radix_tree_gang_lookup_tag(&nfsi->nfs_page_tree, (void **)&req, next, 1, NFS_PAGE_TAG_WRITEBACK)) {
 		if (req->wb_index > idx_end)
 			break;
 
 		next = req->wb_index + 1;
-		if (!NFS_WBACK_BUSY(req))
-			continue;
+		BUG_ON(!NFS_WBACK_BUSY(req));
 
 		atomic_inc(&req->wb_count);
 		spin_unlock(&nfsi->req_lock);
@@ -532,12 +543,15 @@ static int
 nfs_scan_dirty(struct inode *inode, struct list_head *dst, unsigned long idx_start, unsigned int npages)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
-	int	res;
-	res = nfs_scan_list(&nfsi->dirty, dst, idx_start, npages);
-	nfsi->ndirty -= res;
-	sub_page_state(nr_dirty,res);
-	if ((nfsi->ndirty == 0) != list_empty(&nfsi->dirty))
-		printk(KERN_ERR "NFS: desynchronized value of nfs_i.ndirty.\n");
+	int res = 0;
+
+	if (nfsi->ndirty != 0) {
+		res = nfs_scan_lock_dirty(nfsi, dst, idx_start, npages);
+		nfsi->ndirty -= res;
+		sub_page_state(nr_dirty,res);
+		if ((nfsi->ndirty == 0) != list_empty(&nfsi->dirty))
+			printk(KERN_ERR "NFS: desynchronized value of nfs_i.ndirty.\n");
+	}
 	return res;
 }
 
@@ -556,11 +570,14 @@ static int
 nfs_scan_commit(struct inode *inode, struct list_head *dst, unsigned long idx_start, unsigned int npages)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
-	int	res;
-	res = nfs_scan_list(&nfsi->commit, dst, idx_start, npages);
-	nfsi->ncommit -= res;
-	if ((nfsi->ncommit == 0) != list_empty(&nfsi->commit))
-		printk(KERN_ERR "NFS: desynchronized value of nfs_i.ncommit.\n");
+	int res = 0;
+
+	if (nfsi->ncommit != 0) {
+		res = nfs_scan_list(&nfsi->commit, dst, idx_start, npages);
+		nfsi->ncommit -= res;
+		if ((nfsi->ncommit == 0) != list_empty(&nfsi->commit))
+			printk(KERN_ERR "NFS: desynchronized value of nfs_i.ncommit.\n");
+	}
 	return res;
 }
 #endif
@@ -820,7 +837,7 @@ out:
 #else
 	nfs_inode_remove_request(req);
 #endif
-	nfs_unlock_request(req);
+	nfs_clear_page_writeback(req);
 }
 
 static inline int flush_task_priority(int how)
@@ -952,7 +969,7 @@ out_bad:
 		nfs_writedata_free(data);
 	}
 	nfs_mark_request_dirty(req);
-	nfs_unlock_request(req);
+	nfs_clear_page_writeback(req);
 	return -ENOMEM;
 }
 
@@ -1002,7 +1019,7 @@ static int nfs_flush_one(struct list_head *head, struct inode *inode, int how)
 		struct nfs_page *req = nfs_list_entry(head->next);
 		nfs_list_remove_request(req);
 		nfs_mark_request_dirty(req);
-		nfs_unlock_request(req);
+		nfs_clear_page_writeback(req);
 	}
 	return -ENOMEM;
 }
@@ -1029,7 +1046,7 @@ nfs_flush_list(struct list_head *head, int wpages, int how)
 		req = nfs_list_entry(head->next);
 		nfs_list_remove_request(req);
 		nfs_mark_request_dirty(req);
-		nfs_unlock_request(req);
+		nfs_clear_page_writeback(req);
 	}
 	return error;
 }
@@ -1121,7 +1138,7 @@ static void nfs_writeback_done_full(struct nfs_write_data *data, int status)
 		nfs_inode_remove_request(req);
 #endif
 	next:
-		nfs_unlock_request(req);
+		nfs_clear_page_writeback(req);
 	}
 }
 
@@ -1213,36 +1230,24 @@ static void nfs_commit_rpcsetup(struct list_head *head,
 		struct nfs_write_data *data, int how)
 {
 	struct rpc_task		*task = &data->task;
-	struct nfs_page		*first, *last;
+	struct nfs_page		*first;
 	struct inode		*inode;
-	loff_t			start, end, len;
 
 	/* Set up the RPC argument and reply structs
 	 * NB: take care not to mess about with data->commit et al. */
 
 	list_splice_init(head, &data->pages);
 	first = nfs_list_entry(data->pages.next);
-	last = nfs_list_entry(data->pages.prev);
 	inode = first->wb_context->dentry->d_inode;
-
-	/*
-	 * Determine the offset range of requests in the COMMIT call.
-	 * We rely on the fact that data->pages is an ordered list...
-	 */
-	start = req_offset(first);
-	end = req_offset(last) + last->wb_bytes;
-	len = end - start;
-	/* If 'len' is not a 32-bit quantity, pass '0' in the COMMIT call */
-	if (end >= i_size_read(inode) || len < 0 || len > (~((u32)0) >> 1))
-		len = 0;
 
 	data->inode	  = inode;
 	data->cred	  = first->wb_context->cred;
 
 	data->args.fh     = NFS_FH(data->inode);
-	data->args.offset = start;
-	data->args.count  = len;
-	data->res.count   = len;
+	/* Note: we always request a commit of the entire inode */
+	data->args.offset = 0;
+	data->args.count  = 0;
+	data->res.count   = 0;
 	data->res.fattr   = &data->fattr;
 	data->res.verf    = &data->verf;
 	nfs_fattr_init(&data->fattr);
@@ -1282,7 +1287,7 @@ nfs_commit_list(struct list_head *head, int how)
 		req = nfs_list_entry(head->next);
 		nfs_list_remove_request(req);
 		nfs_mark_request_commit(req);
-		nfs_unlock_request(req);
+		nfs_clear_page_writeback(req);
 	}
 	return -ENOMEM;
 }
@@ -1328,7 +1333,7 @@ nfs_commit_done(struct rpc_task *task)
 		dprintk(" mismatch\n");
 		nfs_mark_request_dirty(req);
 	next:
-		nfs_unlock_request(req);
+		nfs_clear_page_writeback(req);
 		res++;
 	}
 	sub_page_state(nr_unstable,res);
@@ -1354,8 +1359,7 @@ int nfs_flush_inode(struct inode *inode, unsigned long idx_start,
 }
 
 #if defined(CONFIG_NFS_V3) || defined(CONFIG_NFS_V4)
-int nfs_commit_inode(struct inode *inode, unsigned long idx_start,
-		    unsigned int npages, int how)
+int nfs_commit_inode(struct inode *inode, int how)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
 	LIST_HEAD(head);
@@ -1363,15 +1367,13 @@ int nfs_commit_inode(struct inode *inode, unsigned long idx_start,
 				error = 0;
 
 	spin_lock(&nfsi->req_lock);
-	res = nfs_scan_commit(inode, &head, idx_start, npages);
+	res = nfs_scan_commit(inode, &head, 0, 0);
+	spin_unlock(&nfsi->req_lock);
 	if (res) {
-		res += nfs_scan_commit(inode, &head, 0, 0);
-		spin_unlock(&nfsi->req_lock);
 		error = nfs_commit_list(&head, how);
-	} else
-		spin_unlock(&nfsi->req_lock);
-	if (error < 0)
-		return error;
+		if (error < 0)
+			return error;
+	}
 	return res;
 }
 #endif
@@ -1393,7 +1395,7 @@ int nfs_sync_inode(struct inode *inode, unsigned long idx_start,
 			error = nfs_flush_inode(inode, idx_start, npages, how);
 #if defined(CONFIG_NFS_V3) || defined(CONFIG_NFS_V4)
 		if (error == 0)
-			error = nfs_commit_inode(inode, idx_start, npages, how);
+			error = nfs_commit_inode(inode, how);
 #endif
 	} while (error > 0);
 	return error;

@@ -134,7 +134,8 @@ extern __inline__ int get_order(unsigned long size)
 #define __VM_DATA_DEFAULT_FLAGS	(VM_READ | VM_WRITE | VM_EXEC | \
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 #define __VM_STACK_FLAGS 	(VM_GROWSDOWN | VM_READ | VM_WRITE | VM_EXEC | \
-                                VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
+				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC | \
+				 VM_ACCOUNT)
 
 #define VM_DATA_DEFAULT_FLAGS \
 	(test_thread_flag(TIF_IA32) ? vm_data_default_flags32 : \

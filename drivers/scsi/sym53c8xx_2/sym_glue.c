@@ -382,13 +382,20 @@ static int sym_scatter_no_sglist(struct sym_hcb *np, struct sym_ccb *cp, struct 
 {
 	struct sym_tblmove *data = &cp->phys.data[SYM_CONF_MAX_SG-1];
 	int segment;
+	unsigned int len = cmd->request_bufflen;
 
-	cp->data_len = cmd->request_bufflen;
-
-	if (cmd->request_bufflen) {
+	if (len) {
 		dma_addr_t baddr = map_scsi_single_data(np, cmd);
 		if (baddr) {
-			sym_build_sge(np, data, baddr, cmd->request_bufflen);
+			if (len & 1) { 
+				struct sym_tcb *tp = &np->target[cp->target];
+				if (tp->head.wval & EWS) { 
+					len++;
+					cp->odd_byte_adjustment++;
+				}
+			}
+			cp->data_len = len;
+			sym_build_sge(np, data, baddr, len);
 			segment = 1;
 		} else {
 			segment = -2;
@@ -411,6 +418,7 @@ static int sym_scatter(struct sym_hcb *np, struct sym_ccb *cp, struct scsi_cmnd 
 		segment = sym_scatter_no_sglist(np, cp, cmd);
 	else if ((use_sg = map_scsi_sg_data(np, cmd)) > 0) {
 		struct scatterlist *scatter = (struct scatterlist *)cmd->buffer;
+		struct sym_tcb *tp = &np->target[cp->target];
 		struct sym_tblmove *data;
 
 		if (use_sg > SYM_CONF_MAX_SG) {
@@ -423,6 +431,10 @@ static int sym_scatter(struct sym_hcb *np, struct sym_ccb *cp, struct scsi_cmnd 
 		for (segment = 0; segment < use_sg; segment++) {
 			dma_addr_t baddr = sg_dma_address(&scatter[segment]);
 			unsigned int len = sg_dma_len(&scatter[segment]);
+			if ((len & 1) && (tp->head.wval & EWS)) {
+				len++;
+				cp->odd_byte_adjustment++;
+			}
 
 			sym_build_sge(np, &data[segment], baddr, len);
 			cp->data_len += len;

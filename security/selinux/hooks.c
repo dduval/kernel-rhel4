@@ -564,11 +564,11 @@ static int superblock_doinit(struct super_block *sb, void *data)
 	sbsec->initialized = 1;
 
 	if (sbsec->behavior > ARRAY_SIZE(labeling_behaviors)) {
-		printk(KERN_INFO "SELinux: initialized (dev %s, type %s), unknown behavior\n",
+		printk(KERN_ERR "SELinux: initialized (dev %s, type %s), unknown behavior\n",
 		       sb->s_id, sb->s_type->name);
 	}
 	else {
-		printk(KERN_INFO "SELinux: initialized (dev %s, type %s), %s\n",
+		printk(KERN_DEBUG "SELinux: initialized (dev %s, type %s), %s\n",
 		       sb->s_id, sb->s_type->name,
 		       labeling_behaviors[sbsec->behavior-1]);
 	}
@@ -1874,6 +1874,9 @@ static void selinux_bprm_apply_creds(struct linux_binprm *bprm, int unsafe)
 			recalc_sigpending();
 			spin_unlock_irq(&current->sighand->siglock);
 		}
+
+		/* Always clear parent death signal on SID transitions. */
+		current->pdeath_signal = 0;
 
 		/* Check whether the new SID can inherit resource limits
 		   from the old SID.  If not, reset all soft limits to
@@ -4025,7 +4028,7 @@ static int selinux_ipc_permission(struct kern_ipc_perm *ipcp, short flag)
 int selinux_register_security (const char *name, struct security_operations *ops)
 {
 	if (secondary_ops != original_ops) {
-		printk(KERN_INFO "%s:  There is already a secondary security "
+		printk(KERN_ERR "%s:  There is already a secondary security "
 		       "module registered.\n", __FUNCTION__);
 		return -EINVAL;
  	}
@@ -4042,7 +4045,7 @@ int selinux_register_security (const char *name, struct security_operations *ops
 int selinux_unregister_security (const char *name, struct security_operations *ops)
 {
 	if (ops != secondary_ops) {
-		printk (KERN_INFO "%s:  trying to unregister a security module "
+		printk(KERN_ERR "%s:  trying to unregister a security module "
 		        "that is not registered.\n", __FUNCTION__);
 		return -EINVAL;
 	}
@@ -4334,19 +4337,19 @@ __init int selinux_init(void)
 		panic("SELinux: Unable to register with kernel.\n");
 
 	if (selinux_enforcing) {
-		printk(KERN_INFO "SELinux:  Starting in enforcing mode\n");
+		printk(KERN_DEBUG "SELinux:  Starting in enforcing mode\n");
 	} else {
-		printk(KERN_INFO "SELinux:  Starting in permissive mode\n");
+		printk(KERN_DEBUG "SELinux:  Starting in permissive mode\n");
 	}
 	return 0;
 }
 
 void selinux_complete_init(void)
 {
-	printk(KERN_INFO "SELinux:  Completing initialization.\n");
+	printk(KERN_DEBUG "SELinux:  Completing initialization.\n");
 
 	/* Set up any superblocks initialized prior to the policy load. */
-	printk(KERN_INFO "SELinux:  Setting up existing superblocks.\n");
+	printk(KERN_DEBUG "SELinux:  Setting up existing superblocks.\n");
 	spin_lock(&sb_security_lock);
 next_sb:
 	if (!list_empty(&superblock_security_head)) {
@@ -4402,9 +4405,9 @@ static int __init selinux_nf_ip_init(void)
 
 	if (!selinux_enabled)
 		goto out;
-		
-	printk(KERN_INFO "SELinux:  Registering netfilter hooks\n");
-	
+
+	printk(KERN_DEBUG "SELinux:  Registering netfilter hooks\n");
+
 	err = nf_register_hook(&selinux_ipv4_op);
 	if (err)
 		panic("SELinux: nf_register_hook for IPv4: error %d\n", err);
@@ -4425,7 +4428,7 @@ __initcall(selinux_nf_ip_init);
 #ifdef CONFIG_SECURITY_SELINUX_DISABLE
 static void selinux_nf_ip_exit(void)
 {
-	printk(KERN_INFO "SELinux:  Unregistering netfilter hooks\n");
+	printk(KERN_DEBUG "SELinux:  Unregistering netfilter hooks\n");
 
 	nf_unregister_hook(&selinux_ipv4_op);
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)

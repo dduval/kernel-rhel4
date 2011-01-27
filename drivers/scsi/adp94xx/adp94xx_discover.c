@@ -667,7 +667,6 @@ asd_discover_wakeup_state_machine(struct state_machine_context *sm_contextp)
 static void
 asd_discovery_ehandler_done(struct asd_softc *asd, struct scb *scb)
 {
-	unsigned long flags;
 	struct state_machine_context *sm_contextp;
 	struct discover_context *discover_contextp;
 
@@ -977,6 +976,14 @@ asd_ssp_request_done(struct asd_softc *asd,
 		break;
 
 	case SSP_TASK_COMP_W_RESP:
+		{
+			union edb 		*edb;
+			struct scb 		*escb;
+			u_int			 edb_index;
+			edb = asd_hwi_get_edb_from_dl(asd, scb, done_listp, &escb, &edb_index);
+			if (edb != NULL)
+				asd_hwi_free_edb(asd, escb, edb_index);
+		}
 	default:
 		/*
 		 * TODO: need better return value here
@@ -3217,7 +3224,7 @@ asd_state_init_get_device_id_post(struct state_machine_context * sm_contextp)
 	    MAX_INQUIRY_LEN(discover_contextp->sas_info_len) -
 	    discover_contextp->resid_len;
 
-	page_length = MIN(asd_be16toh(*((uint16_t *) & vpd_page_header[2])) + 3,
+	page_length = MIN(asd_be16toh(*((uint16_t *) & vpd_page_header[2])) + 4,
 			  inquiry_response_len);
 
 #if 0
@@ -3236,7 +3243,7 @@ asd_state_init_get_device_id_post(struct state_machine_context * sm_contextp)
 	     vpd_pagep = vpd_pagep + length,
 	     offset = vpd_pagep - vpd_page_header) {
 
-		length = vpd_pagep[3] + 3;
+		length = vpd_pagep[3] + 4;
 
 		if ((offset + length) > page_length) {
 			break;
@@ -3278,12 +3285,8 @@ asd_state_init_get_device_id_post(struct state_machine_context * sm_contextp)
 			break;
 		}
 #endif
-		if ((identifier_type & 0xf) != IDENTIFIER_TYPE_NAA) {
-
-			vpd_pagep = vpd_pagep + length;
-
+		if ((identifier_type & 0xf) != IDENTIFIER_TYPE_NAA)
 			continue;
-		}
 
 		protocol = (vpd_pagep[0] & 0xf0) >> 4;
 		piv_valid = vpd_pagep[1] & PIV_VALID;
@@ -3297,7 +3300,7 @@ asd_state_init_get_device_id_post(struct state_machine_context * sm_contextp)
 		printk("Protocol %d\n", protocol);
 #endif
 
-		ctx->currentTarget->scsi_cmdset.ident_len = length - 3;
+		ctx->currentTarget->scsi_cmdset.ident_len = length - 4;
 
 		switch (association) {
 		case ASSOCIATION_SCSI_LOGICAL_UNIT:
@@ -3308,17 +3311,16 @@ asd_state_init_get_device_id_post(struct state_machine_context * sm_contextp)
 			break;
 
 		case ASSOCIATION_SCSI_TARGET_PORT:
+		case ASSOCIATION_SCSI_TARGET_DEVICE:
 			// fujitsu
 			if (((piv_valid & PIV_VALID) != PIV_VALID) ||
 			    (protocol != VPD_SAS_PROTOCOL)) {
 				continue;
 			}
 			break;
+		default:
+			continue;
 
-		case ASSOCIATION_SCSI_TARGET_DEVICE:
-			if (piv_valid & PIV_VALID) {
-				continue;
-			}
 		}
 
 		ctx->currentTarget->scsi_cmdset.ident = (uint8_t *)
@@ -3330,6 +3332,7 @@ asd_state_init_get_device_id_post(struct state_machine_context * sm_contextp)
 			memcpy(ctx->currentTarget->scsi_cmdset.ident,
 			       &vpd_pagep[4],
 			       ctx->currentTarget->scsi_cmdset.ident_len);
+			break;
 		}
 	}
 
@@ -4259,8 +4262,8 @@ asd_get_feature_to_enable(struct asd_target * target, uint8_t * sector_count)
 		}
 	}
 
-	if (features_enabled & SATA_USES_UDMA) {
-		if (features_state & NEEDS_XFER_SETFEATURES) {
+	if (features_state & SATA_USES_UDMA) {
+		if (features_enabled & NEEDS_XFER_SETFEATURES) {
 			*sector_count = *dma_mode_level;
 
 			return SETFEATURES_XFER;
@@ -4278,6 +4281,7 @@ asd_state_configure_ata_features_post(struct state_machine_context *
 	struct asd_ConfigureATA_SM_Context *ctx;
 	unsigned *features_state;
 	struct discover_context *discover_contextp;
+	unsigned *features_enabled;
 
 	GET_STATE_CONTEXT(sm_contextp, ctx);
 
@@ -4295,11 +4299,15 @@ asd_state_configure_ata_features_post(struct state_machine_context *
 		case ASD_COMMAND_SET_ATA:
 			features_state =
 			    &ctx->target->ata_cmdset.features_state;
+			features_enabled =
+			    &ctx->target->ata_cmdset.features_enabled;
 			break;
 
 		case ASD_COMMAND_SET_ATAPI:
 			features_state =
 			    &ctx->target->ata_cmdset.features_state;
+			features_enabled =
+			    &ctx->target->ata_cmdset.features_enabled;
 			break;
 
 		default:
@@ -4324,7 +4332,7 @@ asd_state_configure_ata_features_post(struct state_machine_context *
 			break;
 
 		case SETFEATURES_XFER:
-			*features_state &= ~NEEDS_XFER_SETFEATURES;
+			*features_enabled &= ~NEEDS_XFER_SETFEATURES;
 			break;
 		}
 	}
@@ -6894,6 +6902,16 @@ static int asd_send_ssp_task(struct asd_target *target, u8 * cmd, int cmd_len,
 			break;
 		case SSP_TASK_COMP_W_RESP:
 			asd_dprint("task comp w resp\n");
+			{
+				union edb 		*edb;
+				struct scb 		*escb;
+				u_int			edb_index;
+				struct asd_done_list	*done_listp;
+				done_listp=scb->dl;
+				edb = asd_hwi_get_edb_from_dl(asd, scb, done_listp, &escb, &edb_index);
+				if (edb != NULL)
+					asd_hwi_free_edb(asd, escb, edb_index);
+			}
 			break;
 		default:
 			asd_dprint("task comp w status 0x%02x\n",
@@ -7206,8 +7224,10 @@ asd_DiscoverySM_Finish(struct state_machine_context *sm_contextp,
 		list_move_all(&discover_contextp->port->targets_to_validate,
 			      &ctx->discover_list);
 
+#ifndef NO_SES_SUPPORT
 		asd_examine_ses(discover_contextp->asd,
 				discover_contextp->port);
+#endif
 
 		if (num_discovery == 0)
 			asd_validate_targets_init(discover_contextp->asd);
@@ -7220,8 +7240,10 @@ asd_DiscoverySM_Finish(struct state_machine_context *sm_contextp,
 		 * hot-removed.
 		 */
 
+#ifndef NO_SES_SUPPORT
 		asd_examine_ses(discover_contextp->asd,
 				discover_contextp->port);
+#endif
 
 		asd_validate_targets_hotplug(discover_contextp->asd,
 					     discover_contextp->port, ctx);
@@ -7566,7 +7588,11 @@ asd_remap_device(struct asd_softc *asd,
 			return;
 		}
 	} else {
+#ifndef NO_SES_SUPPORT
 		for (i = 128; i < ASD_MAX_TARGET_IDS; i++) {
+#else
+		for (i = 0; i < (ASD_MAX_TARGET_IDS - 128); i++) {
+#endif
 			if (dm->targets[i] != target)
 				continue;
 			dm->targets[i] = multipath_target;

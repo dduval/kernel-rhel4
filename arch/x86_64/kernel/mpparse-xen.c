@@ -177,6 +177,10 @@ static void __init MP_bus_info (struct mpc_config_bus *m)
 {
 	char str[7];
 
+	if (m->mpc_busid >= MAX_MP_BUSSES)
+		panic("BUSID %d is greater than MAX_MP_BUSSES (%d).",
+		       m->mpc_busid, MAX_MP_BUSSES);
+
 	memcpy(str, m->mpc_bustype, 6);
 	str[6] = 0;
 	Dprintk("Bus #%d is %s\n", m->mpc_busid, str);

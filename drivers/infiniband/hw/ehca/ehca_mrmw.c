@@ -46,14 +46,14 @@
 #include "hcp_if.h"
 #include "hipz_hw.h"
 
-static struct kmem_cache *mr_cache;
-static struct kmem_cache *mw_cache;
+static kmem_cache_t *mr_cache;
+static kmem_cache_t *mw_cache;
 
 static struct ehca_mr *ehca_mr_new(void)
 {
 	struct ehca_mr *me;
 
-	me = kmem_cache_alloc(mr_cache, SLAB_KERNEL);
+	me = kmem_cache_alloc(mr_cache, GFP_KERNEL);
 	if (me) {
 		memset(me, 0, sizeof(struct ehca_mr));
 		spin_lock_init(&me->mrlock);
@@ -72,7 +72,7 @@ static struct ehca_mw *ehca_mw_new(void)
 {
 	struct ehca_mw *me;
 
-	me = kmem_cache_alloc(mw_cache, SLAB_KERNEL);
+	me = kmem_cache_alloc(mw_cache, GFP_KERNEL);
 	if (me) {
 		memset(me, 0, sizeof(struct ehca_mw));
 		spin_lock_init(&me->mwlock);
@@ -255,7 +255,7 @@ struct ib_mr *ehca_reg_user_mr(struct ib_pd *pd,
 	u32 num_pages_mr;
 	u32 num_pages_4k; /* 4k portion "pages" */
 
-        if (!pd) {
+	if (!pd) {
 		ehca_gen_err("bad pd=%p", pd);
 		return ERR_PTR(-EFAULT);
 	}
@@ -1013,7 +1013,7 @@ int ehca_reg_mr_rpages(struct ehca_shca *shca,
 	u32 i;
 	u64 *kpage;
 
-	kpage = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
+	kpage = ehca_alloc_fw_ctrlblock(GFP_KERNEL);
 	if (!kpage) {
 		ehca_err(&shca->ib_device, "kpage alloc failed");
 		ret = -ENOMEM;
@@ -1092,7 +1092,7 @@ int ehca_reg_mr_rpages(struct ehca_shca *shca,
 
 
 ehca_reg_mr_rpages_exit1:
-	kfree(kpage);
+	ehca_free_fw_ctrlblock(kpage);
 ehca_reg_mr_rpages_exit0:
 	if (ret)
 		ehca_err(&shca->ib_device, "ret=%x shca=%p e_mr=%p pginfo=%p "
@@ -1124,7 +1124,7 @@ inline int ehca_rereg_mr_rereg1(struct ehca_shca *shca,
 	ehca_mrmw_map_acl(acl, &hipz_acl);
 	ehca_mrmw_set_pgsize_hipz_acl(&hipz_acl);
 
-	kpage = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
+	kpage = ehca_alloc_fw_ctrlblock(GFP_KERNEL);
 	if (!kpage) {
 		ehca_err(&shca->ib_device, "kpage alloc failed");
 		ret = -ENOMEM;
@@ -1181,7 +1181,7 @@ inline int ehca_rereg_mr_rereg1(struct ehca_shca *shca,
 	}
 
 ehca_rereg_mr_rereg1_exit1:
-	kfree(kpage);
+	ehca_free_fw_ctrlblock(kpage);
 ehca_rereg_mr_rereg1_exit0:
 	if ( ret && (ret != -EAGAIN) )
 		ehca_err(&shca->ib_device, "ret=%x lkey=%x rkey=%x "
@@ -2045,13 +2045,10 @@ int ehca_mrmw_map_hrc_alloc(const u64 hipz_rc)
 	switch (hipz_rc) {
 	case H_SUCCESS:	             /* successful completion */
 		return 0;
-	case H_ADAPTER_PARM:         /* invalid adapter handle */
-	case H_RT_PARM:              /* invalid resource type */
 	case H_NOT_ENOUGH_RESOURCES: /* insufficient resources */
-	case H_MLENGTH_PARM:         /* invalid memory length */
-	case H_MEM_ACCESS_PARM:      /* invalid access controls */
 	case H_CONSTRAINED:          /* resource constraint */
-		return -EINVAL;
+	case H_NO_MEM:
+		return -ENOMEM;
 	case H_BUSY:                 /* long busy */
 		return -EBUSY;
 	default:

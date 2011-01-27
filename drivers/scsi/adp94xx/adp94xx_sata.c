@@ -329,15 +329,19 @@ struct asd_done_list	*done_listp
 {
 	struct ata_resp_edb	*ata_resp_edbp;
 	struct scsi_cmnd	*cmd;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp, &escb,
+						 &edb_index);
 
 		asd_sata_set_check_condition(cmd,
 			(ASD_D2H_FIS(ata_resp_edbp)->error & 0xf0) >> 4, 0, 0);
+		asd_hwi_free_edb(asd, escb, edb_index);
 
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
@@ -491,7 +495,10 @@ struct asd_done_list	*dl
 		asd_hwi_free_scb(asd, scb);
 //JDTEST
 	else
+	{
 		asd_log(ASD_DBG_ERROR, "scb 0x%x SCB_TIMEDOUT(0x%x)\n",scb,scb->flags);
+		scb->flags |= SCB_ABORT_DONE;
+	}
 
 	cmd->scsi_done(cmd);
 }
@@ -600,7 +607,7 @@ struct asd_target	*target
 		READ_AHEAD_FEATURE_ENABLED : 0;
 
 	*features_enabled |=
-		(hd_driveidp->command_set_1 & ATA_SMART_ENABLED) ?
+		(hd_driveidp->command_set_1 & ATA_SMART_CAPABLE) ?
 		SMART_FEATURE_ENABLED : 0;
 
 	*dma_mode_level = 0;
@@ -610,8 +617,8 @@ struct asd_target	*target
 		dma_mode_bits = hd_driveidp->dma_ultra & DMA_ULTRA_MODE_MASK;
 
 		if (dma_mode_bits != 0) {
-			*features_enabled |= SATA_USES_UDMA;
-			*features_state |= NEEDS_XFER_SETFEATURES;
+			*features_state |= SATA_USES_UDMA;
+			*features_enabled |= NEEDS_XFER_SETFEATURES;
 
 			dma_mode_bits = dma_mode_bits >> 1;
 
@@ -837,7 +844,9 @@ INLINE
 struct ata_resp_edb *
 asd_sata_get_edb(
 struct asd_softc	*asd,
-struct asd_done_list	*done_listp
+struct asd_done_list	*done_listp,
+struct scb **pescb,
+u_int *pedb_index
 )
 {
 	struct response_sb	*responsep;
@@ -865,6 +874,8 @@ struct asd_done_list	*done_listp
 	edbp = asd_hwi_indexes_to_edb(asd, &escb, escb_index, edb_index);
 
 	ata_resp_edbp = &edbp->ata_resp;
+	*pescb = escb;
+	*pedb_index = edb_index;
 
 	return ata_resp_edbp;
 }
@@ -1021,13 +1032,16 @@ struct asd_done_list	*done_listp
 	// RST - declare this on the stack for now
 	struct scsi_cmnd	cmd;
 	struct asd_target	*target;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	target = (struct asd_target *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, &cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -1105,13 +1119,16 @@ struct asd_done_list	*done_listp
 	// RST - declare this on the stack for now
 	struct scsi_cmnd	cmd;
 	struct asd_target	*target;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	target = (struct asd_target *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, &cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -1296,18 +1313,21 @@ struct asd_done_list	*done_listp
 	struct asd_device 	*dev;
 	uint32_t		lba;
 	struct hd_driveid	*hd_driveidp;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	write_cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 
 		asd_sata_check_registers(ata_resp_edbp, scb, write_cmd);
 
 		asd_sata_format_unit_free_memory(asd, write_cmd);
 
 		scb->io_ctx = (asd_io_ctx_t)write_cmd->host_scribble;
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -1369,7 +1389,49 @@ struct asd_done_list	*done_listp
 		 */
 	}
 }
+void *asd_sata_setup_data(struct asd_softc *asd, struct scb *scb, Scsi_Cmnd *cmd)
+{
+	int				dir;
+	void 			*buf_ptr;
+	struct			scatterlist *cur_seg;
+	u_int			nseg;
 
+
+	if (cmd->use_sg != 0) {
+
+		cur_seg = (struct scatterlist *)cmd->request_buffer;
+		dir = scsi_to_pci_dma_dir(cmd->sc_data_direction);
+		nseg = asd_map_sg(asd, cur_seg, cmd->use_sg, dir);
+		if (nseg > ASD_NSEG) {
+			asd_unmap_sg(asd, cur_seg, nseg, dir);
+			return NULL;
+		}
+		scb->sg_count = nseg;
+		buf_ptr = (void *)(page_address(cur_seg->page) +
+							cur_seg->offset);
+		return buf_ptr;
+
+	}
+	else
+	{
+		return (void *) cmd->request_buffer;
+	}
+
+}
+void
+asd_sata_unmap_data(struct asd_softc *asd, struct scb *scb, Scsi_Cmnd *cmd)
+{
+	int direction;
+	struct scatterlist *sg;
+
+	direction = scsi_to_pci_dma_dir(cmd->sc_data_direction);
+
+	if (cmd->use_sg != 0) {
+
+		sg = (struct scatterlist *)cmd->request_buffer;
+		asd_unmap_sg(asd, sg, scb->sg_count, direction);
+	}
+}
 /* -----------------------------------
  * INQUIRY: (emulated)
  */
@@ -1385,6 +1447,7 @@ struct scsi_cmnd	*cmd
 	struct asd_ata_task_hscb	*ata_hscb;
 	struct hd_driveid		*hd_driveidp;
 	u_char				inquiry_data[INQUIRY_RESPONSE_SIZE];
+	u_char				*cmd_buf_ptr;
 	ASD_COMMAND_BUILD_STATUS	ret;
 
 	ata_hscb = &scb->hscb->ata_task;
@@ -1451,7 +1514,9 @@ struct scsi_cmnd	*cmd
 
 	inquiry_data[56] = 0;	// IUS | QAS | CLOCKING
 
-	memcpy(cmd->request_buffer, inquiry_data, cmd->request_bufflen);
+	cmd_buf_ptr=(u_char*) asd_sata_setup_data(asd, scb, cmd);
+	memcpy(cmd_buf_ptr, inquiry_data, cmd->request_bufflen);
+	asd_sata_unmap_data(asd, scb, cmd);
 
 	asd_cmd_set_host_status(cmd, DID_OK);
 
@@ -1468,6 +1533,7 @@ u_char			*inquiry_data
 )
 {
 	struct hd_driveid		*hd_driveidp;
+	u_char *cmd_buf_ptr;
 
 	hd_driveidp = &dev->target->ata_cmdset.adp_hd_driveid;
 
@@ -1497,7 +1563,11 @@ u_char			*inquiry_data
 		return ASD_COMMAND_BUILD_FAILED;
 	}
 
-	memcpy(cmd->request_buffer, inquiry_data, cmd->request_bufflen);
+
+	cmd_buf_ptr=(u_char*) asd_sata_setup_data(asd, scb, cmd);
+	memcpy(cmd_buf_ptr, inquiry_data, cmd->request_bufflen);
+	asd_sata_unmap_data(asd, scb, cmd);
+
 
 	asd_cmd_set_host_status(cmd, DID_OK);
 
@@ -1578,13 +1648,16 @@ struct asd_done_list	*done_listp
 {
 	struct ata_resp_edb	*ata_resp_edbp;
 	struct scsi_cmnd	*cmd;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -1625,6 +1698,7 @@ struct scsi_cmnd	*cmd
 	unsigned			buf_offset;
 	ASD_COMMAND_BUILD_STATUS	ret;
 	uint8_t				page_code;
+	uint8_t				*cmd_buf_ptr;
 
 	ata_hscb = &scb->hscb->ata_task;
 
@@ -1632,6 +1706,7 @@ struct scsi_cmnd	*cmd
 		asd_sata_set_check_condition(cmd, ILLEGAL_REQUEST,
 			INVALID_FIELD_IN_CDB, 0);
 	}
+	cmd_buf_ptr=(uint8_t*) asd_sata_setup_data(asd, scb, cmd);
 
 	command_translated = 0;
 	parameter_list_length = 0;
@@ -1652,7 +1727,7 @@ struct scsi_cmnd	*cmd
 	for (buf_offset = 0 ; buf_offset < len ; 
 		buf_offset = buf_offset + page_len ) {
 
-		bufptr = cmd->request_buffer + buf_offset;
+		bufptr = cmd_buf_ptr + buf_offset;
 
 		page_code = *bufptr;
 
@@ -1725,10 +1800,12 @@ struct scsi_cmnd	*cmd
 
 		case ASD_COMMAND_BUILD_FAILED:
 		default:
+			asd_sata_unmap_data(asd, scb, cmd);
 			return ASD_COMMAND_BUILD_FAILED;
 		}
 	}
 
+	asd_sata_unmap_data(asd, scb, cmd);
 	if (command_translated != 0) {
 		/*
 		 * This command is being translated, so we have to
@@ -1773,7 +1850,7 @@ uint8_t			*bufptr
 	struct asd_target			*target;
 	unsigned				state_changed;
 	unsigned				*features_enabled;
-	unsigned				features_state;
+	unsigned				*features_state;
 	DISCOVER_RESULTS			results;
 	struct asd_ConfigureATA_SM_Arguments	args;
 	struct state_machine_context		*sm_contextp;
@@ -1789,12 +1866,12 @@ uint8_t			*bufptr
 	switch (target->command_set_type) {
 	case ASD_COMMAND_SET_ATA:
 		features_enabled = &target->ata_cmdset.features_enabled;
-		features_state = target->ata_cmdset.features_state;
+		features_state = &target->ata_cmdset.features_state;
 		break;
 
 	case ASD_COMMAND_SET_ATAPI:
 		features_enabled = &target->atapi_cmdset.features_enabled;
-		features_state = target->ata_cmdset.features_state;
+		features_state = &target->ata_cmdset.features_state;
 		break;
 
 	default:
@@ -1802,26 +1879,26 @@ uint8_t			*bufptr
 	}
 
 	if (bufptr[12] & SCSI_DRA) {
-		if ((*features_enabled & READ_AHEAD_FEATURE_ENABLED) == 0) {
+		if ((*features_state & SATA_USES_READ_AHEAD) == 0) {
 			state_changed = 1;
-			*features_enabled |= READ_AHEAD_FEATURE_ENABLED;
+			*features_state |= SATA_USES_READ_AHEAD;
 		}
 	} else {
-		if (*features_enabled & READ_AHEAD_FEATURE_ENABLED) {
+		if (*features_state & SATA_USES_READ_AHEAD) {
 			state_changed = 1;
-			*features_enabled &= ~READ_AHEAD_FEATURE_ENABLED;
+			*features_state &= ~SATA_USES_READ_AHEAD;
 		}
 	}
 
 	if (bufptr[2] & SCSI_WCE) {
-		if ((*features_enabled & WRITE_CACHE_FEATURE_ENABLED) == 0) {
+		if ((*features_state & SATA_USES_WRITE_CACHE) == 0) {
 			state_changed = 1;
-			*features_enabled |= WRITE_CACHE_FEATURE_ENABLED;
+			*features_state |= SATA_USES_WRITE_CACHE;
 		}
 	} else {
-		if (*features_enabled & WRITE_CACHE_FEATURE_ENABLED) {
+		if (*features_state & SATA_USES_WRITE_CACHE) {
 			state_changed = 1;
-			*features_enabled &= ~WRITE_CACHE_FEATURE_ENABLED;
+			*features_state &= ~SATA_USES_WRITE_CACHE;
 		}
 	}
 
@@ -1922,11 +1999,9 @@ uint8_t			*bufptr
 	 * nothing more to do.
 	 */
 	if (bufptr[2] & SCSI_DEXCPT) {
-		*features_enabled &= ~SMART_FEATURE_ENABLED;
-		*features_state &= ~SMART_FEATURE_ENABLED;
+		*features_state &= ~SATA_USES_SMART;
 	} else {
-		*features_enabled |= SMART_FEATURE_ENABLED;
-		*features_state |= SMART_FEATURE_ENABLED;
+		*features_state |= SATA_USES_SMART;
 	}
 
 	return ASD_COMMAND_BUILD_FINISHED;
@@ -1956,6 +2031,7 @@ struct scsi_cmnd	*cmd
 	unsigned			transfer_length;
 	unsigned			len;
 	struct hd_driveid		*hd_driveidp;
+	u_char				*cmd_buf_ptr;
 
 	ata_hscb = &scb->hscb->ata_task;
 
@@ -1971,7 +2047,7 @@ struct scsi_cmnd	*cmd
 
 	page_control = cmd->cmnd[2] & PAGE_CONTROL_MASK;
 
-	if (page_control != 0) {
+	if (page_control == PAGE_CONTROL_DEFAULT ||  page_control == PAGE_CONTROL_SAVED ) {
 		/*
 		 * We only support the current values.
 		 */
@@ -2157,7 +2233,7 @@ struct scsi_cmnd	*cmd
 		break;
 
 	case CACHING_MODE_PAGE:
-		bufptr = asd_sata_caching_sense(asd, dev, bufptr);
+		bufptr = asd_sata_caching_sense(asd, dev, bufptr,page_control);
 		break;
 
 	case CONTROL_MODE_PAGE:
@@ -2166,24 +2242,26 @@ struct scsi_cmnd	*cmd
 
 	case INFORMATIONAL_EXCEPTION_CONTROL_PAGE:
 		bufptr = asd_sata_informational_exception_control_sense(asd,
-			dev, bufptr);
+			dev, bufptr,page_control);
 		break;
 
 	case RETURN_ALL_PAGES:
 		bufptr = asd_sata_read_write_error_recovery_sense(asd,
 			dev, bufptr);
 
-		bufptr = asd_sata_caching_sense(asd, dev, bufptr);
+		bufptr = asd_sata_caching_sense(asd, dev, bufptr,page_control);
 
 		bufptr = asd_sata_control_sense(asd, dev, bufptr);
 
 		bufptr = asd_sata_informational_exception_control_sense(asd,
-			dev, bufptr);
+			dev, bufptr,page_control);
 
 		break;
 	}
 
-	memcpy(cmd->request_buffer, buffer, len);
+	cmd_buf_ptr=(u_char *) asd_sata_setup_data(asd, scb, cmd);
+	memcpy(cmd_buf_ptr, buffer, len);
+	asd_sata_unmap_data(asd, scb, cmd);
 
 	asd_free_mem(buffer);
 
@@ -2218,11 +2296,13 @@ uint8_t *
 asd_sata_caching_sense(
 struct asd_softc	*asd,
 struct asd_device 	*dev,
-uint8_t			*bufptr
+uint8_t			*bufptr,
+unsigned		page_control
 )
 {
 	struct hd_driveid		*hd_driveidp;
 	unsigned			features_state;
+	unsigned			features_enabled;
 	struct asd_target		*target;
 
 	target = dev->target;
@@ -2231,11 +2311,13 @@ uint8_t			*bufptr
 	case ASD_COMMAND_SET_ATA:
 		hd_driveidp = &target->ata_cmdset.adp_hd_driveid;
 		features_state = target->ata_cmdset.features_state;
+		features_enabled = target->ata_cmdset.features_enabled;
 		break;
 
 	case ASD_COMMAND_SET_ATAPI:
 		hd_driveidp = &target->atapi_cmdset.adp_hd_driveid;
 		features_state = target->atapi_cmdset.features_state;
+		features_enabled = target->ata_cmdset.features_enabled;
 		break;
 
 	default:
@@ -2247,17 +2329,30 @@ uint8_t			*bufptr
 
 	bufptr[2] = 0;
 
-	if (features_state & WRITE_CACHE_FEATURE_ENABLED) {
-		/* 
-		 * RCD == 0, MF == 0, SIZE == 0, DISC == 0,
-		 * CAP == 0, ABPF == 0, IC == 0
-		 */
-		/*
-		 * After drive reset, we should re-issue IDENTIFY.
-		 */
-		bufptr[2] |= SCSI_WCE;
-	} else {
-		bufptr[2] &= ~SCSI_WCE;
+	if(page_control == PAGE_CONTROL_CURRENT)
+	{
+		if (features_state & SATA_USES_WRITE_CACHE) {
+			/*
+			 * RCD == 0, MF == 0, SIZE == 0, DISC == 0,
+			 * CAP == 0, ABPF == 0, IC == 0
+			 */
+			/*
+			 * After drive reset, we should re-issue IDENTIFY.
+			 */
+			bufptr[2] |= SCSI_WCE;
+		} else {
+			bufptr[2] &= ~SCSI_WCE;
+		}
+	} else
+	{
+		if(features_enabled & WRITE_CACHE_FEATURE_ENABLED)
+		{
+			bufptr[2] |= SCSI_WCE;
+		}
+		else
+		{
+			bufptr[2] &= ~SCSI_WCE;
+		}
 	}
 
 	bufptr[3] = 0;  // DEMAND_READ_RETENTION_PROPERTY == 0
@@ -2277,16 +2372,30 @@ uint8_t			*bufptr
 
 	bufptr[12] = 0;
 
-	if ((features_state & READ_AHEAD_FEATURE_ENABLED) == 0) {
-		/*
-		 * NV_DIS == 0, FSW == 0, LBCSS == 0, FSW == 0
-		 */
-		/*
-		 * After drive reset, we should re-issue IDENTIFY.
-		 */
-		bufptr[12] |= SCSI_DRA;
-	} else {
-		bufptr[12] &= ~SCSI_DRA;
+	if(page_control == PAGE_CONTROL_CURRENT)
+	{
+		if ((features_state & SATA_USES_READ_AHEAD) == 0) {
+			/*
+			 * NV_DIS == 0, FSW == 0, LBCSS == 0, FSW == 0
+			 */
+			/*
+			 * After drive reset, we should re-issue IDENTIFY.
+			 */
+			bufptr[12] |= SCSI_DRA;
+		} else {
+			bufptr[12] &= ~SCSI_DRA;
+		}
+	} else
+	{
+
+		if ((features_enabled & READ_AHEAD_FEATURE_ENABLED) == 0)
+		{
+			bufptr[12] |= SCSI_DRA;
+		}
+		else
+		{
+			bufptr[12] &= ~SCSI_DRA;
+		}
 	}
 
 	bufptr[13] = 0;	// NUMBER_OF_CACHE_SEGMENTS == 0
@@ -2328,11 +2437,13 @@ uint8_t *
 asd_sata_informational_exception_control_sense(
 struct asd_softc	*asd,
 struct asd_device 	*dev,
-uint8_t			*bufptr
+uint8_t			*bufptr,
+unsigned			page_control
 )
 {
 	struct hd_driveid		*hd_driveidp;
 	unsigned			features_state;
+	unsigned			features_enabled;
 	struct asd_target		*target;
 
 	target = dev->target;
@@ -2341,11 +2452,13 @@ uint8_t			*bufptr
 	case ASD_COMMAND_SET_ATA:
 		hd_driveidp = &target->ata_cmdset.adp_hd_driveid;
 		features_state = target->ata_cmdset.features_state;
+		features_enabled = target->ata_cmdset.features_enabled;
 		break;
 
 	case ASD_COMMAND_SET_ATAPI:
 		hd_driveidp = &target->atapi_cmdset.adp_hd_driveid;
 		features_state = target->atapi_cmdset.features_state;
+		features_enabled = target->ata_cmdset.features_enabled;
 		break;
 
 	default:
@@ -2355,11 +2468,27 @@ uint8_t			*bufptr
 	bufptr[0] = INFORMATIONAL_EXCEPTION_CONTROL_PAGE;	// PS == 0
 	bufptr[1] = INFORMATIONAL_EXCEPTION_CONTROL_PAGE_LEN - 2;
 
-	if ((features_state & SMART_FEATURE_ENABLED) == 0) {
-		/*
-		 * LOGERR == 0, TEST == 0, EWASC == 0, EBF == 0, PERF == 0
-		 */
-		bufptr[2] |= SCSI_DEXCPT;		// disabled
+	if(page_control ==PAGE_CONTROL_CURRENT)
+	{
+
+		if ((features_state & SATA_USES_SMART) == 0) {
+			/*
+			 * LOGERR == 0, TEST == 0, EWASC == 0, EBF == 0, PERF == 0
+			 */
+			bufptr[2] |= SCSI_DEXCPT;
+		}
+	}
+	else
+	{
+		if (features_enabled & SMART_FEATURE_ENABLED)
+		{
+
+			/*
+			 * LOGERR == 0, TEST == 0, EWASC == 0, EBF == 0, PERF == 0
+			 */
+			bufptr[2] |= SCSI_DEXCPT;
+		}
+
 	}
 
 	bufptr[3] = 0x06;	// MRIE - report on request
@@ -2551,6 +2680,8 @@ struct asd_done_list	*done_listp
 	struct asd_ata_task_hscb	*ata_hscb;
 	unsigned			remain;
 #endif
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
@@ -2560,8 +2691,9 @@ struct asd_done_list	*done_listp
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -2701,13 +2833,16 @@ struct asd_done_list	*done_listp
 {
 	struct ata_resp_edb	*ata_resp_edbp;
 	struct scsi_cmnd	*cmd;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -2777,10 +2912,10 @@ struct scsi_cmnd	*cmd
 			return ASD_COMMAND_BUILD_FAILED;
 		}
 
-		read_buffer_descriptor = (uint8_t *)cmd->request_buffer;
-
-		memset(read_buffer_descriptor, 0, 
+	read_buffer_descriptor = (uint8_t *)asd_sata_setup_data(asd, scb, cmd);
+		memset(read_buffer_descriptor, 0,
 			READ_BUFFER_DESCRIPTOR_LENGTH);
+	asd_sata_unmap_data(asd, scb, cmd);
 
 		/*
 		 * ATA only supports ATA_BUFFER_SIZE byte buffer writes.
@@ -2839,13 +2974,16 @@ struct asd_done_list	*done_listp
 {
 	struct ata_resp_edb	*ata_resp_edbp;
 	struct scsi_cmnd	*cmd;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -2892,7 +3030,7 @@ struct scsi_cmnd	*cmd
 		return ASD_COMMAND_BUILD_FAILED;
 	}
 
-	read_capacity_data = (u_char *)cmd->request_buffer;
+	read_capacity_data = (u_char *)asd_sata_setup_data(asd, scb, cmd);
 
 	lba_capacity = *((uint64_t *)&hd_driveidp->lba_capacity_2);
 
@@ -2916,6 +3054,7 @@ struct scsi_cmnd	*cmd
 	*((uint32_t *)&read_capacity_data[0]) = ATA2SCSI_4(lba_capacity - 1);
 
 	*((uint32_t *)&read_capacity_data[4]) = ATA2SCSI_4(ATA_BLOCK_SIZE);
+	asd_sata_unmap_data(asd, scb, cmd);
 
 	asd_cmd_set_host_status(cmd, DID_OK);
 
@@ -2936,6 +3075,7 @@ struct scsi_cmnd	*cmd
 {
 	u_char		report_luns_data[REPORT_LUNS_SIZE];
 	unsigned	len;
+	u_char		*cmd_buf_ptr;
 
 	memset(report_luns_data, 0, REPORT_LUNS_SIZE);
 
@@ -2943,7 +3083,9 @@ struct scsi_cmnd	*cmd
 
 	len = MIN(cmd->request_bufflen, REPORT_LUNS_SIZE);
 
-	memcpy(cmd->request_buffer, &report_luns_data[0], len);
+	cmd_buf_ptr = (u_char *)asd_sata_setup_data(asd, scb, cmd);
+	memcpy(cmd_buf_ptr, &report_luns_data[0], len);
+	asd_sata_unmap_data(asd, scb, cmd);
 
 	asd_cmd_set_host_status(cmd, DID_OK);
 
@@ -3061,23 +3203,25 @@ struct scb		*scb,
 struct asd_done_list	*done_listp
 )
 {
-	struct ata_resp_edb	*ata_resp_edbp;
+	struct ata_resp_edb	*ata_resp_edbp=NULL;
 	struct scsi_cmnd	*cmd;
 	COMMAND_SET_TYPE	command_set_type;
 	struct asd_device	*dev;
 	unsigned		error;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	dev = scb->platform_data->dev;
 
 	switch (done_listp->opcode) {
-	case CSMI_TASK_COMP_WO_ERR:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+	case TASK_COMP_WO_ERR:
 		break;
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 	default:
@@ -3087,7 +3231,10 @@ struct asd_done_list	*done_listp
 		return;
 	}
 
-	command_set_type = asd_sata_get_type(ASD_D2H_FIS(ata_resp_edbp));
+	if(ata_resp_edbp !=NULL)
+		command_set_type = asd_sata_get_type(ASD_D2H_FIS(ata_resp_edbp));
+	else
+		command_set_type=ASD_COMMAND_SET_UNKNOWN;
 
 	if (command_set_type != dev->target->command_set_type) {
 		/*
@@ -3179,13 +3326,16 @@ struct asd_done_list	*done_listp
 {
 	struct ata_resp_edb	*ata_resp_edbp;
 	struct scsi_cmnd	*cmd;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -3240,13 +3390,16 @@ struct asd_done_list	*done_listp
 {
 	struct ata_resp_edb	*ata_resp_edbp;
 	struct scsi_cmnd	*cmd;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 
@@ -3313,16 +3466,18 @@ struct asd_done_list	*done_listp
 	struct ata_resp_edb		*ata_resp_edbp;
 	struct scsi_cmnd		*cmd;
 	struct asd_ata_task_hscb	*ata_hscb;
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
 	switch (done_listp->opcode) {
-	case CSMI_TASK_COMP_WO_ERR:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+	case TASK_COMP_WO_ERR:
 		break;
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 	default:
@@ -3576,6 +3731,8 @@ struct asd_done_list	*done_listp
 	struct asd_ata_task_hscb	*ata_hscb;
 	unsigned			sectors;
 #endif
+	u_int			 edb_index;
+	struct scb 		 *escb;
 
 	cmd = (struct scsi_cmnd *)scb->io_ctx;
 
@@ -3585,8 +3742,9 @@ struct asd_done_list	*done_listp
 
 	switch (done_listp->opcode) {
 	case ATA_TASK_COMP_W_RESP:
-		ata_resp_edbp = asd_sata_get_edb(asd, done_listp);
+		ata_resp_edbp = asd_sata_get_edb(asd, done_listp,&escb, &edb_index);
 		asd_sata_check_registers(ata_resp_edbp, scb, cmd);
+		asd_hwi_free_edb(asd, escb, edb_index);
 		asd_pop_post_stack(asd, scb, done_listp);
 		return;
 

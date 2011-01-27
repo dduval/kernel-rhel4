@@ -572,8 +572,13 @@ int smb_fill_super(struct super_block *sb, void *raw_data, int silent)
 		mnt->file_mode = (oldmnt->file_mode & S_IRWXUGO) | S_IFREG;
 		mnt->dir_mode = (oldmnt->dir_mode & S_IRWXUGO) | S_IFDIR;
 
-		mnt->flags = (oldmnt->file_mode >> 9);
+		mnt->flags = (oldmnt->file_mode >> 9) | SMB_MOUNT_UID |
+			SMB_MOUNT_GID | SMB_MOUNT_FMODE | SMB_MOUNT_DMODE;
 	} else {
+		mnt->file_mode = S_IRWXU | S_IRGRP | S_IXGRP |
+				S_IROTH | S_IXOTH | S_IFREG;
+		mnt->dir_mode = S_IRWXU | S_IRGRP | S_IXGRP |
+				S_IROTH | S_IXOTH | S_IFDIR;
 		if (parse_options(mnt, raw_data))
 			goto out_bad_option;
 	}

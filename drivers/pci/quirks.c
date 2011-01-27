@@ -626,6 +626,23 @@ static void __init quirk_mediagx_master(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_CYRIX,	PCI_DEVICE_ID_CYRIX_PCI_MASTER, quirk_mediagx_master );
 
+static void __devinit quirk_sb600_sata(struct pci_dev *pdev)
+{
+	if ((pdev->class >> 8) == PCI_CLASS_STORAGE_IDE) {
+		u8 tmp;
+
+		pci_read_config_byte(pdev, 0x40, &tmp);
+		pci_write_config_byte(pdev, 0x40, tmp|1);
+		pci_write_config_byte(pdev, 0x9, 1);
+		pci_write_config_byte(pdev, 0xa, 6);
+		pci_write_config_byte(pdev, 0x40, tmp);
+
+		pdev->class = PCI_CLASS_STORAGE_SATA_AHCI;
+	}
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_IXP600_SATA, quirk_sb600_sata);
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ATI, PCI_DEVICE_ID_ATI_IXP700_SATA, quirk_sb600_sata);
+
 /*
  * As per PCI spec, ignore base address registers 0-3 of the IDE controllers
  * running in Compatible mode (bits 0 and 2 in the ProgIf for primary and
@@ -1189,6 +1206,80 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_SI,	PCI_DEVICE_ID_SI_962,		quirk_sis_96x_
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_SI,	PCI_DEVICE_ID_SI_963,		quirk_sis_96x_smbus );
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_SI,	PCI_DEVICE_ID_SI_LPC,		quirk_sis_96x_smbus );
 
+#if defined(CONFIG_ATA) || defined(CONFIG_ATA_MODULE)
+
+/*
+ *	If we are using libata we can drive this chip properly but must
+ *	do this early on to make the additional device appear during
+ *	the PCI scanning.
+ */
+
+static void quirk_jmicron_ata(struct pci_dev *pdev)
+{
+	u32 conf1, conf5, class;
+	u8 hdr;
+
+	/* Only poke fn 0 */
+	if (PCI_FUNC(pdev->devfn))
+		return;
+
+	pci_read_config_dword(pdev, 0x40, &conf1);
+	pci_read_config_dword(pdev, 0x80, &conf5);
+
+	conf1 &= ~0x00CFF302; /* Clear bit 1, 8, 9, 12-19, 22, 23 */
+	conf5 &= ~(1 << 24);  /* Clear bit 24 */
+
+	switch (pdev->device) {
+	case PCI_DEVICE_ID_JMICRON_JMB360:
+		/* The controller should be in single function ahci mode */
+		conf1 |= 0x0002A100; /* Set 8, 13, 15, 17 */
+		break;
+
+	case PCI_DEVICE_ID_JMICRON_JMB365:
+	case PCI_DEVICE_ID_JMICRON_JMB366:
+		/* Redirect IDE second PATA port to the right spot */
+		conf5 |= (1 << 24);
+		/* Fall through */
+	case PCI_DEVICE_ID_JMICRON_JMB361:
+	case PCI_DEVICE_ID_JMICRON_JMB363:
+		/* Enable dual function mode, AHCI on fn 0, IDE fn1 */
+		/* Set the class codes correctly and then direct IDE 0 */
+		conf1 |= 0x00C2A102; /* Set 1, 8, 13, 15, 17, 22, 23 */
+		break;
+
+	case PCI_DEVICE_ID_JMICRON_JMB368:
+		/* The controller should be in single function IDE mode */
+		conf1 |= 0x00C00000; /* Set 22, 23 */
+		break;
+	}
+
+	pci_write_config_dword(pdev, 0x40, conf1);
+	pci_write_config_dword(pdev, 0x80, conf5);
+
+	/* Update pdev accordingly */
+	pci_read_config_byte(pdev, PCI_HEADER_TYPE, &hdr);
+	pdev->hdr_type = hdr & 0x7f;
+	pdev->multifunction = !!(hdr & 0x80);
+
+	pci_read_config_dword(pdev, PCI_CLASS_REVISION, &class);
+	pdev->class = class >> 8;
+}
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB360, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB361, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB363, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB365, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB366, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB368, quirk_jmicron_ata);
+/*
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB360, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB361, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB363, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB365, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB366, quirk_jmicron_ata);
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB368, quirk_jmicron_ata);
+*/
+#endif
+
 #ifdef CONFIG_X86_IO_APIC
 static void __init quirk_alder_ioapic(struct pci_dev *pdev)
 {
@@ -1452,6 +1543,8 @@ static void pci_do_fixups(struct pci_dev *dev, struct pci_fixup *f, struct pci_f
 	}
 }
 
+extern struct pci_fixup __start_pci_fixups_early[];
+extern struct pci_fixup __end_pci_fixups_early[];
 extern struct pci_fixup __start_pci_fixups_header[];
 extern struct pci_fixup __end_pci_fixups_header[];
 extern struct pci_fixup __start_pci_fixups_final[];
@@ -1462,6 +1555,11 @@ void pci_fixup_device(enum pci_fixup_pass pass, struct pci_dev *dev)
 	struct pci_fixup *start, *end;
 
 	switch(pass) {
+	case pci_fixup_early:
+		start = __start_pci_fixups_early;
+		end = __end_pci_fixups_early;
+		break;
+
 	case pci_fixup_header:
 		start = __start_pci_fixups_header;
 		end = __end_pci_fixups_header;
@@ -1494,6 +1592,25 @@ static void __init quirk_svw_msi(struct pci_dev *dev)
 	printk(KERN_WARNING "PCI: MSI quirk detected. pci_msi_quirk set.\n");
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_GCNB_LE, quirk_svw_msi);
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_HT1000_PCIX, quirk_svw_msi);
+
+/*
+ * Some settings of MMRBC can lead to data corruption so block changes.
+ * See AMD 8131 HyperTransport PCI-X Tunnel Revision Guide
+ */
+static void __init quirk_amd_8131_mmrbc(struct pci_dev *dev)
+{
+	unsigned char revid;
+
+	pci_read_config_byte(dev, PCI_REVISION_ID, &revid);
+	if (dev->subordinate && revid <= 0x12) {
+		printk(KERN_INFO "AMD8131 rev %x detected, disabling PCI-X MMRBC\n",
+			revid);
+		dev->subordinate->pad2 |= PCI_BUS_FLAGS_NO_MMRBC;
+	}
+}
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_8131_BRIDGE, 
+quirk_amd_8131_mmrbc);
 
 /* Disable MSI on chipsets that are known to not support it */
 static void __devinit quirk_disable_msi(struct pci_dev *dev)

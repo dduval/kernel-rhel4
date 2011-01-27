@@ -577,9 +577,16 @@ static void wacom_intuos_irq(struct urb *urb, struct pt_regs *regs)
 	if (wacom->features->type == 5 && !(data[1] & 0x40))
 		goto exit;
 
-	input_report_abs(dev, ABS_X, be16_to_cpu(*(__be16 *) &data[2]));
-	input_report_abs(dev, ABS_Y, be16_to_cpu(*(__be16 *) &data[4]));
-	input_report_abs(dev, ABS_DISTANCE, data[9]);
+	/* Intuos3* and Cintiq have more than 16 bits for each axis */
+	if (wacom->features->type == 4 || wacom->features->type == 5) {
+		input_report_abs(dev, ABS_X, (data[2] << 9) | (data[3] << 1) | ((data[9] >> 1) & 1));
+		input_report_abs(dev, ABS_Y, (data[4] << 9) | (data[5] << 1) | (data[9] & 1));
+		input_report_abs(dev, ABS_DISTANCE, ((data[9] >> 2) & 0x3f));
+	} else {
+		input_report_abs(dev, ABS_X, be16_to_cpu(*(__be16 *) &data[2]));
+		input_report_abs(dev, ABS_Y, be16_to_cpu(*(__be16 *) &data[4]));
+		input_report_abs(dev, ABS_DISTANCE, data[9]);
+	}
 
 	/* process general packets */
 	wacom_intuos_general(urb);

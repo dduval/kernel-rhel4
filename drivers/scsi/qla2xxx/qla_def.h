@@ -296,6 +296,7 @@ typedef struct srb {
 #define SRB_FO_CANCEL		BIT_9	/* Command don't need to do failover */
 #define SRB_IOCTL		BIT_10	/* IOCTL command. */
 #define SRB_TAPE		BIT_11	/* FCP2 (Tape) command. */
+#define SRB_NO_TIMER		BIT_12
 
 /*
  * SRB state definitions
@@ -694,6 +695,7 @@ typedef struct {
  */
 #define MBC_SERDES_PARAMS		0x10	/* Serdes Tx Parameters. */
 #define MBC_GET_IOCB_STATUS		0x12	/* Get IOCB status command. */
+#define MBC_PORT_PARAMS			0x1A    /* Port iDMA Parameters. */
 #define MBC_GET_TIMEOUT_PARAMS		0x22	/* Get FW timeouts. */
 #define MBC_GEN_SYSTEM_ERROR		0x2a	/* Generate System Error. */
 #define MBC_SET_TIMEOUT_PARAMS		0x32	/* Set FW timeouts. */
@@ -1559,9 +1561,17 @@ typedef union {
 	} r;
 
 	struct {
+#ifdef __BIG_ENDIAN
+		uint8_t domain;
+		uint8_t area;
+		uint8_t al_pa;
+#elif __LITTLE_ENDIAN
 		uint8_t al_pa;
 		uint8_t area;
 		uint8_t domain;
+#else
+#error "__BIG_ENDIAN or __LITTLE_ENDIAN must be defined!"
+#endif
 		uint8_t rsvd_1;
 	} b;
 } port_id_t;
@@ -1574,6 +1584,9 @@ typedef struct {
 	port_id_t d_id;
 	uint8_t node_name[WWN_SIZE];
 	uint8_t port_name[WWN_SIZE];
+	uint8_t fabric_port_name[WWN_SIZE];
+	uint16_t fp_speeds;
+	uint16_t fp_speed;
 } sw_info_t;
 
 /*
@@ -1727,6 +1740,9 @@ typedef struct fc_port {
 	uint16_t loop_id;
 	uint16_t old_loop_id;
 
+	uint8_t fabric_port_name[WWN_SIZE];
+	uint16_t fp_speed;
+
 	fc_port_type_t port_type;
 
 	atomic_t state;
@@ -1748,6 +1764,9 @@ typedef struct fc_port {
     	uint8_t cur_path;		/* current path id */
 
 	lun_bit_mask_t lun_mask;
+
+	unsigned long last_queue_full;
+	unsigned long last_ramp_up;
 } fc_port_t;
 
 /*
@@ -1821,6 +1840,7 @@ typedef struct fc_lun {
 
 #define CT_REJECT_RESPONSE	0x8001
 #define CT_ACCEPT_RESPONSE	0x8002
+#define CT_REASON_INVALID_COMMAND_CODE	0x01
 #define CT_REASON_CANNOT_PERFORM	0x09
 #define CT_EXPL_ALREADY_REGISTERED	0x10
 
@@ -1863,6 +1883,15 @@ typedef struct fc_lun {
 #define	RSNN_NN_CMD	 0x239
 #define	RSNN_NN_REQ_SIZE (16 + 8 + 1 + 255)
 #define	RSNN_NN_RSP_SIZE 16
+
+#define		GFPN_ID_CMD	0x11C
+#define		GFPN_ID_REQ_SIZE (16 + 4)
+#define		GFPN_ID_RSP_SIZE (16 + 8)
+
+#define		GPSC_CMD	0x127
+#define		GPSC_REQ_SIZE	(16 + 8)
+#define		GPSC_RSP_SIZE	(16 + 2 + 2)
+
 
 /*
  * HBA attribute types.
@@ -1977,7 +2006,7 @@ struct ct_sns_req {
 	uint8_t reserved[3];
 
 	union {
-		/* GA_NXT, GPN_ID, GNN_ID, GFT_ID */
+		/* GA_NXT, GPN_ID, GNN_ID, GFT_ID, GFPN_ID */
 		struct {
 			uint8_t reserved;
 			uint8_t port_id[3];
@@ -2052,6 +2081,10 @@ struct ct_sns_req {
 		struct {
 			uint8_t port_name[8];
 		} dpa;
+
+		struct {
+			uint8_t port_name[8];
+		} gpsc;
 	} req;
 };
 
@@ -2115,6 +2148,15 @@ struct ct_sns_rsp {
 			uint8_t port_name[8];
 			struct ct_fdmi_hba_attributes attrs;
 		} ghat;
+
+		struct {
+			uint8_t port_name[8];
+		} gfpn_id;
+
+		struct {
+			uint16_t speeds;
+			uint16_t speed;
+		} gpsc;
 	} rsp;
 };
 
@@ -2263,9 +2305,11 @@ typedef struct scsi_qla_host {
 		uint32_t	enable_lip_full_login	:1;
 		uint32_t	enable_target_reset	:1;
 		uint32_t	enable_led_scheme	:1;
+		uint32_t	inta_enabled		:1;
 		uint32_t	msi_enabled		:1;
 		uint32_t	msix_enabled		:1;
 		uint32_t	enable_ip		:1;
+		uint32_t	gpsc_supported		:1;
 	} flags;
 
 	atomic_t	loop_state;
@@ -2326,6 +2370,7 @@ typedef struct scsi_qla_host {
 #define DT_ISP5432			BIT_10
 #define DT_ISP_LAST			(DT_ISP5432 << 1)
 
+#define DT_IIDMA			BIT_26
 #define DT_OEM_001			BIT_29
 #define DT_ISP2200A			BIT_30
 #define DT_EXTENDED_IDS			BIT_31
@@ -2348,6 +2393,7 @@ typedef struct scsi_qla_host {
 #define IS_QLA24XX(ha)	(IS_QLA2422(ha) || IS_QLA2432(ha))
 #define IS_QLA54XX(ha)	(IS_QLA5422(ha) || IS_QLA5432(ha))
 
+#define IS_IIDMA_CAPABLE(ha)	((ha)->device_type & DT_IIDMA)
 #define IS_OEM_001(ha)		((ha)->device_type & DT_OEM_001)
 #define HAS_EXTENDED_IDS(ha)	((ha)->device_type & DT_EXTENDED_IDS)
 
@@ -2438,6 +2484,10 @@ typedef struct scsi_qla_host {
 	uint16_t	max_public_loop_ids;
 	uint16_t	min_external_loopid;	/* First external loop Id */
 
+#define PORT_SPEED_UNKNOWN 0xFFFF
+#define PORT_SPEED_1GB	0x00
+#define PORT_SPEED_2GB	0x01
+#define PORT_SPEED_4GB	0x03
 	uint16_t	link_data_rate;		/* F/W operating speed */
 
 	uint8_t		current_topology;

@@ -1,4 +1,5 @@
 #include "qim_ioctl.h"
+#include <linux/vmalloc.h>
 
 
 /* Option ROM definitions. */
@@ -1062,3 +1063,146 @@ qim_fw_dump(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
 }
 
 
+
+int
+qim2x00_update_port_param(struct qla_host_ioctl *ha, EXT_IOCTL *pext, int mode)
+{
+	int		ret = 0, rval, port_found;
+	uint16_t	mb[MAILBOX_REGISTER_COUNT];
+	uint16_t	idma_speed;
+	uint8_t		*usr_temp;
+	fc_port_t	*fcport;
+	INT_PORT_PARAM	port_param;
+	struct scsi_qla_host	*dr_ha = ha->dr_data;
+
+	if (!IS_IIDMA_CAPABLE(dr_ha)) {
+		pext->Status = EXT_STATUS_INVALID_REQUEST;
+		DEBUG9_10(printk(
+		    "%s(%ld): inst=%ld not 24xx. exiting.\n",
+		    __func__, dr_ha->host_no, dr_ha->instance));
+		return (ret);
+	}
+
+	/* Copy request buffer */
+	usr_temp = (uint8_t *)Q64BIT_TO_PTR(pext->RequestAdr,
+	    pext->AddrMode);
+	ret = copy_from_user((uint8_t *)&port_param, usr_temp,
+	    sizeof(INT_PORT_PARAM));
+	if (ret) {
+		pext->Status = EXT_STATUS_COPY_ERR;
+		DEBUG9_10(printk(
+		    "%s(%ld): inst=%ld ERROR copy req buf ret=%d\n",
+		    __func__, dr_ha->host_no, dr_ha->instance, ret));
+		return (-EFAULT);
+	}
+
+	if (port_param.FCScsiAddr.DestType != EXT_DEF_TYPE_WWPN) {
+		pext->Status = EXT_STATUS_DEV_NOT_FOUND;
+		DEBUG9_10(printk("%s(%ld): inst=%ld ERROR -wrong Dest "
+		    "type.\n", __func__, dr_ha->host_no, dr_ha->instance));
+		return (ret);
+	}
+
+	port_found = 0;
+	list_for_each_entry(fcport, &dr_ha->fcports, list) {
+		if (memcmp(fcport->port_name,
+		    port_param.FCScsiAddr.DestAddr.WWPN, WWN_SIZE))
+			continue;
+
+		port_found++;
+		break;
+	}
+	if (!port_found) {
+		pext->Status = EXT_STATUS_DEV_NOT_FOUND;
+		DEBUG9_10(printk("%s(%ld): inst=%ld FC AddrFormat - DID NOT "
+		    "FIND Port matching WWPN.\n",
+		    __func__, dr_ha->host_no, dr_ha->instance));
+		return (ret);
+	}
+
+	/* Go with operation. */
+	if (port_param.Mode) {
+		switch (port_param.Speed) {
+		case EXT_DEF_PORTSPEED_1GBIT:
+			idma_speed = PORT_SPEED_1GB;
+			break;
+		case EXT_DEF_PORTSPEED_2GBIT:
+			idma_speed = PORT_SPEED_2GB;
+			break;
+		case EXT_DEF_PORTSPEED_4GBIT:
+			idma_speed = PORT_SPEED_4GB;
+			break;
+		default:
+			pext->Status = EXT_STATUS_INVALID_PARAM;
+			DEBUG9_10(printk("%s(%ld): inst=%ld ERROR -invalid "
+			    "speed.\n", __func__, dr_ha->host_no, dr_ha->instance));
+			return (ret);
+		}
+
+		rval = qla2x00_set_idma_speed(dr_ha, fcport->loop_id, idma_speed,
+		    mb);
+		if (rval != QLA_SUCCESS) {
+			if (mb[0] == MBS_COMMAND_ERROR && mb[1] == 0x09)
+				pext->Status = EXT_STATUS_DEVICE_NOT_READY;
+			else if (mb[0] == MBS_COMMAND_PARAMETER_ERROR)
+				pext->Status = EXT_STATUS_INVALID_PARAM;
+			else
+				pext->Status = EXT_STATUS_ERR;
+
+			DEBUG9_10(printk("%s(%ld): inst=%ld set iDMA cmd "
+			    "FAILED=%x.\n", __func__, dr_ha->host_no,
+			    dr_ha->instance, mb[0]));
+			return (ret);
+		}
+	} else {
+		rval = qla2x00_get_idma_speed(dr_ha, fcport->loop_id,
+		    &idma_speed, mb);
+		if (rval != QLA_SUCCESS) {
+			if (mb[0] == MBS_COMMAND_ERROR && mb[1] == 0x09)
+				pext->Status = EXT_STATUS_DEVICE_NOT_READY;
+			else if (mb[0] == MBS_COMMAND_PARAMETER_ERROR)
+				pext->Status = EXT_STATUS_INVALID_PARAM;
+			else
+				pext->Status = EXT_STATUS_ERR;
+
+			DEBUG9_10(printk("%s(%ld): inst=%ld get iDMA cmd "
+			    "FAILED=%x.\n", __func__, dr_ha->host_no,
+			    dr_ha->instance, mb[0]));
+			return (ret);
+		}
+
+		switch (idma_speed) {
+		case PORT_SPEED_1GB:
+			port_param.Speed = EXT_DEF_PORTSPEED_1GBIT;
+			break;
+		case PORT_SPEED_2GB:
+			port_param.Speed = EXT_DEF_PORTSPEED_2GBIT;
+			break;
+		case PORT_SPEED_4GB:
+			port_param.Speed = EXT_DEF_PORTSPEED_4GBIT;
+			break;
+		default:
+			port_param.Speed = 0xFFFF;
+			break;
+		}
+
+		usr_temp = (uint8_t *)Q64BIT_TO_PTR(pext->ResponseAdr,
+		    pext->AddrMode);
+		ret = copy_to_user(usr_temp, (uint8_t *)&port_param,
+		    sizeof(INT_PORT_PARAM));
+		if (ret) {
+			pext->Status = EXT_STATUS_COPY_ERR;
+			DEBUG9_10(printk(
+			    "%s(%ld): inst=%ld ERROR copy rsp buf ret=%d\n",
+			    __func__, dr_ha->host_no, dr_ha->instance, ret));
+			return (-EFAULT);
+		}
+	}
+
+	pext->Status       = EXT_STATUS_OK;
+	pext->DetailStatus = EXT_STATUS_OK;
+
+	DEBUG9(printk("%s(%ld): exiting.\n", __func__, dr_ha->host_no));
+
+	return (ret);
+}

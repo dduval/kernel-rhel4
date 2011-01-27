@@ -889,27 +889,15 @@ void audit_log_format(struct audit_buffer *ab, const char *fmt, ...)
 	va_end(args);
 }
 
-/**
- * audit_log_hex - convert a buffer to hex and append it to the audit skb
- * @ab: the audit_buffer
- * @buf: buffer to convert to hex
- * @len: length of @buf to be converted
- *
- * No return value; failure to expand is silently ignored.
- *
- * This function will take the passed buf and convert it into a string of
- * ascii hex digits. The new string is placed onto the skb.
- */
-void audit_log_hex(struct audit_buffer *ab, const unsigned char *buf,
+/* This function will take the passed buf and convert it into a string of
+ * ascii hex digits. The new string is placed onto the skb. */
+void audit_log_hex(struct audit_buffer *ab, const unsigned char *buf, 
 		size_t len)
 {
 	int i, avail, new_len;
 	unsigned char *ptr;
 	struct sk_buff *skb;
 	static const unsigned char *hex = "0123456789ABCDEF";
-
-	if (!ab)
-		return;
 
 	BUG_ON(!ab->skb);
 	skb = ab->skb;
@@ -932,87 +920,25 @@ void audit_log_hex(struct audit_buffer *ab, const unsigned char *buf,
 	skb_put(skb, len << 1); /* new string is twice the old string */
 }
 
-/*
- * Format a string of no more than slen characters into the audit buffer,
- * enclosed in quote marks.
- */
-void audit_log_n_string(struct audit_buffer *ab, size_t slen,
-			const char *string)
-{
-	int avail, new_len;
-	unsigned char *ptr;
-	struct sk_buff *skb;
-
-	if (!ab)
-		return;
-
-	BUG_ON(!ab->skb);
-	skb = ab->skb;
-	avail = skb_tailroom(skb);
-	new_len = slen + 3;	/* enclosing quotes + null terminator */
-	if (new_len > avail) {
-		avail = audit_expand(ab, new_len);
-		if (!avail)
-			return;
-	}
-	ptr = skb->tail;
-	*ptr++ = '"';
-	memcpy(ptr, string, slen);
-	ptr += slen;
-	*ptr++ = '"';
-	*ptr = 0;
-	skb_put(skb, slen + 2);	/* don't include null terminator */
-}
-
-/**
- * audit_string_contains_control - does a string need to be logged in hex
- * @string - string to be checked
- * @len - max length of the string to check
- */
-int audit_string_contains_control(const char *string, size_t len)
-{
-	const unsigned char *p;
-	for (p = string; p < (const unsigned char *)string + len && *p; p++) {
-		if (*p == '"' || *p < 0x21 || *p > 0x7f)
-			return 1;
-	}
-	return 0;
-}
-
-/**
- * audit_log_n_untrustedstring - log a string that may contain random characters
- * @ab: audit_buffer
- * @len: lenth of string (not including trailing null)
- * @string: string to be logged
- *
- * This code will escape a string that is passed to it if the string
- * contains a control character, unprintable character, double quote mark,
+/* This code will escape a string that is passed to it if the string
+ * contains a control character, unprintable character, double quote mark, 
  * or a space. Unescaped strings will start and end with a double quote mark.
- * Strings that are escaped are printed in hex (2 digits per char).
- *
- * The caller specifies the number of characters in the string to log, which may
- * or may not be the entire string.
- */
-void audit_log_n_untrustedstring(struct audit_buffer *ab, size_t len,
-				 const char *string)
+ * Strings that are escaped are printed in hex (2 digits per char). */
+const char *audit_log_untrustedstring(struct audit_buffer *ab,
+				      const char *string)
 {
-	if (audit_string_contains_control(string, len))
-		audit_log_hex(ab, string, len);
-	else
-		audit_log_n_string(ab, len, string);
-}
+	const unsigned char *p = string;
+	size_t len = strlen(string);
 
-/**
- * audit_log_untrustedstring - log a string that may contain random characters
- * @ab: audit_buffer
- * @string: string to be logged
- *
- * Same as audit_log_n_untrustedstring(), except that strlen is used to
- * determine string length.
- */
-void audit_log_untrustedstring(struct audit_buffer *ab, const char *string)
-{
-	audit_log_n_untrustedstring(ab, strlen(string), string);
+	while (*p) {
+		if (*p == '"' || *p < 0x21 || *p > 0x7f) {
+			audit_log_hex(ab, string, len);
+			return string + len + 1;
+		}
+		p++;
+	}
+	audit_log_format(ab, "\"%s\"", string);
+	return p + 1;
 }
 
 /* This is a helper-function to print the escaped d_path */

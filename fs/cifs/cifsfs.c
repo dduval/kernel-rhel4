@@ -1,7 +1,7 @@
 /*
  *   fs/cifs/cifsfs.c
  *
- *   Copyright (C) International Business Machines  Corp., 2002,2004
+ *   Copyright (C) International Business Machines  Corp., 2002,2007
  *   Author(s): Steve French (sfrench@us.ibm.com)
  *
  *   Common Internet FileSystem (CIFS) client
@@ -43,12 +43,19 @@
 #include <linux/mm.h>
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
 #include <linux/moduleparam.h>
-#endif
-#define CIFS_MAGIC_NUMBER 0xFF534D42	/* the first four bytes of SMB PDUs */
+#endif /* 2.6.9 */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,19)
+#include <linux/freezer.h>
+#endif /* 2.6.19 */
+#define CIFS_MAGIC_NUMBER 0xFF534D42    /* the first four bytes of SMB PDUs */
 
 #ifdef CONFIG_CIFS_QUOTA
 static struct quotactl_ops cifs_quotactl_ops;
-#endif
+#endif /* QUOTA */
+
+#ifdef CONFIG_CIFS_EXPERIMENTAL
+extern struct export_operations cifs_export_ops;
+#endif /* EXPERIMENTAL */
 
 int cifsFYI = 0;
 int cifsERROR = 1;
@@ -63,8 +70,8 @@ unsigned int extended_security = CIFSSEC_DEF;
 unsigned int sign_CIFS_PDUs = 1;
 extern struct task_struct * oplockThread; /* remove sparse warning */
 struct task_struct * oplockThread = NULL;
-extern struct task_struct * dnotifyThread; /* remove sparse warning */
-struct task_struct * dnotifyThread = NULL;
+/* extern struct task_struct * dnotifyThread; remove sparse warning */
+static struct task_struct * dnotifyThread = NULL;
 unsigned int CIFSMaxBufSize = CIFS_MAX_MSGSIZE;
 module_param(CIFSMaxBufSize, int, 0);
 MODULE_PARM_DESC(CIFSMaxBufSize,"Network buffer size (not including header). Default: 16384 Range: 8192 to 130048");
@@ -94,8 +101,9 @@ cifs_read_super(struct super_block *sb, void *data,
 	struct inode *inode;
 	struct cifs_sb_info *cifs_sb;
 	int rc = 0;
-
-	sb->s_flags |= MS_NODIRATIME; /* and probably even noatime */
+	
+	/* BB should we make this contingent on mount parm? */
+	sb->s_flags |= MS_NODIRATIME | MS_NOATIME;
 	sb->s_fs_info = kzalloc(sizeof(struct cifs_sb_info),GFP_KERNEL);
 	cifs_sb = CIFS_SB(sb);
 	if(cifs_sb == NULL)
@@ -112,6 +120,10 @@ cifs_read_super(struct super_block *sb, void *data,
 
 	sb->s_magic = CIFS_MAGIC_NUMBER;
 	sb->s_op = &cifs_super_ops;
+#ifdef CONFIG_CIFS_EXPERIMENTAL
+	if(experimEnabled != 0)
+		sb->s_export_op = &cifs_export_ops;
+#endif /* EXPERIMENTAL */	
 /*	if(cifs_sb->tcon->ses->server->maxBuf > MAX_CIFS_HDR_SIZE + 512)
 	    sb->s_blocksize = cifs_sb->tcon->ses->server->maxBuf - MAX_CIFS_HDR_SIZE; */
 #ifdef CONFIG_CIFS_QUOTA
@@ -170,23 +182,16 @@ cifs_put_super(struct super_block *sb)
 	return;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 16)
-#if LINUX_VERSION_CODE != KERNEL_VERSION(2, 6, 9)
-void * kzalloc(size_t size, unsigned flgs)
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+static int
+cifs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
-	void * buf;
-	buf = kmalloc(size, flgs);
-	if(buf != NULL)
-		memset(buf, 0, size);
-	return buf;
-}
-#endif
-#endif
-
-
+	struct super_block *sb = dentry->d_sb;
+#else
 static int
 cifs_statfs(struct super_block *sb, struct kstatfs *buf)
 {
+#endif	
 	int xid; 
 	int rc = -EOPNOTSUPP;
 	struct cifs_sb_info *cifs_sb;
@@ -207,7 +212,6 @@ cifs_statfs(struct super_block *sb, struct kstatfs *buf)
 	buf->f_files = 0;	/* undefined */
 	buf->f_ffree = 0;	/* unlimited */
 
-#ifdef CONFIG_CIFS_EXPERIMENTAL
 /* BB we could add a second check for a QFS Unix capability bit */
 /* BB FIXME check CIFS_POSIX_EXTENSIONS Unix cap first FIXME BB */
     if ((pTcon->ses->capabilities & CAP_UNIX) && (CIFS_POSIX_EXTENSIONS &
@@ -217,11 +221,12 @@ cifs_statfs(struct super_block *sb, struct kstatfs *buf)
     /* Only need to call the old QFSInfo if failed
     on newer one */
     if(rc)
-#endif /* CIFS_EXPERIMENTAL */
-	rc = CIFSSMBQFSInfo(xid, pTcon, buf);
+	if(pTcon->ses->capabilities & CAP_NT_SMBS)
+		rc = CIFSSMBQFSInfo(xid, pTcon, buf); /* not supported by OS2 */
 
-	/* Old Windows servers do not support level 103, retry with level 
-	   one if old server failed the previous call */ 
+	/* Some old Windows servers also do not support level 103, retry with
+	   older level one if old server failed the previous call or we
+	   bypassed it because we detected that this was an older LANMAN sess */
 	if(rc)
 		rc = SMBOldQFSInfo(xid, pTcon, buf);
 	/*     
@@ -277,9 +282,14 @@ cifs_alloc_inode(struct super_block *sb)
 	file data or metadata */
 	cifs_inode->clientCanCacheRead = FALSE;
 	cifs_inode->clientCanCacheAll = FALSE;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
 	cifs_inode->vfs_inode.i_blksize = CIFS_MAX_MSGSIZE;
+#endif
 	cifs_inode->vfs_inode.i_blkbits = 14;  /* 2**14 = CIFS_MAX_MSGSIZE */
-	cifs_inode->vfs_inode.i_flags = S_NOATIME | S_NOCMTIME;
+	
+	/* Can not set i_flags here - they get immediately overwritten
+	   to zero by the VFS */
+/*	cifs_inode->vfs_inode.i_flags = S_NOATIME | S_NOCMTIME;*/
 	INIT_LIST_HEAD(&cifs_inode->openFileList);
 	return &cifs_inode->vfs_inode;
 }
@@ -304,6 +314,7 @@ cifs_show_options(struct seq_file *s, struct vfsmount *m)
 
 	if (cifs_sb) {
 		if (cifs_sb->tcon) {
+/* BB add prepath to mount options displayed */
 			seq_printf(s, ",unc=%s", cifs_sb->tcon->treeName);
 			if (cifs_sb->tcon->ses) {
 				if (cifs_sb->tcon->ses->userName)
@@ -424,12 +435,22 @@ static struct quotactl_ops cifs_quotactl_ops = {
 };
 #endif
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)
+static void cifs_umount_begin(struct vfsmount * vfsmnt, int flags)
+#else
 static void cifs_umount_begin(struct super_block * sblock)
+#endif
 {
 	struct cifs_sb_info *cifs_sb;
 	struct cifsTconInfo * tcon;
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 16)
+	if (!(flags & MNT_FORCE))
+		return;
+	cifs_sb = CIFS_SB(vfsmnt->mnt_sb);
+#else
 	cifs_sb = CIFS_SB(sblock);
+#endif
 	if(cifs_sb == NULL)
 		return;
 
@@ -479,9 +500,16 @@ struct super_operations cifs_super_ops = {
 	.remount_fs = cifs_remount,
 };
 
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+static int
+cifs_get_sb(struct file_system_type *fs_type,
+	    int flags, const char *dev_name, void *data, struct vfsmount *mnt)
+#else
 static struct super_block *
 cifs_get_sb(struct file_system_type *fs_type,
 	    int flags, const char *dev_name, void *data)
+#endif
 {
 	int rc;
 	struct super_block *sb = sget(fs_type, NULL, set_anon_super, NULL);
@@ -489,7 +517,11 @@ cifs_get_sb(struct file_system_type *fs_type,
 	cFYI(1, ("Devname: %s flags: %d ", dev_name, flags));
 
 	if (IS_ERR(sb))
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+		return PTR_ERR(sb);
+#else	
 		return sb;
+#endif
 
 	sb->s_flags = flags;
 
@@ -497,11 +529,29 @@ cifs_get_sb(struct file_system_type *fs_type,
 	if (rc) {
 		up_write(&sb->s_umount);
 		deactivate_super(sb);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+		return rc;
+#else		
 		return ERR_PTR(rc);
+#endif		
 	}
 	sb->s_flags |= MS_ACTIVE;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+	return simple_set_mnt(mnt, sb);
+#else	
 	return sb;
+#endif
 }
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 18)
+static ssize_t cifs_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
+                                   unsigned long nr_segs, loff_t pos)
+{
+        struct inode *inode = iocb->ki_filp->f_dentry->d_inode;
+        ssize_t written;
+
+        written = generic_file_aio_write(iocb, iov, nr_segs, pos);
+#else
 
 static ssize_t cifs_file_writev(struct file *file, const struct iovec *iov,
 				unsigned long nr_segs, loff_t *ppos)
@@ -522,6 +572,7 @@ static ssize_t cifs_file_aio_write(struct kiocb *iocb, const char __user *buf,
 	ssize_t written;
 
 	written = generic_file_aio_write(iocb, buf, count, pos);
+#endif
 	if (!CIFS_I(inode)->clientCanCacheAll)
 		filemap_fdatawrite(inode->i_mapping);
 	return written;
@@ -531,7 +582,21 @@ static loff_t cifs_llseek(struct file *file, loff_t offset, int origin)
 {
 	/* origin == SEEK_END => we must revalidate the cached file length */
 	if (origin == 2) {
-		int retval = cifs_revalidate(file->f_dentry);
+		int retval;
+
+		/* some applications poll for the file length in this strange
+                  way so we must seek to end on non-oplocked files by
+                  setting the revalidate time to zero */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
+		if(file->f_path.dentry->d_inode)                
+			CIFS_I(file->f_path.dentry->d_inode)->time = 0;
+
+		retval = cifs_revalidate(file->f_path.dentry);
+#else
+		if(file->f_dentry->d_inode)
+			CIFS_I(file->f_dentry->d_inode)->time = 0;
+		retval = cifs_revalidate(file->f_dentry);
+#endif
 		if (retval < 0)
 			return (loff_t)retval;
 	}
@@ -601,11 +666,13 @@ struct inode_operations cifs_symlink_inode_ops = {
 #endif 
 };
 
-struct file_operations cifs_file_ops = {
+const struct file_operations cifs_file_ops = {
 	.read = do_sync_read,
 	.write = do_sync_write,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 19)
 	.readv = generic_file_readv,
 	.writev = cifs_file_writev,
+#endif
 	.aio_read = generic_file_aio_read,
 	.aio_write = cifs_file_aio_write,
 	.open = cifs_open,
@@ -625,7 +692,7 @@ struct file_operations cifs_file_ops = {
 #endif /* CONFIG_CIFS_EXPERIMENTAL */
 };
 
-struct file_operations cifs_file_direct_ops = {
+const struct file_operations cifs_file_direct_ops = {
 	/* no mmap, no aio, no readv - 
 	   BB reevaluate whether they can be done with directio, no cache */
 	.read = cifs_user_read,
@@ -644,11 +711,14 @@ struct file_operations cifs_file_direct_ops = {
 	.dir_notify = cifs_dir_notify,
 #endif /* CONFIG_CIFS_EXPERIMENTAL */
 };
-struct file_operations cifs_file_nobrl_ops = {
+
+const struct file_operations cifs_file_nobrl_ops = {
 	.read = do_sync_read,
 	.write = do_sync_write,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 19)
 	.readv = generic_file_readv,
 	.writev = cifs_file_writev,
+#endif
 	.aio_read = generic_file_aio_read,
 	.aio_write = cifs_file_aio_write,
 	.open = cifs_open,
@@ -667,7 +737,7 @@ struct file_operations cifs_file_nobrl_ops = {
 #endif /* CONFIG_CIFS_EXPERIMENTAL */
 };
 
-struct file_operations cifs_file_direct_nobrl_ops = {
+const struct file_operations cifs_file_direct_nobrl_ops = {
 	/* no mmap, no aio, no readv - 
 	   BB reevaluate whether they can be done with directio, no cache */
 	.read = cifs_user_read,
@@ -686,7 +756,7 @@ struct file_operations cifs_file_direct_nobrl_ops = {
 #endif /* CONFIG_CIFS_EXPERIMENTAL */
 };
 
-struct file_operations cifs_dir_ops = {
+const struct file_operations cifs_dir_ops = {
 	.readdir = cifs_readdir,
 	.release = cifs_closedir,
 	.read    = generic_read_dir,
@@ -724,8 +794,7 @@ cifs_init_inodecache(void)
 static void
 cifs_destroy_inodecache(void)
 {
-	if (kmem_cache_destroy(cifs_inode_cachep))
-		printk(KERN_WARNING "cifs_inode_cache: error freeing\n");
+	kmem_cache_destroy(cifs_inode_cachep);
 }
 
 static int
@@ -807,13 +876,9 @@ static void
 cifs_destroy_request_bufs(void)
 {
 	mempool_destroy(cifs_req_poolp);
-	if (kmem_cache_destroy(cifs_req_cachep))
-		printk(KERN_WARNING
-		       "cifs_destroy_request_cache: error not all structures were freed\n");
+	kmem_cache_destroy(cifs_req_cachep);
 	mempool_destroy(cifs_sm_req_poolp);
-	if (kmem_cache_destroy(cifs_sm_req_cachep))
-		printk(KERN_WARNING
-		      "cifs_destroy_request_cache: cifs_small_rq free error\n");
+	kmem_cache_destroy(cifs_sm_req_cachep);
 }
 
 static int
@@ -850,13 +915,8 @@ static void
 cifs_destroy_mids(void)
 {
 	mempool_destroy(cifs_mid_poolp);
-	if (kmem_cache_destroy(cifs_mid_cachep))
-		printk(KERN_WARNING
-		       "cifs_destroy_mids: error not all structures were freed\n");
-
-	if (kmem_cache_destroy(cifs_oplock_cachep))
-		printk(KERN_WARNING
-		       "error not all oplock structures were freed\n");
+	kmem_cache_destroy(cifs_mid_cachep);
+	kmem_cache_destroy(cifs_oplock_cachep);
 }
 
 static int cifs_oplock_thread(void * dummyarg)
@@ -972,7 +1032,7 @@ init_cifs(void)
 #ifdef CONFIG_PROC_FS
 	cifs_proc_init();
 #endif
-	INIT_LIST_HEAD(&GlobalServerList);	/* BB not implemented yet */
+/*	INIT_LIST_HEAD(&GlobalServerList);*/	/* BB not implemented yet */
 	INIT_LIST_HEAD(&GlobalSMBSessionList);
 	INIT_LIST_HEAD(&GlobalTreeConnectionList);
 	INIT_LIST_HEAD(&GlobalOplock_Q);

@@ -637,7 +637,7 @@ handle_scsi_data(struct iscsi_session *session, struct iscsi_hdr *sth)
 					sc->use_sg, offset,
 					session->data_digest);
 	else {
-		sg_init_one(&sg, sc->request_buffer, dlength);
+		sg_init_one(&sg, sc->request_buffer, sc->bufflen);
 		rc = iscsi_recv_sg_data(session, dlength, &sg, 1, offset,
 					session->data_digest);
 	}

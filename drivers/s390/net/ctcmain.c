@@ -280,6 +280,8 @@ struct ctc_priv {
  	 */
  	fsm_timer               restart_timer;
 
+	int buffer_size;
+
 	struct channel *channel[2];
 };
 
@@ -1925,7 +1927,6 @@ add_channel(struct ccw_device *cdev, enum channel_types type)
 	ch->cdev = cdev;
 	snprintf(ch->id, CTC_ID_SIZE, "ch-%s", cdev->dev.bus_id);
 	ch->type = type;
-	loglevel = CTC_LOGLEVEL_DEFAULT;
 	ch->fsm = init_fsm(ch->id, ch_state_names,
 			   ch_event_names, NR_CH_STATES, NR_CH_EVENTS,
 			   ch_fsm, CH_FSM_LEN, GFP_KERNEL);
@@ -2424,14 +2425,19 @@ transmit_skb(struct channel *ch, struct sk_buff *skb)
 	struct ll_header header;
 	int rc = 0;
 
+	/* we need to acquire the lock for testing the state
+	 * otherwise we can have an IRQ changing the state to 
+	 * TXIDLE after the test but before acquiring the lock.
+	 */
+	spin_lock_irqsave(&ch->collect_lock, saveflags);
 	DBF_TEXT(trace, 5, __FUNCTION__);
 	if (fsm_getstate(ch->fsm) != CH_STATE_TXIDLE) {
 		int l = skb->len + LL_HEADER_LENGTH;
 
-		spin_lock_irqsave(&ch->collect_lock, saveflags);
-		if (ch->collect_len + l > ch->max_bufsize - 2)
-			rc = -EBUSY;
-		else {
+		if (ch->collect_len + l > ch->max_bufsize - 2) {
+			spin_unlock_irqrestore(&ch->collect_lock, saveflags);
+			return -EBUSY;
+		} else {
 			atomic_inc(&skb->users);
 			header.length = l;
 			header.type = skb->protocol;
@@ -2448,6 +2454,7 @@ transmit_skb(struct channel *ch, struct sk_buff *skb)
 		struct sk_buff *nskb;
 		unsigned long hi;
 
+		spin_unlock_irqrestore(&ch->collect_lock, saveflags);
 		/**
 		 * Protect skb against beeing free'd by upper
 		 * layers.
@@ -2472,6 +2479,7 @@ transmit_skb(struct channel *ch, struct sk_buff *skb)
 			if (!nskb) {
 				atomic_dec(&skb->users);
 				skb_pull(skb, LL_HEADER_LENGTH + 2);
+				ctc_clear_busy(ch->netdev);
 				return -ENOMEM;
 			} else {
 				memcpy(skb_put(nskb, skb->len),
@@ -2497,6 +2505,7 @@ transmit_skb(struct channel *ch, struct sk_buff *skb)
 				 */
 				atomic_dec(&skb->users);
 				skb_pull(skb, LL_HEADER_LENGTH + 2);
+				ctc_clear_busy(ch->netdev);
 				return -EBUSY;
 			}
 
@@ -2543,6 +2552,7 @@ transmit_skb(struct channel *ch, struct sk_buff *skb)
 		}
 	}
 
+	ctc_clear_busy(ch->netdev);
 	return rc;
 }
 
@@ -2637,7 +2647,6 @@ ctc_tx(struct sk_buff *skb, struct net_device * dev)
 	dev->trans_start = jiffies;
 	if (transmit_skb(privptr->channel[WRITE], skb) != 0)
 		rc = 1;
-	ctc_clear_busy(dev);
 	return rc;
 }
 
@@ -2692,7 +2701,7 @@ buffer_show(struct device *dev, char *buf)
 	if (!priv)
 		return -ENODEV;
 	return sprintf(buf, "%d\n",
-		       priv->channel[READ]->max_bufsize);
+		       priv->buffer_size);
 }
 
 static ssize_t
@@ -2701,56 +2710,61 @@ buffer_write(struct device *dev, const char *buf, size_t count)
 	struct ctc_priv *priv;
 	struct net_device *ndev;
 	int bs1;
+	char buffer[16];
 
 	DBF_TEXT(trace, 5, __FUNCTION__);
+	DBF_TEXT(trace, 3, buf);
 	priv = dev->driver_data;
-	if (!priv)
+	if (!priv) {
+		DBF_TEXT(trace, 3, "bfnopriv");
 		return -ENODEV;
-	ndev = priv->channel[READ]->netdev;
-	if (!ndev)
-		return -ENODEV;
-	sscanf(buf, "%u", &bs1);
+	}
 
+	sscanf(buf, "%u", &bs1);
 	if (bs1 > CTC_BUFSIZE_LIMIT)
-		return -EINVAL;
+		goto einval;
+	if (bs1 < (576 + LL_HEADER_LENGTH + 2))
+		goto einval;
+	priv->buffer_size = bs1;	/* just to overwrite the default */
+	
+	ndev = priv->channel[READ]->netdev;
+	if (!ndev) {
+		DBF_TEXT(trace, 3, "bfnondev");
+		return -ENODEV;
+	}
+	
 	if ((ndev->flags & IFF_RUNNING) &&
 	    (bs1 < (ndev->mtu + LL_HEADER_LENGTH + 2)))
-		return -EINVAL;
-	if (bs1 < (576 + LL_HEADER_LENGTH + 2))
-		return -EINVAL;
+		goto einval;
 
 	priv->channel[READ]->max_bufsize =
-	    priv->channel[WRITE]->max_bufsize = bs1;
+	priv->channel[WRITE]->max_bufsize = bs1;
 	if (!(ndev->flags & IFF_RUNNING))
 		ndev->mtu = bs1 - LL_HEADER_LENGTH - 2;
 	priv->channel[READ]->flags |= CHANNEL_FLAGS_BUFSIZE_CHANGED;
 	priv->channel[WRITE]->flags |= CHANNEL_FLAGS_BUFSIZE_CHANGED;
 
+	sprintf(buffer, "%d",priv->buffer_size);
+	DBF_TEXT(trace, 3, buffer);
 	return count;
 
+einval:
+	DBF_TEXT(trace, 3, "buff_err");
+	return -EINVAL;
 }
 
 static ssize_t
 loglevel_show(struct device *dev, char *buf)
 {
-	struct ctc_priv *priv;
-
-	priv = dev->driver_data;
-	if (!priv)
-		return -ENODEV;
 	return sprintf(buf, "%d\n", loglevel);
 }
 
 static ssize_t
 loglevel_write(struct device *dev, const char *buf, size_t count)
 {
-	struct ctc_priv *priv;
 	int ll1;
 
 	DBF_TEXT(trace, 5, __FUNCTION__);
-	priv = dev->driver_data;
-	if (!priv)
-		return -ENODEV;
 	sscanf(buf, "%i", &ll1);
 
 	if ((ll1 > CTC_LOGLEVEL_MAX) || (ll1 < 0))
@@ -2820,28 +2834,6 @@ stats_write(struct device *dev, const char *buf, size_t count)
 	return count;
 }
 
-static DEVICE_ATTR(buffer, 0644, buffer_show, buffer_write);
-static DEVICE_ATTR(loglevel, 0644, loglevel_show, loglevel_write);
-static DEVICE_ATTR(stats, 0644, stats_show, stats_write);
-
-static int
-ctc_add_attributes(struct device *dev)
-{
-	device_create_file(dev, &dev_attr_buffer);
-	device_create_file(dev, &dev_attr_loglevel);
-	device_create_file(dev, &dev_attr_stats);
-	return 0;
-}
-
-static void
-ctc_remove_attributes(struct device *dev)
-{
-	device_remove_file(dev, &dev_attr_stats);
-	device_remove_file(dev, &dev_attr_loglevel);
-	device_remove_file(dev, &dev_attr_buffer);
-}
-
-
 static void
 ctc_netdev_unregister(struct net_device * dev)
 {
@@ -2884,51 +2876,6 @@ ctc_free_netdevice(struct net_device * dev, int free_dev)
 #endif
 }
 
-/**
- * Initialize everything of the net device except the name and the
- * channel structs.
- */
-static struct net_device *
-ctc_init_netdevice(struct net_device * dev, int alloc_device, 
-		   struct ctc_priv *privptr)
-{
-	if (!privptr)
-		return NULL;
-
-	DBF_TEXT(setup, 3, __FUNCTION__);
-	if (alloc_device) {
-		dev = kmalloc(sizeof (struct net_device), GFP_KERNEL);
-		if (!dev)
-			return NULL;
-		memset(dev, 0, sizeof (struct net_device));
-	}
-
-	dev->priv = privptr;
-	privptr->fsm = init_fsm("ctcdev", dev_state_names,
-				dev_event_names, NR_DEV_STATES, NR_DEV_EVENTS,
-				dev_fsm, DEV_FSM_LEN, GFP_KERNEL);
-	if (privptr->fsm == NULL) {
-		if (alloc_device)
-			kfree(dev);
-		return NULL;
-	}
-	fsm_newstate(privptr->fsm, DEV_STATE_STOPPED);
-	fsm_settimer(privptr->fsm, &privptr->restart_timer);
-	dev->mtu = CTC_BUFSIZE_DEFAULT - LL_HEADER_LENGTH - 2;
-	dev->hard_start_xmit = ctc_tx;
-	dev->open = ctc_open;
-	dev->stop = ctc_close;
-	dev->get_stats = ctc_stats;
-	dev->change_mtu = ctc_change_mtu;
-	dev->hard_header_len = LL_HEADER_LENGTH + 2;
-	dev->addr_len = 0;
-	dev->type = ARPHRD_SLIP;
-	dev->tx_queue_len = 100;
-	dev->flags = IFF_POINTOPOINT | IFF_NOARP;
-	SET_MODULE_OWNER(dev);
-	return dev;
-}
-
 static ssize_t
 ctc_proto_show(struct device *dev, char *buf)
 {
@@ -2961,8 +2908,6 @@ ctc_proto_store(struct device *dev, const char *buf, size_t count)
 	return count;
 }
 
-static DEVICE_ATTR(protocol, 0644, ctc_proto_show, ctc_proto_store);
-
 static ssize_t
 ctc_type_show(struct device *dev, char *buf)
 {
@@ -2975,17 +2920,37 @@ ctc_type_show(struct device *dev, char *buf)
 	return sprintf(buf, "%s\n", cu3088_type[cgdev->cdev[0]->id.driver_info]);
 }
 
+static DEVICE_ATTR(buffer, 0644, buffer_show, buffer_write);
+static DEVICE_ATTR(protocol, 0644, ctc_proto_show, ctc_proto_store);
 static DEVICE_ATTR(type, 0444, ctc_type_show, NULL);
+static DEVICE_ATTR(loglevel, 0644, loglevel_show, loglevel_write);
+static DEVICE_ATTR(stats, 0644, stats_show, stats_write);
 
 static struct attribute *ctc_attr[] = {
 	&dev_attr_protocol.attr,
 	&dev_attr_type.attr,
+	&dev_attr_buffer.attr,
 	NULL,
 };
 
 static struct attribute_group ctc_attr_group = {
 	.attrs = ctc_attr,
 };
+
+static int
+ctc_add_attributes(struct device *dev)
+{
+	device_create_file(dev, &dev_attr_loglevel);
+	device_create_file(dev, &dev_attr_stats);
+	return 0;
+}
+
+static void
+ctc_remove_attributes(struct device *dev)
+{
+	device_remove_file(dev, &dev_attr_stats);
+	device_remove_file(dev, &dev_attr_loglevel);
+}
 
 static int
 ctc_add_files(struct device *dev)
@@ -3019,7 +2984,7 @@ ctc_probe_device(struct ccwgroup_device *cgdev)
 	int rc;
 
 	pr_debug("%s() called\n", __FUNCTION__);
-	DBF_TEXT(trace, 3, __FUNCTION__);
+	DBF_TEXT(setup, 3, __FUNCTION__);
 
 	if (!get_device(&cgdev->dev))
 		return -ENODEV;
@@ -3039,11 +3004,59 @@ ctc_probe_device(struct ccwgroup_device *cgdev)
 		return rc;
 	}
 
+	priv->buffer_size = CTC_BUFSIZE_DEFAULT;
 	cgdev->cdev[0]->handler = ctc_irq_handler;
 	cgdev->cdev[1]->handler = ctc_irq_handler;
 	cgdev->dev.driver_data = priv;
 
 	return 0;
+}
+
+/*
+ * Initialize everything of the net device except the name and the
+ * channel structs.
+ */
+static struct net_device *
+ctc_init_netdevice(struct net_device * dev, int alloc_device,
+		   struct ctc_priv *privptr)
+{
+	if (!privptr)
+		return NULL;
+
+	DBF_TEXT(setup, 3, __FUNCTION__);
+
+	if (alloc_device) {
+		dev = kmalloc(sizeof (struct net_device), GFP_KERNEL);
+		if (!dev)
+			return NULL;
+		memset(dev, 0, sizeof (struct net_device));
+	}
+
+	dev->priv = privptr;
+	privptr->fsm = init_fsm("ctcdev", dev_state_names,
+				dev_event_names, NR_DEV_STATES, NR_DEV_EVENTS,
+				dev_fsm, DEV_FSM_LEN, GFP_KERNEL);
+	if (privptr->fsm == NULL) {
+		if (alloc_device)
+			kfree(dev);
+		return NULL;
+	}
+	fsm_newstate(privptr->fsm, DEV_STATE_STOPPED);
+	fsm_settimer(privptr->fsm, &privptr->restart_timer);
+	if (dev->mtu == 0)
+		dev->mtu = CTC_BUFSIZE_DEFAULT - LL_HEADER_LENGTH - 2;
+	dev->hard_start_xmit = ctc_tx;
+	dev->open = ctc_open;
+	dev->stop = ctc_close;
+	dev->get_stats = ctc_stats;
+	dev->change_mtu = ctc_change_mtu;
+	dev->hard_header_len = LL_HEADER_LENGTH + 2;
+	dev->addr_len = 0;
+	dev->type = ARPHRD_SLIP;
+	dev->tx_queue_len = 100;
+	dev->flags = IFF_POINTOPOINT | IFF_NOARP;
+	SET_MODULE_OWNER(dev);
+	return dev;
 }
 
 /**
@@ -3064,6 +3077,7 @@ ctc_new_device(struct ccwgroup_device *cgdev)
 	struct ctc_priv *privptr;
 	struct net_device *dev;
 	int ret;
+	char buffer[16];
 
 	pr_debug("%s() called\n", __FUNCTION__);
 	DBF_TEXT(setup, 3, __FUNCTION__);
@@ -3071,6 +3085,9 @@ ctc_new_device(struct ccwgroup_device *cgdev)
 	privptr = cgdev->dev.driver_data;
 	if (!privptr)
 		return -ENODEV;
+
+	sprintf(buffer, "%d", privptr->buffer_size);
+	DBF_TEXT(setup, 3, buffer);
 
 	type = get_channel_type(&cgdev->cdev[0]->id);
 	
@@ -3119,7 +3136,7 @@ ctc_new_device(struct ccwgroup_device *cgdev)
 		}
 		privptr->channel[direction]->netdev = dev;
 		privptr->channel[direction]->protocol = privptr->protocol;
-		privptr->channel[direction]->max_bufsize = CTC_BUFSIZE_DEFAULT;
+		privptr->channel[direction]->max_bufsize = privptr->buffer_size;
 	}
 	/* sysfs magic */
 	SET_NETDEV_DEV(dev, &cgdev->dev);
@@ -3160,7 +3177,7 @@ ctc_shutdown_device(struct ccwgroup_device *cgdev)
 	struct ctc_priv *priv;
 	struct net_device *ndev;
 		
-	DBF_TEXT(trace, 3, __FUNCTION__);
+	DBF_TEXT(setup, 3, __FUNCTION__);
 	pr_debug("%s() called\n", __FUNCTION__);
 
 	priv = cgdev->dev.driver_data;
@@ -3248,6 +3265,7 @@ static struct ccwgroup_driver ctc_group_driver = {
 static void __exit
 ctc_exit(void)
 {
+	DBF_TEXT(setup, 3, __FUNCTION__);
 	unregister_cu3088_discipline(&ctc_group_driver);
 	ctc_tty_cleanup();
 	ctc_unregister_dbf_views();
@@ -3264,6 +3282,9 @@ static int __init
 ctc_init(void)
 {
 	int ret = 0;
+
+	loglevel = CTC_LOGLEVEL_DEFAULT;
+	DBF_TEXT(setup, 3, __FUNCTION__);
 
 	print_banner();
 

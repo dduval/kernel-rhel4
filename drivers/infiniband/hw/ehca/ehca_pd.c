@@ -43,14 +43,14 @@
 #include "ehca_tools.h"
 #include "ehca_iverbs.h"
 
-static struct kmem_cache *pd_cache;
+static kmem_cache_t *pd_cache;
 
 struct ib_pd *ehca_alloc_pd(struct ib_device *device,
 			    struct ib_ucontext *context, struct ib_udata *udata)
 {
 	struct ehca_pd *pd;
 
-	pd = kmem_cache_alloc(pd_cache, SLAB_KERNEL);
+	pd = kmem_cache_alloc(pd_cache, GFP_KERNEL);
 	if (!pd) {
 		ehca_err(device, "device=%p context=%p out of memory",
 			 device, context);

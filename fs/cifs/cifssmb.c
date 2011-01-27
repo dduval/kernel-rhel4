@@ -49,6 +49,7 @@ static struct {
 } protocols[] = {
 #ifdef CONFIG_CIFS_WEAK_PW_HASH
 	{LANMAN_PROT, "\2LM1.2X002"},
+	{LANMAN2_PROT, "\2LANMAN2.1"},
 #endif /* weak password hashing for legacy clients */
 	{CIFS_PROT, "\2NT LM 0.12"}, 
 	{POSIX_PROT, "\2POSIX 2"},
@@ -61,6 +62,7 @@ static struct {
 } protocols[] = {
 #ifdef CONFIG_CIFS_WEAK_PW_HASH
 	{LANMAN_PROT, "\2LM1.2X002"},
+	{LANMAN2_PROT, "\2LANMAN2.1"},
 #endif /* weak password hashing for legacy clients */
 	{CIFS_PROT, "\2NT LM 0.12"}, 
 	{BAD_PROT, "\2"}
@@ -70,13 +72,13 @@ static struct {
 /* define the number of elements in the cifs dialect array */
 #ifdef CONFIG_CIFS_POSIX
 #ifdef CONFIG_CIFS_WEAK_PW_HASH
-#define CIFS_NUM_PROT 3
+#define CIFS_NUM_PROT 4
 #else
 #define CIFS_NUM_PROT 2
 #endif /* CIFS_WEAK_PW_HASH */
 #else /* not posix */
 #ifdef CONFIG_CIFS_WEAK_PW_HASH
-#define CIFS_NUM_PROT 2
+#define CIFS_NUM_PROT 3
 #else
 #define CIFS_NUM_PROT 1
 #endif /* CONFIG_CIFS_WEAK_PW_HASH */
@@ -136,12 +138,17 @@ small_smb_init(int smb_command, int wct, struct cifsTconInfo *tcon,
 			while(tcon->ses->server->tcpStatus == CifsNeedReconnect) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2, 5, 0)
 				int timeout = 10 * HZ;
-				while ((tcon->ses->server->tcpStatus != CifsGood) && (timeout > 0)) {
-					timeout = interruptible_sleep_on_timeout(&tcon->ses->server->response_q,timeout);
+				while((tcon->ses->server->tcpStatus != CifsGood)
+						&& (timeout > 0)) {
+					timeout = interruptible_sleep_on_timeout(
+						&tcon->ses->server->response_q,
+						timeout);
 				}
 #else
-				wait_event_interruptible_timeout(tcon->ses->server->response_q,
-					(tcon->ses->server->tcpStatus == CifsGood), 10 * HZ);
+				wait_event_interruptible_timeout(
+					tcon->ses->server->response_q,
+					(tcon->ses->server->tcpStatus == CifsGood),
+					10 * HZ);
 #endif
 				if(tcon->ses->server->tcpStatus == CifsNeedReconnect) {
 					/* on "soft" mounts we wait once */
@@ -277,8 +284,20 @@ smb_init(int smb_command, int wct, struct cifsTconInfo *tcon,
 				   reconnect, should be greater than cifs socket
 				   timeout which is 7 seconds */
 			while(tcon->ses->server->tcpStatus == CifsNeedReconnect) {
-				wait_event_interruptible_timeout(tcon->ses->server->response_q,
-					(tcon->ses->server->tcpStatus == CifsGood), 10 * HZ);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 5, 0)
+				int timeout = 10 * HZ;
+				while((tcon->ses->server->tcpStatus != CifsGood)
+						&& (timeout > 0)) {
+					timeout = interruptible_sleep_on_timeout
+						(&tcon->ses->server->response_q,
+						 timeout);
+				}
+#else
+				wait_event_interruptible_timeout(
+					tcon->ses->server->response_q,
+					(tcon->ses->server->tcpStatus == CifsGood),
+					10 * HZ);
+#endif
 				if(tcon->ses->server->tcpStatus == 
 						CifsNeedReconnect) {
 					/* on "soft" mounts we wait once */
@@ -407,6 +426,7 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 	struct TCP_Server_Info * server;
 	u16 count;
 	unsigned int secFlags;
+	u16 dialect;
 
 	if(ses->server)
 		server = ses->server;
@@ -446,9 +466,10 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 	if (rc != 0) 
 		goto neg_err_exit;
 
-	cFYI(1,("Dialect: %d", pSMBr->DialectIndex));
+	dialect = le16_to_cpu(pSMBr->DialectIndex);
+	cFYI(1,("Dialect: %d", dialect));
 	/* Check wct = 1 error case */
-	if((pSMBr->hdr.WordCount < 13) || (pSMBr->DialectIndex == BAD_PROT)) {
+	if((pSMBr->hdr.WordCount < 13) || (dialect == BAD_PROT)) {
 		/* core returns wct = 1, but we do not ask for core - otherwise
 		small wct just comes when dialect index is -1 indicating we 
 		could not negotiate a common dialect */
@@ -456,7 +477,9 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 		goto neg_err_exit;
 #ifdef CONFIG_CIFS_WEAK_PW_HASH 
 	} else if((pSMBr->hdr.WordCount == 13)
-			&& (pSMBr->DialectIndex == LANMAN_PROT)) {
+			&& ((dialect == LANMAN_PROT)
+				|| (dialect == LANMAN2_PROT))) {
+		__s16 tmp;
 		struct lanman_neg_rsp * rsp = (struct lanman_neg_rsp *)pSMBr;
 
 		if((secFlags & CIFSSEC_MAY_LANMAN) || 
@@ -482,12 +505,44 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 			server->maxRw = 0;/* we do not need to use raw anyway */
 			server->capabilities = CAP_MPX_MODE;
 		}
-		server->timeZone = le16_to_cpu(rsp->ServerTimeZone);
+		tmp = (__s16)le16_to_cpu(rsp->ServerTimeZone);
+		if (tmp == -1) {
+			/* OS/2 often does not set timezone therefore
+			 * we must use server time to calc time zone.
+			 * Could deviate slightly from the right zone.
+			 * Smallest defined timezone difference is 15 minutes
+			 * (i.e. Nepal).  Rounding up/down is done to match
+			 * this requirement.
+			 */
+			int val, seconds, remain, result;
+			struct timespec ts, utc;
+			utc = CURRENT_TIME;
+			ts = cnvrtDosUnixTm(le16_to_cpu(rsp->SrvTime.Date),
+						le16_to_cpu(rsp->SrvTime.Time));
+			cFYI(1,("SrvTime: %d sec since 1970 (utc: %d) diff: %d",
+				(int)ts.tv_sec, (int)utc.tv_sec,
+				(int)(utc.tv_sec - ts.tv_sec)));
+			val = (int)(utc.tv_sec - ts.tv_sec);
+			seconds = val < 0 ? -val : val;
+			result = (seconds / MIN_TZ_ADJ) * MIN_TZ_ADJ;
+			remain = seconds % MIN_TZ_ADJ;
+			if(remain >= (MIN_TZ_ADJ / 2))
+				result += MIN_TZ_ADJ;
+			if(val < 0)
+				result = - result;
+			server->timeAdj = result;
+		} else {
+			server->timeAdj = (int)tmp;
+			server->timeAdj *= 60; /* also in seconds */
+		}
+		cFYI(1,("server->timeAdj: %d seconds", server->timeAdj));
+
 
 		/* BB get server time for time conversions and add
 		code to use it and timezone since this is not UTC */	
 
-		if (rsp->EncryptionKeyLength == CIFS_CRYPTO_KEY_SIZE) {
+		if (rsp->EncryptionKeyLength == 
+				cpu_to_le16(CIFS_CRYPTO_KEY_SIZE)) {
 			memcpy(server->cryptKey, rsp->EncryptionKey,
 				CIFS_CRYPTO_KEY_SIZE);
 		} else if (server->secMode & SECMODE_PW_ENCRYPT) {
@@ -541,7 +596,8 @@ CIFSSMBNegotiate(unsigned int xid, struct cifsSesInfo *ses)
 	cFYI(0, ("Max buf = %d", ses->server->maxBuf));
 	GETU32(ses->server->sessid) = le32_to_cpu(pSMBr->SessionKey);
 	server->capabilities = le32_to_cpu(pSMBr->Capabilities);
-	server->timeZone = le16_to_cpu(pSMBr->ServerTimeZone);	
+	server->timeAdj = (int)(__s16)le16_to_cpu(pSMBr->ServerTimeZone);
+	server->timeAdj *= 60;
 	if (pSMBr->EncryptionKeyLength == CIFS_CRYPTO_KEY_SIZE) {
 		memcpy(server->cryptKey, pSMBr->u.EncryptionKey,
 		       CIFS_CRYPTO_KEY_SIZE);
@@ -1481,8 +1537,13 @@ CIFSSMBLock(const int xid, struct cifsTconInfo *tcon,
 	pSMB->hdr.smb_buf_length += count;
 	pSMB->ByteCount = cpu_to_le16(count);
 
-	rc = SendReceive(xid, tcon->ses, (struct smb_hdr *) pSMB,
+	if (waitFlag) {
+		rc = SendReceiveBlockingLock(xid, tcon, (struct smb_hdr *) pSMB,
+			(struct smb_hdr *) pSMBr, &bytes_returned);
+	} else {
+		rc = SendReceive(xid, tcon->ses, (struct smb_hdr *) pSMB,
 			 (struct smb_hdr *) pSMBr, &bytes_returned, timeout);
+	}
 	cifs_stats_inc(&tcon->num_locks);
 	if (rc) {
 		cFYI(1, ("Send error in Lock = %d", rc));
@@ -1567,8 +1628,14 @@ CIFSSMBPosixLock(const int xid, struct cifsTconInfo *tcon,
 	pSMB->Reserved4 = 0;
 	pSMB->hdr.smb_buf_length += byte_count;
 	pSMB->ByteCount = cpu_to_le16(byte_count);
-	rc = SendReceive(xid, tcon->ses, (struct smb_hdr *) pSMB,
+	if (waitFlag) {
+		rc = SendReceiveBlockingLock(xid, tcon, (struct smb_hdr *) pSMB,
+			(struct smb_hdr *) pSMBr, &bytes_returned);
+	} else {
+		rc = SendReceive(xid, tcon->ses, (struct smb_hdr *) pSMB,
 			(struct smb_hdr *) pSMBr, &bytes_returned, timeout);
+	}
+
 	if (rc) {
 		cFYI(1, ("Send error in Posix Lock = %d", rc));
 	} else if (get_flag) {
@@ -1627,7 +1694,7 @@ CIFSSMBClose(const int xid, struct cifsTconInfo *tcon, int smb_file_id)
 	pSMBr = (CLOSE_RSP *)pSMB; /* BB removeme BB */
 
 	pSMB->FileID = (__u16) smb_file_id;
-	pSMB->LastWriteTime = 0;
+	pSMB->LastWriteTime = 0xFFFFFFFF;
 	pSMB->ByteCount = 0;
 	rc = SendReceive(xid, tcon->ses, (struct smb_hdr *) pSMB,
 			 (struct smb_hdr *) pSMBr, &bytes_returned, 0);
@@ -2866,7 +2933,6 @@ qsec_out:
 	return rc;
 }
 
-
 /* Legacy Query Path Information call for lookup to old servers such
    as Win9x/WinME */
 int SMBQueryInformation(const int xid, struct cifsTconInfo *tcon,
@@ -2908,7 +2974,20 @@ QInfRetry:
 	if (rc) {
 		cFYI(1, ("Send error in QueryInfo = %d", rc));
 	} else if (pFinfo) {            /* decode response */
+		struct timespec ts;
+		__u32 time = le32_to_cpu(pSMBr->last_write_time);
+		/* BB FIXME - add time zone adjustment BB */
 		memset(pFinfo, 0, sizeof(FILE_ALL_INFO));
+		ts.tv_nsec = 0;
+		ts.tv_sec = time;
+		/* decode time fields */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+		pFinfo->ChangeTime = cpu_to_le64(cifs_UnixTimeToNT(ts));
+#else
+		pFinfo->ChangeTime = cpu_to_le64(cifs_UnixTimeToNT(time));
+#endif
+		pFinfo->LastWriteTime = pFinfo->ChangeTime;
+		pFinfo->LastAccessTime = 0;
 		pFinfo->AllocationSize =
 			cpu_to_le64(le32_to_cpu(pSMBr->size));
 		pFinfo->EndOfFile = pFinfo->AllocationSize;
@@ -2932,6 +3011,7 @@ int
 CIFSSMBQPathInfo(const int xid, struct cifsTconInfo *tcon,
 		 const unsigned char *searchName,
 		 FILE_ALL_INFO * pFindData,
+		 int legacy /* old style infolevel */,
 		 const struct nls_table *nls_codepage, int remap)
 {
 /* level 263 SMB_QUERY_FILE_ALL_INFO */
@@ -2980,7 +3060,10 @@ QPathInfoRetry:
 	byte_count = params + 1 /* pad */ ;
 	pSMB->TotalParameterCount = cpu_to_le16(params);
 	pSMB->ParameterCount = pSMB->TotalParameterCount;
-	pSMB->InformationLevel = cpu_to_le16(SMB_QUERY_FILE_ALL_INFO);
+	if(legacy)
+		pSMB->InformationLevel = cpu_to_le16(SMB_INFO_STANDARD);
+	else
+		pSMB->InformationLevel = cpu_to_le16(SMB_QUERY_FILE_ALL_INFO);
 	pSMB->Reserved4 = 0;
 	pSMB->hdr.smb_buf_length += byte_count;
 	pSMB->ByteCount = cpu_to_le16(byte_count);
@@ -2992,13 +3075,24 @@ QPathInfoRetry:
 	} else {		/* decode response */
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
 
-		if (rc || (pSMBr->ByteCount < 40)) 
+		if (rc) /* BB add auto retry on EOPNOTSUPP? */
+			rc = -EIO;
+		else if (!legacy && (pSMBr->ByteCount < 40)) 
 			rc = -EIO;	/* bad smb */
+		else if(legacy && (pSMBr->ByteCount < 24))
+			rc = -EIO;  /* 24 or 26 expected but we do not read last field */
 		else if (pFindData){
+			int size;
 			__u16 data_offset = le16_to_cpu(pSMBr->t2.DataOffset);
+			if(legacy) /* we do not read the last field, EAsize, fortunately
+					   since it varies by subdialect and on Set vs. Get, is  
+					   two bytes or 4 bytes depending but we don't care here */
+				size = sizeof(FILE_INFO_STANDARD);
+			else
+				size = sizeof(FILE_ALL_INFO);
 			memcpy((char *) pFindData,
 			       (char *) &pSMBr->hdr.Protocol +
-			       data_offset, sizeof (FILE_ALL_INFO));
+			       data_offset, size);
 		} else
 		    rc = -ENOMEM;
 	}
@@ -3622,6 +3716,14 @@ getDFSRetry:
 		name_len++;	/* trailing null */
 		strncpy(pSMB->RequestFileName, searchName, name_len);
 	}
+
+	if(ses->server) {
+		if(ses->server->secMode &
+		   (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
+			pSMB->hdr.Flags2 |= SMBFLG2_SECURITY_SIGNATURE;
+	}
+
+        pSMB->hdr.Uid = ses->Suid;
 
 	params = 2 /* level */  + name_len /*includes null */ ;
 	pSMB->TotalDataCount = 0;
@@ -4741,6 +4843,16 @@ setPermsRetry:
 	pSMB->InformationLevel = cpu_to_le16(SMB_SET_FILE_UNIX_BASIC);
 	pSMB->Reserved4 = 0;
 	pSMB->hdr.smb_buf_length += byte_count;
+	/* Samba server ignores set of file size to zero due to bugs in some
+	older clients, but we should be precise - we use SetFileSize to
+	set file size and do not want to truncate file size to zero
+	accidently as happened on one Samba server beta by putting
+	zero instead of -1 here */ 
+	data_offset->EndOfFile = NO_CHANGE_64;
+	data_offset->NumOfBytes = NO_CHANGE_64;
+	data_offset->LastStatusChange = NO_CHANGE_64;
+	data_offset->LastAccessTime = NO_CHANGE_64;
+	data_offset->LastModificationTime = NO_CHANGE_64;
 	data_offset->Uid = cpu_to_le64(uid);
 	data_offset->Gid = cpu_to_le64(gid);
 	/* better to leave device as zero when it is  */
@@ -4826,7 +4938,7 @@ int CIFSSMBNotify(const int xid, struct cifsTconInfo *tcon,
 	} else {
 		/* Add file to outstanding requests */
 		/* BB change to kmem cache alloc */	
-		dnotify_req = (struct dir_notify_req *) kmalloc(
+		dnotify_req = kmalloc(
 						sizeof(struct dir_notify_req),
 						 GFP_KERNEL);
 		if(dnotify_req) {

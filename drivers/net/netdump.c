@@ -473,14 +473,15 @@ static asmlinkage void netpoll_netdump(struct pt_regs *regs, void *platform_arg)
 			reply.nr = req->nr;
 			reply.info = 0;
 
-			send_netdump_msg(&np, tmp, strlen(tmp), &reply);
-
 			netdump_mode = 0;
 			if (regs)
 				show_regs(regs);
 			show_state();
 			show_mem();
 			netdump_mode = 1;
+
+			send_netdump_msg(&np, tmp, strlen(tmp), &reply);
+
 			break;
 
 		default:

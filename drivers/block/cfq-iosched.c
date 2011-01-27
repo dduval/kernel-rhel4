@@ -56,7 +56,6 @@ struct cfq_data {
 	struct list_head *crq_hash;
 
 	unsigned int busy_queues;
-	unsigned int max_queued;
 
 	mempool_t *crq_pool;
 
@@ -609,8 +608,6 @@ static int cfq_may_queue(request_queue_t *q, int rw)
 
 		if (limit < 3)
 			limit = 3;
-		else if (limit > cfqd->max_queued)
-			limit = cfqd->max_queued;
 
 		if (cfqq->queued[rw] > limit)
 			ret = 0;
@@ -722,13 +719,6 @@ static int cfq_init(request_queue_t *q, elevator_t *e)
 	cfqd->dispatch = &q->queue_head;
 	e->elevator_data = cfqd;
 	cfqd->queue = q;
-
-	/*
-	 * just set it to some high value, we want anyone to be able to queue
-	 * some requests. fairness is handled differently
-	 */
-	cfqd->max_queued = q->nr_requests;
-	q->nr_requests = 8192;
 
 	cfqd->cfq_queued = cfq_queued;
 	cfqd->cfq_quantum = cfq_quantum;

@@ -1418,14 +1418,14 @@ qla2x00_get_port_name(scsi_qla_host_t *ha, uint16_t loop_id, uint8_t *name,
 	} else {
 		if (name != NULL) {
 			/* This function returns name in big endian. */
-			name[0] = LSB(mcp->mb[2]);
-			name[1] = MSB(mcp->mb[2]);
-			name[2] = LSB(mcp->mb[3]);
-			name[3] = MSB(mcp->mb[3]);
-			name[4] = LSB(mcp->mb[6]);
-			name[5] = MSB(mcp->mb[6]);
-			name[6] = LSB(mcp->mb[7]);
-			name[7] = MSB(mcp->mb[7]);
+			name[0] = MSB(mcp->mb[2]);
+			name[1] = LSB(mcp->mb[2]);
+			name[2] = MSB(mcp->mb[3]);
+	       		name[3] = LSB(mcp->mb[3]);
+			name[4] = MSB(mcp->mb[6]);
+			name[5] = LSB(mcp->mb[6]);
+			name[6] = MSB(mcp->mb[7]);
+			name[7] = LSB(mcp->mb[7]);
 		}
 
 		DEBUG11(printk("qla2x00_get_port_name(%ld): done.\n",
@@ -2526,3 +2526,91 @@ qla2x00_stop_firmware(scsi_qla_host_t *ha)
 
 	return rval;
 }
+
+int
+qla2x00_get_idma_speed(scsi_qla_host_t *ha, uint16_t loop_id,
+    uint16_t *port_speed, uint16_t *mb)
+{
+	int rval;
+	mbx_cmd_t mc;
+	mbx_cmd_t *mcp = &mc;
+
+	if (!IS_IIDMA_CAPABLE(ha))
+		return QLA_FUNCTION_FAILED;
+
+	DEBUG11(printk("%s(%ld): entered.\n", __func__, ha->host_no));
+
+	mcp->mb[0] = MBC_PORT_PARAMS;
+	mcp->mb[1] = loop_id;
+	mcp->mb[2] = mcp->mb[3] = mcp->mb[4] = mcp->mb[5] = 0;
+	mcp->out_mb = MBX_5|MBX_4|MBX_3|MBX_2|MBX_1|MBX_0;
+	mcp->in_mb = MBX_5|MBX_4|MBX_3|MBX_1|MBX_0;
+	mcp->tov = 30;
+	mcp->flags = 0;
+	rval = qla2x00_mailbox_command(ha, mcp);
+
+	/* Return mailbox statuses. */
+	if (mb != NULL) {
+		mb[0] = mcp->mb[0];
+		mb[1] = mcp->mb[1];
+		mb[3] = mcp->mb[3];
+		mb[4] = mcp->mb[4];
+		mb[5] = mcp->mb[5];
+	}
+
+	if (rval != QLA_SUCCESS) {
+		DEBUG2_3_11(printk("%s(%ld): failed=%x.\n", __func__,
+		    ha->host_no, rval));
+	} else {
+		DEBUG11(printk("%s(%ld): done.\n", __func__, ha->host_no));
+		if (port_speed)
+			*port_speed = mcp->mb[3];
+	}
+
+	return rval;
+}
+EXPORT_SYMBOL_GPL(qla2x00_get_idma_speed);
+
+int
+qla2x00_set_idma_speed(scsi_qla_host_t *ha, uint16_t loop_id,
+    uint16_t port_speed, uint16_t *mb)
+{
+	int rval;
+	mbx_cmd_t mc;
+	mbx_cmd_t *mcp = &mc;
+
+	if (!IS_IIDMA_CAPABLE(ha))
+		return QLA_FUNCTION_FAILED;
+
+	DEBUG11(printk("%s(%ld): entered.\n", __func__, ha->host_no));
+
+	mcp->mb[0] = MBC_PORT_PARAMS;
+	mcp->mb[1] = loop_id;
+	mcp->mb[2] = BIT_0;
+	mcp->mb[3] = port_speed & (BIT_2|BIT_1|BIT_0);
+	mcp->mb[4] = mcp->mb[5] = 0;
+	mcp->out_mb = MBX_5|MBX_4|MBX_3|MBX_2|MBX_1|MBX_0;
+	mcp->in_mb = MBX_5|MBX_4|MBX_3|MBX_1|MBX_0;
+	mcp->tov = 30;
+	mcp->flags = 0;
+	rval = qla2x00_mailbox_command(ha, mcp);
+
+	/* Return mailbox statuses. */
+	if (mb != NULL) {
+		mb[0] = mcp->mb[0];
+		mb[1] = mcp->mb[1];
+		mb[3] = mcp->mb[3];
+		mb[4] = mcp->mb[4];
+		mb[5] = mcp->mb[5];
+	}
+
+	if (rval != QLA_SUCCESS) {
+		DEBUG2_3_11(printk("%s(%ld): failed=%x.\n", __func__,
+		    ha->host_no, rval));
+	} else {
+		DEBUG11(printk("%s(%ld): done.\n", __func__, ha->host_no));
+	}
+
+	return rval;
+}
+EXPORT_SYMBOL_GPL(qla2x00_set_idma_speed);

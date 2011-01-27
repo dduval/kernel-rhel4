@@ -3,8 +3,8 @@
  *      For use with LSI Logic PCI chip/adapter(s)
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2005 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsil.com)
+ *  Copyright (c) 1999-2007 LSI Logic Corporation
+ *  (mailto:mpt_linux_developer@lsi.com)
  *
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -74,6 +74,7 @@
 MODULE_AUTHOR(MODULEAUTHOR);
 MODULE_DESCRIPTION(my_NAME);
 MODULE_LICENSE("GPL");
+MODULE_VERSION(my_VERSION);
 
 /* Command line args */
 static int mpt_pq_filter = 0;
@@ -130,7 +131,7 @@ static struct scsi_host_template mptfc_driver_template = {
 	.bios_param			= mptscsih_bios_param,
 	.can_queue			= MPT_FC_CAN_QUEUE,
 	.this_id			= -1,
-	.sg_tablesize			= MPT_SCSI_SG_DEPTH,
+	.sg_tablesize			= CONFIG_FUSION_MAX_SGE,
 	.max_sectors			= 8192,
 	.cmd_per_lun			= 7,
 	.use_clustering			= ENABLE_CLUSTERING,
@@ -160,6 +161,8 @@ static struct pci_device_id mptfc_pci_table[] = {
 		PCI_ANY_ID, PCI_ANY_ID },
 	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVICEID_FC949E,
 		PCI_ANY_ID, PCI_ANY_ID },
+        { 0x1657, MPI_MANUFACTPAGE_DEVICEID_FC949E,
+                PCI_ANY_ID, PCI_ANY_ID },
 	{0}	/* Terminating entry */
 };
 MODULE_DEVICE_TABLE(pci, mptfc_pci_table);
@@ -181,8 +184,6 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	MPT_ADAPTER 		*ioc;
 	unsigned long		 flags;
 	int			 sz, ii;
-	int			 numSGE = 0;
-	int			 scale;
 	int			 ioc_cap;
 	u8			*mem;
 	int			error=0;
@@ -261,46 +262,16 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->name, mpt_can_queue, ioc->req_depth,
 		sh->can_queue));
 
-	sh->max_id = MPT_MAX_FC_DEVICES<256 ? MPT_MAX_FC_DEVICES : 255;
+	sh->max_id = ioc->DevicesPerBus;
 
 	sh->max_lun = MPT_LAST_LUN + 1;
-	sh->max_channel = 0;
+	sh->max_channel = ioc->NumberOfBuses - 1;
 	sh->this_id = ioc->pfacts[0].PortSCSIID;
-
 
 	/* Required entry.
 	 */
 	sh->unique_id = ioc->id;
-
-	/* Verify that we won't exceed the maximum
-	 * number of chain buffers
-	 * We can optimize:  ZZ = req_sz/sizeof(SGE)
-	 * For 32bit SGE's:
-	 *  numSGE = 1 + (ZZ-1)*(maxChain -1) + ZZ
-	 *               + (req_sz - 64)/sizeof(SGE)
-	 * A slightly different algorithm is required for
-	 * 64bit SGEs.
-	 */
-	scale = ioc->req_sz/(sizeof(dma_addr_t) + sizeof(u32));
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
-		numSGE = (scale - 1) *
-		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 60) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
-	} else {
-		numSGE = 1 + (scale - 1) *
-		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 64) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
-	}
-
-	if (numSGE < sh->sg_tablesize) {
-		/* Reset this value */
-		dprintk((MYIOC_s_INFO_FMT
-		  "Resetting sg_tablesize to %d from %d\n",
-		  ioc->name, numSGE, sh->sg_tablesize));
-		sh->sg_tablesize = numSGE;
-	}
+	sh->sg_tablesize = ioc->sg_tablesize;
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	/* Set the pci device pointer in Scsi_Host structure.
@@ -329,23 +300,24 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dprintk((MYIOC_s_INFO_FMT "ScsiLookup @ %p, sz=%d\n",
 		 ioc->name, hd->ScsiLookup, sz));
 
-	/* Allocate memory for the device structures.
-	 * A non-Null pointer at an offset
-	 * indicates a device exists.
-	 * max_id = 1 + maximum id (hosts.h)
-	 */
-	sz = sh->max_id * sizeof(void *);
-	mem = kmalloc(sz, GFP_ATOMIC);
-	if (mem == NULL) {
-		error = -ENOMEM;
-		goto out_mptfc_probe;
+	for (ii=0; ii < ioc->NumberOfBuses; ii++) {
+		/* Allocate memory for the device structures.
+		 * A non-Null pointer at an offset
+		 * indicates a device exists.
+		 */
+		sz = ioc->DevicesPerBus * sizeof(void *);
+		mem = kmalloc(sz, GFP_ATOMIC);
+		if (mem == NULL) {
+			error = -ENOMEM;
+			goto out_mptfc_probe;
+		}
+
+		memset(mem, 0, sz);
+		ioc->Target_List[ii] = (struct _MPT_DEVICE *) mem;
+
+		dinitprintk((KERN_INFO
+		  " For Bus=%d, Target_List=%p sz=%d\n", ii, mem, sz));
 	}
-
-	memset(mem, 0, sz);
-	hd->Targets = (VirtDevice **) mem;
-
-	dprintk((KERN_INFO
-	  "  Targets @ %p, sz=%d\n", hd->Targets, sz));
 
 	/* Clear the TM flags
 	 */
@@ -361,13 +333,17 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 */
 	hd->cmdPtr = NULL;
 
-	/* Initialize this SCSI Hosts' timers
+	/* Initialize this IOC's timers
 	 * To use, set the timer expires field
-	 * and add_timer
+	 * and add_timer. Used for internally
+         * generated commands.
 	 */
-	init_timer(&hd->timer);
-	hd->timer.data = (unsigned long) hd;
-	hd->timer.function = mptscsih_timer_expired;
+        init_timer(&hd->InternalCmdTimer);
+	hd->InternalCmdTimer.data = (unsigned long) hd;
+	hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
+        init_timer(&ioc->TMtimer);
+	ioc->TMtimer.data = (unsigned long) ioc;
+	ioc->TMtimer.function = mptscsih_TM_timeout;
 
 	hd->mpt_pq_filter = mpt_pq_filter;
 
@@ -379,6 +355,9 @@ mptfc_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	init_waitqueue_head(&hd->scandv_waitq);
 	hd->scandv_wait_done = 0;
 	hd->last_queue_full = 0;
+
+        init_waitqueue_head(&hd->TM_waitq);
+        hd->TM_wait_done = 0;
 
 	error = scsi_add_host (sh, &ioc->pcidev->dev);
 	if(error) {
@@ -415,6 +394,60 @@ static struct pci_driver mptfc_driver = {
 };
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
+int
+mptfc_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply)
+{
+	MPT_SCSI_HOST *hd;
+	u8 event = le32_to_cpu(pEvReply->Event) & 0xFF;
+
+	devtprintk((MYIOC_s_INFO_FMT "MPT event (=%02Xh) routed to FC host driver!\n",
+			ioc->name, event));
+
+	if (ioc->sh == NULL ||
+		((hd = (MPT_SCSI_HOST *)ioc->sh->hostdata) == NULL))
+		return 1;
+
+	switch (event) {
+	case MPI_EVENT_UNIT_ATTENTION:			/* 03 */
+		/* FIXME! */
+		break;
+	case MPI_EVENT_IOC_BUS_RESET:			/* 04 */
+	case MPI_EVENT_EXT_BUS_RESET:			/* 05 */
+		if (hd && (ioc->bus_type == SPI) && (hd->soft_resets < -1))
+			hd->soft_resets++;
+		break;
+	case MPI_EVENT_LOGOUT:				/* 09 */
+		/* FIXME! */
+		break;
+
+		/*
+		 *  CHECKME! Don't think we need to do
+		 *  anything for these, but...
+		 */
+	case MPI_EVENT_RESCAN:				/* 06 */
+	case MPI_EVENT_LINK_STATUS_CHANGE:		/* 07 */
+	case MPI_EVENT_LOOP_STATE_CHANGE:		/* 08 */
+		/*
+		 *  CHECKME!  Falling thru...
+		 */
+		break;
+
+	case MPI_EVENT_NONE:				/* 00 */
+	case MPI_EVENT_LOG_DATA:			/* 01 */
+	case MPI_EVENT_STATE_CHANGE:			/* 02 */
+	case MPI_EVENT_EVENT_CHANGE:			/* 0A */
+	case MPI_EVENT_INTEGRATED_RAID:			/* 0B */
+	default:
+		devtprintk((KERN_INFO "%s:  Ignoring event (=%02Xh)\n",
+			__FUNCTION__, event));
+		break;
+	}
+
+	return 1;		/* currently means nothing really */
+}
+
+
+/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /**
  *	mptfc_init - Register MPT adapter(s) as SCSI host(s) with
  *	linux scsi mid-layer.
@@ -431,9 +464,9 @@ mptfc_init(void)
 	mptfcTaskCtx = mpt_register(mptscsih_taskmgmt_complete, MPTFC_DRIVER);
 	mptfcInternalCtx = mpt_register(mptscsih_scandv_complete, MPTFC_DRIVER);
 
-	if (mpt_event_register(mptfcDoneCtx, mptscsih_event_process) == 0) {
+        if (mpt_event_register(mptfcDoneCtx, mptfc_event_process) == 0) {
 		devtprintk((KERN_INFO MYNAM
-		  ": Registered for IOC event notifications\n"));
+                  ": mptfc_event_process Registered for IOC event notifications\n"));
 	}
 
 	if (mpt_reset_register(mptfcDoneCtx, mptscsih_ioc_reset) == 0) {
@@ -454,6 +487,7 @@ static void __exit
 mptfc_exit(void)
 {
 	pci_unregister_driver(&mptfc_driver);
+
 
 	mpt_reset_deregister(mptfcDoneCtx);
 	dprintk((KERN_INFO MYNAM

@@ -35,11 +35,15 @@
 #endif
 
 
+#include <linux/dma-mapping.h>
 #ifndef DMA_64BIT_MASK
 #define DMA_64BIT_MASK ((dma_addr_t)0xffffffffffffffffULL)
 #endif
 #ifndef DMA_32BIT_MASK
 #define DMA_32BIT_MASK ((dma_addr_t)0xffffffffULL)
+#endif
+#ifndef DMA_31BIT_MASK
+#define DMA_31BIT_MASK ((dma_addr_t)0x7fffffffULL)
 #endif
 #ifndef spin_trylock_irqsave
 #define spin_trylock_irqsave(lock, flags) \
@@ -55,4 +59,10 @@
 
 
 
-    
+
+#ifndef IRQF_SHARED
+# define IRQF_SHARED SA_SHIRQ
+#endif
+#ifndef IRQF_DISABLED
+# define IRQF_DISABLED SA_INTERRUPT /* Counter intuitive? */
+#endif

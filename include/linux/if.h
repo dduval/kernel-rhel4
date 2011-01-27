@@ -55,7 +55,9 @@
 #define IFF_SLAVE_INACTIVE	0x4	/* bonding slave not the curr. active */
 #define IFF_MASTER_8023AD	0x8	/* bonding master, 802.3ad. 	*/
 #define IFF_MASTER_ALB	0x10		/* bonding master, balance-alb.	*/
-#define IFF_EXTENDED   0x20
+#define IFF_EXTENDED	0x20
+#define IFF_BONDING	0x40		/* bonding master or slave      */
+#define IFF_SLAVE_NEEDARP	0x80	/* need ARPs for validation     */
 
 #define IF_GET_IFACE	0x0001		/* for querying only */
 #define IF_GET_PROTO	0x0002

@@ -441,6 +441,39 @@ out:
 	return ret;
 }
 
+/* The key must be already stored in q->key. */
+static inline struct futex_hash_bucket *
+queue_lock(struct futex_q *q, int fd, struct file *filp)
+{
+	struct futex_hash_bucket *hb;
+
+	q->fd = fd;
+	q->filp = filp;
+
+	init_waitqueue_head(&q->waiters);
+
+	get_key_refs(&q->key);
+	hb = hash_futex(&q->key);
+	q->lock_ptr = &hb->lock;
+
+	spin_lock(&hb->lock);
+	return hb;
+}
+
+static inline void __queue_me(struct futex_q *q, struct futex_hash_bucket *hb)
+{
+	list_add_tail(&q->list, &hb->chain);
+	hb->nqueued++;
+	spin_unlock(&hb->lock);
+}
+
+static inline void
+queue_unlock(struct futex_q *q, struct futex_hash_bucket *hb)
+{
+	spin_unlock(&hb->lock);
+	drop_key_refs(&q->key);
+}
+
 /*
  * queue_me and unqueue_me must be called as a pair, each
  * exactly once.  They are called with the hashed spinlock held.
@@ -449,32 +482,22 @@ out:
 /* The key must be already stored in q->key. */
 static void queue_me(struct futex_q *q, int fd, struct file *filp)
 {
-	struct futex_hash_bucket *bh;
+	struct futex_hash_bucket *hb;
 
-	q->fd = fd;
-	q->filp = filp;
-
-	init_waitqueue_head(&q->waiters);
-
-	get_key_refs(&q->key);
-	bh = hash_futex(&q->key);
-	q->lock_ptr = &bh->lock;
-
-	spin_lock(&bh->lock);
-	bh->nqueued++;
-	list_add_tail(&q->list, &bh->chain);
-	spin_unlock(&bh->lock);
+	hb = queue_lock(q, fd, filp);
+	__queue_me(q, hb);
 }
 
 /* Return 1 if we were still queued (ie. 0 means we were woken) */
 static int unqueue_me(struct futex_q *q)
 {
-	int ret = 0;
 	spinlock_t *lock_ptr;
+	int ret = 0;
 
 	/* In the common case we don't take the spinlock, which is nice. */
  retry:
 	lock_ptr = q->lock_ptr;
+	barrier();
 	if (lock_ptr != 0) {
 		spin_lock(lock_ptr);
 		/*
@@ -506,35 +529,51 @@ static int unqueue_me(struct futex_q *q)
 
 static int futex_wait(unsigned long uaddr, int val, unsigned long time)
 {
-	DECLARE_WAITQUEUE(wait, current);
+	struct task_struct *curr = current;
+	DECLARE_WAITQUEUE(wait, curr);
+	struct futex_hash_bucket *hb;
 	int ret, curval;
 	struct futex_q q;
 
  retry:
-	down_read(&current->mm->mmap_sem);
+	down_read(&curr->mm->mmap_sem);
 
 	ret = get_futex_key(uaddr, &q.key);
 	if (unlikely(ret != 0))
 		goto out_release_sem;
 
-	queue_me(&q, -1, NULL);
+	hb = queue_lock(&q, -1, NULL);
 
 	/*
-	 * Access the page after the futex is queued.
+	 * Access the page AFTER the futex is queued.
+	 * Order is important:
+	 *
+	 *   Userspace waiter: val = var; if (cond(val)) futex_wait(&var, val);
+	 *   Userspace waker:  if (cond(var)) { var = new; futex_wake(&var); }
+	 *
+	 * The basic logical guarantee of a futex is that it blocks ONLY
+	 * if cond(var) is known to be true at the time of blocking, for
+	 * any cond.  If we queued after testing *uaddr, that would open
+	 * a race condition where we could block indefinitely with
+	 * cond(var) false, which would violate the guarantee.
+	 *
+	 * A consequence is that futex_wait() can return zero and absorb
+	 * a wakeup when *uaddr != val on entry to the syscall.  This is
+	 * rare, but normal.
+	 *
 	 * We hold the mmap semaphore, so the mapping cannot have changed
-	 * since we looked it up.
+	 * since we looked it up in get_futex_key.
 	 */
-
 	ret = get_futex_value_locked(&curval, (int __user *)uaddr);
 
 	if (unlikely(ret)) {
-		/* If we would have faulted, release mmap_sem, fault it in and
+		queue_unlock(&q, hb);
+
+		/*
+		 * If we would have faulted, release mmap_sem, fault it in and
 		 * start all over again.
 		 */
-		up_read(&current->mm->mmap_sem);
-
-		if (!unqueue_me(&q)) /* There's a chance we got woken already */
-			return 0;
+		up_read(&curr->mm->mmap_sem);
 
 		ret = get_user(curval, (int __user *)uaddr);
 
@@ -542,16 +581,18 @@ static int futex_wait(unsigned long uaddr, int val, unsigned long time)
 			goto retry;
 		return ret;
 	}
-	if (curval != val) {
-		ret = -EWOULDBLOCK;
-		goto out_unqueue;
-	}
+	ret = -EWOULDBLOCK;
+	if (curval != val)
+		goto out_unlock_release_sem;
+
+	/* Only actually queue if *uaddr contained val.  */
+	__queue_me(&q, hb);
 
 	/*
 	 * Now the futex is queued and we have checked the data, we
 	 * don't want to hold mmap_sem while we sleep.
-	 */	
-	up_read(&current->mm->mmap_sem);
+	 */
+	up_read(&curr->mm->mmap_sem);
 
 	/*
 	 * There might have been scheduling since the queue_me(), as we
@@ -583,16 +624,17 @@ static int futex_wait(unsigned long uaddr, int val, unsigned long time)
 		return 0;
 	if (time == 0)
 		return -ETIMEDOUT;
-	/* We expect signal_pending(current), but another thread may
-	 * have handled it for us already. */
+	/*
+	 * We expect signal_pending(current), but another thread may
+	 * have handled it for us already.
+	 */
 	return -EINTR;
 
- out_unqueue:
-	/* If we were woken (and unqueued), we succeeded, whatever. */
-	if (!unqueue_me(&q))
-		ret = 0;
+ out_unlock_release_sem:
+	queue_unlock(&q, hb);
+
  out_release_sem:
-	up_read(&current->mm->mmap_sem);
+	up_read(&curr->mm->mmap_sem);
 	return ret;
 }
 

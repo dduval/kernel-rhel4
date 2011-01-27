@@ -2614,6 +2614,7 @@ qeth_process_inbound_buffer(struct qeth_card *card,
 				skb->ip_summed = CHECKSUM_UNNECESSARY;
 			else
 				skb->ip_summed = CHECKSUM_NONE;
+			*((__u32 *)skb->cb) = ++card->seqno.pkt_seqno;
 		} else if (hdr->hdr.l3.id == QETH_HEADER_TYPE_LAYER3)     
 			qeth_rebuild_skb(card, skb, hdr);
 		else { /*in case of OSN*/
@@ -6636,7 +6637,7 @@ qeth_setadpparms_change_macaddr_cb(struct qeth_card *card,
 	QETH_DBF_TEXT(trace,4,"chgmaccb");
 
 	cmd = (struct qeth_ipa_cmd *) data;
-	if (!card->options.layer2 || card->info.guestlan ||
+	if (!card->options.layer2 ||
 	    !(card->info.mac_bits & QETH_LAYER2_MAC_READ)) {	
 		memcpy(card->dev->dev_addr,
 		       &cmd->data.setadapterparms.data.change_addr.addr,

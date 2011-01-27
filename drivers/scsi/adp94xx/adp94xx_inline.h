@@ -831,7 +831,8 @@ asd_release_hostq_locked(struct asd_softc *asd)
 static inline void
 asd_freeze_targetq(struct asd_softc *asd, struct asd_target *targ)
 {
-	targ->qfrozen++;
+	if(targ->qfrozen==0)
+		targ->qfrozen++;
 }
 
 static inline void
@@ -921,13 +922,15 @@ static inline void
 asd_hwi_free_scb(struct asd_softc *asd, struct scb *scb)
 {
 //JD
+	scb->io_ctx=NULL;
+	scb->post_stack_depth=0;
 	if ((scb->flags & SCB_RESERVED) != 0) {
 #ifdef ASD_DEBUG
 		printk("Free reserved scb 0x%x flags 0x%x\n",scb, scb->flags);
 #endif
         	list_add(&scb->hwi_links, &asd->rsvd_scbs);
 	} else {
-        	list_add(&scb->hwi_links, &asd->free_scbs);
+		list_add(&scb->hwi_links, &asd->free_scbs);
 		/* Notify the OSM that a resource is now available. */
 		asd_platform_scb_free(asd, scb);
 	}
@@ -1105,6 +1108,8 @@ struct asd_done_list	*done_listp
 	if (scb->post_stack_depth == 0) {
 //JD		panic("post_stack underflow - opcode 0x%x done_list=%p "
 //			"scb = %p\n", done_listp->opcode, done_listp, scb);
+			asd_log(ASD_DBG_ERROR, "Post overflow scb ptr=%p\n",
+				scb);
 		return;
 	}
 

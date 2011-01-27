@@ -70,6 +70,7 @@ extern int qim_update_option_rom(struct qla_host_ioctl *, EXT_IOCTL *, int);
 extern int qim_get_option_rom_layout(struct qla_host_ioctl *, EXT_IOCTL *, int);
 extern int qim_get_vpd(struct qla_host_ioctl *, EXT_IOCTL *, int);
 extern int qim_update_vpd(struct qla_host_ioctl *, EXT_IOCTL *, int);
+extern int qim2x00_update_port_param(struct qla_host_ioctl *, EXT_IOCTL *, int);
 
 /*
  * Local prototypes
@@ -796,6 +797,10 @@ qim_send_ioctl(struct scsi_device *dev, int cmd, void *arg)
 	case INT_CC_UPDATE_VPD:
 		ret = qim_update_vpd(ha, pext, mode);
 		break; 
+
+	case INT_CC_PORT_PARAM:
+		ret = qim2x00_update_port_param(ha, pext, mode);
+		break;
 
 	/* all others go here */
 	/*
@@ -3657,6 +3662,17 @@ qim_send_els_passthru(struct qla_host_ioctl *ha, EXT_IOCTL *pext,
 		return (ret);
 	}
 
+	if ((CMD_COMPL_STATUS(pscsi_cmd) != 0 &&
+	    CMD_COMPL_STATUS(pscsi_cmd) != CS_DATA_UNDERRUN &&
+	    CMD_COMPL_STATUS(pscsi_cmd) != CS_DATA_OVERRUN)||
+	    CMD_ENTRY_STATUS(pscsi_cmd) != 0) {
+		DEBUG9_10(printk("%s(%ld): inst=%ld cmd returned error=%x.\n",
+			__func__, ha->host_no, ha->instance,
+			CMD_COMPL_STATUS(pscsi_cmd)));
+			pext->Status = EXT_STATUS_ERR;
+		return (ret);
+	}
+
 	/* check on data returned */
 	ptmp_stat = (uint8_t *)ha->ioctl_mem + FC_HEADER_LEN;
 
@@ -3893,11 +3909,13 @@ qim_ioctl_ms_queuecommand(struct qla_host_ioctl *ha, EXT_IOCTL *pext,
 		/* We waited and post function did not get called */
 		DEBUG9_10(printk("%s(%ld): inst=%ld command timed out.\n",
 		    __func__, ha->host_no, ha->instance);)
+	
+		if (tmp_rval == QLA_MEMORY_ALLOC_FAILED) {
+			atomic_set(&sp->ref_count, 0);
+			add_to_free_queue (dr_ha, sp);
+		}
 
 		pext->Status = EXT_STATUS_MS_NO_RESPONSE;
-
-		atomic_set(&sp->ref_count, 0);
-		add_to_free_queue (dr_ha, sp);
 
 		return (ret);
 	}
@@ -4073,16 +4091,15 @@ qim_start_ms_cmd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, srb_t *sp,
 
 	/* set flag to indicate IOCTL MSIOCB cmd in progress */
 	ha->ioctl->MSIOCB_InProgress = 1;
-	ha->ioctl->ioctl_tov = pkt->timeout + 1; /* 1 second more */
 
 	/* prepare for receiving completion. */
 	qim_ioctl_sem_init(ha);
 
-	/* Issue command to ISP */
-	qim_isp_cmd(dr_ha);
+	sp->flags |= SRB_NO_TIMER;
 
-	ha->ioctl->cmpl_timer.expires = jiffies + ha->ioctl->ioctl_tov * HZ;
-	add_timer(&ha->ioctl->cmpl_timer);
+	/* Issue command to ISP */
+	sp->state = SRB_ACTIVE_STATE;
+	qim_isp_cmd(dr_ha);
 
 	DEBUG9(printk("%s(%ld): inst=%ld releasing hardware_lock.\n",
 	    __func__, ha->host_no, ha->instance);)
@@ -4092,8 +4109,6 @@ qim_start_ms_cmd(struct qla_host_ioctl *ha, EXT_IOCTL *pext, srb_t *sp,
 	    __func__, ha->host_no, ha->instance);)
 
 	down(&ha->ioctl->cmpl_sem);
-
-	del_timer(&ha->ioctl->cmpl_timer);
 
 	if (ha->ioctl->MSIOCB_InProgress == 1) {
 	 	DEBUG9_10(printk("%s(%ld): inst=%ld timed out. exiting.\n",
@@ -5335,23 +5350,24 @@ qim_cmd_timeout(srb_t *sp)
 }
 
 static inline void
-qim_add_timer_to_cmd(srb_t *sp, int timeout)
+qim_add_timer_to_cmd(struct scsi_qla_host *dr_ha, srb_t *sp, int timeout)
 {
 	init_timer(&sp->timer);
 	sp->timer.expires = jiffies + timeout * HZ;
 	sp->timer.data = (unsigned long) sp;
 	sp->timer.function = (void (*) (unsigned long))qim_cmd_timeout;
 	add_timer(&sp->timer);
+        sp_get(dr_ha, sp); /* take command timeout reference */
 }
 
 static inline void
 qim_delete_timer_from_cmd(srb_t *sp)
 {
-	if (sp->timer.function != NULL) {
-		del_timer(&sp->timer);
-		sp->timer.function = NULL;
-		sp->timer.data = (unsigned long) NULL;
-	}
+	if (sp->flags & SRB_NO_TIMER)
+		return;
+
+	if (del_timer(&sp->timer))
+		sp_put((scsi_qla_host_t *)sp->cmd->device->host->hostdata, sp);
 }
 
 static int
@@ -5568,11 +5584,12 @@ qim_ioctl_scsi_queuecommand(struct qla_host_ioctl *ha, EXT_IOCTL *pext,
 	    __func__, ha->host_no, ha->instance);)
 
 	/* Time the command via our standard driver-timer */
-	if ((pscsi_cmd->timeout_per_command / HZ) > QLA_CMD_TIMER_DELTA)
-		qim_add_timer_to_cmd(sp,
-		    (pscsi_cmd->timeout_per_command/HZ) - QLA_CMD_TIMER_DELTA);
+	  if ((pscsi_cmd->timeout_per_command / HZ) > ql2xcmdtimermin)
+		qim_add_timer_to_cmd(dr_ha, sp,
+		    (pscsi_cmd->timeout_per_command/HZ) -
+		    QLA_CMD_TIMER_DELTA);
 	else
-		qim_add_timer_to_cmd(sp, pscsi_cmd->timeout_per_command/HZ);
+		sp->flags |= SRB_NO_TIMER;
 
 	if (qim_start_scsi(sp) != QIM_SUCCESS) {
 		qim_delete_timer_from_cmd(sp);

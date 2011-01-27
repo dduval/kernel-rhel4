@@ -42,9 +42,6 @@
 #ifndef __EHCA_CLASSES_H__
 #define __EHCA_CLASSES_H__
 
-#include "ehca_classes.h"
-#include "ipz_pt_fn.h"
-
 struct ehca_module;
 struct ehca_qp;
 struct ehca_cq;
@@ -54,14 +51,22 @@ struct ehca_mw;
 struct ehca_pd;
 struct ehca_av;
 
-#ifdef CONFIG_PPC64
-#include "ehca_classes_pSeries.h"
-#endif
-
 #include <rdma/ib_verbs.h>
 #include <rdma/ib_user_verbs.h>
 
+#ifdef CONFIG_PPC64
+#include "ehca_classes_pSeries.h"
+#endif
+#include "ehca_classes.h"
+#include "ipz_pt_fn.h"
 #include "ehca_irq.h"
+
+#define EHCA_EQE_CACHE_SIZE 20
+
+struct ehca_eqe_cache_entry {
+	struct ehca_eqe *eqe;
+	struct ehca_cq *cq;
+};
 
 struct ehca_eq {
 	u32 length;
@@ -74,6 +79,8 @@ struct ehca_eq {
 	spinlock_t spinlock;
 	struct tasklet_struct interrupt_task;
 	u32 ist;
+	spinlock_t irq_spinlock;
+	struct ehca_eqe_cache_entry eqe_cache[EHCA_EQE_CACHE_SIZE];
 };
 
 struct ehca_sport {
@@ -146,7 +153,9 @@ struct ehca_cq {
 	u64 uspace_fwh;
 	struct hlist_head qp_hashtab[QP_HASHTAB_LEN];
 	struct list_head entry;
-	u32 nr_callbacks;
+	u32 nr_callbacks; /* #events assigned to cpu by scaling code */
+	u32 nr_events;    /* #events seen */
+	wait_queue_head_t wait_completion;
 	spinlock_t task_lock;
 	u32 ownpid;
 };
@@ -275,12 +284,14 @@ void ehca_cleanup_mrmw_cache(void);
 
 extern spinlock_t ehca_qp_idr_lock;
 extern spinlock_t ehca_cq_idr_lock;
+extern spinlock_t hcall_lock;
 extern struct idr ehca_qp_idr;
 extern struct idr ehca_cq_idr;
 
 extern int ehca_static_rate;
 extern int ehca_port_act_time;
 extern int ehca_use_hp_mr;
+extern int ehca_scaling_code;
 
 struct ipzu_queue_resp {
 	u64 queue;        /* points to first queue entry */

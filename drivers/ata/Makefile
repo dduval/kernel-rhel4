@@ -15,7 +15,9 @@ obj-$(CONFIG_SATA_SX4)		+= sata_sx4.o
 obj-$(CONFIG_SATA_NV)		+= sata_nv.o
 obj-$(CONFIG_SATA_ULI)		+= sata_uli.o
 obj-$(CONFIG_SATA_MV)		+= sata_mv.o
+obj-$(CONFIG_PATA_JMICRON)	+= pata_jmicron.o
 obj-$(CONFIG_PDC_ADMA)		+= pdc_adma.o
+obj-$(CONFIG_PATA_PDC2027X)	+= pata_pdc2027x.o
 
 libata-objs	:= libata-core.o libata-scsi.o libata-sff.o libata-eh.o \
 		   libata-dump.o

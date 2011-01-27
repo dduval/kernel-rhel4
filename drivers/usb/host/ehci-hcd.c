@@ -412,6 +412,37 @@ static int ehci_start (struct usb_hcd *hcd)
 	ehci->watchdog.function = ehci_watchdog;
 	ehci->watchdog.data = (unsigned long) ehci;
 
+#ifdef	CONFIG_PCI
+	/*
+	 * The mask of consistent DMA must be set before we dig into DMA pool.
+	 */
+	if (hcd->self.controller->bus == &pci_bus_type) {
+		struct pci_dev		*pdev;
+
+		pdev = to_pci_dev(hcd->self.controller);
+
+		switch (pdev->vendor) {
+		case PCI_VENDOR_ID_NVIDIA:
+			/* NVidia reports that certain chips don't handle
+			 * QH, ITD, or SITD addresses above 2GB.  (But TD,
+			 * data buffer, and periodic schedule are normal.)
+			 */
+			switch (pdev->device) {
+			case 0x003c:   /* MCP04 */
+			case 0x005b:   /* CK804 */
+			case 0x00d8:   /* CK8 */
+			case 0x00e8:   /* CK8S */
+				if (pci_set_consistent_dma_mask(pdev,
+						0x000000007fffffffULL) < 0)
+					ehci_warn (ehci, "can't enable NVidia "
+						"workaround for >2GB RAM\n");
+				break;
+			}
+			break;
+		}
+	}
+#endif
+
 	/*
 	 * hw default: 1K periodic list heads, one per frame.
 	 * periodic_size can shrink by USBCMD update if hcc_params allows.
@@ -461,23 +492,6 @@ static int ehci_start (struct usb_hcd *hcd)
 		case PCI_VENDOR_ID_ARC:
 			if (pdev->device == PCI_DEVICE_ID_ARC_EHCI)
 				ehci->is_arc_rh_tt = 1;
-			break;
-		case PCI_VENDOR_ID_NVIDIA:
-			/* NVidia reports that certain chips don't handle
-			 * QH, ITD, or SITD addresses above 2GB.  (But TD,
-			 * data buffer, and periodic schedule are normal.)
-			 */
-			switch (pdev->device) {
-			case 0x003c:   /* MCP04 */
-			case 0x005b:   /* CK804 */
-			case 0x00d8:   /* CK8 */
-			case 0x00e8:   /* CK8S */
-				if (pci_set_consistent_dma_mask(pdev,
-						0x000000007fffffffULL) < 0)
-					ehci_warn (ehci, "can't enable NVidia "
-						"workaround for >2GB RAM\n");
-				break;
-			}
 			break;
 		}
 

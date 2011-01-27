@@ -3,7 +3,7 @@
  *
  *   Directory search handling
  * 
- *   Copyright (C) International Business Machines  Corp., 2004, 2005
+ *   Copyright (C) International Business Machines  Corp., 2004, 2007
  *   Author(s): Steve French (sfrench@us.ibm.com)
  *
  *   This library is free software; you can redistribute it and/or modify
@@ -82,8 +82,13 @@ static int construct_dentry(struct qstr *qstring, struct file *file,
 			if(*ptmp_inode == NULL)
 				return rc;
 			rc = 1;
-			d_instantiate(tmp_dentry, *ptmp_inode);
 		}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
+		if(file->f_path.dentry->d_sb->s_flags & MS_NOATIME)
+#else
+		if(file->f_dentry->d_sb->s_flags & MS_NOATIME)
+#endif
+			(*ptmp_inode)->i_flags |= S_NOATIME | S_NOCMTIME;
 	} else {
 		tmp_dentry = d_alloc(file->f_dentry, qstring);
 		if(tmp_dentry == NULL) {
@@ -99,9 +104,13 @@ static int construct_dentry(struct qstr *qstring, struct file *file,
 			tmp_dentry->d_op = &cifs_dentry_ops;
 		if(*ptmp_inode == NULL)
 			return rc;
-		rc = 1;
-		d_instantiate(tmp_dentry, *ptmp_inode);
-		d_rehash(tmp_dentry);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
+		if(file->f_path.dentry->d_sb->s_flags & MS_NOATIME)
+#else
+		if(file->f_dentry->d_sb->s_flags & MS_NOATIME)
+#endif
+			(*ptmp_inode)->i_flags |= S_NOATIME | S_NOCMTIME;			
+		rc = 2;
 	}
 
 	tmp_dentry->d_time = jiffies;
@@ -109,11 +118,32 @@ static int construct_dentry(struct qstr *qstring, struct file *file,
 	return rc;
 }
 
+static void AdjustForTZ(struct cifsTconInfo * tcon, struct inode * inode)
+{
+	if((tcon) && (tcon->ses) && (tcon->ses->server)) {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+		inode->i_ctime.tv_sec += tcon->ses->server->timeAdj;
+		inode->i_mtime.tv_sec += tcon->ses->server->timeAdj;
+		inode->i_atime.tv_sec += tcon->ses->server->timeAdj;
+#else
+		inode->i_ctime += tcon->ses->server->timeAdj;
+		inode->i_mtime += tcon->ses->server->timeAdj;
+		inode->i_atime += tcon->ses->server->timeAdj;
+#endif
+	}
+	return;
+}
+
+
 static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 		char * buf, int *pobject_type, int isNewInode)
 {
 	loff_t local_size;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct timespec local_mtime;
+#else
+	time_t local_mtime;
+#endif
 
 	struct cifsInodeInfo *cifsInfo = CIFS_I(tmp_inode);
 	struct cifs_sb_info *cifs_sb = CIFS_SB(tmp_inode->i_sb);
@@ -138,12 +168,26 @@ static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 		tmp_inode->i_ctime =
 		      cifs_NTtimeToUnix(le64_to_cpu(pfindData->ChangeTime));
 	} else { /* legacy, OS2 and DOS style */
+/*		struct timespec ts;*/
 		FIND_FILE_STANDARD_INFO * pfindData = 
 			(FIND_FILE_STANDARD_INFO *)buf;
 
+		tmp_inode->i_mtime = cnvrtDosUnixTm(
+				le16_to_cpu(pfindData->LastWriteDate),
+				le16_to_cpu(pfindData->LastWriteTime));
+		tmp_inode->i_atime = cnvrtDosUnixTm(
+				le16_to_cpu(pfindData->LastAccessDate),
+				le16_to_cpu(pfindData->LastAccessTime));
+		tmp_inode->i_ctime = cnvrtDosUnixTm(
+				le16_to_cpu(pfindData->LastWriteDate),
+				le16_to_cpu(pfindData->LastWriteTime));
+		AdjustForTZ(cifs_sb->tcon, tmp_inode);
 		attr = le16_to_cpu(pfindData->Attributes);
 		allocation_size = le32_to_cpu(pfindData->AllocationSize);
 		end_of_file = le32_to_cpu(pfindData->DataSize);
+		/* do not need to use current_fs_time helper function since
+		 time not stored for this case so atime can not "go backwards"
+		 by pulling newer older from disk when inode refrenshed */
 		tmp_inode->i_atime = CURRENT_TIME;
 		/* tmp_inode->i_mtime =  BB FIXME - add dos time handling
 		tmp_inode->i_ctime = 0;   BB FIXME */
@@ -200,6 +244,10 @@ static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 		tmp_inode->i_mode |= S_IFREG;
 		if (attr & ATTR_READONLY)
 			tmp_inode->i_mode &= ~(S_IWUGO);
+		else if ((tmp_inode->i_mode & S_IWUGO) == 0)
+			/* the ATTR_READONLY flag may have been changed on   */
+		   	/* server -- set any w bits allowed by mnt_file_mode */
+			tmp_inode->i_mode |= (S_IWUGO & cifs_sb->mnt_file_mode);
 	} /* could add code here - to validate if device or weird share type? */
 
 	/* can not fill in nlink here as in qpathinfo version and Unx search */
@@ -207,7 +255,8 @@ static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 		atomic_set(&cifsInfo->inUse, 1);
 	}
 
-	if (is_size_safe_to_change(cifsInfo)) {
+	spin_lock(&tmp_inode->i_lock);
+	if (is_size_safe_to_change(cifsInfo, end_of_file)) {
 		/* can not safely change the file size here if the 
 		client is writing to it due to potential races */
 		i_size_write(tmp_inode, end_of_file);
@@ -216,13 +265,13 @@ static void fill_in_inode(struct inode *tmp_inode, int new_buf_type,
 	/* for this calculation, even though the reported blocksize is larger */
 		tmp_inode->i_blocks = (512 - 1 + allocation_size) >> 9;
 	}
+	spin_unlock(&tmp_inode->i_lock);
 
 	if (allocation_size < end_of_file)
 		cFYI(1, ("May be sparse file, allocation less than file size"));
-	cFYI(1,
-	     ("File Size %ld and blocks %ld and blocksize %ld",
-	      (unsigned long)tmp_inode->i_size, tmp_inode->i_blocks,
-	      tmp_inode->i_blksize));
+	cFYI(1, ("File Size %ld and blocks %llu",
+			(unsigned long)tmp_inode->i_size,
+			(unsigned long long)tmp_inode->i_blocks));
 	if (S_ISREG(tmp_inode->i_mode)) {
 		cFYI(1, ("File inode"));
 		tmp_inode->i_op = &cifs_file_inode_ops;
@@ -275,7 +324,11 @@ static void unix_fill_in_inode(struct inode *tmp_inode,
 	FILE_UNIX_INFO *pfindData, int *pobject_type, int isNewInode)
 {
 	loff_t local_size;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct timespec local_mtime;
+#else
+	time_t local_mtime;
+#endif
 
 	struct cifsInodeInfo *cifsInfo = CIFS_I(tmp_inode);
 	struct cifs_sb_info *cifs_sb = CIFS_SB(tmp_inode->i_sb);
@@ -337,15 +390,17 @@ static void unix_fill_in_inode(struct inode *tmp_inode,
 	tmp_inode->i_gid = le64_to_cpu(pfindData->Gid);
 	tmp_inode->i_nlink = le64_to_cpu(pfindData->Nlinks);
 
-	if (is_size_safe_to_change(cifsInfo)) {
+	spin_lock(&tmp_inode->i_lock);
+	if (is_size_safe_to_change(cifsInfo, end_of_file)) {
 		/* can not safely change the file size here if the 
 		client is writing to it due to potential races */
-		i_size_write(tmp_inode,end_of_file);
+		i_size_write(tmp_inode, end_of_file);
 
 	/* 512 bytes (2**9) is the fake blocksize that must be used */
 	/* for this calculation, not the real blocksize */
 		tmp_inode->i_blocks = (512 - 1 + num_of_bytes) >> 9;
 	}
+	spin_unlock(&tmp_inode->i_lock);
 
 	if (S_ISREG(tmp_inode->i_mode)) {
 		cFYI(1, ("File inode"));
@@ -870,12 +925,22 @@ static int cifs_filldir(char *pfindEntry, struct file *file,
 				pfindEntry, &obj_type, rc);
 	else
 		fill_in_inode(tmp_inode, 1 /* NT */, pfindEntry, &obj_type, rc);
+
+	if(rc) /* new inode - needs to be tied to dentry */ {
+		d_instantiate(tmp_dentry, tmp_inode);
+		if(rc == 2)
+			d_rehash(tmp_dentry);
+	}
 	
 	
 	rc = filldir(direntry,qstring.name,qstring.len,file->f_pos,
 		     tmp_inode->i_ino,obj_type);
 	if(rc) {
 		cFYI(1,("filldir rc = %d",rc));
+		/* we can not return filldir errors to the caller
+		since they are "normal" when the stat blocksize
+		is too small - we return remapped error instead */
+		rc = -EOVERFLOW;
 	}
 
 	dput(tmp_dentry);
@@ -936,6 +1001,7 @@ static int cifs_save_resume_key(const char *current_entry,
 		filename = &pFindData->FileName[0];
 		/* one byte length, no name conversion */
 		len = (unsigned int)pFindData->FileNameLength;
+		cifsFile->srch_inf.resume_key = pFindData->ResumeKey;
 	} else {
 		cFYI(1,("Unknown findfirst level %d",level));
 		return -EINVAL;
@@ -1053,6 +1119,11 @@ int cifs_readdir(struct file *file, void *direntry, filldir_t filldir)
 			we want to check for that here? */
 			rc = cifs_filldir(current_entry, file,
 					filldir, direntry, tmp_buf, max_len);
+			if(rc == -EOVERFLOW) {
+				rc = 0;
+				break;
+			}
+
 			file->f_pos++;
 			if(file->f_pos == 
 				cifsFile->srch_inf.index_of_last_entry) {

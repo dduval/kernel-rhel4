@@ -283,6 +283,7 @@ svc_process(struct svc_serv *serv, struct svc_rqst *rqstp)
 	rqstp->rq_res.len = 0;
 	rqstp->rq_res.page_base = 0;
 	rqstp->rq_res.page_len = 0;
+	rqstp->rq_res.tail[0].iov_base = NULL;
 	rqstp->rq_res.tail[0].iov_len = 0;
 	/* tcp needs a space for the record length... */
 	if (rqstp->rq_prot == IPPROTO_TCP)
@@ -377,7 +378,7 @@ svc_process(struct svc_serv *serv, struct svc_rqst *rqstp)
 	 * better idea of reply size
 	 */
 	if (procp->pc_xdrressize)
-		svc_reserve(rqstp, procp->pc_xdrressize<<2);
+		svc_reserve_auth(rqstp, procp->pc_xdrressize<<2);
 
 	/* Call the function that processes the request. */
 	if (!versp->vs_dispatch) {

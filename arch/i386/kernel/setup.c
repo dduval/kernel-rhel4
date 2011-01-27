@@ -378,6 +378,21 @@ static void __init limit_regions(unsigned long long size)
 	}
 }
 
+int __init e820_mapped(unsigned long start, unsigned long end, unsigned type)
+{
+        int i;
+        for (i = 0; i < e820.nr_map; i++) {
+                struct e820entry *ei = &e820.map[i];
+                if (type && ei->type != type)
+                        continue;
+                if (ei->addr >= end || ei->addr + ei->size < start)
+                        continue;
+                return 1;
+        }
+        return 0;
+}
+EXPORT_SYMBOL_GPL(e820_mapped);
+
 static void __init add_memory_region(unsigned long long start,
                                   unsigned long long size, int type)
 {

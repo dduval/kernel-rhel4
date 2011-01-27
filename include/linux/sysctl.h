@@ -177,6 +177,9 @@ enum
 	VM_MAX_QUEUE_DEPTH=29,	/* max IO queue depth */
 	VM_PERCPU_PAGELIST_FRACTION=30,/* int: fraction of pages in each percpu_pagelist */
 	VM_PAGECACHE=31,	/* favor reclaiming unmapped pagecache pages */
+	VM_PANIC_ON_OOM=32,	/* panic at out-of-memory */
+	VM_INACTIVE_PERCENT=33, /* desired size of inactive list */
+	VM_DROP_PAGECACHE=34,   /* nuke lots of pagecache */
 };
 
 
@@ -355,6 +358,8 @@ enum
 	NET_TCP_TSO_WIN_DIVISOR=107,
 	NET_TCP_BIC_BETA=108,
 	NET_IPV4_ICMP_ERRORS_USE_INBOUND_IFADDR=109,
+	NET_IPV4_TCP_WORKAROUND_SIGNED_WINDOWS=110,
+	NET_TCP_SLOW_START_AFTER_IDLE=111,
 };
 
 enum {

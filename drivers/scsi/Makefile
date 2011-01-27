@@ -64,6 +64,7 @@ obj-$(CONFIG_SCSI_AHA1740)	+= aha1740.o
 obj-$(CONFIG_SCSI_AIC7XXX)	+= aic7xxx/
 obj-$(CONFIG_SCSI_AIC79XX)	+= aic7xxx/
 obj-$(CONFIG_SCSI_AACRAID)	+= aacraid/
+obj-$(CONFIG_SCSI_ARCMSR)	+= arcmsr/
 obj-$(CONFIG_SCSI_AIC7XXX_OLD)	+= aic7xxx_old.o
 obj-$(CONFIG_SCSI_ADP94XX)	+= adp94xx/
 obj-$(CONFIG_SCSI_IPS)		+= ips.o

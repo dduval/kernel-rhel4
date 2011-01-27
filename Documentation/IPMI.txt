@@ -437,7 +437,8 @@ at module load time (for a module) with:
 	addr=<adapter1>,<i2caddr1>[,<adapter2>,<i2caddr2>[,...]]
 	dbg=<flags1>,<flags2>...
           slave_addrs=<addr1>,<addr2>,...
-	[defaultprobe=0] [dbg_probe=1]
+	  [defaultprobe=0] [dbg_probe=1]
+	  force_kipmid=<enable1>,<enable2>,...
 
 The addresses are specified in pairs, the first is the adapter ID and the
 second is the I2C address on that adapter.
@@ -460,12 +461,19 @@ that the known I2c address be given to the SMBus driver in the smb_addr
 parameter. The default adrress range will not be used when a smb_addr
 parameter is provided.
 
+The force_kipmid parameter forcefully enables (if set to 1) or disables
+(if set to 0) the kernel IPMI daemon.  Normally this is auto-detected
+by the driver, but systems with broken interrupts might need an enable,
+or users that don't want the daemon (don't need the performance, don't
+want the CPU hit) can disable it.
+
 When compiled into the kernel, the addresses can be specified on the
 kernel command line as:
 
   ipmb_smb.addr=<adapter1>,<i2caddr1>[,<adapter2>,<i2caddr2>[,...]]
 	ipmi_smb.dbg=<flags1>,<flags2>...
 	ipmi_smb.defaultprobe=0 ipmi_smb.dbg_probe=1
+	ipmi_smb.force_kipmid=<enable1>,<enable2>,...
 
 These are the same options as on the module command line.
 

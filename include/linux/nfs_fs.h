@@ -91,6 +91,7 @@ struct nfs_access_entry {
 struct nfs4_state;
 struct nfs_open_context {
 	atomic_t count;
+	struct vfsmount *vfsmnt;
 	struct dentry *dentry;
 	struct rpc_cred *cred;
 	struct nfs4_state *state;
@@ -340,7 +341,7 @@ extern void nfs_end_attr_update(struct inode *);
 extern void nfs_begin_data_update(struct inode *);
 extern void nfs_end_data_update(struct inode *);
 extern void nfs_end_data_update_defer(struct inode *);
-extern struct nfs_open_context *alloc_nfs_open_context(struct dentry *dentry, struct rpc_cred *cred);
+extern struct nfs_open_context *alloc_nfs_open_context(struct vfsmount *mnt, struct dentry *dentry, struct rpc_cred *cred);
 extern struct nfs_open_context *get_nfs_open_context(struct nfs_open_context *ctx);
 extern void put_nfs_open_context(struct nfs_open_context *ctx);
 extern void nfs_file_set_open_context(struct file *filp, struct nfs_open_context *ctx);
@@ -452,11 +453,11 @@ extern int  nfs_sync_inode(struct inode *, unsigned long, unsigned int, int);
 extern int  nfs_flush_inode(struct inode *, unsigned long, unsigned int, int);
 extern int  nfs_flush_list(struct list_head *, int, int);
 #if defined(CONFIG_NFS_V3) || defined(CONFIG_NFS_V4)
-extern int  nfs_commit_inode(struct inode *, unsigned long, unsigned int, int);
+extern int  nfs_commit_inode(struct inode *, int);
 extern int  nfs_commit_list(struct list_head *, int);
 #else
 static inline int
-nfs_commit_inode(struct inode *inode, unsigned long idx_start, unsigned int npages, int how)
+nfs_commit_inode(struct inode *inode, int how)
 {
 	return 0;
 }
@@ -765,10 +766,18 @@ enum {
 	NFS_DELEGATED_STATE,
 };
 
+/* struct for tracking incomplete opens */
+struct nfs4_inc_open {
+	struct list_head	state;
+	struct task_struct	*task;
+	unsigned long		flags;
+};
+
 struct nfs4_state {
 	struct list_head open_states;	/* List of states for the same state_owner */
 	struct list_head inode_states;	/* List of states for the same inode */
 	struct list_head lock_states;	/* List of subservient lock stateids */
+	struct list_head inc_open;	/* List of incomplete opens */
 
 	struct nfs4_state_owner *owner;	/* Pointer to the open owner */
 	struct inode *inode;		/* Pointer to the inode */
@@ -795,6 +804,7 @@ extern struct dentry_operations nfs4_dentry_operations;
 extern struct inode_operations nfs4_dir_inode_operations;
 
 /* nfs4proc.c */
+extern int nfs4_map_errors(int err);
 extern int nfs4_proc_setclientid(struct nfs4_client *, u32, unsigned short);
 extern int nfs4_proc_setclientid_confirm(struct nfs4_client *);
 extern int nfs4_open_reclaim(struct nfs4_state_owner *, struct nfs4_state *);

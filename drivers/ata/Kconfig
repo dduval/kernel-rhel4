@@ -147,6 +147,23 @@ config SATA_INTEL_COMBINED
 	depends on IDE=y && !BLK_DEV_IDE_SATA && (SATA_AHCI || ATA_PIIX)
 	default y
 
+config PATA_PDC2027X
+	tristate "Promise PATA 2027x support"
+	depends on PCI
+	help
+	  This option enables support for Promise PATA pdc20268 to pdc20277 host adapters.
+
+	  If unsure, say N.
+
+config PATA_JMICRON
+	tristate "JMicron PATA support"
+	depends on PCI
+	help
+	  Enable support for the JMicron IDE controller, via the new
+	  ATA layer.
+
+	  If unsure, say N.
+
 endif
 endmenu
 

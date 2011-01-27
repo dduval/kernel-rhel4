@@ -27,9 +27,6 @@
 #include <xen/interface/io/kbdif.h>
 #include <xen/xenbus.h>
 
-/* FIXME: crl: this is temporary until we get the big Xen update */
-#define is_initial_xendomain() 0
-
 struct xenkbd_info
 {
 	struct input_dev *dev;

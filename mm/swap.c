@@ -43,8 +43,6 @@ int page_cluster;
  */
 int pagecache_maxpercent = 100;
 
-#ifdef CONFIG_HUGETLB_PAGE
-
 void put_page(struct page *page)
 {
 	if (unlikely(PageCompound(page))) {
@@ -61,7 +59,6 @@ void put_page(struct page *page)
 		__page_cache_release(page);
 }
 EXPORT_SYMBOL(put_page);
-#endif
 
 /*
  * Writeback is about to end against a page which has been marked for immediate

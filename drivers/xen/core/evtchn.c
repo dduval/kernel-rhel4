@@ -444,12 +444,6 @@ void unbind_from_irqhandler(unsigned int irq, void *dev_id)
 }
 EXPORT_SYMBOL_GPL(unbind_from_irqhandler);
 
-#ifdef CONFIG_SMP
-static void do_nothing_function(void *ign)
-{
-}
-#endif
-
 /* Rebind an evtchn so that it gets delivered to a specific cpu */
 static void rebind_irq_to_cpu(unsigned irq, unsigned tcpu)
 {
@@ -458,8 +452,6 @@ static void rebind_irq_to_cpu(unsigned irq, unsigned tcpu)
 
 	if (!VALID_EVTCHN(evtchn))
 		return;
-
-	spin_lock(&irq_mapping_update_lock);
 
 	/* Send future instances of this interrupt to other vcpu. */
 	bind_vcpu.port = evtchn;
@@ -472,21 +464,6 @@ static void rebind_irq_to_cpu(unsigned irq, unsigned tcpu)
 	 */
 	if (HYPERVISOR_event_channel_op(EVTCHNOP_bind_vcpu, &bind_vcpu) >= 0)
 		bind_evtchn_to_cpu(evtchn, tcpu);
-
-	spin_unlock(&irq_mapping_update_lock);
-
-	/*
-	 * Now send the new target processor a NOP IPI. When this returns, it
-	 * will check for any pending interrupts, and so service any that got 
-	 * delivered to the wrong processor by mistake.
-	 * 
-	 * XXX: The only time this is called with interrupts disabled is from
-	 * the hotplug/hotunplug path. In that case, all cpus are stopped with 
-	 * interrupts disabled, and the missed interrupts will be picked up
-	 * when they start again. This is kind of a hack.
-	 */
-	if (!irqs_disabled())
-		smp_call_function(do_nothing_function, NULL, 0, 0);
 }
 
 
@@ -884,7 +861,7 @@ void __init xen_init_IRQ(void)
 #ifdef RTC_IRQ
 		/* If not domain 0, force our RTC driver to fail its probe. */
 		if ((i == RTC_IRQ) &&
-		    !(xen_start_info->flags & SIF_INITDOMAIN))
+		    !is_initial_xendomain())
 			continue;
 #endif
 

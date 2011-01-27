@@ -14,9 +14,12 @@ deps_config := \
 	drivers/firmware/Kconfig \
 	drivers/edac/Kconfig \
 	drivers/infiniband/util/Kconfig \
+	drivers/infiniband/ulp/vnic/Kconfig \
 	drivers/infiniband/ulp/sdp/Kconfig \
 	drivers/infiniband/ulp/srp/Kconfig \
 	drivers/infiniband/ulp/ipoib/Kconfig \
+	drivers/infiniband/hw/cxgb3/Kconfig \
+	drivers/infiniband/hw/amso1100/Kconfig \
 	drivers/infiniband/hw/ehca/Kconfig \
 	drivers/infiniband/hw/ipath/Kconfig \
 	drivers/infiniband/hw/mthca/Kconfig \

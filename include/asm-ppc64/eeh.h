@@ -79,7 +79,7 @@ void eeh_slot_error_detail (struct device_node *dn, int severity);
  * a second; this routine will sleep while the adapter is 
  * being reset.
  */
-void rtas_set_slot_reset (struct device_node *dn);
+int rtas_set_slot_reset (struct device_node *dn);
 
 /**
  * rtas_configure_bridge -- firmware initialization of pci bridge

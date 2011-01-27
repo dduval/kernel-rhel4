@@ -87,3 +87,47 @@ extern int pci_conf1_write( int seg,  int bus,
 extern int pci_conf1_read( int seg,  int bus,
                int devfn, int reg, int len, u32 *value);
 
+
+/*
+ * AMD Fam10h CPUs are buggy, and cannot access MMIO config space
+ * on their northbrige except through the * %eax register. As such, you MUST
+ * NOT use normal IOMEM accesses, you need to only use the magic mmio-config
+ * accessor functions.
+ * In fact just use pci_config_*, nothing else please.
+ */
+static inline unsigned char mmio_config_readb(void __iomem *pos)
+{
+	u8 val;
+	asm volatile("movb (%1),%%al" : "=a" (val) : "r" (pos));
+	return val;
+}
+
+static inline unsigned short mmio_config_readw(void __iomem *pos)
+{
+	u16 val;
+	asm volatile("movw (%1),%%ax" : "=a" (val) : "r" (pos));
+	return val;
+}
+
+static inline unsigned int mmio_config_readl(void __iomem *pos)
+{
+	u32 val;
+	asm volatile("movl (%1),%%eax" : "=a" (val) : "r" (pos));
+	return val;
+}
+
+static inline void mmio_config_writeb(void __iomem *pos, u8 val)
+{
+	asm volatile("movb %%al,(%1)" :: "a" (val), "r" (pos) : "memory");
+}
+
+static inline void mmio_config_writew(void __iomem *pos, u16 val)
+{
+	asm volatile("movw %%ax,(%1)" :: "a" (val), "r" (pos) : "memory");
+}
+
+static inline void mmio_config_writel(void __iomem *pos, u32 val)
+{
+	asm volatile("movl %%eax,(%1)" :: "a" (val), "r" (pos) : "memory");
+}
+

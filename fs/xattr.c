@@ -303,6 +303,7 @@ removexattr(struct dentry *d, char __user *name)
 		if (error)
 			goto out;
 		down(&d->d_inode->i_sem);
+		audit_notify_watch(d->d_inode, MAY_WRITE);
 		error = d->d_inode->i_op->removexattr(d, kname);
 		up(&d->d_inode->i_sem);
 	}

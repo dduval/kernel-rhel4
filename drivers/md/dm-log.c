@@ -150,6 +150,8 @@ struct log_c {
 
 	int failure_response;
 
+	struct dm_io_request io_req;
+
 	/*
 	 * Disk log fields
 	 */
@@ -159,8 +161,6 @@ struct log_c {
 
 	struct io_region header_location;
 	struct log_header *disk_header;
-
-	struct io_region bits_location;
 };
 
 /*
@@ -203,13 +203,20 @@ static void header_from_disk(struct log_header *core, struct log_header *disk)
 	core->nr_regions = le64_to_cpu(disk->nr_regions);
 }
 
+static int rw_header(struct log_c *lc, int rw)
+{
+	lc->io_req.bi_rw = rw;
+	lc->io_req.mem.ptr.vma = lc->disk_header;
+	lc->io_req.notify.fn = NULL;
+
+	return dm_io(&lc->io_req, 1, &lc->header_location, NULL);
+}
+
 static int read_header(struct log_c *log)
 {
 	int r;
-	unsigned long ebits;
 
-	r = dm_io_sync_vm(1, &log->header_location, READ,
-			  log->disk_header, &ebits);
+	r = rw_header(log, READ);
 	if (r)
 		return r;
 
@@ -238,34 +245,8 @@ static int read_header(struct log_c *log)
 
 static inline int write_header(struct log_c *log)
 {
-	unsigned long ebits;
-
 	header_to_disk(&log->header, log->disk_header);
-	return dm_io_sync_vm(1, &log->header_location, WRITE,
-			     log->disk_header, &ebits);
-}
-
-/*----------------------------------------------------------------
- * Bits IO
- *--------------------------------------------------------------*/
-static int read_bits(struct log_c *log)
-{
-	int r;
-	unsigned long ebits;
-
-	r = dm_io_sync_vm(1, &log->bits_location, READ,
-			  log->clean_bits, &ebits);
-	if (r)
-		return r;
-
-	return 0;
-}
-
-static int write_bits(struct log_c *log)
-{
-	unsigned long ebits;
-	return dm_io_sync_vm(1, &log->bits_location, WRITE,
-			     log->clean_bits, &ebits);
+	return rw_header(log, WRITE);
 }
 
 /*----------------------------------------------------------------
@@ -385,9 +366,10 @@ static int disk_ctr(struct dirty_log *log, struct dm_target *ti,
 		    unsigned int argc, char **argv)
 {
 	int r;
-	size_t size;
+	size_t size, bitset_size;
 	struct log_c *lc;
 	struct dm_dev *dev;
+	uint32_t *clean_bits;
 
 	if (argc < 2 || argc > 4) {
 		DMWARN("wrong number of arguments to disk mirror log");
@@ -412,23 +394,34 @@ static int disk_ctr(struct dirty_log *log, struct dm_target *ti,
 	/* setup the disk header fields */
 	lc->header_location.bdev = lc->log_dev->bdev;
 	lc->header_location.sector = 0;
-	lc->header_location.count = 1;
 
-	/*
-	 * We can't read less than this amount, even though we'll
-	 * not be using most of this space.
-	 */
-	lc->disk_header = vmalloc(1 << SECTOR_SHIFT);
+	/* Include both the header and the bitset in one buffer. */
+	bitset_size = lc->bitset_uint32_count * sizeof(uint32_t);
+	size = dm_round_up((LOG_OFFSET << SECTOR_SHIFT) + bitset_size,
+			   ti->limits.hardsect_size);
+	lc->header_location.count = size >> SECTOR_SHIFT;
+
+	lc->disk_header = vmalloc(size);
 	if (!lc->disk_header)
 		goto bad;
 
-	/* setup the disk bitset fields */
-	lc->bits_location.bdev = lc->log_dev->bdev;
-	lc->bits_location.sector = LOG_OFFSET;
+	/*
+	 * Deallocate the clean_bits buffer that was allocated in core_ctr()
+	 * and point it at the appropriate place in the disk_header buffer.
+	 */
+	clean_bits = lc->clean_bits;
+	lc->clean_bits = (void *)lc->disk_header + (LOG_OFFSET << SECTOR_SHIFT);
+	memcpy(lc->clean_bits, clean_bits, bitset_size);
+	vfree(clean_bits);
 
-	size = dm_round_up(lc->bitset_uint32_count * sizeof(uint32_t),
-			   1 << SECTOR_SHIFT);
-	lc->bits_location.count = size >> SECTOR_SHIFT;
+	lc->io_req.mem.type = DM_IO_VMA;
+	lc->io_req.client = dm_io_client_create(dm_div_up(size, PAGE_SIZE));
+	if (IS_ERR(lc->io_req.client)) {
+		r = PTR_ERR(lc->io_req.client);
+		DMWARN("couldn't allocate disk io client");
+		vfree(lc->disk_header);
+		goto bad;
+	}
 	return 0;
 
  bad:
@@ -441,7 +434,9 @@ static void disk_dtr(struct dirty_log *log)
 {
 	struct log_c *lc = (struct log_c *) log->context;
 	dm_put_device(lc->ti, lc->log_dev);
+	dm_io_client_destroy(lc->io_req.client);
 	vfree(lc->disk_header);
+	lc->clean_bits = NULL;
 	core_dtr(log);
 }
 
@@ -484,8 +479,7 @@ static int disk_resume(struct dirty_log *log)
 	 * Read the disk header, but only if we know it is good.
 	 * Assume the worst in the event of failure.
 	 */
-	if (!lc->log_dev_failed &&
-	    ((r = read_header(lc)) || read_bits(lc))) {
+	if (!lc->log_dev_failed && (r = read_header(lc))) {
 		DMWARN("Read %s failed on mirror log device, %s.",
 		      r ? "header" : "bits", lc->log_dev->name);
 		fail_log_device(lc);
@@ -514,11 +508,10 @@ static int disk_resume(struct dirty_log *log)
 	/* set the correct number of regions in the header */
 	lc->header.nr_regions = lc->region_count;
 
-	/* write out the log.  'i' tells us which has failed if any */
-	i = 1;
-	if ((r = write_bits(lc)) || (i = 0) || (r = write_header(lc))) {
-		DMWARN("Write %s failed on mirror log device, %s.",
-		      i ? "bits" : "header", lc->log_dev->name);
+	/* write out the log */
+	if ((r = write_header(lc))) {
+		DMWARN("Write header failed on mirror log device, %s.",
+		      lc->log_dev->name);
 		fail_log_device(lc);
 	} else
 		restore_log_device(lc);
@@ -573,7 +566,7 @@ static int disk_flush(struct dirty_log *log)
 	if (!lc->touched)
 		return 0;
 
-	r = write_bits(lc);
+	r = write_header(lc);
 	if (r)
 		fail_log_device(lc);
 	else {
@@ -593,7 +586,10 @@ static void core_mark_region(struct dirty_log *log, region_t region)
 static void core_clear_region(struct dirty_log *log, region_t region)
 {
 	struct log_c *lc = (struct log_c *) log->context;
-	log_set_bit(lc, lc->clean_bits, region);
+
+	/* Only clear the region if it is also in sync */
+	if (log_test_bit(lc->sync_bits, region))
+		log_set_bit(lc, lc->clean_bits, region);
 }
 
 static int core_get_resync_work(struct dirty_log *log, region_t *region)

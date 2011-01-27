@@ -1123,8 +1123,11 @@ int __skb_linearize(struct sk_buff *skb, int gfp_mask)
 	int headerlen = skb->data - skb->head;
 	int expand = (skb->tail + skb->data_len) - skb->end;
 
-	if (skb_shared(skb))
-		BUG();
+	if (skb_shared(skb)) {
+		printk("skb_linearize called with shared buffer (dropping)\n");
+		dump_stack();
+		return -EINVAL;
+	}
 
 	if (expand <= 0)
 		expand = 0;
@@ -1499,7 +1502,7 @@ drop:
 	return NET_RX_DROP;
 }
 
-static inline struct net_device *skb_bond(struct sk_buff *skb)
+inline struct net_device *skb_bond(struct sk_buff *skb)
 {
 	struct net_device *dev = skb->dev;
 
@@ -1507,9 +1510,14 @@ static inline struct net_device *skb_bond(struct sk_buff *skb)
 		/*
 		 * On bonding slaves other than the currently active
 		 * slave, suppress duplicates except for 802.3ad
-		 * ETH_P_SLOW and alb non-mcast/bcast.
+		 * ETH_P_SLOW and alb non-mcast/bcast and ARP on 
+                 * active-backup slaves with arp_validate enabled.
 		 */
 		if (dev->priv_flags & IFF_SLAVE_INACTIVE) {
+			if ((dev->priv_flags & IFF_SLAVE_NEEDARP) &&
+			    skb->protocol == __constant_htons(ETH_P_ARP))
+				goto keep;
+
 			if (dev->master->priv_flags & IFF_MASTER_ALB) {
 				if (skb->pkt_type != PACKET_BROADCAST &&
 				    skb->pkt_type != PACKET_MULTICAST)
@@ -1530,6 +1538,7 @@ keep:
 
 	return dev;
 }
+EXPORT_SYMBOL(skb_bond);
 
 static void net_tx_action(struct softirq_action *h)
 {

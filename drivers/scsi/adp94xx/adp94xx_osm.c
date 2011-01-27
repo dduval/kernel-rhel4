@@ -83,9 +83,33 @@ static char *adp94xx = NULL;
 #ifdef MODULE_LICENSE
 MODULE_LICENSE("Dual BSD/GPL");
 #endif
+#ifdef MODULE_VERSION
+MODULE_VERSION(ASD_DRIVER_VERSION);
+#endif
 MODULE_AUTHOR("Maintainer: David Chaw <david_chaw@adaptec.com>");
 MODULE_DESCRIPTION("Adaptec Linux SAS/SATA Family Driver");
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,16)
+	module_param(adp94xx, charp, S_IRUGO|S_IWUSR);
+#else
+	MODULE_PARM(adp94xx, "s");
+#endif
+MODULE_PARM_DESC(adp94xx,
+"period delimited, options string.\n"
+"	cmd_per_lun:<int>	Queue depth for all attached targets that\n"
+"				support tag queueing\n"
+"	attach_HostRAID:<int>	Attach to controllers in HostRAID mode\n"
+"			(default is 0, false; 1 will enable this feature).\n"
+"\n"
+"	Sample module configuration line:\n"
+"		Set the Queue Depth of all targets to 32.\n"
+"\n"
+"	options adp94xx 'adp94xx=cmd_per_lun:32'"
+"\n"
+"	Sample module configuration line:\n"
+"		Disable this driver.\n"
+"\n"
+"	options adp94xx 'adp94xx=disable'");
 #endif /* MODULE */
 
 /* By default we do not attach to HostRAID enabled controllers.
@@ -779,7 +803,11 @@ static int asd_aic9405_setup(struct asd_softc *asd)
 	 * which phys to be enabled.
 	 */ 
 	asd->hw_profile.enabled_phys = 0xF0;
+#ifndef EXTENDED_SCB
 	asd->hw_profile.max_scbs = ASD_MAX_USABLE_SCBS;
+#else
+	asd->hw_profile.max_scbs = ASD_MAX_USABLE_SCBS + ASD_EXTENDED_SCB_NUMBER;
+#endif
 	asd->hw_profile.max_ddbs = ASD_MAX_DDBS;	 
 	asd->hw_profile.rev_id = asd_pcic_read_byte(asd, PCIC_DEVREV_ID);
 
@@ -840,7 +868,11 @@ asd_aic9410_setup(struct asd_softc *asd)
 	 * which phys to be enabled.
 	 */ 
 	asd->hw_profile.enabled_phys = 0xFF;
+#ifndef EXTENDED_SCB
 	asd->hw_profile.max_scbs = ASD_MAX_USABLE_SCBS;
+#else
+	asd->hw_profile.max_scbs = ASD_MAX_USABLE_SCBS + ASD_EXTENDED_SCB_NUMBER;
+#endif
 	asd->hw_profile.max_ddbs = ASD_MAX_DDBS;	 
 	asd->hw_profile.rev_id = asd_pcic_read_byte(asd, PCIC_DEVREV_ID);
 
@@ -1598,9 +1630,9 @@ asd_timed_run_dev_queue(u_long arg)
 		asd_flush_device_queue(asd, dev);
 	} else {
 		asd_log(ASD_DBG_ERROR, "DEV QF: %d TARG QF: %d "
-			"DEV FL: 0x%x TARG FL: 0x%x.\n",
+			"DEV FL: 0x%x TARG FL: 0x%x. ptarget=%p\n",
 			dev->qfrozen, dev->target->qfrozen,
-			dev->flags, dev->target->flags);
+			dev->flags, dev->target->flags,dev->target);
 	}
 
 	asd_unlock(asd, &flags);
@@ -1641,7 +1673,11 @@ asd_scb_done(struct asd_softc *asd, struct scb *scb, struct asd_done_list *dl)
 //JD
 #ifdef ASD_DEBUG
 	if( (dl->opcode != TASK_COMP_WO_ERR) && (dl->opcode != TASK_COMP_W_UNDERRUN) ) 
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 		asd_log(ASD_DBG_INFO, "asd_scb_done with error cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x abort:%d) dl->opcode 0x%x\n",
+#else
+		asd_log(ASD_DBG_INFO, "asd_scb_done with error cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x) dl->opcode 0x%x\n",
+#endif
 			cmd->cmnd[2],
 			cmd->cmnd[3],
 			cmd->cmnd[4],
@@ -1652,7 +1688,9 @@ asd_scb_done(struct asd_softc *asd, struct scb *scb, struct asd_done_list *dl)
 		  cmd->pid,
 		  cmd->resid,
 		  cmd->timeout_per_command,
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 		  cmd->abort_reason,
+#endif
 		  dl->opcode);
 #endif
 	switch (dl->opcode) {
@@ -1785,7 +1823,10 @@ asd_scb_done(struct asd_softc *asd, struct scb *scb, struct asd_done_list *dl)
 		asd_hwi_free_scb(asd, scb);
 //JDTEST
 	else
+	{
 		asd_log(ASD_DBG_ERROR, "scb 0x%x SCB_TIMEDOUT(0x%x)\n",scb,scb->flags);
+		scb->flags |= SCB_ABORT_DONE;
+	}
 	
 	cmd->scsi_done(cmd);
 }
@@ -1847,7 +1888,10 @@ asd_scb_internal_done(struct asd_softc *asd, struct scb *scb,
 		asd_hwi_free_scb(asd, scb);
 //JDTEST
 	else
+	{
+		scb->flags |= SCB_ABORT_DONE;
 		asd_log(ASD_DBG_ERROR, "scb 0x%x SCB_TIMEDOUT(0x%x)\n",scb,scb->flags);
+	}
 }
 
 static void
@@ -4027,7 +4071,11 @@ asd_map_target(struct asd_softc *asd, struct asd_target *targ)
 		/* Normal case: no SES device claimed to know the order
 		 * of this device.
 		 */
+#ifndef NO_SES_SUPPORT
 		for (i = 128; i < ASD_MAX_TARGET_IDS; i++) {
+#else
+		for (i = 0; i < (ASD_MAX_TARGET_IDS - 128); i++) {
+#endif
 			if (dm->targets[i] == NULL) {
 				dm->targets[i] = targ;
 				targ->target_id = i;
@@ -4805,11 +4853,19 @@ asd_queue(Scsi_Cmnd  *cmd, void (*scsi_done)(Scsi_Cmnd *))
 
 	asd = *((struct asd_softc **) cmd->device->host->hostdata);
 #ifdef CHECK_CMD
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 	cmd->abort_reason=jiffies / HZ;
+#endif
+	if(asd->debug_flag ==1)
+		asd_log(ASD_DBG_INFO, "asd_queue\n");
 //JD
 	if(cmd->cmnd[0]==0x0)
 	{
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 	asd_log(ASD_DBG_INFO, "asd_queue for SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x abort:%d), opcode 0x%x.\n", 
+#else
+	asd_log(ASD_DBG_INFO, "asd_queue for SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x), opcode 0x%x.\n",
+#endif
 			cmd->cmnd[2],
 			cmd->cmnd[3],
 			cmd->cmnd[4],
@@ -4820,7 +4876,9 @@ asd_queue(Scsi_Cmnd  *cmd, void (*scsi_done)(Scsi_Cmnd *))
 		  cmd->pid,
 		  cmd->resid,
 		  cmd->timeout_per_command,
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 		  cmd->abort_reason,
+#endif
 		  cmd->cmnd[0]);
 	}
 #endif
@@ -5372,13 +5430,18 @@ asd_abort(Scsi_Cmnd *cmd)
 	union asd_cmd 		*list_acmd;
 	int			 retval;
 	int			 found;
+	unsigned long		 flags;
 
 #ifdef ASD_DEBUG
 	asd_log(ASD_DBG_INFO, "(scsi%d: Ch %d Id %d Lun %d): ",
 		  cmd->device->host->host_no,
 		  cmd->device->channel, cmd->device->id, cmd->device->lun);
 //JD
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 	asd_log(ASD_DBG_INFO, "Abort requested for SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x abort:%d vs current:%d), opcode 0x%x.\n", 
+#else
+	asd_log(ASD_DBG_INFO, "Abort requested for SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x vs current:%d), opcode 0x%x.\n",
+#endif
 			cmd->cmnd[2],
 			cmd->cmnd[3],
 			cmd->cmnd[4],
@@ -5389,7 +5452,9 @@ asd_abort(Scsi_Cmnd *cmd)
 		  cmd->pid,
 		  cmd->resid,
 		  cmd->timeout_per_command,
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 		  cmd->abort_reason,
+#endif
 		  (jiffies / HZ),
 		  cmd->cmnd[0]);
 #endif
@@ -5398,7 +5463,11 @@ asd_abort(Scsi_Cmnd *cmd)
 	found = 0;
 	retval = SUCCESS;
 
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,16)
+	asd_lock(asd, &flags);
+#else
 	asd_sml_lock(asd);
+#endif
 
 	/* See if any existing device owns this command. */
 	dev = asd_get_device(asd, cmd->device->channel,
@@ -5438,7 +5507,11 @@ asd_abort(Scsi_Cmnd *cmd)
 	list_for_each_entry(list_acmd, &dev->busyq, acmd_links) {
 //JD
 #ifdef ASD_DEBUG
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 		asd_log(ASD_DBG_INFO, "Checking busy queue cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x, abort:0x%x).\n",
+#else
+		asd_log(ASD_DBG_INFO, "Checking busy queue cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x).\n",
+#endif
 			list_acmd->scsi_cmd.cmnd[2],
 			list_acmd->scsi_cmd.cmnd[3],
 			list_acmd->scsi_cmd.cmnd[4],
@@ -5448,8 +5521,12 @@ asd_abort(Scsi_Cmnd *cmd)
 			list_acmd->scsi_cmd.tag,
 			list_acmd->scsi_cmd.pid,
 			list_acmd->scsi_cmd.resid,
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 			list_acmd->scsi_cmd.timeout_per_command,
 			list_acmd->scsi_cmd.abort_reason);
+#else
+			list_acmd->scsi_cmd.timeout_per_command);
+#endif
 #endif
 		if (list_acmd == acmd) {
 			/* Found it. */
@@ -5481,18 +5558,9 @@ asd_abort(Scsi_Cmnd *cmd)
 	 */
 	list_for_each_entry(scb_to_abort, &asd->platform_data->pending_os_scbs,
 			    owner_links) {
-//JD
 #ifdef ASD_DEBUG
 		asd_log(ASD_DBG_INFO, "Checking pending_os_scbs scb_to_abort->io_ctx %p TC 0x%x.\n", scb_to_abort->io_ctx, SCB_GET_INDEX(scb_to_abort));
-//JD
-		asd_log(ASD_DBG_INFO, "SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x , opcode 0x%x.\n", 
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[2],
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[3],
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[4],
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[5],
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[7],
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[8],
-			scb_to_abort->io_ctx->scsi_cmd.cmnd[0]);
+		asd_log(ASD_DBG_INFO, "scb_to_abort=%p\n", scb_to_abort);
 #endif
 		if (scb_to_abort->io_ctx == acmd) {
 			/* Found it. */
@@ -5522,7 +5590,11 @@ asd_abort(Scsi_Cmnd *cmd)
 	}
 //JD
 #ifdef ASD_DEBUG
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 	asd_log(ASD_DBG_INFO, "Remove this command and put it into timeout SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x abort:%d), opcode 0x%x.\n", 
+#else
+	asd_log(ASD_DBG_INFO, "Remove this command and put it into timeout SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x (tag:0x%x, pid:0x%x, res_count:0x%x, timeout:0x%x), opcode 0x%x.\n",
+#endif
 			cmd->cmnd[2],
 			cmd->cmnd[3],
 			cmd->cmnd[4],
@@ -5533,7 +5605,9 @@ asd_abort(Scsi_Cmnd *cmd)
 		cmd->pid,
 		cmd->resid,
 		cmd->timeout_per_command,
+#if LINUX_VERSION_CODE <  KERNEL_VERSION(2,6,13)
 		cmd->abort_reason,
+#endif
 		cmd->cmnd[0]);
 #endif
 	/*
@@ -5552,7 +5626,13 @@ asd_abort(Scsi_Cmnd *cmd)
 	asd->platform_data->flags |= ASD_SCB_UP_EH_SEM;
 
 	/* Release the host's lock prior putting the process to sleep. */
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,16)
+	/* it lock by abort rtn, just go to unlock it */
+	asd_unlock(asd, &flags);
+#else
+	/* Release the host's lock prior putting the process to sleep. */
 	spin_unlock_irq(&asd->platform_data->spinlock);
+#endif
 	
 	asd_sleep_sem(&asd->platform_data->eh_sem);
 
@@ -5562,10 +5642,19 @@ asd_abort(Scsi_Cmnd *cmd)
 		retval = FAILED;
 
 	/* Acquire the host's lock. */
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,16)
+	asd_lock(asd, &flags);
+#else
 	spin_lock_irq(&asd->platform_data->spinlock);
+#endif
 	
 exit:
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,16)
+	/* it lock by abort rtn, just go to unlock it */
+	asd_unlock(asd, &flags);
+#else
 	asd_sml_unlock(asd);
+#endif
 	return (retval);
 }
 

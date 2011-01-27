@@ -30,9 +30,6 @@
 #include <xen/xenbus.h>
 #include <linux/kthread.h>
 
-/* FIXME: crl: this is temporary until we get the big Xen update */
-#define is_initial_xendomain() 0
-
 struct xenfb_mapping
 {
 	struct list_head	link;

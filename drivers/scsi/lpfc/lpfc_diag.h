@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_diag.h 2757 2005-12-09 18:21:44Z sf_support $
+ * $Id: lpfc_diag.h 3037 2007-05-22 14:02:22Z sf_support $
  */
 
 #ifndef _H_LPFC_DIAG
@@ -164,6 +164,12 @@ typedef struct LINKINFO {
 	uint8_t a_wwpName[8];
 	uint8_t a_wwnName[8];
 } LinkInfo;
+
+/* structure used for temperature event */
+typedef struct temp_event_info {
+	uint32_t event_type;
+	uint32_t temp;
+} temp_event_info_t;
 
 /* values for a_topology */
 #define LNK_LOOP                0x1

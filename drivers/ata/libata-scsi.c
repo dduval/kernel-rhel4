@@ -2920,10 +2920,8 @@ void ata_scsi_scan_host(struct ata_port *ap)
 			continue;
 
 		sdev = __scsi_add_device(ap->scsi_host, 0, i, 0, NULL);
-		if (!IS_ERR(sdev)) {
+		if (!IS_ERR(sdev))
 			dev->sdev = sdev;
-			scsi_device_put(sdev);
-		}
 	}
 }
 

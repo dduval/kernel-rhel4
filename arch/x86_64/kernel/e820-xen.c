@@ -626,7 +626,7 @@ void __init e820_reserve_resources(void)
 	unsigned long gapstart, round;
 	int found = 0;
 
-	if (!(xen_start_info->flags & SIF_INITDOMAIN))
+	if (!is_initial_xendomain())
 		return;
 
 #if 0 /* not exec'd since guest-only, so rtn in above statement */

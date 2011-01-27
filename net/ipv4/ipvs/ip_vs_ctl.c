@@ -75,6 +75,7 @@ static int sysctl_ip_vs_amemthresh = 1024;
 static int sysctl_ip_vs_am_droprate = 10;
 int sysctl_ip_vs_cache_bypass = 0;
 int sysctl_ip_vs_expire_nodest_conn = 0;
+int sysctl_ip_vs_expire_quiescent_template = 0;
 int sysctl_ip_vs_sync_threshold[2] = { 3, 50 };
 int sysctl_ip_vs_nat_icmp_send = 0;
 
@@ -1571,6 +1572,13 @@ static struct ctl_table vs_vars[] = {
 		.ctl_name	= NET_IPV4_VS_NAT_ICMP_SEND,
 		.procname	= "nat_icmp_send",
 		.data		= &sysctl_ip_vs_nat_icmp_send,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+
+		.ctl_name	= NET_IPV4_VS_EXPIRE_QUIESCENT_TEMPLATE,
+		.procname	= "expire_quiescent_template",
+		.data		= &sysctl_ip_vs_expire_quiescent_template,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,

@@ -393,6 +393,10 @@ int __init nmi_init(struct oprofile_operations ** ops)
 				   user space an consistent name. */
 				nmi_ops.cpu_type = "x86-64/hammer";
 				break;
+			case 0x10:
+				model = &op_athlon_spec;
+				nmi_ops.cpu_type = "x86-64/family10";
+				break;
 			}
 			break;
  

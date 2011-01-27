@@ -30,3 +30,4 @@ obj-$(CONFIG_S390_TAPE_3590) += tape_3590.o
 
 obj-$(CONFIG_VMCP) += vmcp.o
 obj-$(CONFIG_MONREADER) += monreader.o
+obj-$(CONFIG_MONWRITER) += monwriter.o

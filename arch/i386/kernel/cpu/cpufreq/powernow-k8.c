@@ -78,7 +78,10 @@ static u32 find_khz_freq_from_fid(u32 fid)
 /* Return a frequency in MHz, given an input fid and did */
 static u32 find_freq_from_fiddid(u32 fid, u32 did)
 {
-	return 100 * (fid + 0x10) >> did;
+	if (current_cpu_data.x86 == 0x10)
+		return 100 * (fid + 0x10) >> did;
+	else
+		return 100 * (fid + 0x8) >> did;
 }
 
 static u32 find_khz_freq_from_fiddid(u32 fid, u32 did)
@@ -1405,10 +1408,24 @@ static int __init powernowk8_init(void)
 #endif
 
 	if (supported_cpus == num_online_cpus()) {
+#ifdef CONFIG_SMP
+#ifdef CONFIG_X86_64
                printk(KERN_INFO PFX "Found %d %s "
-                       "processors (" VERSION ")\n", supported_cpus,
-                       boot_cpu_data.x86_model_id);
+			"processors (%d cpu cores) (" VERSION ")\n", 
+			supported_cpus/cpu_data[0].x86_num_cores,
+			boot_cpu_data.x86_model_id, supported_cpus);
+#else
+		printk(KERN_INFO PFX "Found %d %s "
+			"processors (%d cpu cores) (" VERSION ")\n", 
+			supported_cpus/smp_num_cores,
+			boot_cpu_data.x86_model_id, supported_cpus);
+#endif
 		return cpufreq_register_driver(&cpufreq_amd64_driver);
+#else
+		printk(KERN_INFO PFX "Found %s single processor" 
+			"(%d cpu cores) (" VERSION ")\n", 
+			boot_cpu_data.x86_model_id, supported_cpus);
+#endif
 	}
 
 	return -ENODEV;

@@ -292,8 +292,6 @@ struct page {
 
 extern void FASTCALL(__page_cache_release(struct page *));
 
-#ifdef CONFIG_HUGETLB_PAGE
-
 static inline int page_count(struct page *p)
 {
 	if (PageCompound(p))
@@ -309,23 +307,6 @@ static inline void get_page(struct page *page)
 }
 
 void put_page(struct page *page);
-
-#else		/* CONFIG_HUGETLB_PAGE */
-
-#define page_count(p)		(atomic_read(&(p)->_count) + 1)
-
-static inline void get_page(struct page *page)
-{
-	atomic_inc(&page->_count);
-}
-
-static inline void put_page(struct page *page)
-{
-	if (!PageReserved(page) && put_page_testzero(page))
-		__page_cache_release(page);
-}
-
-#endif		/* CONFIG_HUGETLB_PAGE */
 
 /*
  * Multiple processes may "see" the same page. E.g. for untouched
@@ -591,6 +572,10 @@ int zeromap_page_range(struct vm_area_struct *vma, unsigned long from,
 			unsigned long size, pgprot_t prot);
 void unmap_mapping_range(struct address_space *mapping,
 		loff_t const holebegin, loff_t const holelen, int even_cows);
+
+int drop_caches_sysctl_handler(struct ctl_table *, int, struct file *,
+					void __user *, size_t *, loff_t *);
+int shrink_slab(unsigned long, unsigned int, unsigned long);
 
 static inline void unmap_shared_mapping_range(struct address_space *mapping,
 		loff_t const holebegin, loff_t const holelen)

@@ -58,13 +58,8 @@ static int __get_user_pages(unsigned long start_page, size_t num_pages,
 	size_t got;
 	int ret;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
 	lock_limit = current->rlim[RLIMIT_MEMLOCK].rlim_cur >>
 		PAGE_SHIFT;
-#else
-	lock_limit = current->signal->rlim[RLIMIT_MEMLOCK].rlim_cur >>
-		PAGE_SHIFT;
-#endif
 
 	if (num_pages > lock_limit) {
 		ret = -ENOMEM;
@@ -92,6 +87,62 @@ bail_release:
 	__ipath_release_user_pages(p, got, 0);
 bail:
 	return ret;
+}
+
+/**
+ * ipath_map_page - a safety wrapper around pci_map_page()
+ *
+ * A dma_addr of all 0's is interpreted by the chip as "disabled".
+ * Unfortunately, it can also be a valid dma_addr returned on some
+ * architectures.
+ *
+ * The powerpc iommu assigns dma_addrs in ascending order, so we don't
+ * have to bother with retries or mapping a dummy page to insure we
+ * don't just get the same mapping again.
+ *
+ * I'm sure we won't be so lucky with other iommu's, so FIXME.
+ */
+dma_addr_t ipath_map_page(struct pci_dev *hwdev, struct page *page,
+	unsigned long offset, size_t size, int direction)
+{
+	dma_addr_t phys;
+
+	phys = pci_map_page(hwdev, page, offset, size, direction);
+
+	if (phys == 0) {
+		pci_unmap_page(hwdev, phys, size, direction);
+		phys = pci_map_page(hwdev, page, offset, size, direction);
+		/*
+		 * FIXME: If we get 0 again, we should keep this page,
+		 * map another, then free the 0 page.
+		 */
+	}
+
+	return phys;
+}
+
+/**
+ * ipath_map_single - a safety wrapper around pci_map_single()
+ *
+ * Same idea as ipath_map_page().
+ */
+dma_addr_t ipath_map_single(struct pci_dev *hwdev, void *ptr, size_t size,
+	int direction)
+{
+	dma_addr_t phys;
+
+	phys = pci_map_single(hwdev, ptr, size, direction);
+
+	if (phys == 0) {
+		pci_unmap_single(hwdev, phys, size, direction);
+		phys = pci_map_single(hwdev, ptr, size, direction);
+		/*
+		 * FIXME: If we get 0 again, we should keep this page,
+		 * map another, then free the 0 page.
+		 */
+	}
+
+	return phys;
 }
 
 /**
@@ -163,9 +214,10 @@ struct ipath_user_pages_work {
 	unsigned long num_pages;
 };
 
-static void user_pages_account(void *ptr)
+static void user_pages_account(struct work_struct *_work)
 {
-	struct ipath_user_pages_work *work = ptr;
+	struct ipath_user_pages_work *work =
+		container_of(_work, struct ipath_user_pages_work, work);
 
 	down_write(&work->mm->mmap_sem);
 	work->mm->locked_vm -= work->num_pages;
@@ -191,7 +243,7 @@ void ipath_release_user_pages_on_close(struct page **p, size_t num_pages)
 
 	goto bail;
 
-	INIT_WORK(&work->work, user_pages_account, work);
+	INIT_WORK(&work->work, user_pages_account);
 	work->mm = mm;
 	work->num_pages = num_pages;
 

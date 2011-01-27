@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -180,7 +180,6 @@ static inline void __qla4xxx_enable_intrs(scsi_qla_host_t *ha)
 
 	if( IS_QLA4010(ha) ) {
 		WRT_REG_DWORD(&ha->reg->ctrl_status, SET_RMASK(CSR_SCSI_INTR_ENABLE));
-		//writel(SET_RMASK(CSR_SCSI_INTR_ENABLE), &ha->reg->ctrl_status);
 		PCI_POSTING(&ha->reg->ctrl_status);
 		QL4PRINT(QLP7, printk("scsi%d: %s: intSET_RMASK = %08x\n",
 			      ha->host_no, __func__,

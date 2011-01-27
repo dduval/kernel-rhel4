@@ -33,6 +33,7 @@
 #include <asm/mpspec.h>
 #include <asm/pgalloc.h>
 #include <asm/mach_apic.h>
+#include <asm/proto.h>
 
 int apic_verbosity;
 
@@ -736,7 +737,7 @@ int __init calibrate_APIC_clock(void)
 		rdtscl(tsc);
 	} while ((tsc - tsc_start) < TICK_COUNT && (apic - apic_start) < TICK_COUNT);
 
-	result = (apic_start - apic) * 1000L * cpu_khz / (tsc - tsc_start);
+	result = (apic_start - apic) * 1000L * tsc_khz / (tsc - tsc_start);
 
 	printk(KERN_INFO "Detected %d.%03d MHz APIC timer.\n",
 		result / 1000 / 1000, result / 1000 % 1000);

@@ -764,8 +764,6 @@ struct file *filp_open(const char * filename, int flags, int mode)
 	namei_flags = flags;
 	if ((namei_flags+1) & O_ACCMODE)
 		namei_flags++;
-	if (namei_flags & O_TRUNC)
-		namei_flags |= 2;
 
 	error = -ENFILE;
 	f = get_empty_filp();

@@ -113,7 +113,13 @@ static inline unsigned long _get_base(char * addr)
 	__asm__ ( \
 		"movl %%cr3,%0\n\t" \
 		:"=r" (__dummy)); \
-	machine_to_phys(__dummy); \
+	__dummy = xen_cr3_to_pfn(__dummy); \
+	mfn_to_pfn(__dummy) << PAGE_SHIFT; \
+})
+#define write_cr3(x) ({						\
+	unsigned int __dummy = pfn_to_mfn((x) >> PAGE_SHIFT);	\
+	__dummy = xen_pfn_to_cr3(__dummy);			\
+	__asm__ __volatile__("movl %0,%%cr3": :"r" (__dummy));	\
 })
 
 #endif	/* __KERNEL__ */
@@ -516,8 +522,8 @@ do {									\
 		preempt_enable_no_resched();				\
 } while (0)
 
-#define safe_halt()		((void)0)
-#define halt()			((void)0)
+void safe_halt(void);
+void halt(void);
 
 #define __save_and_cli(x)						\
 do {									\

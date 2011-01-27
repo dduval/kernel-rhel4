@@ -42,10 +42,13 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,14)
 #include <linux/compiler.h>
 #endif
+#include <linux/mutex.h>
 
 #ifndef __nocast
 #define __nocast
 #endif
+
+#define IPATH_IDSTR	"QLogic kernel.org driver"
 
 /*
  * XXX - This is here for a short time only. See bug 8823.
@@ -62,5 +65,14 @@ void __iowrite32_copy(void __iomem * dst, const void *src, size_t count);
 #ifndef BITS_PER_BYTE
 #define BITS_PER_BYTE 8
 #endif
+
+/*
+ * Optimized word copy; good for rev C and later opterons.  Among the best
+ * for short copies, and does as well or slightly better than the
+ * optimizization guide copies 6 and 8 at 2KB.
+ *
+ * Present in 2.6.16 and later kernels.
+ */
+void __iowrite32_copy(void __iomem * dst, const void *src, size_t count);
 
 #endif				/* _IPATH_BACKPORT_H */

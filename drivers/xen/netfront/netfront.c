@@ -938,15 +938,16 @@ static int network_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (notify)
 		notify_remote_via_irq(np->irq);
 
+	np->stats.tx_bytes += skb->len;
+	np->stats.tx_packets++;
+
+	/* Note: It is not safe to access skb after network_tx_buf_gc()! */
 	network_tx_buf_gc(dev);
 
 	if (!netfront_tx_slot_available(np))
 		netif_stop_queue(dev);
 
 	spin_unlock_irq(&np->tx_lock);
-
-	np->stats.tx_bytes += skb->len;
-	np->stats.tx_packets++;
 
 	return 0;
 
@@ -2091,7 +2092,6 @@ static int __init netif_init(void)
 		MODPARM_rx_flip = 1; /* Default is to flip. */
 #endif
 
-#define is_initial_xendomain() 0
 	if (is_initial_xendomain())
 		return 0;
 

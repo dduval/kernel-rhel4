@@ -1092,9 +1092,18 @@ asmlinkage long sys_getegid(void)
 
 #endif
 
+struct ptimeout {
+	struct task_struct *tsk;
+	int timer_ran;
+};
+
 static void process_timeout(unsigned long __data)
 {
-	wake_up_process((task_t *)__data);
+	struct ptimeout *p = (struct ptimeout *) __data;
+	wake_up_process(p->tsk);
+	/* make sure the wake-up has completed */
+	smp_wmb();
+	p->timer_ran = 1;
 }
 
 /**
@@ -1127,6 +1136,7 @@ fastcall signed long __sched schedule_timeout(signed long timeout)
 {
 	struct timer_list timer;
 	unsigned long expire;
+	struct ptimeout p = { current, 0 };
 
 	if (crashdump_mode()) {
 		diskdump_mdelay(timeout);
@@ -1168,12 +1178,13 @@ fastcall signed long __sched schedule_timeout(signed long timeout)
 
 	init_timer(&timer);
 	timer.expires = expire;
-	timer.data = (unsigned long) current;
+	timer.data = (unsigned long) &p;
 	timer.function = process_timeout;
 
 	add_timer(&timer);
 	schedule();
-	del_singleshot_timer_sync(&timer);
+	if (!p.timer_ran)
+		del_singleshot_timer_sync(&timer);
 
 	timeout = expire - jiffies;
 

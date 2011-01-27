@@ -96,8 +96,6 @@ void enable_hlt(void)
 EXPORT_SYMBOL(enable_hlt);
 
 /* XXX XEN doesn't use default_idle(), poll_idle(). Use xen_idle() instead. */
-extern void stop_hz_timer(void);
-extern void start_hz_timer(void);
 void xen_idle(void)
 {
 	local_irq_disable();
@@ -105,13 +103,7 @@ void xen_idle(void)
 	if (need_resched())
 		local_irq_enable();
 	else {
-		clear_thread_flag(TIF_POLLING_NRFLAG);
-		smp_mb__after_clear_bit();
-		stop_hz_timer();
-		/* Blocking includes an implicit local_irq_enable(). */
-		HYPERVISOR_sched_op(SCHEDOP_block, 0);
-		start_hz_timer();
-		set_thread_flag(TIF_POLLING_NRFLAG);
+		safe_halt();
 	}
 }
 
@@ -139,10 +131,6 @@ static inline void play_dead(void)
  * low exit latency (ie sit in a loop waiting for
  * somebody to say that they'd like to reschedule)
  */
-#ifdef CONFIG_SMP
-extern void smp_suspend(void);
-extern void smp_resume(void);
-#endif
 void cpu_idle (void)
 {
 	int cpu = smp_processor_id();

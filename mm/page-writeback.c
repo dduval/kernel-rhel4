@@ -235,46 +235,34 @@ static void balance_dirty_pages(struct address_space *mapping)
 	long dirty_thresh;
 	unsigned long pages_written = 0;
 	unsigned long write_chunk = sync_writeback_pages();
-
 	struct backing_dev_info *bdi = mapping->backing_dev_info;
+	long nr_dirty_p = -1;
+	long nr_dirty;
 
 	for (;;) {
-		struct writeback_control wbc = {
-			.bdi		= bdi,
-			.sync_mode	= WB_SYNC_NONE,
-			.older_than_this = NULL,
-			.nr_to_write	= write_chunk,
-		};
-
 		get_dirty_limits(&wbs, &background_thresh,
 					&dirty_thresh, mapping);
 		nr_reclaimable = wbs.nr_dirty + wbs.nr_unstable;
-		if (nr_reclaimable + wbs.nr_writeback <= dirty_thresh)
+		nr_dirty = nr_reclaimable + wbs.nr_writeback;
+		if (nr_dirty <= dirty_thresh)
 			break;
 
 		dirty_exceeded = 1;
 
-		/* Note: nr_reclaimable denotes nr_dirty + nr_unstable.
-		 * Unstable writes are a feature of certain networked
-		 * filesystems (i.e. NFS) in which data may have been
-		 * written to the server's write cache, but has not yet
-		 * been flushed to permanent storage.
-		 */
-		if (nr_reclaimable) {
-			writeback_inodes(&wbc);
-			get_dirty_limits(&wbs, &background_thresh,
-					&dirty_thresh, mapping);
-			nr_reclaimable = wbs.nr_dirty + wbs.nr_unstable;
-			if (nr_reclaimable + wbs.nr_writeback <= dirty_thresh)
-				break;
-			pages_written += write_chunk - wbc.nr_to_write;
+		if (nr_dirty < nr_dirty_p) {
+			pages_written += nr_dirty_p - nr_dirty;
 			if (pages_written >= write_chunk)
 				break;		/* We've done our duty */
 		}
+		nr_dirty_p = nr_dirty;
+
+		if (!writeback_in_progress(bdi))
+			pdflush_operation(background_writeout, 0);
+
 		blk_congestion_wait(WRITE, HZ/10);
 	}
 
-	if (nr_reclaimable + wbs.nr_writeback <= dirty_thresh)
+	if (nr_dirty <= dirty_thresh)
 		dirty_exceeded = 0;
 
 	if (writeback_in_progress(bdi))
@@ -358,6 +346,7 @@ void throttle_vm_writeout(void)
 static void background_writeout(unsigned long _min_pages)
 {
 	long min_pages = _min_pages;
+	long min_writeback = ratelimit_pages * 2 * num_online_cpus();
 	struct writeback_control wbc = {
 		.bdi		= NULL,
 		.sync_mode	= WB_SYNC_NONE,
@@ -365,6 +354,8 @@ static void background_writeout(unsigned long _min_pages)
 		.nr_to_write	= 0,
 		.nonblocking	= 1,
 	};
+	long nr_writeback_p = -1;
+	long written = 0;
 
 	for ( ; ; ) {
 		struct writeback_state wbs;
@@ -373,8 +364,24 @@ static void background_writeout(unsigned long _min_pages)
 
 		get_dirty_limits(&wbs, &background_thresh, &dirty_thresh, NULL);
 		if (wbs.nr_dirty + wbs.nr_unstable < background_thresh
-				&& min_pages <= 0)
+				&& min_pages <= 0 && !dirty_exceeded)
 			break;
+		/*
+		 * Throttle writeback if it exceeds 1/2 dirty threshold.
+		 */
+		if (wbs.nr_writeback >= min_writeback &&
+		    wbs.nr_writeback > dirty_thresh / 2) {
+			long prev = nr_writeback_p;
+
+			nr_writeback_p = wbs.nr_writeback;
+			if (wbs.nr_writeback < prev)
+				written += prev - wbs.nr_writeback;
+			if (written < ratelimit_pages) {
+				blk_congestion_wait(WRITE, HZ/10);
+				continue;
+			}
+			written = 0;
+		}
 		wbc.encountered_congestion = 0;
 		wbc.nr_to_write = MAX_WRITEBACK_PAGES;
 		wbc.pages_skipped = 0;
@@ -383,7 +390,7 @@ static void background_writeout(unsigned long _min_pages)
 		if (wbc.nr_to_write > 0 || wbc.pages_skipped > 0) {
 			/* Wrote less than expected */
 			blk_congestion_wait(WRITE, HZ/10);
-			if (!wbc.encountered_congestion)
+			if (!wbc.encountered_congestion && !dirty_exceeded)
 				break;
 		}
 	}

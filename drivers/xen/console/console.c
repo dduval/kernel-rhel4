@@ -60,9 +60,6 @@
 #include <xen/xenbus.h>
 #include <xen/xencons.h>
 
-/* FIXME: crl: this is temporary until we get the big Xen update */
-#define is_initial_xendomain() 0
-
 /*
  * Modes:
  *  'xencons=off'  [XC_OFF]:     Console is disabled.

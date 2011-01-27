@@ -618,10 +618,10 @@ asmlinkage long compat_mbind(compat_ulong_t start, compat_ulong_t len,
 #endif
 
 /* Return effective policy for a VMA */
-static struct mempolicy *
-get_vma_policy(struct vm_area_struct *vma, unsigned long addr)
+struct mempolicy *
+get_vma_policy(struct task_struct *task, struct vm_area_struct *vma, unsigned long addr)
 {
-	struct mempolicy *pol = current->mempolicy;
+	struct mempolicy *pol = task->mempolicy;
 
 	if (vma) {
 		if (vma->vm_ops && vma->vm_ops->get_policy)
@@ -738,7 +738,7 @@ static struct page *alloc_page_interleave(unsigned gfp, unsigned order, unsigned
 struct page *
 alloc_page_vma(unsigned gfp, struct vm_area_struct *vma, unsigned long addr)
 {
-	struct mempolicy *pol = get_vma_policy(vma, addr);
+	struct mempolicy *pol = get_vma_policy(current, vma, addr);
 
 	if (unlikely(pol->policy == MPOL_INTERLEAVE)) {
 		unsigned nid;
@@ -852,7 +852,7 @@ void __mpol_free(struct mempolicy *p)
 /* Find first node suitable for an allocation */
 int mpol_first_node(struct vm_area_struct *vma, unsigned long addr)
 {
-	struct mempolicy *pol = get_vma_policy(vma, addr);
+	struct mempolicy *pol = get_vma_policy(current, vma, addr);
 
 	switch (pol->policy) {
 	case MPOL_DEFAULT:
@@ -872,7 +872,7 @@ int mpol_first_node(struct vm_area_struct *vma, unsigned long addr)
 /* Find secondary valid nodes for an allocation */
 int mpol_node_valid(int nid, struct vm_area_struct *vma, unsigned long addr)
 {
-	struct mempolicy *pol = get_vma_policy(vma, addr);
+	struct mempolicy *pol = get_vma_policy(current, vma, addr);
 
 	switch (pol->policy) {
 	case MPOL_PREFERRED:

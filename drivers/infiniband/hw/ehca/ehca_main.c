@@ -40,6 +40,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef CONFIG_PPC_64K_PAGES
+#include <linux/slab.h>
+#endif
 #include "ehca_classes.h"
 #include "ehca_iverbs.h"
 #include "ehca_mrmw.h"
@@ -49,7 +52,7 @@
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Christoph Raisch <raisch@de.ibm.com>");
 MODULE_DESCRIPTION("IBM eServer HCA InfiniBand Device Driver");
-MODULE_VERSION("SVNEHCA_0015");
+MODULE_VERSION("SVNEHCA_0022");
 
 int ehca_open_aqp1     = 0;
 int ehca_debug_level   = 0;
@@ -59,6 +62,7 @@ int ehca_use_hp_mr     = 0;
 int ehca_port_act_time = 30;
 int ehca_poll_all_eqs  = 1;
 int ehca_static_rate   = -1;
+int ehca_scaling_code  = 1;
 
 module_param_named(open_aqp1,     ehca_open_aqp1,     int, 0);
 module_param_named(debug_level,   ehca_debug_level,   int, 0);
@@ -68,6 +72,7 @@ module_param_named(use_hp_mr,     ehca_use_hp_mr,     int, 0);
 module_param_named(port_act_time, ehca_port_act_time, int, 0);
 module_param_named(poll_all_eqs,  ehca_poll_all_eqs,  int, 0);
 module_param_named(static_rate,   ehca_static_rate,   int, 0);
+module_param_named(scaling_code,   ehca_scaling_code,   int, 0);
 
 MODULE_PARM_DESC(open_aqp1,
 		 "AQP1 on startup (0: no (default), 1: yes)");
@@ -88,16 +93,39 @@ MODULE_PARM_DESC(poll_all_eqs,
 		 " (0: no, 1: yes (default))");
 MODULE_PARM_DESC(static_rate,
 		 "set permanent static rate (default: disabled)");
+MODULE_PARM_DESC(scaling_code,
+		 "set scaling code (0: disabled, 1: enabled/default)");
 
 spinlock_t ehca_qp_idr_lock;
 spinlock_t ehca_cq_idr_lock;
+spinlock_t hcall_lock;
 DEFINE_IDR(ehca_qp_idr);
 DEFINE_IDR(ehca_cq_idr);
+
 
 static struct list_head shca_list; /* list of all registered ehcas */
 static spinlock_t shca_list_lock;
 
 static struct timer_list poll_eqs_timer;
+
+#ifdef CONFIG_PPC_64K_PAGES
+static struct kmem_cache *ctblk_cache = NULL;
+
+void *ehca_alloc_fw_ctrlblock(gfp_t flags)
+{
+	void *ret = kmem_cache_zalloc(ctblk_cache, flags);
+	if (!ret)
+		ehca_gen_err("Out of memory for ctblk");
+	return ret;
+}
+
+void ehca_free_fw_ctrlblock(void *ptr)
+{
+	if (ptr)
+		kmem_cache_free(ctblk_cache, ptr);
+
+}
+#endif
 
 static int ehca_create_slab_caches(void)
 {
@@ -133,6 +161,17 @@ static int ehca_create_slab_caches(void)
 		goto create_slab_caches5;
 	}
 
+#ifdef CONFIG_PPC_64K_PAGES
+	ctblk_cache = kmem_cache_create("ehca_cache_ctblk",
+					EHCA_PAGESIZE, H_CB_ALIGNMENT,
+					SLAB_HWCACHE_ALIGN,
+					NULL, NULL);
+	if (!ctblk_cache) {
+		ehca_gen_err("Cannot create ctblk SLAB cache.");
+		ehca_cleanup_mrmw_cache();
+		goto create_slab_caches5;
+	}
+#endif
 	return 0;
 
 create_slab_caches5:
@@ -157,6 +196,10 @@ static void ehca_destroy_slab_caches(void)
 	ehca_cleanup_qp_cache();
 	ehca_cleanup_cq_cache();
 	ehca_cleanup_pd_cache();
+#ifdef CONFIG_PPC_64K_PAGES
+	if (ctblk_cache)
+		kmem_cache_destroy(ctblk_cache);
+#endif
 }
 
 #define EHCA_HCAAVER  EHCA_BMASK_IBM(32,39)
@@ -168,7 +211,7 @@ int ehca_sense_attributes(struct ehca_shca *shca)
 	u64 h_ret;
 	struct hipz_query_hca *rblock;
 
-	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
+	rblock = ehca_alloc_fw_ctrlblock(GFP_KERNEL);
 	if (!rblock) {
 		ehca_gen_err("Cannot allocate rblock memory.");
 		return -ENOMEM;
@@ -211,7 +254,7 @@ int ehca_sense_attributes(struct ehca_shca *shca)
 	shca->sport[1].rate = IB_RATE_30_GBPS;
 
 num_ports1:
-	kfree(rblock);
+	ehca_free_fw_ctrlblock(rblock);
 	return ret;
 }
 
@@ -220,7 +263,7 @@ static int init_node_guid(struct ehca_shca *shca)
 	int ret = 0;
 	struct hipz_query_hca *rblock;
 
-	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
+	rblock = ehca_alloc_fw_ctrlblock(GFP_KERNEL);
 	if (!rblock) {
 		ehca_err(&shca->ib_device, "Can't allocate rblock memory.");
 		return -ENOMEM;
@@ -235,12 +278,13 @@ static int init_node_guid(struct ehca_shca *shca)
 	memcpy(&shca->ib_device.node_guid, &rblock->node_guid, sizeof(u64));
 
 init_node_guid1:
-	kfree(rblock);
+	ehca_free_fw_ctrlblock(rblock);
 	return ret;
 }
 
 int ehca_init_device(struct ehca_shca *shca)
 {
+	extern struct ib_dma_mapping_ops ehca_dma_mapping_ops;
 	int ret;
 
 	ret = init_node_guid(shca);
@@ -269,7 +313,7 @@ int ehca_init_device(struct ehca_shca *shca)
 		(1ull << IB_USER_VERBS_CMD_ATTACH_MCAST)	|
 		(1ull << IB_USER_VERBS_CMD_DETACH_MCAST);
 
-	shca->ib_device.node_type           = IB_NODE_CA;
+	shca->ib_device.node_type           = RDMA_NODE_IB_CA;
 	shca->ib_device.phys_port_cnt       = shca->num_ports;
 	shca->ib_device.dma_device          = &shca->ibmebus_dev->ofdev.dev;
 	shca->ib_device.query_device        = ehca_query_device;
@@ -314,8 +358,9 @@ int ehca_init_device(struct ehca_shca *shca)
 	shca->ib_device.dealloc_fmr	    = ehca_dealloc_fmr;
 	shca->ib_device.attach_mcast	    = ehca_attach_mcast;
 	shca->ib_device.detach_mcast	    = ehca_detach_mcast;
-	/* shca->ib_device.process_mad	    = ehca_process_mad;	    */
+	/* shca->ib_device.process_mad	    = ehca_process_mad;     */
 	shca->ib_device.mmap		    = ehca_mmap;
+	shca->ib_device.dma_ops             = &ehca_dma_mapping_ops;
 
 	return ret;
 }
@@ -422,7 +467,6 @@ void ehca_remove_driver_sysfs(struct ibmebus_driver *drv)
 
 #define EHCA_RESOURCE_ATTR(name)                                           \
 static ssize_t  ehca_show_##name(struct device *dev,                       \
-				 struct device_attribute *attr,            \
 				 char *buf)                                \
 {									   \
 	struct ehca_shca *shca;						   \
@@ -431,7 +475,7 @@ static ssize_t  ehca_show_##name(struct device *dev,                       \
 									   \
 	shca = dev->driver_data;					   \
 									   \
-	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);			   \
+	rblock = ehca_alloc_fw_ctrlblock(GFP_KERNEL);			   \
 	if (!rblock) {						           \
 		dev_err(dev, "Can't allocate rblock memory.");		   \
 		return 0;						   \
@@ -439,12 +483,12 @@ static ssize_t  ehca_show_##name(struct device *dev,                       \
 									   \
 	if (hipz_h_query_hca(shca->ipz_hca_handle, rblock) != H_SUCCESS) { \
 		dev_err(dev, "Can't query device properties");	   	   \
-		kfree(rblock);					   	   \
+		ehca_free_fw_ctrlblock(rblock);			   	   \
 		return 0;					   	   \
 	}								   \
 									   \
 	data = rblock->name;                                               \
-	kfree(rblock);                                                     \
+	ehca_free_fw_ctrlblock(rblock);                                    \
 									   \
 	if ((strcmp(#name, "num_ports") == 0) && (ehca_nr_ports == 1))	   \
 		return snprintf(buf, 256, "1\n");			   \
@@ -470,7 +514,6 @@ EHCA_RESOURCE_ATTR(max_pd);
 EHCA_RESOURCE_ATTR(max_ah);
 
 static ssize_t ehca_show_adapter_handle(struct device *dev,
-					struct device_attribute *attr,
 					char *buf)
 {
 	struct ehca_shca *shca = dev->driver_data;
@@ -740,8 +783,24 @@ void ehca_poll_eqs(unsigned long data)
 
 	spin_lock(&shca_list_lock);
 	list_for_each_entry(shca, &shca_list, shca_list) {
-		if (shca->eq.is_initialized)
-			ehca_tasklet_eq((unsigned long)(void*)shca);
+		if (shca->eq.is_initialized) {
+			/* call deadman proc only if eq ptr does not change */
+			struct ehca_eq *eq = &shca->eq;
+			int max = 3;
+			volatile u64 q_ofs, q_ofs2;
+			u64 flags;
+			spin_lock_irqsave(&eq->spinlock, flags);
+			q_ofs = eq->ipz_queue.current_q_offset;
+			spin_unlock_irqrestore(&eq->spinlock, flags);
+			do {
+				spin_lock_irqsave(&eq->spinlock, flags);
+				q_ofs2 = eq->ipz_queue.current_q_offset;
+				spin_unlock_irqrestore(&eq->spinlock, flags);
+				max--;
+			} while (q_ofs == q_ofs2 && max > 0);
+			if (q_ofs == q_ofs2)
+				ehca_process_eq(shca, 0);
+		}
 	}
 	mod_timer(&poll_eqs_timer, jiffies + HZ);
 	spin_unlock(&shca_list_lock);
@@ -752,11 +811,12 @@ int __init ehca_module_init(void)
 	int ret;
 
 	printk(KERN_INFO "eHCA Infiniband Device Driver "
-	                 "(Rel.: SVNEHCA_0015)\n");
+	                 "(Rel.: SVNEHCA_0022)\n");
 	idr_init(&ehca_qp_idr);
 	idr_init(&ehca_cq_idr);
 	spin_lock_init(&ehca_qp_idr_lock);
 	spin_lock_init(&ehca_cq_idr_lock);
+	spin_lock_init(&hcall_lock);
 
 	INIT_LIST_HEAD(&shca_list);
 	spin_lock_init(&shca_list_lock);

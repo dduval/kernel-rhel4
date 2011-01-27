@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -29,6 +29,7 @@
 #define QLP19	0x00080000  // PDU info
 #define QLP20   0x00100000  // iSNS info
 #define QLP24   0x01000000  // Scatter/Gather info
+#define QLP25   0x02000000  // Core Dump Data
 
 extern uint32_t ql_dbg_level;
 
@@ -50,7 +51,7 @@ void     qla4xxx_print_srb_info(uint32_t dbg_mask, srb_t *srb);
 
 /*
  * Driver debug definitions.
- */
+ */			
 /* #define QL_DEBUG_LEVEL_1  */	/* Output register accesses to COM1 */
 
 /* #define QL_DEBUG_LEVEL_3  */	/* Output function trace msgs to COM1 */
@@ -58,7 +59,7 @@ void     qla4xxx_print_srb_info(uint32_t dbg_mask, srb_t *srb);
 /* #define QL_DEBUG_LEVEL_5  */	
 /* #define QL_DEBUG_LEVEL_9  */	
 
- #define QL_DEBUG_LEVEL_2   /* Output error msgs to COM1 */
+/* #define QL_DEBUG_LEVEL_2  */ /* Output error msgs to COM1 */
 
 #define DEBUG(x)	do {} while (0);
 

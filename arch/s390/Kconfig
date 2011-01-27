@@ -17,6 +17,9 @@ config RWSEM_XCHGADD_ALGORITHM
 config GENERIC_BUST_SPINLOCK
 	bool
 
+config NO_IOMEM
+	def_bool y
+
 mainmenu "Linux Kernel Configuration"
 
 config ARCH_S390

@@ -5,6 +5,7 @@
  * 
  *   Copyright (C) International Business Machines  Corp., 2002,2003
  *   Author(s): Steve French (sfrench@us.ibm.com)
+ *              Jeremy Allison (jra@samba.org)
  *
  *   This library is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU Lesser General Public License as published
@@ -21,17 +22,26 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 #include <linux/fs.h>
-#include <linux/backing-dev.h>
 #include <linux/stat.h>
 #include <linux/fcntl.h>
-#include <linux/mpage.h>
 #include <linux/pagemap.h>
-#include <linux/pagevec.h>
 #include <linux/smp_lock.h>
-#include <linux/writeback.h>
 #include <linux/delay.h>
 #include <asm/div64.h>
 #include "cifsfs.h"
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
+#include <linux/backing-dev.h>
+#include <linux/mpage.h>
+#include <linux/pagevec.h>
+#include <linux/writeback.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
+#include <linux/task_io_accounting_ops.h>
+#endif /* 2.6.19 */
+#endif
+#include <asm/uaccess.h>
+#ifndef FL_SLEEP
+#define FL_SLEEP 0
+#endif
 #include "cifspdu.h"
 #include "cifsglob.h"
 #include "cifsproto.h"
@@ -47,6 +57,8 @@ static inline struct cifsFileInfo *cifs_init_private(
 	private_data->netfid = netfid;
 	private_data->pid = current->tgid;	
 	init_MUTEX(&private_data->fh_sem);
+	init_MUTEX(&private_data->lock_sem);
+	INIT_LIST_HEAD(&private_data->llist);
 	private_data->pfile = file; /* needed for writepage */
 	private_data->pInode = inode;
 	private_data->invalidHandle = FALSE;
@@ -79,7 +91,11 @@ static inline int cifs_convert_flags(unsigned int flags)
 static inline int cifs_get_disposition(unsigned int flags)
 {
 	if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 		return FILE_CREATE;
+#else
+		return FILE_OPEN_IF;
+#endif
 	else if ((flags & (O_CREAT | O_TRUNC)) == (O_CREAT | O_TRUNC))
 		return FILE_OVERWRITE_IF;
 	else if ((flags & O_CREAT) == O_CREAT)
@@ -96,7 +112,11 @@ static inline int cifs_open_inode_helper(struct inode *inode, struct file *file,
 	struct cifsTconInfo *pTcon, int *oplock, FILE_ALL_INFO *buf,
 	char *full_path, int xid)
 {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct timespec temp;
+#else
+	time_t temp;
+#endif
 	int rc;
 
 	/* want handles we can use to read with first
@@ -329,7 +349,7 @@ out:
 	return rc;
 }
 
-/* Try to reaquire byte range locks that were released when session */
+/* Try to reacquire byte range locks that were released when session */
 /* to server was lost */
 static int cifs_relock_file(struct cifsFileInfo *cifsFile)
 {
@@ -484,6 +504,8 @@ int cifs_close(struct inode *inode, struct file *file)
 	cifs_sb = CIFS_SB(inode->i_sb);
 	pTcon = cifs_sb->tcon;
 	if (pSMBFile) {
+		struct cifsLockInfo *li, *tmp;
+
 		pSMBFile->closePend = TRUE;
 		if (pTcon) {
 			/* no sense reconnecting to close a file that is
@@ -499,14 +521,28 @@ int cifs_close(struct inode *inode, struct file *file)
 					the struct would be in each open file,
 					but this should give enough time to 
 					clear the socket */
-					cERROR(1,("close with pending writes"));
+#ifdef CONFIG_CIFS_DEBUG2
+					cFYI(1,("close delay, write pending"));
+#endif /* DEBUG2 */
 					msleep(timeout);
 					timeout *= 4;
-				} 
+				}
+				if(atomic_read(&pSMBFile->wrtPending))
+					cERROR(1,("close with pending writes"));
 				rc = CIFSSMBClose(xid, pTcon,
 						  pSMBFile->netfid);
 			}
 		}
+
+		/* Delete any outstanding lock records.
+		   We'll lose them when the file is closed anyway. */
+		down(&pSMBFile->lock_sem);
+		list_for_each_entry_safe(li, tmp, &pSMBFile->llist, llist) {
+			list_del(&li->llist);
+			kfree(li);
+		}
+		up(&pSMBFile->lock_sem);
+
 		write_lock(&GlobalSMBSeslock);
 		list_del(&pSMBFile->flist);
 		list_del(&pSMBFile->tlist);
@@ -581,6 +617,21 @@ int cifs_closedir(struct inode *inode, struct file *file)
 	return rc;
 }
 
+static int store_file_lock(struct cifsFileInfo *fid, __u64 len,
+				__u64 offset, __u8 lockType)
+{
+	struct cifsLockInfo *li = kmalloc(sizeof(struct cifsLockInfo), GFP_KERNEL);
+	if (li == NULL)
+		return -ENOMEM;
+	li->offset = offset;
+	li->length = len;
+	li->type = lockType;
+	down(&fid->lock_sem);
+	list_add(&li->llist, &fid->llist);
+	up(&fid->lock_sem);
+	return 0;
+}
+
 int cifs_lock(struct file *file, int cmd, struct file_lock *pfLock)
 {
 	int rc, xid;
@@ -592,6 +643,7 @@ int cifs_lock(struct file *file, int cmd, struct file_lock *pfLock)
 	struct cifsTconInfo *pTcon;
 	__u16 netfid;
 	__u8 lockType = LOCKING_ANDX_LARGE_FILES;
+	int posix_locking;
 
 	length = 1 + pfLock->fl_end - pfLock->fl_start;
 	rc = -EACCES;
@@ -650,14 +702,14 @@ int cifs_lock(struct file *file, int cmd, struct file_lock *pfLock)
 	}
 	netfid = ((struct cifsFileInfo *)file->private_data)->netfid;
 
+	posix_locking = (cifs_sb->tcon->ses->capabilities & CAP_UNIX) &&
+			(CIFS_UNIX_FCNTL_CAP & le64_to_cpu(cifs_sb->tcon->fsUnixInfo.Capability));
 
 	/* BB add code here to normalize offset and length to
 	account for negative length which we can not accept over the
 	wire */
 	if (IS_GETLK(cmd)) {
-		if((cifs_sb->tcon->ses->capabilities & CAP_UNIX) &&
-		   (CIFS_UNIX_FCNTL_CAP & 
-			le64_to_cpu(cifs_sb->tcon->fsUnixInfo.Capability))) {
+		if(posix_locking) {
 			int posix_lock_type;
 			if(lockType & LOCKING_ANDX_SHARED_LOCK)
 				posix_lock_type = CIFS_RDLCK;
@@ -693,9 +745,15 @@ int cifs_lock(struct file *file, int cmd, struct file_lock *pfLock)
 		FreeXid(xid);
 		return rc;
 	}
-	if ((cifs_sb->tcon->ses->capabilities & CAP_UNIX) &&
-		(CIFS_UNIX_FCNTL_CAP &
-			 le64_to_cpu(cifs_sb->tcon->fsUnixInfo.Capability))) {
+
+	if (!numLock && !numUnlock) {
+		/* if no lock or unlock then nothing
+		to do since we do not know what it is */
+		FreeXid(xid);
+		return -EOPNOTSUPP;
+	}
+
+	if (posix_locking) {
 		int posix_lock_type;
 		if(lockType & LOCKING_ANDX_SHARED_LOCK)
 			posix_lock_type = CIFS_RDLCK;
@@ -704,18 +762,47 @@ int cifs_lock(struct file *file, int cmd, struct file_lock *pfLock)
 		
 		if(numUnlock == 1)
 			posix_lock_type = CIFS_UNLCK;
-		else if(numLock == 0) {
-			/* if no lock or unlock then nothing
-			to do since we do not know what it is */
-			FreeXid(xid);
-			return -EOPNOTSUPP;
-		}
+
 		rc = CIFSSMBPosixLock(xid, pTcon, netfid, 0 /* set */,
 				      length, pfLock,
 				      posix_lock_type, wait_flag);
-	} else
-		rc = CIFSSMBLock(xid, pTcon, netfid, length, pfLock->fl_start,
-				numUnlock, numLock, lockType, wait_flag);
+	} else {
+		struct cifsFileInfo *fid = (struct cifsFileInfo *)file->private_data;
+
+		if (numLock) {
+			rc = CIFSSMBLock(xid, pTcon, netfid, length, pfLock->fl_start,
+					0, numLock, lockType, wait_flag);
+
+			if (rc == 0) {
+				/* For Windows locks we must store them. */
+				rc = store_file_lock(fid, length,
+						pfLock->fl_start, lockType);
+			}
+		} else if (numUnlock) {
+			/* For each stored lock that this unlock overlaps
+			   completely, unlock it. */
+			int stored_rc = 0;
+			struct cifsLockInfo *li, *tmp;
+
+			rc = 0;
+			down(&fid->lock_sem);
+			list_for_each_entry_safe(li, tmp, &fid->llist, llist) {
+				if (pfLock->fl_start <= li->offset &&
+						length >= li->length) {
+					stored_rc = CIFSSMBLock(xid, pTcon, netfid,
+							li->length, li->offset,
+							1, 0, li->type, FALSE);
+					if (stored_rc)
+						rc = stored_rc;
+
+					list_del(&li->llist);
+					kfree(li);
+				}
+			}
+			up(&fid->lock_sem);
+		}
+	}
+
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,8)
 	if (pfLock->fl_flags & FL_POSIX)
 		posix_lock_file_wait(file, pfLock);
@@ -957,8 +1044,9 @@ static ssize_t cifs_write(struct file *file, const char *write_data,
 	/* since the write may have blocked check these pointers again */
 	if (file->f_dentry) {
 		if (file->f_dentry->d_inode) {
-			file->f_dentry->d_inode->i_ctime = 
-			file->f_dentry->d_inode->i_mtime = CURRENT_TIME;
+/*BB We could make this contingent on superblock ATIME flag too */
+/*			file->f_dentry->d_inode->i_ctime = 
+			file->f_dentry->d_inode->i_mtime = CURRENT_TIME;*/
 			if (total_written > 0) {
 				if (*poffset > file->f_dentry->d_inode->i_size)
 					i_size_write(file->f_dentry->d_inode, 
@@ -982,7 +1070,9 @@ struct cifsFileInfo *find_writable_file(struct cifsInodeInfo *cifs_inode)
 
 	if(cifs_inode == NULL) {
 		cERROR(1,("Null inode passed to cifs_writeable_file"));
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 4, 19)
 		dump_stack();
+#endif
 		return NULL;
 	}
 
@@ -997,7 +1087,11 @@ struct cifsFileInfo *find_writable_file(struct cifsInodeInfo *cifs_inode)
 			read_unlock(&GlobalSMBSeslock);
 			if((open_file->invalidHandle) && 
 			   (!open_file->closePend) /* BB fixme -since the second clause can not be true remove it BB */) {
-				rc = cifs_reopen_file(&cifs_inode->vfs_inode, 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 5, 0)
+				rc = cifs_reopen_file(open_file->pfile->f_dentry->d_inode,
+#else
+				rc = cifs_reopen_file(&cifs_inode->vfs_inode,
+#endif
 						      open_file->pfile, FALSE);
 				/* if it fails, try another handle - might be */
 				/* dangerous to hold up writepages with retry */
@@ -1090,8 +1184,12 @@ static int cifs_writepages(struct address_space *mapping,
 	int done = 0;
 	pgoff_t end = -1;
 	pgoff_t index;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+	int range_whole = 0;
+#else		
 	int is_range = 0;
-	struct kvec iov[32];
+#endif /* 2.6.17 */	
+	struct kvec * iov;
 	int len;
 	int n_iov = 0;
 	pgoff_t next;
@@ -1116,8 +1214,13 @@ static int cifs_writepages(struct address_space *mapping,
 	if((cifs_sb->tcon->ses) && (cifs_sb->tcon->ses->server))
 		if(cifs_sb->tcon->ses->server->secMode &
                           (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
-			if(!experimEnabled)
+			if(!experimEnabled) 
 				return generic_writepages(mapping, wbc);
+
+	iov = kmalloc(32 * sizeof(struct kvec), GFP_KERNEL);
+	if(iov == NULL)
+		return generic_writepages(mapping, wbc);
+
 
 	/*
 	 * BB: Is this meaningful for a non-block-device file system?
@@ -1125,12 +1228,25 @@ static int cifs_writepages(struct address_space *mapping,
 	 */
 	if (wbc->nonblocking && bdi_write_congested(bdi)) {
 		wbc->encountered_congestion = 1;
+		kfree(iov);
 		return 0;
 	}
 
 	xid = GetXid();
 
 	pagevec_init(&pvec, 0);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+	if (wbc->range_cyclic) {
+		index = mapping->writeback_index; /* Start from prev offset */
+		end = -1;
+	} else {
+		index = wbc->range_start >> PAGE_CACHE_SHIFT;
+		end = wbc->range_end >> PAGE_CACHE_SHIFT;
+		if (wbc->range_start == 0 && wbc->range_end == LLONG_MAX)
+			range_whole = 1;
+		scanned = 1;
+	}
+#else	
 	if (wbc->sync_mode == WB_SYNC_NONE)
 		index = mapping->writeback_index; /* Start from prev offset */
 	else {
@@ -1143,6 +1259,7 @@ static int cifs_writepages(struct address_space *mapping,
 		is_range = 1;
 		scanned = 1;
 	}
+#endif /* 2.6.17 */	
 retry:
 	while (!done && (index <= end) &&
 	       (nr_pages = pagevec_lookup_tag(&pvec, mapping, &index,
@@ -1176,7 +1293,11 @@ retry:
 				break;
 			}
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+			if (!wbc->range_cyclic && page->index > end) {
+#else
 			if (unlikely(is_range) && (page->index > end)) {
+#endif /* 2.6.17 */
 				done = 1;
 				unlock_page(page);
 				break;
@@ -1192,14 +1313,21 @@ retry:
 				wait_on_page_writeback(page);
 
 			if (PageWriteback(page) ||
-					!test_clear_page_dirty(page)) {
+					!clear_page_dirty_for_io(page)) {
 				unlock_page(page);
 				break;
 			}
 
+			/*
+			 * This actually clears the dirty bit in the radix tree.
+			 * See cifs_writepage() for more commentary.
+			 */
+			set_page_writeback(page);
+
 			if (page_offset(page) >= mapping->host->i_size) {
 				done = 1;
 				unlock_page(page);
+				end_page_writeback(page);
 				break;
 			}
 
@@ -1263,6 +1391,7 @@ retry:
 					SetPageError(page);
 				kunmap(page);
 				unlock_page(page);
+				end_page_writeback(page);
 				page_cache_release(page);
 			}
 			if ((wbc->nr_to_write -= n_iov) <= 0)
@@ -1280,16 +1409,24 @@ retry:
 		index = 0;
 		goto retry;
 	}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+	if (wbc->range_cyclic || (range_whole && wbc->nr_to_write > 0))
+#else	
 	if (!is_range)
+#endif /* 2.6.17 */	
 		mapping->writeback_index = index;
 
 	FreeXid(xid);
-
+	kfree(iov);
 	return rc;
 }
 #endif /* KERNEL_VERSION > 2.6.14 */
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
+static int cifs_writepage(struct page* page)
+#else 
 static int cifs_writepage(struct page* page, struct writeback_control *wbc)
+#endif
 {
 	int rc = -EFAULT;
 	int xid;
@@ -1300,11 +1437,23 @@ static int cifs_writepage(struct page* page, struct writeback_control *wbc)
         if (!PageUptodate(page)) {
 		cFYI(1, ("ppw - page not up to date"));
 	}
-	
+
+	/*
+	 * Set the "writeback" flag, and clear "dirty" in the radix tree.
+	 *
+	 * A writepage() implementation always needs to do either this,
+	 * or re-dirty the page with "redirty_page_for_writepage()" in
+	 * the case of a failure.
+	 *
+	 * Just unlocking the page will cause the radix tree tag-bits
+	 * to fail to update with the state of the page correctly.
+	 */
+	set_page_writeback(page);		
 	rc = cifs_partialpagewrite(page, 0, PAGE_CACHE_SIZE);
 	SetPageUptodate(page); /* BB add check for error and Clearuptodate? */
 	unlock_page(page);
-	page_cache_release(page);	
+	end_page_writeback(page);
+	page_cache_release(page);
 	FreeXid(xid);
 	return rc;
 }
@@ -1321,6 +1470,7 @@ static int cifs_commit_write(struct file *file, struct page *page,
 	xid = GetXid();
 	cFYI(1, ("commit write for page %p up to position %lld for %d", 
 		 page, position, to));
+	spin_lock(&inode->i_lock);
 	if (position > inode->i_size) {
 		i_size_write(inode, position);
 		/* if (file->private_data == NULL) {
@@ -1350,6 +1500,7 @@ static int cifs_commit_write(struct file *file, struct page *page,
 			cFYI(1, (" SetEOF (commit write) rc = %d", rc));
 		} */
 	}
+	spin_unlock(&inode->i_lock);
 	if (!PageUptodate(page)) {
 		position =  ((loff_t)page->index << PAGE_CACHE_SHIFT) + offset;
 		/* can not rely on (or let) writepage write this data */
@@ -1427,7 +1578,11 @@ int cifs_fsync(struct file *file, struct dentry *dentry, int datasync)
  * As file closes, flush all cached write data for this inode checking
  * for write behind errors.
  */
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 17)
+int cifs_flush(struct file *file, fl_owner_t id)
+#else
 int cifs_flush(struct file *file)
+#endif /* 2.6.17 */
 {
 	struct inode * inode = file->f_dentry->d_inode;
 	int rc = 0;
@@ -1766,6 +1921,9 @@ static int cifs_readpages(struct file *file, struct address_space *mapping,
 			}
 			break;
 		} else if (bytes_read > 0) {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 19)
+			task_io_account_read(bytes_read);
+#endif
 			pSMBr = (struct smb_com_read_rsp *)smb_read_data;
 			cifs_copy_cache_pages(mapping, page_list, bytes_read,
 				smb_read_data + 4 /* RFC1001 hdr */ +
@@ -1889,33 +2047,52 @@ static int cifs_readpage(struct file *file, struct page *page)
 	return rc;
 }
 
+static int is_inode_writable(struct cifsInodeInfo *cifs_inode)
+{
+	struct cifsFileInfo *open_file;
+
+	read_lock(&GlobalSMBSeslock);
+	list_for_each_entry(open_file, &cifs_inode->openFileList, flist) {
+		if (open_file->closePend)
+			continue;
+		if (open_file->pfile &&
+		    ((open_file->pfile->f_flags & O_RDWR) ||
+		     (open_file->pfile->f_flags & O_WRONLY))) {
+			read_unlock(&GlobalSMBSeslock);
+			return 1;
+		}
+	}
+	read_unlock(&GlobalSMBSeslock);
+	return 0;
+}
+
 /* We do not want to update the file size from server for inodes
    open for write - to avoid races with writepage extending
    the file - in the future we could consider allowing
    refreshing the inode only on increases in the file size 
    but this is tricky to do without racing with writebehind
    page caching in the current Linux kernel design */
-int is_size_safe_to_change(struct cifsInodeInfo *cifsInode)
+int is_size_safe_to_change(struct cifsInodeInfo *cifsInode, __u64 end_of_file)
 {
-	struct cifsFileInfo *open_file = NULL;
-
-	if (cifsInode)
-		open_file =  find_writable_file(cifsInode);
- 
-	if(open_file) {
+	if (!cifsInode)
+		return 1;
+	if (is_inode_writable(cifsInode)) {
+		/* This inode is open for write at least once */
 		struct cifs_sb_info *cifs_sb;
 
-		/* there is not actually a write pending so let
-		this handle go free and allow it to
-		be closable if needed */
-		atomic_dec(&open_file->wrtPending);
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 		cifs_sb = CIFS_SB(cifsInode->vfs_inode.i_sb);
+#else
+		cifs_sb = CIFS_SB(open_file->pfile->f_dentry->d_inode->i_sb);
+#endif
 		if ( cifs_sb->mnt_cifs_flags & CIFS_MOUNT_DIRECT_IO ) {
 			/* since no page cache to corrupt on directio 
 			we can change size safely */
 			return 1;
 		}
+
+		if(i_size_read(&cifsInode->vfs_inode) < end_of_file)
+			return 1;
 
 		return 0;
 	} else
@@ -1926,38 +2103,56 @@ static int cifs_prepare_write(struct file *file, struct page *page,
 	unsigned from, unsigned to)
 {
 	int rc = 0;
-        loff_t offset = (loff_t)page->index << PAGE_CACHE_SHIFT;
-	cFYI(1, ("prepare write for page %p from %d to %d",page,from,to));
-	if (!PageUptodate(page)) {
-	/*	if (to - from != PAGE_CACHE_SIZE) {
-			void *kaddr = kmap_atomic(page, KM_USER0);
-			memset(kaddr, 0, from);
-			memset(kaddr + to, 0, PAGE_CACHE_SIZE - to);
-			flush_dcache_page(page);
-			kunmap_atomic(kaddr, KM_USER0);
-		} */
-		/* If we are writing a full page it will be up to date,
-		   no need to read from the server */
-		if ((to == PAGE_CACHE_SIZE) && (from == 0))
-			SetPageUptodate(page);
+	loff_t i_size;
+	loff_t offset;
 
-		/* might as well read a page, it is fast enough */
-		if ((file->f_flags & O_ACCMODE) != O_WRONLY) {
-			rc = cifs_readpage_worker(file, page, &offset);
-		} else {
-		/* should we try using another file handle if there is one -
-		   how would we lock it to prevent close of that handle
-		   racing with this read?
-		   In any case this will be written out by commit_write */
-		}
+	cFYI(1, ("prepare write for page %p from %d to %d",page,from,to));
+	if (PageUptodate(page))
+		return 0;
+
+	/* If we are writing a full page it will be up to date,
+	   no need to read from the server */
+	if ((to == PAGE_CACHE_SIZE) && (from == 0)) {
+		SetPageUptodate(page);
+		return 0;
 	}
 
-	/* BB should we pass any errors back? 
-	   e.g. if we do not have read access to the file */
+	offset = (loff_t)page->index << PAGE_CACHE_SHIFT;
+	i_size = i_size_read(page->mapping->host);
+
+	if ((offset >= i_size) ||
+	    ((from == 0) && (offset + to) >= i_size)) {
+		/*
+		 * We don't need to read data beyond the end of the file.
+		 * zero it, and set the page uptodate
+		 */
+		void *kaddr = kmap_atomic(page, KM_USER0);
+
+		if (from)
+			memset(kaddr, 0, from);
+		if (to < PAGE_CACHE_SIZE)
+			memset(kaddr + to, 0, PAGE_CACHE_SIZE - to);
+		flush_dcache_page(page);
+		kunmap_atomic(kaddr, KM_USER0);
+		SetPageUptodate(page);
+	} else if ((file->f_flags & O_ACCMODE) != O_WRONLY) {
+		/* might as well read a page, it is fast enough */
+		rc = cifs_readpage_worker(file, page, &offset);
+	} else {
+		/* we could try using another file handle if there is one -
+		   but how would we lock it to prevent close of that handle
+		   racing with this read? In any case
+		   this will be written out by commit_write so is fine */
+	}
+
+	/* we do not need to pass errors back 
+	   e.g. if we do not have read access to the file 
+	   because cifs_commit_write will do the right thing.  -- shaggy */
+
 	return 0;
 }
 
-struct address_space_operations cifs_addr_ops = {
+const struct address_space_operations cifs_addr_ops = {
 	.readpage = cifs_readpage,
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	.readpages = cifs_readpages,
@@ -1968,7 +2163,9 @@ struct address_space_operations cifs_addr_ops = {
 #endif
 	.prepare_write = cifs_prepare_write,
 	.commit_write = cifs_commit_write,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	.set_page_dirty = __set_page_dirty_nobuffers,
+#endif
 	/* .sync_page = cifs_sync_page, */
 	/* .direct_IO = */
 };
@@ -1978,7 +2175,7 @@ struct address_space_operations cifs_addr_ops = {
  * contain the header plus one complete page of data.  Otherwise, we need
  * to leave cifs_readpages out of the address space operations.
  */
-struct address_space_operations cifs_addr_ops_smallbuf = {
+const struct address_space_operations cifs_addr_ops_smallbuf = {
 	.readpage = cifs_readpage,
 	.writepage = cifs_writepage,
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 14)
@@ -1986,7 +2183,9 @@ struct address_space_operations cifs_addr_ops_smallbuf = {
 #endif
 	.prepare_write = cifs_prepare_write,
 	.commit_write = cifs_commit_write,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	.set_page_dirty = __set_page_dirty_nobuffers,
+#endif
 	/* .sync_page = cifs_sync_page, */
 	/* .direct_IO = */
 };

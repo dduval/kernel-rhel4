@@ -8,6 +8,8 @@
 #EXTRA_CFLAGS += -DMPT_DEBUG_EXIT
 #EXTRA_CFLAGS += -DMPT_DEBUG_FAIL
 #EXTRA_CFLAGS  += -DMPT_DEBUG_SAS
+EXTRA_CFLAGS += -DCPQ_CIM
+EXTRA_CFLAGS += -DMPT_SUPPORT_FWDLB_IOCTL
 
 #
 # driver/module specifics...
@@ -29,7 +31,6 @@
 #
 #  For mptctl:
 #CFLAGS_mptctl.o += -DMPT_DEBUG_IOCTL
-CFLAGS_mptctl.o  += -DCPQ_CIM
 #
 #  For mptsas:
 #CFLAGS_mptsas.o += -DMPT_DEBUG_HOTPLUG

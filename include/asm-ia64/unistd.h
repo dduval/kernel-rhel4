@@ -264,11 +264,13 @@
 #define __NR_request_key		1272
 #define __NR_keyctl			1273
 
+/* 1274 -- 1303 reserved*/
+#define __NR_getcpu			1304
 #ifdef __KERNEL__
 
 #include <linux/config.h>
 
-#define NR_syscalls			256 /* length of syscall table */
+#define NR_syscalls			281 /* length of syscall table */
 
 #define __ARCH_WANT_SYS_RT_SIGACTION
 

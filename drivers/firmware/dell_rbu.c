@@ -48,7 +48,12 @@
 MODULE_AUTHOR("Abhay Salunke <abhay_salunke@dell.com>");
 MODULE_DESCRIPTION("Driver for updating BIOS image on DELL systems");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.7");
+MODULE_VERSION("0.8");
+
+static unsigned long allocation_floor = 0x100000;
+module_param(allocation_floor, ulong, 0644);
+MODULE_PARM_DESC(allocation_floor,
+	"Minimum address for allocations when using Packet mode");
 
 static struct _rbu_data {
 	void *image_update_buffer;
@@ -200,32 +205,91 @@ static int create_packet(size_t length)
 {
 	struct packet_data *newpacket;
 	int ordernum = 0;
+	int retval = 0;
+	unsigned int packet_array_size = 0;
+	void **invalid_addr_packet_array = 0;
+	void *packet_data_temp_buf = 0;
+	unsigned int idx = 0;
 
 	pr_debug("create_packet: entry \n");
 
 	if (rbu_data.packetsize == 0 ) {
 		pr_debug("create_packet: packetsize not specified\n");
-		return -EINVAL;
+		retval = -EINVAL;
+		goto out_noalloc;
 	}
+
+	spin_unlock(&rbu_data.lock);
 
 	newpacket = kmalloc(sizeof(struct packet_data) ,GFP_KERNEL);
 	if(newpacket == NULL) {
 		printk(KERN_WARNING "create_packet: failed to allocate new "
 			"packet\n");
-		return -ENOMEM;
+		retval = -ENOMEM;
+		spin_lock(&rbu_data.lock);
+		goto out_noalloc;
 	}
 
-	/* there is no upper limit on memory address for packetized mechanism*/
-	newpacket->data = get_free_pages_limited(rbu_data.packetsize,
-				&ordernum, 0);
-	pr_debug("create_packet: newpacket %p\n", newpacket->data);
-		
-	if(newpacket->data == NULL) {
-		printk(KERN_WARNING "create_packet: failed to allocate new "
-			"packet\n");
-		kfree(newpacket);
-		return -ENOMEM;
+	ordernum = get_order(rbu_data.packetsize);
+
+	/*
+	 * BIOS errata mean we cannot allocate packets below 1MB or they will
+	 * be overwritten by BIOS.
+	 *
+	 * array to temporarily hold packets
+	 * that are below the allocation floor
+	 *
+	 * NOTE: very simplistic because we only need the floor to be at 1MB
+	 * 	 due to BIOS errata. This shouldn't be used for higher floors
+	 *	 or you will run out of mem trying to allocate the array.
+	 */
+	packet_array_size = max(
+			(unsigned int)(allocation_floor / rbu_data.packetsize),
+			(unsigned int)1);
+	invalid_addr_packet_array = kmalloc(packet_array_size * sizeof(void*),
+						GFP_KERNEL);
+
+	if (!invalid_addr_packet_array) {
+		printk(KERN_WARNING
+			"dell_rbu:%s: failed to allocate "
+			"invalid_addr_packet_array \n",
+			__FUNCTION__);
+		retval = -ENOMEM;
+		spin_lock(&rbu_data.lock);
+		goto out_alloc_packet;
 	}
+
+	while (!packet_data_temp_buf)
+	{
+		packet_data_temp_buf = (unsigned char *)
+			__get_free_pages(GFP_KERNEL, ordernum);
+		if (!packet_data_temp_buf)
+		{
+			printk(KERN_WARNING
+				"dell_rbu:%s: failed to allocate new "
+				"packet\n", __FUNCTION__);
+			retval = -ENOMEM;
+			spin_lock(&rbu_data.lock);
+			goto out_alloc_packet_array;
+		}
+
+		if ((unsigned long)virt_to_phys(packet_data_temp_buf)
+				< allocation_floor)
+		{
+			pr_debug("packet 0x%lx below floor at 0x%lx.\n",
+					(unsigned long)virt_to_phys(
+						packet_data_temp_buf),
+					allocation_floor);
+			invalid_addr_packet_array[idx++] = packet_data_temp_buf;
+			packet_data_temp_buf = 0;
+		}
+	}
+	spin_lock(&rbu_data.lock);
+
+	newpacket->data = packet_data_temp_buf;
+
+	pr_debug("create_packet: newpacket at physical addr %lx\n",
+		(unsigned long)virt_to_phys(newpacket->data));
 
 	newpacket->ordernum = ordernum;
 	++rbu_data.num_packets;
@@ -237,7 +301,25 @@ static int create_packet(size_t length)
 	
 	pr_debug("create_packet: exit \n");
 
-	return 0;
+out_alloc_packet_array:
+	/* always free packet array */
+	for (;idx>0;idx--)
+	{
+		pr_debug("freeing unused packet below floor 0x%lx.",
+			(unsigned long)virt_to_phys(
+				invalid_addr_packet_array[idx-1]));
+		free_pages((unsigned long)invalid_addr_packet_array[idx-1],
+			ordernum);
+	}
+	kfree(invalid_addr_packet_array);
+
+out_alloc_packet:
+	/* if error, free data */
+	if (retval)
+		kfree(newpacket);
+
+out_noalloc:
+	return retval;
 }
 
 

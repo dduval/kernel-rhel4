@@ -298,7 +298,7 @@ static void dispose_list(struct list_head *head)
 /*
  * Invalidate all inodes for a device.
  */
-static int invalidate_list(struct list_head *head, struct super_block * sb, struct list_head * dispose)
+static int invalidate_list(struct list_head *head, struct super_block * sb, struct list_head * dispose, int pages)
 {
 	struct list_head *next;
 	int busy = 0, count = 0;
@@ -314,18 +314,38 @@ static int invalidate_list(struct list_head *head, struct super_block * sb, stru
 		inode = list_entry(tmp, struct inode, i_list);
 		if (inode->i_sb != sb)
 			continue;
-		invalidate_inode_buffers(inode);
-		if (!atomic_read(&inode->i_count)) {
-			hlist_del_init(&inode->i_hash);
-			list_move(&inode->i_list, dispose);
-			inode->i_state |= I_FREEING;
-			count++;
-			continue;
+		if (pages)
+			invalidate_inode_pages(inode->i_mapping);
+		else {
+			invalidate_inode_buffers(inode);
+			if (!atomic_read(&inode->i_count)) {
+				hlist_del_init(&inode->i_hash);
+				list_move(&inode->i_list, dispose);
+				inode->i_state |= I_FREEING;
+				count++;
+				continue;
+			}
 		}
 		busy = 1;
 	}
 	/* only unused inodes may be cached with i_count zero */
 	inodes_stat.nr_unused -= count;
+	return busy;
+}
+
+int invalidate_inodes_and_pages(struct super_block * sb)
+{
+	int busy;
+	LIST_HEAD(throw_away);
+                                                                                                   
+	down(&iprune_sem);
+	spin_lock(&inode_lock);
+	busy = invalidate_list(&inode_in_use, sb, &throw_away, 1);
+	busy |= invalidate_list(&inode_unused, sb, &throw_away, 1);
+	busy |= invalidate_list(&sb->s_dirty, sb, &throw_away, 1);
+	busy |= invalidate_list(&sb->s_io, sb, &throw_away, 1);
+	spin_unlock(&inode_lock);
+	up(&iprune_sem);
 	return busy;
 }
 
@@ -352,10 +372,10 @@ int invalidate_inodes(struct super_block * sb)
 
 	down(&iprune_sem);
 	spin_lock(&inode_lock);
-	busy = invalidate_list(&inode_in_use, sb, &throw_away);
-	busy |= invalidate_list(&inode_unused, sb, &throw_away);
-	busy |= invalidate_list(&sb->s_dirty, sb, &throw_away);
-	busy |= invalidate_list(&sb->s_io, sb, &throw_away);
+	busy = invalidate_list(&inode_in_use, sb, &throw_away, 0);
+	busy |= invalidate_list(&inode_unused, sb, &throw_away, 0);
+	busy |= invalidate_list(&sb->s_dirty, sb, &throw_away, 0);
+	busy |= invalidate_list(&sb->s_io, sb, &throw_away, 0);
 	spin_unlock(&inode_lock);
 
 	dispose_list(&throw_away);

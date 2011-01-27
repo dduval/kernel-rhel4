@@ -41,47 +41,50 @@ static int br_device_event(struct notifier_block *unused, unsigned long event, v
 
 	br = p->br;
 
-	spin_lock_bh(&br->lock);
 	switch (event) {
 	case NETDEV_CHANGEMTU:
 		dev_set_mtu(br->dev, br_min_mtu(br));
 		break;
 
 	case NETDEV_CHANGEADDR:
+		spin_lock_bh(&br->lock);
 		br_fdb_changeaddr(p, dev->dev_addr);
 		br_stp_recalculate_bridge_id(br);
+		spin_unlock_bh(&br->lock);
 		break;
 
 	case NETDEV_CHANGE:	/* device is up but carrier changed */
-		if (!(br->dev->flags & IFF_UP))
-			break;
-
-		if (netif_carrier_ok(dev)) {
-			if (p->state == BR_STATE_DISABLED)
-				br_stp_enable_port(p);
-		} else {
-			if (p->state != BR_STATE_DISABLED)
-				br_stp_disable_port(p);
+		if (br->dev->flags & IFF_UP) {
+			spin_lock_bh(&br->lock);
+			if (netif_carrier_ok(dev)) {
+				if (p->state == BR_STATE_DISABLED)
+					br_stp_enable_port(p);
+			} else {
+				if (p->state != BR_STATE_DISABLED)
+					br_stp_disable_port(p);
+			}
+			spin_unlock_bh(&br->lock);
 		}
 		break;
 
 	case NETDEV_DOWN:
+		spin_lock_bh(&br->lock);
 		if (br->dev->flags & IFF_UP)
 			br_stp_disable_port(p);
+		spin_unlock_bh(&br->lock);
 		break;
 
 	case NETDEV_UP:
+		spin_lock_bh(&br->lock);
 		if (netif_carrier_ok(dev) && (br->dev->flags & IFF_UP)) 
 			br_stp_enable_port(p);
+		spin_unlock_bh(&br->lock);
 		break;
 
 	case NETDEV_UNREGISTER:
-		spin_unlock_bh(&br->lock);
 		br_del_if(br, dev);
-		goto done;
+		break;
 	} 
-	spin_unlock_bh(&br->lock);
 
- done:
 	return NOTIFY_DONE;
 }

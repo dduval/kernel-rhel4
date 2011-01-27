@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -123,6 +123,7 @@
 #define MBOX_AEN_REG_COUNT		6
 #define MAX_INIT_RETRIES		5
 #define IOCB_HIWAT_CUSHION		16
+#define LEGACY_IFCB_SIZE		0x200
 
 /*
  * Buffer sizes
@@ -148,8 +149,10 @@
 
 
 #define	ISCSI_IPADDR_SIZE		4	/* IP address size */
+#define	ISCSI_IPv6ADDR_SIZE		16	/* IPv6 address size */
 #define	ISCSI_ALIAS_SIZE		32	/* ISCSI Alais name size */
 #define	ISCSI_NAME_SIZE			255	/* ISCSI Name size  - usually a string */
+#define IP_ADDR_STR_SIZE		40
 
 #define SYS_DELAY(x)		do {udelay(x);barrier();} while(0);
 #define QLA4XXX_DELAY(sec)  	do {mdelay(sec * 1000);} while(0);
@@ -167,22 +170,131 @@
 #define LSDW(x)	((uint32_t)((uint64_t)(x)))
 #define MSDW(x)	((uint32_t)((((uint64_t)(x)) >> 16) >> 16))
 
-#define IPAddrIsZero( _X1_ )   ((_X1_)[0] == 0 && \
-                                (_X1_)[1] == 0 && \
-                                (_X1_)[2] == 0 && \
-                                (_X1_)[3] == 0)
+#define IPv4AddrIsZero( _X1_ )   ((_X1_)[0] == 0 && \
+                                  (_X1_)[1] == 0 && \
+                                  (_X1_)[2] == 0 && \
+                                  (_X1_)[3] == 0)
 
-#define IPAddrIsEqual(_X1_, _X2_) ((_X1_)[0] == (_X2_)[0] && \
-                                   (_X1_)[1] == (_X2_)[1] && \
-                                   (_X1_)[2] == (_X2_)[2] && \
-                                   (_X1_)[3] == (_X2_)[3])
+#define IPv4AddrIsEqual(_X1_, _X2_) ((_X1_)[0] == (_X2_)[0] && \
+                                     (_X1_)[1] == (_X2_)[1] && \
+                                     (_X1_)[2] == (_X2_)[2] && \
+                                     (_X1_)[3] == (_X2_)[3])
+				
+#define iSNSIPv4AddrIsZero( _X1_ )   ((_X1_)[12] == 0 && \
+				      (_X1_)[13] == 0 && \
+				      (_X1_)[14] == 0 && \
+				      (_X1_)[15] == 0)
 
-#define IPAddr2Uint32(_X1_,_X2_) { \
-                                  *_X2_ = 0; \
-				  *_X2_ |= _X1_[3] << 24; \
-				  *_X2_ |= _X1_[2] << 16; \
-				  *_X2_ |= _X1_[1] << 8;  \
-				  *_X2_ |= _X1_[0];}
+#define iSNSIPv4AddrIsEqual(_X1_, _X2_) ((_X1_)[12] == (_X2_)[12] && \
+					 (_X1_)[13] == (_X2_)[13] && \
+					 (_X1_)[14] == (_X2_)[14] && \
+					 (_X1_)[15] == (_X2_)[15])
+
+#define IPv4Addr2Uint32(_X1_,_X2_) { \
+				     if ((IPv4MappedIPv6Addr(_X1_)) \
+				     || (IPv4CompatIPv6Addr(_X1_))) {\
+				     *_X2_ = 0; \
+				     *_X2_ |= _X1_[15] << 24; \
+				     *_X2_ |= _X1_[14] << 16; \
+				     *_X2_ |= _X1_[13] << 8;  \
+				     *_X2_ |= _X1_[12]; }\
+				     else { \
+                                    *_X2_ = 0; \
+				    *_X2_ |= _X1_[3] << 24; \
+				    *_X2_ |= _X1_[2] << 16; \
+				    *_X2_ |= _X1_[1] << 8;  \
+				    *_X2_ |= _X1_[0];}}
+				
+#define IPv4Addr2Str(addr, str) { sprintf(str, "%d.%d.%d.%d", \
+				  addr[0], addr[1], addr[2], addr[3]);}
+				
+#define IPv4CompatIPv6Addr(_X1_) ((_X1_)[0] == 0 && \
+				  (_X1_)[1] == 0 && \
+				  (_X1_)[2] == 0 && \
+				  (_X1_)[3] == 0 && \
+				  (_X1_)[4] == 0 && \
+				  (_X1_)[5] == 0 && \
+				  (_X1_)[6] == 0 && \
+				  (_X1_)[7] == 0 && \
+				  (_X1_)[8] == 0 && \
+				  (_X1_)[9] == 0 && \
+				  (_X1_)[10] == 0 && \
+				  (_X1_)[11] == 0 && \
+				  ((_X1_)[12] != 0 || \
+				   (_X1_)[13] != 0 || \
+				   (_X1_)[14] != 0 || \
+				   (_X1_)[15] != 0 ))
+			
+#define IPv4MappedIPv6Addr(_X1_) ((_X1_)[0] == 0 && \
+				  (_X1_)[1] == 0 && \
+				  (_X1_)[2] == 0 && \
+				  (_X1_)[3] == 0 && \
+				  (_X1_)[4] == 0 && \
+				  (_X1_)[5] == 0 && \
+				  (_X1_)[6] == 0 && \
+				  (_X1_)[7] == 0 && \
+				  (_X1_)[8] == 0 && \
+				  (_X1_)[9] == 0 && \
+				  (_X1_)[10] == 0xFF && \
+				  (_X1_)[11] == 0xFF)
+			
+#define IPv6Addr2Str(addr, str) { \
+				if ((IPv4MappedIPv6Addr(addr)) \
+				|| (IPv4CompatIPv6Addr(addr))) \
+				sprintf(str, "%d.%d.%d.%d", \
+				addr[12], addr[13], addr[14], addr[15]);\
+				else \
+				sprintf(str, \
+				"%02x%02x:%02x%02x:%02x%02x:%02x%02x:" \
+				"%02x%02x:%02x%02x:%02x%02x:%02x%02x", \
+				addr[0], addr[1], addr[2], addr[3], \
+				addr[4], addr[5], addr[6], addr[7],	\
+				addr[8], addr[9], addr[10], addr[11], \
+				addr[12], addr[13], addr[14], addr[15]);}
+
+#define IPv6AddrIsZero( _X1_ )   ((_X1_)[0] == 0 && (_X1_)[1] == 0 && \
+				  (_X1_)[2] == 0 && (_X1_)[3] == 0 && \
+				  (_X1_)[4] == 0 && (_X1_)[5] == 0 && \
+				  (_X1_)[6] == 0 && (_X1_)[7] == 0 && \
+				  (_X1_)[8] == 0 && (_X1_)[9] == 0 && \
+				  (_X1_)[10] == 0 && (_X1_)[11] == 0 && \
+				  (_X1_)[12] == 0 && (_X1_)[13] == 0 && \
+                                  (_X1_)[14] == 0 && (_X1_)[15] == 0)
+
+#define IPv6AddrIsEqual(_X1_, _X2_) ((_X1_)[0] == (_X2_)[0] && \
+                                     (_X1_)[1] == (_X2_)[1] && \
+                                     (_X1_)[2] == (_X2_)[2] && \
+                                     (_X1_)[3] == (_X2_)[3] && \
+                                     (_X1_)[4] == (_X2_)[4] && \
+                                     (_X1_)[5] == (_X2_)[5] && \
+                                     (_X1_)[6] == (_X2_)[6] && \
+                                     (_X1_)[7] == (_X2_)[7] && \
+                                     (_X1_)[8] == (_X2_)[8] && \
+                                     (_X1_)[9] == (_X2_)[9] && \
+                                     (_X1_)[10] == (_X2_)[10] && \
+                                     (_X1_)[11] == (_X2_)[11] && \
+                                     (_X1_)[12] == (_X2_)[12] && \
+                                     (_X1_)[13] == (_X2_)[13] && \
+                                     (_X1_)[15] == (_X2_)[15] && \
+                                     (_X1_)[15] == (_X2_)[15])
+
+#define IS_IPv6_ENABLED(ha) (((ha)->ipv6_options & IPV6_OPT_IPV6_PROTOCOL_ENABLE) != 0)
+#define IS_IPv4_ENABLED(ha) (((ha)->ip_options & IPOPT_IPv4_PROTOCOL_ENABLE) != 0)
+
+#define IPAddr2Str(ha, addr, str) { \
+				if (IS_IPv6_ENABLED(ha)) \
+				     IPv6Addr2Str(addr, str) \
+				else IPv4Addr2Str(addr, str);}
+				
+#define IPAddrIsZero(ha, _X1_) ( \
+				(IS_IPv6_ENABLED(ha)) \
+				? (IPv6AddrIsZero(_X1_)) \
+				: (IPv4AddrIsZero(_X1_)))
+
+#define IPAddrIsEqual(ha, _X1_, _X2_) ( \
+				(IS_IPv6_ENABLED(ha)) \
+				? (IPv6AddrIsEqual(_X1_, _X2_)) \
+				: (IPv4AddrIsEqual(_X1_, _X2_)))
 
 /*
  * I/O port access macros
@@ -223,7 +335,8 @@
 #define SEMAPHORE_TOV			10
 #define ADAPTER_INIT_TOV		120
 #define ADAPTER_RESET_TOV		180
-#define INTERNAL_PASSTHRU__TOV		60
+#define ADAPTER_ONLINE_TOV		30
+#define INTERNAL_PASSTHRU_TOV		60
 #define EXTEND_CMD_TOV			60
 #define WAIT_CMD_TOV			30
 #define EH_WAIT_CMD_TOV			120
@@ -407,9 +520,9 @@ typedef struct ddb_entry {
 	struct fc_port *fcport;		/* 12 x0c */
 	uint16_t fw_ddb_index;		/* 16 x10 DDB index from firmware's DEV_DB structure */
 	uint16_t out_count;		/* 18 x12 Number of active commands */
-
 	uint8_t  num_valid_luns;	/* 20 x14 Number of valid luns */
-	uint8_t  reserved1[3];		/* 21 x15 */
+	uint16_t options;		/* 21 x15 */
+	uint8_t  reserved1;		/* 23 x17 */
 
 	/* refer to MBOX_CMD_GET_DATABASE_ENTRY for fw_ddb_fw_ddb_device_state definitions   */
 	uint32_t fw_ddb_device_state;	/* 24 x18 Device State */
@@ -453,9 +566,11 @@ typedef struct ddb_entry {
 	unsigned long dev_scan_wait_to_start_relogin;    /* 72 x48 */
 	unsigned long dev_scan_wait_to_complete_relogin; /* 76 x4c */
 
-	uint8_t  ip_addr[ISCSI_IPADDR_SIZE];
-	uint8_t  iscsi_name[ISCSI_NAME_SIZE];	 /*  */
-} ddb_entry_t;				 /* */
+	uint8_t  reserved2[4];				 /* 80 x50 */
+	uint8_t  iscsi_name[ISCSI_NAME_SIZE];	  	 /*  (255) */
+	uint8_t  remote_ip_addr[ISCSI_IPv6ADDR_SIZE];	 /*  (16) IPv4 or IPv6 */
+	uint8_t  ipv6_local_ip_addr[ISCSI_IPv6ADDR_SIZE];/*  (16) */
+} ddb_entry_t;				 /* 368 x170 */
 
 /*
  * Fibre channel port type.
@@ -524,8 +639,8 @@ typedef struct fc_port {
 #define FCF_CONFIG_DEVICE        BIT_8
 #define FCF_MSA_DEVICE            BIT_9
 #define FCF_MSA_PORT_ACTIVE     BIT_10
-#define FCF_LOGIN_NEEDED		BIT_12
-#define FCF_EVA_DEVICE            BIT_13
+#define FCF_LOGIN_NEEDED	BIT_12
+#define FCF_EVA_DEVICE          BIT_13
 
 #define FCF_RLC_SUPPORT		BIT_14
 #define FCF_CONFIG		BIT_15	/* Needed? */
@@ -625,6 +740,7 @@ typedef struct scsi_qla_host {
 	#define DPC_CHECK_LUN		     14 /* 0x00004000 */
 	#define DPC_GET_DHCP_IP_ADDR	     15 /* 0x00008000 */
 	#define DPC_RESET_NIC_TEST	     17 /* 0x00020000 */
+	#define DPC_RESET_HA_INTR_COMPLETION 18 /* 0x00040000 */
 
 	uint16_t        iocb_cnt;
 	uint16_t        iocb_hiwat;
@@ -664,7 +780,7 @@ typedef struct scsi_qla_host {
 	unsigned long mem_addr;
 	unsigned long io_len;
 	unsigned long mem_len;
-	unsigned int irq;		 /* IRQ for adapter            */
+	unsigned int irq;		 /* IRQ for adapter */
 
 	uint8_t		driver_verstr[80];
 	uint8_t		driver_version[4];
@@ -689,7 +805,7 @@ typedef struct scsi_qla_host {
 	uint32_t        seconds_since_last_heartbeat;
 	uint32_t        mac_index;
 
-	/* Info Initialized at init time */
+	/* Info Needed for Management App */
 	/* --- From GetFwVersion --- */
 	uint32_t        firmware_version[2];
 	uint32_t        patch_number;
@@ -701,13 +817,13 @@ typedef struct scsi_qla_host {
 	uint8_t         ip_address[IP_ADDR_LEN];
 	uint8_t         subnet_mask[IP_ADDR_LEN];
 	uint8_t         gateway[IP_ADDR_LEN];
-	uint8_t         isns_ip_address[IP_ADDR_LEN];
+	uint8_t		rsvd4[4];
 	uint16_t       	isns_server_port_number;
-	uint16_t        resvd7;
+	uint16_t        ip_options;
 	uint8_t         alias[32];
 	uint8_t         name_string[256];
 	uint8_t         heartbeat_interval;
-	uint8_t         rsvd;
+	uint8_t         acb_version;
 	/* --- From FlashSysInfo --- */
 	uint8_t         my_mac[MAC_ADDR_LEN];
 	uint8_t         serial_number[16];
@@ -902,6 +1018,17 @@ typedef struct scsi_qla_host {
 	#if defined(SH_HAS_HOST_LOCK)
 	spinlock_t      host_lock ____cacheline_aligned;
 	#endif
+	
+	/* IPv6 Needed for Management App */
+	uint8_t         isns_server_ip_addr[16];
+	uint8_t         isns_ha_ip_addr[16];
+	uint32_t	ipv6_options;
+	uint32_t	ipv6_addl_options;
+	uint32_t	ipv6_tcp_options;
+	uint8_t		ipv6_link_local_addr[16];
+	uint8_t		ipv6_addr0[16];
+	uint8_t		ipv6_addr1[16];
+	uint8_t		ipv6_default_router_addr[16];
 }scsi_qla_host_t;
 
 #define ADAPTER_UP(ha) ((test_bit(AF_ONLINE, &ha->flags) != 0) && \

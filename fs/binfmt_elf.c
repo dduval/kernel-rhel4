@@ -1183,22 +1183,18 @@ static int dump_seek(struct file *file, loff_t off)
  */
 static int maydump(struct vm_area_struct *vma)
 {
-	/*
-	 * If we may not read the contents, don't allow us to dump
-	 * them either. "dump_write()" can't handle it anyway.
-	 */
-	if (!(vma->vm_flags & VM_READ))
+	/* Do not dump I/O mapped devices or special mappings */
+	if (vma->vm_flags & (VM_IO | VM_RESERVED))
 		return 0;
 
-	/* Do not dump I/O mapped devices! -DaveM */
-	if (vma->vm_flags & VM_IO)
+	/* Dump shared memory only if mapped from an anonymous file. */
+	if (vma->vm_flags & VM_SHARED)
+		return vma->vm_file->f_dentry->d_inode->i_nlink == 0;
+
+	/* If it hasn't been written to, don't write it out */
+	if (!vma->anon_vma)
 		return 0;
-#if 1
-	if (vma->vm_flags & (VM_WRITE|VM_GROWSUP|VM_GROWSDOWN))
-		return 1;
-	if (vma->vm_flags & (VM_READ|VM_EXEC|VM_EXECUTABLE|VM_SHARED))
-		return 0;
-#endif
+
 	return 1;
 }
 

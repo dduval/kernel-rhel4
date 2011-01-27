@@ -29,6 +29,7 @@
 #define SMP_IRQ_REDIRECTION	(1 << 0)
 #define SMP_IPI_REDIRECTION	(1 << 1)
 
+#define raw_smp_processor_id()	(current_thread_info()->cpu)
 #define smp_processor_id()	(current_thread_info()->cpu)
 
 extern struct smp_boot_data {

@@ -408,6 +408,7 @@ struct ethtool_ops {
 #define SUPPORTED_FIBRE			(1 << 10)
 #define SUPPORTED_BNC			(1 << 11)
 #define SUPPORTED_10000baseT_Full	(1 << 12)
+#define SUPPORTED_2500baseX_Full	(1 << 15)
 
 /* Indicates what features are advertised by the interface. */
 #define ADVERTISED_10baseT_Half		(1 << 0)
@@ -423,6 +424,7 @@ struct ethtool_ops {
 #define ADVERTISED_FIBRE		(1 << 10)
 #define ADVERTISED_BNC			(1 << 11)
 #define ADVERTISED_10000baseT_Full	(1 << 12)
+#define ADVERTISED_2500baseX_Full	(1 << 15)
 
 /* The following are all involved in forcing a particular link
  * mode for the device for setting things.  When getting the

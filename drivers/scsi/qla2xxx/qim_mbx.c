@@ -18,6 +18,7 @@
  */
 #include "qim_def.h"
 #include "exioctln.h"
+#include "exioct.h"
 #include "inioct.h"
 
 #include <linux/delay.h>

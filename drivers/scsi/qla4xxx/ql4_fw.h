@@ -1,6 +1,6 @@
 /*
- * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * QLogic iSCSI HBA Module
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -16,11 +16,6 @@
 #define QLA4XXX_VENDOR_ID   	0x1077
 #define QLA4000_DEVICE_ID  	0x4000
 #define QLA4010_DEVICE_ID  	0x4010
-
-#define QLA4040_SSDID_NIC  	0x011D	/* Uses QLA4010 PCI Device ID */
-#define QLA4040_SSDID_ISCSI  	0x011E
-#define QLA4040C_SSDID_NIC  	0x011F
-#define QLA4040C_SSDID_ISCSI  	0x0120
 
 #define MAX_PRST_DEV_DB_ENTRIES         64
 #define MIN_DISC_DEV_DB_ENTRY           MAX_PRST_DEV_DB_ENTRIES
@@ -86,9 +81,9 @@ typedef struct _PORT_CTRL_STAT_REGS {
 	__le32  gp_in;	       			/* 228 xe4   *  */
 	__le32  ProbeMuxAddr;		       	/* 232 xe8   *  */
 	__le32  ProbeMuxData;		       	/* 236 xec   *  */
-	__le32  ERMQueueBaseAddr0;	       	/* 240 xf0   *  */
-	__le32  ERMQueueBaseAddr1;	       	/* 244 xf4   *  */
-	__le32  MACConfiguration;	       	/* 248 xf8   *  */
+	__le32  stats_index;	       		/* 240 xf0   *  */
+	__le32  stats_read_data_inc;	       	/* 244 xf4   *  auto_increment */
+	__le32  stats_read_data_noinc;	       	/* 248 xf8   *  no auto_increment */
 	__le32  port_err_status;	       	/* 252 xfc  COR */
 } PORT_CTRL_STAT_REGS, *PPORT_CTRL_STAT_REGS;
 
@@ -208,7 +203,9 @@ typedef struct isp_reg_t {
 	__le32 req_q_in;  /* SCSI Request Queue Producer Index */
 	__le32 rsp_q_out; /* SCSI Completion Queue Consumer Index */
 
-	__le32 reserved2[4];				/* 0x40 */
+	__le32 reserved2[2];				/* 0x40 */
+	__le32 arc_madi_cmd;
+	__le32 arc_madi_data;
 
 	union {
 		struct {
@@ -223,10 +220,13 @@ typedef struct isp_reg_t {
 
 			__le32 reserved4[23];		/* 0x84 */
 
-			__le32 gp_out;		/* 0xe0 */
+			__le32 gp_out;			/* 0xe0 */
 			__le32 gp_in;
 
-			__le32 reserved5[5];
+			__le32 probe_mux_addr;
+			__le32 probe_mux_data;
+
+			__le32 reserved5[3];		/* 0xf0 */
 
 			__le32 port_err_status;	/* 0xfc */
 		} __attribute__((packed)) isp4010;
@@ -287,6 +287,16 @@ typedef struct isp_reg_t {
 	(IS_QLA4010(ha) ? \
 	 &ha->reg->u2.isp4010.gp_in : \
 	 &ha->reg->u2.isp4022.p0.gp_in)
+
+#define ISP_PROBE_MUX_ADDR(ha) \
+	(IS_QLA4010(ha) ? \
+	 &ha->reg->u2.isp4010.probe_mux_addr : \
+	 &ha->reg->u2.isp4022.p0.ProbeMuxAddr)
+
+#define ISP_PROBE_MUX_DATA(ha) \
+	(IS_QLA4010(ha) ? \
+	 &ha->reg->u2.isp4010.probe_mux_data : \
+	 &ha->reg->u2.isp4022.p0.ProbeMuxData)
 
 /* Semaphore Defines for 4010 */
 #define QL4010_DRVR_SEM_BITS    0x00000030
@@ -522,7 +532,7 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 #define MBOX_CMD_GET_FW_STATUS                  0x001F
 #define MBOX_CMD_SET_ISNS_SERVICE               0x0021
 		#define ISNS_DISABLE                            0
-		#define ISNS_ENABLE                             1
+		#define ISNSv4_ENABLE                           1
 		#define ISNS_STATUS                             2 /* Not working */
 		#define ISNSv6_ENABLE                           3
 #define MBOX_CMD_COPY_FLASH                     0x0024
@@ -566,7 +576,7 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 		#define FW_STATE_CONFIG_WAIT                    0x00000001
 		#define FW_STATE_WAIT_AUTOCONNECT               0x00000002
 		#define FW_STATE_ERROR                          0x00000004
-		#define FW_STATE_DHCPv4_IN_PROGRESS		0x00000008
+		#define FW_STATE_CONFIGURING_IP			0x00000008
 		#define FW_STATE_WAIT_ACTIVATE_PRI_ACB          0x00000010
 		#define FW_STATE_WAIT_ACTIVATE_SEC_ACB          0x00000020
 
@@ -613,13 +623,18 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 #define MBOX_CMD_GET_CONN_EVENT_LOG       	0x0077
 #define MBOX_CMD_RESTORE_FACTORY_DEFAULTS      	0x0087
 #define MBOX_CMD_SET_ACB                        0x0088
-		#define ACB_PARAM_ERR_INVALID_VALUE		0x0001
-		#define ACB_PARAM_ERR_INVALID_SIZE		0x0002
-		#define ACB_PARAM_ERR_INVALID_ADDR		0x0003
+		/* Outgoing Mailbox 1 */
+		#define SET_ACB_PARAM_ERR_INVALID_VALUE		0x0001
+		#define SET_ACB_PARAM_ERR_INVALID_SIZE		0x0002
+		#define SET_ACB_PARAM_ERR_INVALID_ADDR		0x0003
+		/* Outgoing Mailbox 5 - see ACB State Defines below */
 #define MBOX_CMD_GET_ACB                        0x0089
 #define MBOX_CMD_DISABLE_ACB                    0x008A
-		#define ACB_CMD_OPTION_NOT_FORCED		0x0000
-		#define ACB_CMD_OPTION_FORCED			0x0001
+		/* Outgoing Mailbox 1 */
+		#define DISABLE_ACB_ERR_FW_NOT_INITIALIZED	0x0003
+		#define DISABLE_ACB_ERR_ACB_ALREADY_DISABLED	0x0004
+		#define DISABLE_ACB_ERR_DDBS_ARE_ACTIVE		0x0005
+		/* Outgoing Mailbox 5 - see ACB State Defines below */
 #define MBOX_CMD_GET_IPV6_NEIGHBOR_CACHE        0x008B
 #define MBOX_CMD_GET_IPV6_DEST_CACHE            0x008C
 #define MBOX_CMD_GET_IPV6_DEF_ROUTER_LIST       0x008D
@@ -627,28 +642,20 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 #define MBOX_CMD_CONTROL_NEW_CONNS              0x008F
 #define MBOX_CMD_SET_IPV6_NEIGHBOR_CACHE	0x0090
 #define MBOX_CMD_GET_IP_ADDR_STATE		0x0091
-		/* Incoming Mailbox 2 */
-		#define IP_INDEX_IPv4		0
-		#define IP_INDEX_IPv6_LINK_LOCAL 0
-		#define IP_INDEX_IPv6_ADDR0	0
-		#define IP_INDEX_IPv6_ADDR1	0
-		
+		/* Incoming Mailbox 2 - see IP Address Index Defines below */
 		/* Outgoing Mailbox 1 */
-		#define ACB_STATE_ENABLED			0x0000
-		#define ACB_STATE_DISABLED			0x0001
-		#define ACB_STATE_DISABLING			0x0002
-		#define ACB_STATE_WAITING_FOR_INIT		0x0003
+		#define GET_IPSTATE_ACB_STATE_MASK              0xF0000000
+			/* see ACB State Defines below */
+		#define GET_IPSTATE_IP_STATE_MASK               0x0F000000
+			/* see ACB State Defines below */
+		#define GET_IPSTATE_IP_CONFIG_MASK		0x00F00000
+			/* see IP Address Defines below */
+		#define GET_IPSTATE_ADDL_INFO			0x00000010
+		#define GET_IPSTATE_IPv6_PROT_ENABLED		0x00000008
+		#define GET_IPSTATE_IPv4_PROT_ENABLED		0x00000004
+		#define GET_IPSTATE_NEW_CONN_DISABLED		0x00000002
+		#define GET_IPSTATE_VLAN_TAG_ENABLED		0x00000001
 		
-		/* Outgoing Mailboxes 2 & 3 */
-		#define ACB_CS_NOT_CONFIGURED			0x0000
-		#define ACB_CS_ACTIVE				0x0001
-		#define ACB_CS_ACCEPTING_NEW_CONNECTIONS      	0x0002
-		#define ACB_CS_DISABLED_VIA_ACB               	0x0010
-		#define ACB_CS_DHCP_LEASE_EXPIRED             	0x0020
-		#define ACB_CS_DHCP_WAITING_TO_ACQUIRE_LEASE  	0x0100
-		#define ACB_CS_DHCP_WAITING_FOR_NEIGHBOR_DISC 	0x0200
-		#define ACB_CS_DHCP_WAITING_FOR_VALIDATION    	0x0400
-		#define ACB_CS_CONFIG_ERROR                   	0x8000
 #define MBOX_CMD_SEND_IPV6_ROUTER_SOL		0x0092
 #define MBOX_CMD_GET_DATABASE_ENTRY_CURRENT_IP_ADDR	0x0093
 #define MBOX_CMD_NOP                            0x00FF
@@ -691,34 +698,76 @@ typedef union _EXTERNAL_HW_CONFIG_REG {
 #define MBOX_ASTS_NVRAM_INVALID      		0x801A
 #define MBOX_ASTS_MAC_ADDRESS_CHANGED      	0x801B
 #define MBOX_ASTS_IP_ADDRESS_CHANGED      	0x801C
-		/* mailbox 1 */
-		#define PRIMARY_ACB				0
-		#define SECONDARY_ACB				1
-		/* mailbox 4 */
-		#define IP_ADDR_CFG_NOT_CONFIGURED		00
-		#define IP_ADDR_CFG_STATIC			01
-		#define IP_ADDR_CFG_DHCP			02
-		/* mailbox 5 */
-		#define IP_INTERFACE_IPv4			00
-		#define IP_INTERFACE_IPv6_LINK_LOCAL		01
-		#define IP_INTERFACE_IPv_ADDR0			02
-		#define IP_INTERFACE_IPv_ADDR1			03
-		
+		/* Mailbox 1 - see ACB Location defines below */
+		/* Mailbox 4 - see IP Address Configuration Defines below */
+		/* Mailbox 5 - IP Address Index Defines below */
+
 #define MBOX_ASTS_DHCP_LEASE_EXPIRED      	0x801D
 #define MBOX_ASTS_DHCP_LEASE_ACQUIRED           0x801F
 #define MBOX_ASTS_ISNS_UNSOLICITED_PDU_RECEIVED 0x8021
 		#define ISNS_EVENT_DATA_RECEIVED		0x0000
 		#define ISNS_EVENT_CONNECTION_OPENED		0x0001
 		#define ISNS_EVENT_CONNECTION_FAILED		0x0002
+		
+#define MBOX_ASTS_SOCKET_IOCB			0x8023
+		#define SOCKET_STAT_READ			0x0000
+		#define SOCKET_STAT_OPEN			0x0001
+		#define SOCKET_STAT_CLOSED			0x0002
+		#define SOCKET_STAT_ACCEPT			0x0003
+		
 #define MBOX_ASTS_DUPLICATE_IP                  0x8025
 #define MBOX_ASTS_ARP_COMPLETE                  0x8026
 #define MBOX_ASTS_SUBNET_STATE_CHANGE		0x8027
 #define MBOX_ASTS_RESPONSE_QUEUE_FULL           0x8028
 #define MBOX_ASTS_IP_ADDR_STATE_CHANGED         0x8029
-#define MBOX_ASTS_IPV6_PREFIX_EXPIRED           0x802B
+		/* Mailbox 1 - see ACB Location defines below */
+		/* Mailbox 2&3 - see ACB State defines below */
+		/* Mailbox 4 - see IP Address Configuration Defines below */
+		/* Mailbox 5 */
+		#define IPADDR_STATECHG_IP_INDEX_MASK		0x0000000F
+			/*see  IP Address Index Defines below */
+		#define IPADDR_STATECHG_ADDL_INFO_MASK		0x000000F0
+
+#define MBOX_ASTS_IPV6_DEFAULT_ROUTER_CHANGED   0x802A
+#define MBOX_ASTS_IPV6_LINK_MTU_CHANGE          0x802B
 #define MBOX_ASTS_IPV6_ND_PREFIX_IGNORED        0x802C
 #define MBOX_ASTS_IPV6_LCL_PREFIX_IGNORED       0x802D
 #define MBOX_ASTS_ICMPV6_ERROR_MSG_RCVD         0x802E
+#define MBOX_ASTS_PING_COMPLETION		0x8034
+		/* Mailbox 6 */
+		#define PING_STAT_SUCCESSFUL			0x0000
+		#define PING_STAT_SENT_NO_REPLY			0x0004
+		#define PING_STAT_ICMP_TOO_BIG			0x0006
+		#define PING_STAT_ICMP_ERR			0x0007
+		#define PING_STAT_EXCEEDED_MAX_PINGS		0x0008
+		#define PING_STAT_NO_ARP			0x0009
+
+
+/* ACB Location Defines */
+#define ACB_PRIMARY			0x00
+#define ACB_SECONDARY			0x01
+
+/* ACB State Defines */
+#define ACB_STATE_UNCONFIGURED		0x00
+#define ACB_STATE_INVALID		0x01
+#define ACB_STATE_ACQUIRING		0x02
+#define ACB_STATE_TENTATIVE		0x03
+#define ACB_STATE_DEPRICATED		0x04
+#define ACB_STATE_VALID			0x05
+#define ACB_STATE_DISABLING		0x06
+
+/* IP Address Index Defines */
+#define IP_INDEX_IPv4			0x00
+#define IP_INDEX_IPv6_LINK_LOCAL 	0x01
+#define IP_INDEX_IPv6_ADDR0		0x02
+#define IP_INDEX_IPv6_ADDR1		0x03
+
+/* IP Address Configuration Defines */
+#define IP_ADDR_CFG_NOT_CONFIGURED	0x00
+#define IP_ADDR_CFG_STATIC		0x01
+#define IP_ADDR_CFG_DHCP		0x02
+#define IP_ADDR_CFG_NEIGHBOR		0x03
+#define IP_ADDR_CFG_LINK_LOCAL		0x04
 
 
 /*************************************************************************/
@@ -746,7 +795,7 @@ typedef struct _ADDRESS_CTRL_BLK {
    #define  FWOPT_AUTO_TARGET_INFO_DISABLE   0x0004
    #define  FWOPT_SENSE_BUFFER_DATA_ENABLE   0x0002
 
-	__le16    ExecThrottle;			/* 04-05 */
+	__le16    ExecThrottle;			/* 04-05 Session Mode */
 	uint8_t   ZIOCount;	  		/* 06    */
 	uint8_t   Reserved0;	  		/* 07    */
 	__le16    MaxEthFrPayloadSize;		/* 08-09 */
@@ -757,8 +806,8 @@ typedef struct _ADDRESS_CTRL_BLK {
 	uint8_t   HeartbeatInterval;		/* 0C */
 	uint8_t   InstanceNumber;		/* 0D */
 	uint16_t  Reserved1;		  	/* 0E-0F */
-	__le16  ReqQConsumerIndex;		/* 10-11 */
-	__le16  ComplQProducerIndex;		/* 12-13 */
+	__le16  ReqQConsumerIndex;		/* 10-11 4010 Only */
+	__le16  ComplQProducerIndex;		/* 12-13 4010 Only */
 	__le16  ReqQLen;			/* 14-15 */
 	__le16  ComplQLen;			/* 16-17 */
 	__le32  ReqQAddrLo;			/* 18-1B */
@@ -783,7 +832,7 @@ typedef struct _ADDRESS_CTRL_BLK {
    #define  IOPT_BIDIR_CHAP_ENABLE     	     0x0010
 
 	__le16  TCPOptions;			/* 32-33 */
-   #define  TOPT_ISNS_ENABLE		     0x4000
+   #define  TOPT_ISNSv4_ENABLE		     0x4000
    #define  TOPT_SLP_USE_DA_ENABLE	     0x2000
    #define  TOPT_AUTO_DISCOVERY_ENABLE       0x1000
    #define  TOPT_SLP_UA_ENABLE               0x0800
@@ -812,46 +861,48 @@ typedef struct _ADDRESS_CTRL_BLK {
    #define  IPOPT_IP_ADDRESS_VALID           0x0001
 
 	__le16    MaxPDUSize;			/* 36-37 */
-	uint8_t   IPTypeOfSvc;   		/* 38-38 IPv4 */
-	uint8_t   Reserved2;   			/* 39 */
+	uint8_t   IPv4TypeOfSvc;   		/* 38 */
+	uint8_t   IPv4Time2Live;   		/* 39 */
 	uint8_t   ACBVersion;   		/* 3A */
    #define ACB_NOT_SUPPORTED		    0x00
-   #define ACB_SUPPORTED		    0x02
+   #define ACB_SUPPORTED		    0x02/* Capable of ACB Version 2 Features */
 
-	uint8_t   Reserved12[3];   		/* 3B-3D */
+	uint8_t   Reserved12;   		/* 3B */
+	__le16    DefaultTimeout;   		/* 3C-3D */
 	__le16    FirstBurstSize;		/* 3E-3F */
-	__le16    DefaultTime2Wait;		/* 40-41 */
-	__le16    DefaultTime2Retain;		/* 42-43 */
+	__le16    DefaultTime2Wait;  		/* 40-41 Session Mode */
+	__le16    DefaultTime2Retain;  		/* 42-43 Session Mode */
 	__le16    MaxOutStndngR2T;		/* 44-45 */
-	__le16    KeepAliveTimeout;		/* 46-47 */
-	__le16    PortNumber;			/* 48-49 */
+	__le16    KeepAliveTimeout;		/* 46-47 Session Mode */
+	__le16    PortNumber;			/* 48-49 IPv4 */
 	__le16    MaxBurstSize;			/* 4A-4B */
 	uint32_t  Reserved3;	        	/* 4C-4F */
 	uint8_t   IPAddr[4];			/* 50-53 IPv4 */
 	__le16    VLANTagCtrl;			/* 54-55 IPv4 */
-	uint8_t   Reserved4[10];		/* 56-5F */
-	uint8_t   SubnetMask[4];		/* 60-63 */
+	uint8_t   IPv4AddrState;		/* 56 */
+	uint8_t   IPv4CacheId;			/* 567 */
+	uint8_t   Reserved4[8];			/* 58-5F */
+	uint8_t   SubnetMask[4];		/* 60-63 IPv4 */
 	uint8_t   Reserved5[12];		/* 64-6F */
-	uint8_t   GatewayIPAddr[4];		/* 70-73 */
+	uint8_t   GatewayIPAddr[4];		/* 70-73 IPv4 */
 	uint8_t   Reserved6[12];		/* 74-7F */
-	uint8_t   PriDNSIPAddr[4];		/* 80-83 */
-	uint8_t   SecDNSIPAddr[4];		/* 84-87 */
-	uint8_t   Reserved7[8];			/* 88-8F */
-	uint8_t   iSCSIAlias[32];		/* 90-AF */
-	uint8_t   Reserved8[22];		/* B0-C5 */
-	__le16    TargetPortalGroup;		/* C6-C7 */
+	uint8_t   PriDNSIPAddr[4];		/* 80-83 Session Mode */
+	uint8_t   SecDNSIPAddr[4];		/* 84-87 Session Mode */
+	__le16    MinEphPortNum;		/* 88-89 */
+	__le16    MaxEphPortNum;		/* 8A-8B */
+	uint8_t   Reserved7[4];			/* 8C-8F */
+	uint8_t   iSCSIAlias[32];		/* 90-AF Session Mode */
+	uint8_t   Reserved8[24];		/* B0-C7 */
 	uint8_t   AbortTimer;                   /* C8    */
 	uint8_t   TCPWindowScaleFactor;       	/* C9    */
-	uint8_t   Reserved9[6];                 /* CA-CF */
-	uint8_t   SecIPAddr[4];			/* D0-D3 */
-	uint8_t   DHCPVendorIDLen;        	/* D4    IPv4 */
-	uint8_t   DHCPVendorID[11];           	/* D5-DF IPv4 */
+	uint8_t   Reserved9[10];                 /* CA-D3 */
+	uint8_t   DHCPVendorIDLen;        	/* D4    IPv4 4022/32 */
+	uint8_t   DHCPVendorID[11];           	/* D5-DF IPv4 4022/32 */
 	uint8_t   iSNSIPAddr[4];		/* E0-E3 */
 	__le16    iSNSServerPortNumber;		/* E4-E5 */
-	uint8_t   Reserved10[10];		/* E6-EF */
-	uint8_t   SLPDAIPAddr[4];		/* F0-F3 */
-	uint8_t   DHCPClientIDLen;            	/* F4    IPv4 */
-	uint8_t   DHCPClientID[11];           	/* F5-FF IPv4 */
+	uint8_t   Reserved10[14];		/* E6-F3 */
+	uint8_t   DHCPClientIDLen;            	/* F4    IPv4 4022/32 */
+	uint8_t   DHCPClientID[11];           	/* F5-FF IPv4 4022/32 */
 	uint8_t   iSCSINameString[224];   	/* 100-1DF */
 	uint8_t   Reserved11[32];               /* 1e0-1FF */
 
@@ -881,7 +932,7 @@ typedef struct _ADDRESS_CTRL_BLK {
 
 	uint8_t   IPv6TCPRcvScale;            	/* 20C 	   */
 	uint8_t   IPv6FlowLabel[3];           	/* 20D-20F */
-	uint8_t   GatewayIPv6Addr[16];        	/* 210-21F */
+	uint8_t   IPv6DefaultRouterAddr[16];    /* 210-21F */
 	uint8_t   IPv6VLANTCI[2];             	/* 220-221 */
 	uint8_t   IPv6LinkLocalAddrState;       /* 222     */
 	/* states also apply to ipv6_addr0 & ipv6_addr1 */
@@ -912,8 +963,6 @@ typedef struct _ADDRESS_CTRL_BLK {
 	uint8_t	Reserved14[140];		/* 274-2FF */
 } ADDRESS_CTRL_BLK, *PADDRESS_CTRL_BLK;         /* 300     */
 
-#define ACB_PRIMARY	0x0000
-#define ACB_SECONDARY	0x0001
 
 typedef struct _INIT_FW_CTRL_BLK {
 	ADDRESS_CTRL_BLK   pri_acb;
@@ -937,10 +986,10 @@ typedef struct _DEV_DB_ENTRY {
    #define  DDB_OPT_TARGET                   0x0002  /* device is a target */
    #define  DDB_OPT_INITIATOR                0x0001  /* device is an initiator */
 
-	__le16   exeThrottle;   		/* 02-03 */
+	__le16   exeThrottle;   		/* 02-03 Session Mode */
 	__le16   exeCount;      		/* 04-05 */
-	uint8_t  retryCount;    		/* 06    */
-	uint8_t  retryDelay;    		/* 07    */
+	uint8_t  retryCount;    		/* 06    Session Mode */
+	uint8_t  retryDelay;    		/* 07    Session Mode */
 	__le16   iSCSIOptions;  		/* 08-09 */
    #define DDB_IOPT_RECV_ISCSI_MARKER_ENABLE 0x8000
    #define DDB_IOPT_SEND_ISCSI_MARKER_ENABLE 0x4000
@@ -964,24 +1013,24 @@ typedef struct _DEV_DB_ENTRY {
    #define DDB_IPOPT_IP_ADDRESS_VALID        0x0001
 
 	__le16   maxPDUSize;    		/* 0E-0F */
-	__le16   rcvMarkerInt;  		/* 10-11 */
-	__le16   sndMarkerInt;  		/* 12-13 */
+	__le16   rcvMarkerInt;  		/* 10-11 Session Mode */
+	__le16   sndMarkerInt;  		/* 12-13 Session Mode */
 	__le16   iSCSIMaxSndDataSegLen;  	/* 14-15 */
 	__le16   firstBurstSize;	   	/* 16-17 */
-	__le16   DefaultTime2Wait; 		/* 18-19 */
-	__le16   DefaultTime2Retain; 		/* 1A-1B */
+	__le16   DefaultTime2Wait; 		/* 18-19 Session Mode */
+	__le16   DefaultTime2Retain; 		/* 1A-1B Session Mode */
 	__le16   maxOutstndngR2T;	   	/* 1C-1D */
-	__le16   keepAliveTimeout;   		/* 1E-1F */
-	uint8_t ISID[6];	      		/* 20-25  big-endian, must be */
+	__le16   keepAliveTimeout;   		/* 1E-1F Session Mode */
+	uint8_t ISID[6];	      		/* 20-25 Session Mode, big-endian, must be */
 						/* converted to little-endian */
-	__le16   TSID;	      			/* 26-27 */
+	__le16   TSID;	      			/* 26-27 Session Mode */
 	__le16   RemoteTCPPortNumber; 		/* 28-29 */
 	__le16   maxBurstSize;  		/* 2A-2B */
 	__le16   taskMngmntTimeout;  		/* 2C-2D */
 	__le16   reserved1;     		/* 2E-2F */
 	uint8_t  RemoteIPAddr[0x10];  		/* 30-3F */
-	uint8_t  iSCSIAlias[0x20];   		/* 40-5F */
-	uint8_t  targetAddr[0x20];   		/* 60-7F */
+	uint8_t  iSCSIAlias[0x20];   		/* 40-5F Session Mode */
+	uint8_t  targetAddr[0x20];   		/* 60-7F Session Mode */
 	__le16   MaxSegmentSize;  		/* 80-81 */
 	uint8_t  Reserved1[2];  		/* 82-83 */
 	__le16   LocalTCPPortNumber;  		/* 84-85 */
@@ -1034,11 +1083,11 @@ typedef struct _SYS_INFO_PHYS_ADDR {
 
 typedef struct _FLASH_SYS_INFO {
 	uint32_t           cookie;		/* 00-03 */
-	uint32_t           physAddrCount;		/* 04-07 */
+	uint32_t           physAddrCount;	/* 04-07 */
 	SYS_INFO_PHYS_ADDR physAddr[4];		/* 08-27 */
-	uint8_t            vendorId[128];		/* 28-A7 */
+	uint8_t            vendorId[128];	/* 28-A7 */
 	uint8_t            productId[128];	/* A8-127 */
-	uint32_t           serialNumber;		/* 128-12B */
+	uint32_t           serialNumber;	/* 128-12B */
 
 	/* PCI Configuration values */
 	uint32_t           pciDeviceVendor;	/* 12C-12F */
@@ -1059,7 +1108,7 @@ typedef struct _FLASH_SYS_INFO {
 
 	/* Leave this last in the struct so it is declared invalid if
 	 * any new items are added. */
-	uint32_t           reserved1[39];		/* 170-1ff */
+	uint32_t           reserved1[39];	/* 170-1ff */
 } FLASH_SYS_INFO, *PFLASH_SYS_INFO;		/* 200 */
 
 typedef struct _FLASH_DRIVER_INFO {
@@ -1086,36 +1135,36 @@ typedef struct _CHAP_ENTRY {
 	uint16_t reserved;			    /* 360 x168 */
    #define CHAP_COOKIE                     0x4092
 
-	uint16_t cookie;				    /* 362 x16a */
-} CHAP_ENTRY, *PCHAP_ENTRY;			    /* 364 x16c */
+	uint16_t cookie;				/* 362 x16a */
+} CHAP_ENTRY, *PCHAP_ENTRY;			    	/* 364 x16c */
 
 
 /*************************************************************************/
 
 typedef struct _CRASH_RECORD {
-	uint16_t  fw_major_version;	/* 00 - 01 */
-	uint16_t  fw_minor_version;	/* 02 - 03 */
-	uint16_t  fw_patch_version;	/* 04 - 05 */
-	uint16_t  fw_build_version;	/* 06 - 07 */
+	uint16_t  fw_major_version;		/* 00 - 01 */
+	uint16_t  fw_minor_version;		/* 02 - 03 */
+	uint16_t  fw_patch_version;		/* 04 - 05 */
+	uint16_t  fw_build_version;		/* 06 - 07 */
 
 	uint8_t   build_date[16];		/* 08 - 17 */
 	uint8_t   build_time[16];		/* 18 - 27 */
 	uint8_t   build_user[16];		/* 28 - 37 */
-	uint8_t   card_serial_num[16];	/* 38 - 47 */
+	uint8_t   card_serial_num[16];		/* 38 - 47 */
 
 	uint32_t  time_of_crash_in_secs;	/* 48 - 4B */
-	uint32_t  time_of_crash_in_ms;	/* 4C - 4F */
+	uint32_t  time_of_crash_in_ms;		/* 4C - 4F */
 
 	uint16_t  out_RISC_sd_num_frames;	/* 50 - 51 */
-	uint16_t  OAP_sd_num_words;	/* 52 - 53 */
-	uint16_t  IAP_sd_num_frames;	/* 54 - 55 */
-	uint16_t  in_RISC_sd_num_words;	/* 56 - 57 */
+	uint16_t  OAP_sd_num_words;		/* 52 - 53 */
+	uint16_t  IAP_sd_num_frames;		/* 54 - 55 */
+	uint16_t  in_RISC_sd_num_words;		/* 56 - 57 */
 
 	uint8_t   reserved1[28];		/* 58 - 7F */
 
 	uint8_t   out_RISC_reg_dump[256];	/* 80 -17F */
 	uint8_t   in_RISC_reg_dump[256];	/*180 -27F */
-	uint8_t   in_out_RISC_stack_dump[0]; /*280 - ??? */
+	uint8_t   in_out_RISC_stack_dump[0]; 	/*280 - ??? */
 } CRASH_RECORD, *PCRASH_RECORD;
 
 
@@ -1125,14 +1174,14 @@ typedef struct _CRASH_RECORD {
 
 typedef struct _CONN_EVENT_LOG_ENTRY {
 	uint32_t  timestamp_sec;		/* 00 - 03 seconds since boot */
-	uint32_t  timestamp_ms;		/* 04 - 07 milliseconds since boot */
-	uint16_t  device_index;		/* 08 - 09  */
+	uint32_t  timestamp_ms;			/* 04 - 07 milliseconds since boot */
+	uint16_t  device_index;			/* 08 - 09  */
 	uint16_t  fw_conn_state;		/* 0A - 0B  */
-	uint8_t   event_type;		/* 0C - 0C  */
-	uint8_t   error_code;		/* 0D - 0D  */
-	uint16_t  error_code_detail;	/* 0E - 0F  */
+	uint8_t   event_type;			/* 0C - 0C  */
+	uint8_t   error_code;			/* 0D - 0D  */
+	uint16_t  error_code_detail;		/* 0E - 0F  */
 	uint8_t   num_consecutive_events;	/* 10 - 10  */
-	uint8_t   rsvd[3];		/* 11 - 13  */
+	uint8_t   rsvd[3];			/* 11 - 13  */
 } CONN_EVENT_LOG_ENTRY, *PCONN_EVENT_LOG_ENTRY;
 
 
@@ -1229,13 +1278,13 @@ typedef struct DATA_SEG_A64 {
 /* Command Type 3 entry structure*/
 
 typedef struct _COMMAND_T3_ENTRY {
-	HEADER  hdr;		   /* 00-03 */
+	HEADER  hdr;		   	/* 00-03 */
 
-	__le32  handle;		   /* 04-07 */
-	__le16  target;		   /* 08-09 */
-	__le16  connection_id;	   /* 0A-0B */
+	__le32  handle;		   	/* 04-07 */
+	__le16  target;		   	/* 08-09 */
+	__le16  connection_id;	   	/* 0A-0B */
 
-	uint8_t   control_flags;	   /* 0C */
+	uint8_t   control_flags;   	/* 0C */
    #define CF_IMMEDIATE		   0x80
 
 	/* data direction  (bits 5-6)*/
@@ -1260,39 +1309,39 @@ typedef struct _COMMAND_T3_ENTRY {
 	   AS THE COMMAND IS PROCESSED. WHEN THE IOCB IS CHANGED TO AN IOSB THIS
 	   FIELD WILL HAVE THE STATE FLAGS SET PROPERLY.
 	*/
-	uint8_t   state_flags;	   /* 0D */
-	uint8_t   cmdRefNum;	   /* 0E */
-	uint8_t   reserved1;	   /* 0F */
-	uint8_t   cdb[IOCB_MAX_CDB_LEN];	/* 10-1F */
-	uint8_t   lun[8];		   /* 20-27 */
-	__le32  cmdSeqNum;	   /* 28-2B */
-	__le16  timeout;	   /* 2C-2D */
-	__le16  dataSegCnt;	   /* 2E-2F */
-	__le32  ttlByteCnt;	   /* 30-33 */
+	uint8_t   state_flags;	   	/* 0D */
+	uint8_t   cmdRefNum;	   	/* 0E */
+	uint8_t   reserved1;	   	/* 0F */
+	uint8_t   cdb[IOCB_MAX_CDB_LEN];/* 10-1F */
+	uint8_t   lun[8];		/* 20-27 */
+	__le32  cmdSeqNum;	   	/* 28-2B */
+	__le16  timeout;	   	/* 2C-2D */
+	__le16  dataSegCnt;	   	/* 2E-2F */
+	__le32  ttlByteCnt;	   	/* 30-33 */
 	DATA_SEG_A64 dataseg[COMMAND_SEG_A64];	/* 34-3F */
 
 } COMMAND_T3_ENTRY;
 
 typedef struct _COMMAND_T4_ENTRY {
-	HEADER  hdr;		  /* 00-03 */
-	uint32_t  handle;		  /* 04-07 */
-	uint16_t  target;		  /* 08-09 */
-	uint16_t  connection_id;	  /* 0A-0B */
-	uint8_t   control_flags;	  /* 0C */
+	HEADER  hdr;		   	/* 00-03 */
+	uint32_t  handle;		/* 04-07 */
+	uint16_t  target;		/* 08-09 */
+	uint16_t  connection_id;	/* 0A-0B */
+	uint8_t   control_flags;	/* 0C */
 
 	/* STATE FLAGS FIELD IS A PLACE HOLDER. THE FW WILL SET BITS IN THIS FIELD
 	   AS THE COMMAND IS PROCESSED. WHEN THE IOCB IS CHANGED TO AN IOSB THIS
 	   FIELD WILL HAVE THE STATE FLAGS SET PROPERLY.
 	*/
-	uint8_t   state_flags;	  /* 0D */
-	uint8_t   cmdRefNum;	  /* 0E */
-	uint8_t   reserved1;	  /* 0F */
-	uint8_t   cdb[IOCB_MAX_CDB_LEN]; /* 10-1F */
-	uint8_t   lun[8];		  /* 20-27 */
-	uint32_t  cmdSeqNum;	  /* 28-2B */
-	uint16_t  timeout;	  /* 2C-2D */
-	uint16_t  dataSegCnt;	  /* 2E-2F */
-	uint32_t  ttlByteCnt;	  /* 30-33 */
+	uint8_t   state_flags;	  	/* 0D */
+	uint8_t   cmdRefNum;	  	/* 0E */
+	uint8_t   reserved1;	  	/* 0F */
+	uint8_t   cdb[IOCB_MAX_CDB_LEN];/* 10-1F */
+	uint8_t   lun[8];		/* 20-27 */
+	uint32_t  cmdSeqNum;	  	/* 28-2B */
+	uint16_t  timeout;	  	/* 2C-2D */
+	uint16_t  dataSegCnt;	  	/* 2E-2F */
+	uint32_t  ttlByteCnt;	  	/* 30-33 */
 
 	/* WE ONLY USE THE ADDRESS FIELD OF THE FOLLOWING STRUCT.
 	   THE COUNT FIELD IS RESERVED */
@@ -1368,7 +1417,7 @@ typedef struct _STATUS_ENTRY {
    #define ISCSI_FLAG_RESIDUAL_UNDER_BIREAD  0x08
    #define ISCSI_FLAG_RESIDUAL_OVER_BIREAD   0x10
 
-	uint8_t   iscsiResponse;		     /* 0A */
+	uint8_t   iscsiResponse;	     /* 0A */
    #define ISCSI_RSP_COMPLETE                    0x00
    #define ISCSI_RSP_TARGET_FAILURE              0x01
    #define ISCSI_RSP_DELIVERY_SUBSYS_FAILURE     0x02
@@ -1477,12 +1526,12 @@ typedef struct _NOTIFY_ACK_ENTRY {
 
 typedef struct _ATIO_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
+	uint32_t  handle;		  /* 04-07 */
 	uint16_t  initiator;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 	uint32_t  taskTag;		  /* 0C-0f */
 	uint8_t   scsiCDB[IOCB_MAX_CDB_LEN];     /* 10-1F */
-	uint8_t   LUN[8];			  /* 20-27 */
+	uint8_t   LUN[8];		  /* 20-27 */
 	uint8_t   cmdRefNum;		  /* 28 */
 
 	uint8_t   pduType;		  /* 29 */
@@ -1510,17 +1559,17 @@ typedef struct _ATIO_ENTRY {
 	uint8_t   reserved2;		  /* 2F */
 	uint32_t  totalByteCnt;		  /* 30-33 */
 	uint32_t  cmdSeqNum;		  /* 34-37 */
-	uint64_t  immDataBufDesc;		  /* 38-3F */
+	uint64_t  immDataBufDesc;	  /* 38-3F */
 } ATIO_ENTRY ;
 
 typedef struct _CTIO3_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
+	uint32_t  handle;		  /* 04-07 */
 	uint16_t  initiator;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 	uint32_t  taskTag;		  /* 0C-0F */
 
-	uint8_t   flags;			  /* 10 */
+	uint8_t   flags;		  /* 10 */
    #define CTIO_FLAG_SEND_SCSI_STATUS     0x01
    #define CTIO_FLAG_TERMINATE_COMMAND    0x10
    #define CTIO_FLAG_FAST_POST            0x08
@@ -1536,12 +1585,12 @@ typedef struct _CTIO3_ENTRY {
 
 	uint8_t   scsiStatus;		  /* 11 */
 	uint16_t  timeout;		  /* 12-13 */
-	uint32_t  offset;			  /* 14-17 */
-	uint32_t  r2tSN;			  /* 18-1B */
+	uint32_t  offset;		  /* 14-17 */
+	uint32_t  r2tSN;		  /* 18-1B */
 	uint32_t  expCmdSN;		  /* 1C-1F */
 	uint32_t  maxCmdSN;		  /* 20-23 */
-	uint32_t  dataSN;			  /* 24-27 */
-	uint32_t  residualCount;		  /* 28-2B */
+	uint32_t  dataSN;		  /* 24-27 */
+	uint32_t  residualCount;	  /* 28-2B */
 	uint16_t  reserved;		  /* 2C-2D */
 	uint16_t  segmentCnt;		  /* 2E-2F */
 	uint32_t  totalByteCnt;		  /* 30-33 */
@@ -1550,19 +1599,19 @@ typedef struct _CTIO3_ENTRY {
 
 typedef struct _CTIO4_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
+	uint32_t  handle;		  /* 04-07 */
 	uint16_t  initiator;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 	uint32_t  taskTag;		  /* 0C-0F */
-	uint8_t   flags;			  /* 10 */
+	uint8_t   flags;		  /* 10 */
 	uint8_t   scsiStatus;		  /* 11 */
 	uint16_t  timeout;		  /* 12-13 */
-	uint32_t  offset;			  /* 14-17 */
-	uint32_t  r2tSN;			  /* 18-1B */
+	uint32_t  offset;		  /* 14-17 */
+	uint32_t  r2tSN;		  /* 18-1B */
 	uint32_t  expCmdSN;		  /* 1C-1F */
 	uint32_t  maxCmdSN;		  /* 20-23 */
-	uint32_t  dataSN;			  /* 24-27 */
-	uint32_t  residualCount;		  /* 28-2B */
+	uint32_t  dataSN;		  /* 24-27 */
+	uint32_t  residualCount;	  /* 28-2B */
 	uint16_t  reserved;		  /* 2C-2D */
 	uint16_t  segmentCnt;		  /* 2E-2F */
 	uint32_t  totalByteCnt;		  /* 30-33 */
@@ -1573,7 +1622,7 @@ typedef struct _CTIO4_ENTRY {
 
 typedef struct _CTIO5_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
+	uint32_t  handle;		  /* 04-07 */
 	uint16_t  initiator;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 	uint32_t  taskTag;		  /* 0C-0F */
@@ -1593,11 +1642,11 @@ typedef struct _CTIO5_ENTRY {
 
 typedef struct _CTIO6_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
+	uint32_t  handle;		  /* 04-07 */
 	uint16_t  initiator;		  /* 08-09 */
 	uint16_t  connection;		  /* 0A-0B */
 	uint32_t  taskTag;		  /* 0C-0F */
-	uint16_t  flags;			  /* 10-11 */
+	uint16_t  flags;		  /* 10-11 */
 	uint16_t  timeout;		  /* 12-13 */
 	uint32_t  reserved1;		  /* 14-17 */
 	uint64_t  reserved2;		  /* 18-1F */
@@ -1609,11 +1658,11 @@ typedef struct _CTIO6_ENTRY {
 
 typedef struct _CTIO_STATUS_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
+	uint32_t  handle;		  /* 04-07 */
 	uint16_t  initiator;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 	uint32_t  taskTag;		  /* 0C-0F */
-	uint16_t  status;			  /* 10-11 */
+	uint16_t  status;		  /* 10-11 */
    #define CTIO_STATUS_COMPLETE           0x0001
    #define CTIO_STATUS_ABORTED            0x0002
    #define CTIO_STATUS_DMA_ERROR          0x0003
@@ -1636,7 +1685,7 @@ typedef struct _CTIO_STATUS_ENTRY {
 	uint32_t  reserved2;		  /* 1C-1F */
 	uint32_t  reserved3;		  /* 20-23 */
 	uint64_t  expDataSN;		  /* 24-27 */
-	uint32_t  residualCount;		  /* 28-2B */
+	uint32_t  residualCount;	  /* 28-2B */
 	uint32_t  reserved4;		  /* 2C-2F */
 	uint64_t  reserved5;		  /* 30-37 */
 	uint64_t  reserved6;		  /* 38-3F */
@@ -1692,8 +1741,8 @@ typedef struct _PASSTHRU0_ENTRY {
 
 typedef struct _PASSTHRU1_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
-	uint16_t  target;			  /* 08-09 */
+	uint32_t  handle;		  /* 04-07 */
+	uint16_t  target;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 
 	uint16_t  controlFlags;		  /* 0C-0D */
@@ -1716,8 +1765,8 @@ typedef struct _PASSTHRU1_ENTRY {
 
 typedef struct _PASSTHRU_STATUS_ENTRY {
 	HEADER  hdr;			  /* 00-03 */
-	uint32_t  handle;			  /* 04-07 */
-	uint16_t  target;			  /* 08-09 */
+	uint32_t  handle;		  /* 04-07 */
+	uint16_t  target;		  /* 08-09 */
 	uint16_t  connectionID;		  /* 0A-0B */
 
 	uint8_t   completionStatus;	  /* 0C */
@@ -1728,7 +1777,7 @@ typedef struct _PASSTHRU_STATUS_ENTRY {
    #define PASSTHRU_STATUS_PCI_ERROR      		0x10
    #define PASSTHRU_STATUS_NO_CONNECTION  		0x28
 
-	uint8_t   residualFlags;		  /* 0D */
+	uint8_t   residualFlags;	  /* 0D */
    #define PASSTHRU_STATUS_DATAOUT_OVERRUN              0x01
    #define PASSTHRU_STATUS_DATAOUT_UNDERRUN             0x02
    #define PASSTHRU_STATUS_DATAIN_OVERRUN               0x04
@@ -1777,11 +1826,11 @@ typedef struct _ASYNCHMSG_ENTRY {
 typedef struct _TIMER_ENTRY {
 	HEADER  hdr;		   /* 00-03 */
 
-	uint32_t  handle;		   /* 04-07 */
-	uint16_t  target;		   /* 08-09 */
-	uint16_t  connection_id;	   /* 0A-0B */
+	uint32_t  handle;	   /* 04-07 */
+	uint16_t  target;	   /* 08-09 */
+	uint16_t  connection_id;   /* 0A-0B */
 
-	uint8_t   control_flags;	   /* 0C */
+	uint8_t   control_flags;   /* 0C */
 
 	/* STATE FLAGS FIELD IS A PLACE HOLDER. THE FW WILL SET BITS IN THIS FIELD
 	   AS THE COMMAND IS PROCESSED. WHEN THE IOCB IS CHANGED TO AN IOSB THIS
@@ -1790,8 +1839,8 @@ typedef struct _TIMER_ENTRY {
 	uint8_t   state_flags;	   /* 0D */
 	uint8_t   cmdRefNum;	   /* 0E */
 	uint8_t   reserved1;	   /* 0F */
-	uint8_t   cdb[IOCB_MAX_CDB_LEN];	   /* 10-1F */
-	uint8_t   lun[8];		   /* 20-27 */
+	uint8_t   cdb[IOCB_MAX_CDB_LEN]; /* 10-1F */
+	uint8_t   lun[8];	   /* 20-27 */
 	uint32_t  cmdSeqNum;	   /* 28-2B */
 	uint16_t  timeout;	   /* 2C-2D */
 	uint16_t  dataSegCnt;	   /* 2E-2F */

@@ -670,6 +670,12 @@ int in_gate_area(struct task_struct *task, unsigned long addr)
 	return (addr >= vma->vm_start) && (addr < vma->vm_end);
 }
 
+void *alloc_bootmem_high_node(pg_data_t *pgdat, unsigned long size)
+{
+	return __alloc_bootmem_core(pgdat->bdata, size,
+			SMP_CACHE_BYTES, (4UL*1024*1024*1024), 0);
+}
+
 #ifdef CONFIG_MEM_MIRROR
 /*
  * For memory-tracking purposes, see mm_track.h for details.

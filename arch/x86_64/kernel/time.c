@@ -37,6 +37,7 @@
 #include <asm/proto.h>
 #include <asm/hpet.h>
 #include <asm/sections.h>
+#include <asm/nmi.h>
 #include <linux/cpufreq.h>
 #ifdef CONFIG_X86_LOCAL_APIC
 #include <asm/apic.h>
@@ -62,6 +63,7 @@ static int notsc __initdata = 0;
 
 
 unsigned int cpu_khz;					/* TSC clocks / usec, not used here */
+unsigned int tsc_khz;
 unsigned long hpet_period = 0;		/* fsecs / HPET clock */
 unsigned long hpet_tick;				/* HPET clocks / interrupt */
 static int hpet_use_timer;
@@ -575,6 +577,37 @@ unsigned long get_cmos_time(void)
 	return mktime(year, mon, day, hour, min, sec);
 }
 
+/* calibrate_cpu is used on systems with fixed rate TSCs to determine
+ * processor frequency */
+#define TICK_COUNT 100000000
+static unsigned int __init tsc_calibrate_cpu_khz(void)
+{
+       int tsc_start, tsc_now;
+       int no_ctr_free;
+       unsigned long evntsel3 = 0, pmc3 = 0, pmc_now = 0;
+       unsigned long flags;
+
+       rdmsrl(MSR_K7_EVNTSEL3, evntsel3);
+       wrmsrl(MSR_K7_EVNTSEL3, 0);
+       rdmsrl(MSR_K7_PERFCTR3, pmc3);
+       local_irq_save(flags);
+       /* start meauring cycles, incrementing from 0 */
+       wrmsrl(MSR_K7_PERFCTR3, 0);
+       wrmsrl(MSR_K7_EVNTSEL3, 1 << 22 | 3 << 16 | 0x76);
+       rdtscl(tsc_start);
+       do {
+               rdmsrl(MSR_K7_PERFCTR3, pmc_now);
+               rdtscll_sync(&tsc_now);
+       } while ((tsc_now - tsc_start) < TICK_COUNT);
+
+       local_irq_restore(flags);
+       wrmsrl(MSR_K7_EVNTSEL3, 0);
+       wrmsrl(MSR_K7_PERFCTR3, pmc3);
+       wrmsrl(MSR_K7_EVNTSEL3, evntsel3);
+
+       return pmc_now * tsc_khz / (tsc_now - tsc_start);
+}
+
 #ifdef CONFIG_CPU_FREQ
 
 /* Frequency scaling support. Adjust the TSC based timer when the cpu frequency
@@ -622,7 +655,7 @@ static void cpufreq_delayed_get(void)
 static unsigned int  ref_freq = 0;
 static unsigned long loops_per_jiffy_ref = 0;
 
-static unsigned long cpu_khz_ref = 0;
+static unsigned long tsc_khz_ref = 0;
 
 static int time_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
 				 void *data)
@@ -646,7 +679,7 @@ static int time_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
 	if (!ref_freq) {
 		ref_freq = freq->old;
 		loops_per_jiffy_ref = *lpj;
-		cpu_khz_ref = cpu_khz;
+		tsc_khz_ref = tsc_khz;
 	}
         if ((val == CPUFREQ_PRECHANGE  && freq->old < freq->new) ||
             (val == CPUFREQ_POSTCHANGE && freq->old > freq->new) ||
@@ -654,12 +687,12 @@ static int time_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
                 *lpj =
 		cpufreq_scale(loops_per_jiffy_ref, ref_freq, freq->new);
 
-		cpu_khz = cpufreq_scale(cpu_khz_ref, ref_freq, freq->new);
+		tsc_khz = cpufreq_scale(tsc_khz_ref, ref_freq, freq->new);
 		if (!(freq->flags & CPUFREQ_CONST_LOOPS))
 			vxtime.tsc_quot = (1000L << 32) / cpu_khz;
 	}
 	
-	set_cyc2ns_scale(cpu_khz_ref / 1000);
+	set_cyc2ns_scale(tsc_khz_ref / 1000);
 
 	return 0;
 }
@@ -874,20 +907,26 @@ void __init time_init(void)
 		vxtime.hpet_address = 0;
 
 	if (hpet_use_timer) {
-		cpu_khz = hpet_calibrate_tsc();
+		tsc_khz = hpet_calibrate_tsc();
 		timename = "HPET";
 #ifdef CONFIG_X86_PM_TIMER
        } else if (pmtmr_ioport && !vxtime.hpet_address) {
                vxtime_hz = PM_TIMER_FREQUENCY;
                timename = "PM";
                pit_init();
-               cpu_khz = pit_calibrate_tsc();
+               tsc_khz = pit_calibrate_tsc();
 #endif
 	} else {
 		pit_init();
-		cpu_khz = pit_calibrate_tsc();
+		tsc_khz = pit_calibrate_tsc();
 		timename = "PIT";
 	}
+
+	cpu_khz = tsc_khz;
+	if (cpu_has(&boot_cpu_data, X86_FEATURE_CONSTANT_TSC) &&
+		boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+		boot_cpu_data.x86 == 16)
+		cpu_khz = tsc_calibrate_cpu_khz();
 
 	printk(KERN_INFO "time.c: Using %ld.%06ld MHz %s timer.\n",
 	       vxtime_hz / 1000000, vxtime_hz % 1000000, timename);
@@ -900,7 +939,7 @@ void __init time_init(void)
 	rdtscll_sync(&vxtime.last_tsc);
 	setup_irq(0, &irq0);
 
-	set_cyc2ns_scale(cpu_khz / 1000);
+	set_cyc2ns_scale(tsc_khz / 1000);
 
 	time_cpu_notifier(NULL, CPU_ONLINE, (void *)(long)smp_processor_id());
 

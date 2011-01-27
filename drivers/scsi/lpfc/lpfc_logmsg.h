@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_logmsg.h 2757 2005-12-09 18:21:44Z sf_support $
+ * $Id: lpfc_logmsg.h 3037 2007-05-22 14:02:22Z sf_support $
  */
 
 #ifndef _H_LPFC_LOGMSG
@@ -30,9 +30,9 @@
 #define LOG_MBOX                      0x4	/* Mailbox events */
 #define LOG_INIT                      0x8	/* Initialization events */
 #define LOG_LINK_EVENT                0x10	/* Link events */
-#define LOG_IP                        0x20	/* IP traffic history */
 #define LOG_FCP                       0x40	/* FCP traffic history */
 #define LOG_NODE                      0x80	/* Node table events */
+#define LOG_TEMP                      0x100    /* Temperature sensor events */
 #define LOG_MISC                      0x400	/* Miscellaneous events */
 #define LOG_SLI                       0x800	/* SLI events */
 #define LOG_CHK_COND                  0x1000	/* FCP Check condition flag */

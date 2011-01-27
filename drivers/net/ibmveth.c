@@ -892,6 +892,14 @@ static int ibmveth_change_mtu(struct net_device *dev, int new_mtu)
 	return 0;	
 }
 
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void ibmveth_poll_controller(struct net_device *dev)
+{
+	ibmveth_replenish_task(dev->priv);
+	ibmveth_interrupt(dev->irq, dev, NULL);
+}
+#endif
+
 static int __devinit ibmveth_probe(struct vio_dev *dev, const struct vio_device_id *id)
 {
 	int rc, i;
@@ -963,6 +971,9 @@ static int __devinit ibmveth_probe(struct vio_dev *dev, const struct vio_device_
 	netdev->ethtool_ops           = &netdev_ethtool_ops;
 	netdev->change_mtu         = ibmveth_change_mtu;
 	SET_NETDEV_DEV(netdev, &dev->dev);
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	netdev->poll_controller = ibmveth_poll_controller;
+#endif
 
 	memcpy(&netdev->dev_addr, &adapter->mac_addr, netdev->addr_len);
 
@@ -1105,7 +1116,9 @@ static void ibmveth_proc_register_adapter(struct ibmveth_adapter *adapter)
 {
 	struct proc_dir_entry *entry;
 	if (ibmveth_proc_dir) {
-		entry = create_proc_entry(adapter->netdev->name, S_IFREG, ibmveth_proc_dir);
+		char u_addr[10];
+		sprintf(u_addr, "%x", adapter->vdev->unit_address);
+		entry = create_proc_entry(u_addr, S_IFREG, ibmveth_proc_dir);
 		if (!entry) {
 			ibmveth_error_printk("Cannot create adapter proc entry");
 		} else {
@@ -1120,7 +1133,9 @@ static void ibmveth_proc_register_adapter(struct ibmveth_adapter *adapter)
 static void ibmveth_proc_unregister_adapter(struct ibmveth_adapter *adapter)
 {
 	if (ibmveth_proc_dir) {
-		remove_proc_entry(adapter->netdev->name, ibmveth_proc_dir);
+		char u_addr[10];
+		sprintf(u_addr, "%x", adapter->vdev->unit_address);
+		remove_proc_entry(u_addr, ibmveth_proc_dir);
 	}
 }
 

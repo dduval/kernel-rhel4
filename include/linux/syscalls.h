@@ -50,6 +50,7 @@ struct timezone;
 struct tms;
 struct utimbuf;
 struct mq_attr;
+struct getcpu_cache;
 
 #include <linux/config.h>
 #include <linux/types.h>
@@ -506,4 +507,5 @@ asmlinkage long sys_request_key(const char __user *_type,
 asmlinkage long sys_keyctl(int cmd, unsigned long arg2, unsigned long arg3,
 			   unsigned long arg4, unsigned long arg5);
 
+asmlinkage long sys_getcpu(unsigned *cpu, unsigned *node, struct getcpu_cache *cache);
 #endif

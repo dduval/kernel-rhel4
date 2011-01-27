@@ -1415,9 +1415,14 @@ int open_namei(const char * pathname, int flag, int mode, struct nameidata *nd)
 	int acc_mode, error = 0;
 	struct dentry *dentry;
 	struct dentry *dir;
+	struct vfsmount *mnt;
 	int count = 0;
 
 	acc_mode = ACC_MODE(flag);
+
+	/* O_TRUNC implies we need access checks for write permissions */
+	if (flag & O_TRUNC)
+		acc_mode |= MAY_WRITE;
 
 	/* Allow the LSM permission hook to distinguish append 
 	   access from general write access. */
@@ -1540,6 +1545,7 @@ do_link:
 		goto exit_dput;
 	touch_atime(nd->mnt, dentry);
 	nd_set_link(nd, NULL);
+	mnt = mntget(nd->mnt);
 	error = dentry->d_inode->i_op->follow_link(dentry, nd);
 	if (!error) {
 		char *s = nd_get_link(nd);
@@ -1549,6 +1555,8 @@ do_link:
 			dentry->d_inode->i_op->put_link(dentry, nd);
 	}
 	dput(dentry);
+	mntput(mnt);
+
 	if (error)
 		return error;
 	nd->flags &= ~LOOKUP_PARENT;

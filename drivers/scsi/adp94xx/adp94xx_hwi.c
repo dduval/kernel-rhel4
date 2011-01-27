@@ -76,6 +76,8 @@ static void	asd_hwi_process_prim_event(struct asd_softc *asd,
 static void	asd_hwi_process_phy_event(struct asd_softc *asd, 
 					  struct asd_phy *phy, u_int oob_status,
 					  u_int oob_mode);
+static void	asd_hwi_process_timer_event(struct asd_softc *asd,
+					    struct asd_phy *phy, uint8_t error);
 static void	asd_hwi_handle_link_rst_err(struct asd_softc *asd,
 					    struct asd_phy *phy);
 static void	asd_hwi_process_req_task(struct asd_softc *asd,
@@ -89,6 +91,11 @@ static void	asd_hwi_reset_lu(struct asd_softc *asd,
 				 struct scb *scb_to_reset, struct scb *scb);
 static void	asd_hwi_reset_device(struct asd_softc *asd, 
 				     struct scb *scb_to_reset, struct scb *scb);
+static void	asd_hwi_resume_sendq(struct asd_softc *asd,
+				     struct scb *scb_to_reset, struct scb *scb);
+static void	asd_hwi_resume_sendq_done(struct asd_softc *asd,
+					  struct scb *scb,
+					  struct asd_done_list *dl);
 static void	asd_hwi_reset_end_device(struct asd_softc *asd,
 					 struct scb *scb);
 static void	asd_hwi_reset_exp_device(struct asd_softc *asd,
@@ -306,7 +313,22 @@ asd_hwi_init_scbdata(struct asd_softc *asd)
 		if (++scb_cnt > ASD_RSVD_SCBS)
 			break;
 	}
-	
+
+#ifdef EXTENDED_SCB
+	/* allocate memory for extended scb*/
+	/* reserved 128 byte more for 128 bytes alignment*/
+	if (asd_alloc_dma_mem(asd, SCB_SIZE * (ASD_EXTENDED_SCB_NUMBER+1),
+		(void **)&asd->ext_scb_map.vaddr,
+		&asd->ext_scb_map.busaddr,
+		&asd->ext_scb_dmat,
+		&asd->ext_scb_map) != 0) {
+		asd_hwi_exit_hw(asd);
+		goto error_exit;
+	}
+#ifdef ASD_DEBUG
+	asd_print("EXTENDED_SCB is allocated\n");
+#endif
+#endif
 	return (0); 
 
 error_exit:
@@ -632,7 +654,6 @@ asd_hwi_init_hw(struct asd_softc  *asd)
 #ifdef ASD_DEBUG
 	asd_log(ASD_DBG_INFO, "After initial BAR Setting\n");
 	DumpPCI(asd);
-	asd->debug_flag=12;
 #endif
 	/* Retrieve OCM information */
 	if (asd_hwi_get_ocm_info(asd)) {
@@ -907,6 +928,13 @@ asd_log(ASD_DBG_INFO, "freeing pending scb 0x%x scb->hwi_links 0x%p",scb, &scb->
 		asd_dma_tag_destroy(asd, asd->shared_data_dmat);
 		/* FALLTHROUGH */
 	case 4:
+#ifdef EXTENDED_SCB
+	/* free memory for extended scb*/
+	asd_free_dma_mem(asd, asd->ext_scb_dmat, &asd->ext_scb_map);
+#ifdef ASD_DEBUG
+	asd_print("EXTENDED_SCB is freed\n");
+#endif
+#endif
 		asd_dma_tag_destroy(asd, asd->sg_dmat);
 		/* FALLTHROUGH */
 	case 3:
@@ -1849,18 +1877,8 @@ asd_hwi_process_dl(struct asd_softc *asd)
 //JD
 #ifdef ASD_DEBUG
 		if(asd->debug_flag==1)
-		{
-		asd_log(ASD_DBG_INFO, "asd_hwi_process_dl: dumping SCSI cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x , opcode 0x%x.\n", 
-			scb->io_ctx->scsi_cmd.cmnd[2],
-			scb->io_ctx->scsi_cmd.cmnd[3],
-			scb->io_ctx->scsi_cmd.cmnd[4],
-			scb->io_ctx->scsi_cmd.cmnd[5],
-			scb->io_ctx->scsi_cmd.cmnd[7],
-			scb->io_ctx->scsi_cmd.cmnd[8],
-			scb->io_ctx->scsi_cmd.cmnd[0]);
-
-
-		}
+		        asd_log(ASD_DBG_INFO, "scb ptr=%p opcode=%x index=%x\n",
+				scb,dl_entry->opcode,dl_entry->index);
 #endif
 		if ((scb->flags & SCB_PENDING) != 0) {
 			list_del(&scb->hwi_links);
@@ -1896,6 +1914,8 @@ asd_hwi_process_dl(struct asd_softc *asd)
 		case TMF_F_W_CONN_HNDL_NOT_FOUND:
 		case TASK_CLEARED:
 		case TASK_UA_W_SYNCS_RCVD:
+		case TASK_UNACKED_W_BREAK_RCVD:
+		case TASK_UNACKED_W_ACKNAK_TIMEOUT:
 			asd_pop_post_stack(asd, scb, dl_entry);
 			break;
 			
@@ -1945,10 +1965,6 @@ asd_hwi_process_dl(struct asd_softc *asd)
 		if (asd->dl_next == 0)
 			asd->dl_valid ^= ASD_DL_TOGGLE_MASK;
 	}
-//JD
-#ifdef ASD_DEBUG
-	asd->debug_flag=0;
-#endif
 	asd->flags &= ~ASD_RUNNING_DONE_LIST;
 } 
 
@@ -2266,6 +2282,7 @@ asd_hwi_process_edb(struct asd_softc *asd, struct asd_done_list *dl_entry)
 		asd_log(ASD_DBG_RUNTIME, "EDB: TIMER EVENT. Error = 0x%x \n", 
 			timer_event->error);
 
+		asd_hwi_process_timer_event(asd, phy, timer_event->error);
 		break;
 	}
 	
@@ -2442,6 +2459,42 @@ asd_hwi_process_phy_event(struct asd_softc *asd, struct asd_phy *phy,
 		asd_log(ASD_DBG_ERROR,
 			"PHY_EVENT (%d) - UNKNOWN EVENT 0x%x.\n", phy->id,
 			oob_status);
+		break;
+	}
+}
+
+/*
+ * Function:
+ * 	asd_hwi_process_timer_event()
+ *
+ * Description:
+ *	Process received async. timer events.
+ */
+static void
+asd_hwi_process_timer_event(struct asd_softc *asd, struct asd_phy *phy, uint8_t	error)
+{
+	switch (error) {
+	case DWS_RESET_TO_EXP:
+		/*
+		 * We received a DWS timer event that the direct attached device may be lost,
+		 * let's remove the device and restart a discovery.
+		 */
+		asd_log(ASD_DBG_RUNTIME,
+			"TIMER_EVENT (%d) - DWS_RESET_TO_EXP.\n", phy->id);
+		phy->state = ASD_PHY_ONLINE;
+		phy->attr = (ASD_SSP_INITIATOR | ASD_SMP_INITIATOR |
+			     ASD_STP_INITIATOR);
+
+		if (phy->src_port != NULL)
+			phy->src_port->events |= ASD_LOSS_OF_SIGNAL;
+
+		asd_wakeup_sem(&asd->platform_data->discovery_sem);
+		break;
+
+	default:
+		asd_log(ASD_DBG_ERROR,
+			"TIMER_EVENT (%d) - UNKNOWN EVENT 0x%x.\n", phy->id,
+			error);
 		break;
 	}
 }
@@ -2901,6 +2954,7 @@ do {								\
 		clr_nxs_hscb->conn_handle_to_clr = 
 					targ->ddb_profile.conn_handle;
 		clr_nxs_hscb->queue_ind = (uint8_t) parm;
+		RESUME_SENDQ_REQ;
 		break;
 		
 	case CLR_NXS_I_T_L_Q_TAG:
@@ -3231,6 +3285,8 @@ asd_recover_cmds(struct asd_softc *asd)
 	struct scb	*free_scb;
 	struct scb	*safe_scb;
 	u_long		 flags;
+	Scsi_Cmnd	*cmd;
+	struct asd_device *dev;
 
 	if (list_empty(&asd->timedout_scbs)) {
 		asd_log(ASD_DBG_ERROR, "Timed-out scbs already completed.\n");
@@ -3239,6 +3295,10 @@ asd_recover_cmds(struct asd_softc *asd)
 	list_for_each_entry_safe(scb, safe_scb, &asd->timedout_scbs,
 				 timedout_links) {
 		asd_lock(asd, &flags);
+#ifdef ASD_DEBUG
+	asd_log(ASD_DBG_ERROR, "asd_recover_cmds: Curr State: 0x%x Status: 0x%x.\n",
+		scb->eh_state, scb->eh_status);
+#endif
 
 		/* 
 		 * Error recovery is in progress for this scb.
@@ -3304,7 +3364,21 @@ asd_recover_cmds(struct asd_softc *asd)
 			asd_log(ASD_DBG_ERROR, "PORT RESET ER REQ.\n");
 			asd_hwi_reset_port(asd, scb, free_scb);
 			break;
-			
+		case SCB_EH_RESUME_SENDQ:
+			{
+				struct asd_port		*port;
+				asd_log(ASD_DBG_ERROR, "RESUME SENDQ REQ.\n");
+				asd_unlock(asd, &flags);
+				port = SCB_GET_SRC_PORT(scb);
+
+				/* wait 2 sec for Broadcast event */
+				asd_delay(2000000);
+				asd_lock(asd, &flags);
+
+				asd_hwi_resume_sendq(asd, scb, free_scb);
+				break;
+			}
+
 		default:
 			asd_log(ASD_DBG_ERROR, "Unknown Error Recovery "
 				"Level scb 0x%x.\n",scb);
@@ -3323,13 +3397,14 @@ done:
 			asd_lock(asd, &flags);
 
 			list_del(&scb->timedout_links);
-			scb->flags &= ~SCB_TIMEDOUT;
 			scb->platform_data->targ->flags &= 
 						~ASD_TARG_IN_RECOVERY;
 			/* Unfreeze the target's queue. */
 			asd_unfreeze_targetq(asd, scb->platform_data->targ);
+			scb->eh_status = SCB_EH_SUCCEED;
 			scb->eh_post(asd, scb);
-
+			scb->eh_status = (scb->flags & SCB_ABORT_DONE ?
+					  SCB_EH_SUCCEED : SCB_EH_FAILED);
 			if (scb->eh_status != SCB_EH_FAILED) {
 				struct asd_device *dev;
 				/* 
@@ -3351,16 +3426,49 @@ done:
 			 	 * Only free the scb if the error recovery is
 			 	 * successful.
 			 	 */
+				scb->flags &= ~(SCB_TIMEDOUT+SCB_ABORT_DONE);
 				asd_hwi_free_scb(asd, scb);
 			}
 //JDTEST
 			else
 			{
-//cleaning up failed recovery scb 
-				asd_log(ASD_DBG_ERROR, "scb 0x%x SCB_EH_FAILED flags 0x%x\n",scb, scb->flags);
-				if(scb->flags& (SCB_INTERNAL | SCB_RECOVERY | SCB_PENDING) )
-				{
+				/* cleaning up failed recovery scb */
+				asd_log(ASD_DBG_ERROR, "scb 0x%x SCB_EH_FAILED flags 0x%x\n",
+					scb, scb->flags);
+				dev = scb->platform_data->dev;
+				if ((dev != NULL) && (dev->qfrozen == 0) &&
+				    (dev->flags & ASD_DEV_TIMER_ACTIVE) == 0 &&
+				    (dev->target->flags &
+				     ASD_TARG_HOT_REMOVED) == 0)
+					asd_setup_dev_timer(dev, HZ,
+						asd_timed_run_dev_queue);
+				if(scb->flags & SCB_PENDING)
 					list_del(&scb->hwi_links);
+				if(scb->flags & SCB_INTERNAL) {
+					list_del(&scb->owner_links);
+					asd_hwi_free_scb(asd, scb);
+				}
+				else
+				{
+					asd_log(ASD_DBG_INFO,"free scb from pending queue\n");
+					list_del(&scb->owner_links);
+
+					cmd = &acmd_scsi_cmd(scb->io_ctx);
+					dev = scb->platform_data->dev;
+					dev->active--;
+					dev->openings++;
+					if ((scb->flags & SCB_DEV_QFRZN) != 0) {
+						scb->flags &= ~SCB_DEV_QFRZN;
+						dev->qfrozen--;
+					}
+
+					asd_unmap_scb(asd, scb);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
+					asd_cmd_set_host_status(cmd, DID_NO_CONNECT);
+#else
+					asd_cmd_set_offline_status(cmd);
+#endif
+					cmd->scsi_done(cmd);
 					asd_hwi_free_scb(asd, scb);
 				}
 			}
@@ -3410,6 +3518,21 @@ asd_scb_eh_timeout(u_long arg)
 		break;
 
 	case SCB_EH_PORT_RESET_REQ:
+		{
+			/* scb timeout during reset port */
+			struct asd_port		*port;
+			struct asd_target	*targ;
+			port = SCB_GET_SRC_PORT(err_scb);
+
+			/* Unfreeze all the targets. */
+			list_for_each_entry(targ, &port->targets, all_domain_targets) {
+				targ->qfrozen--;
+				asd_log(ASD_DBG_INFO,
+					"clear freezen in timeout ptr=%p num=%d\n",
+					targ, targ->qfrozen);
+			}
+		}
+
 	default:
 		/* 
 		 * Currently, our biggest hammer now is PORT RESET.
@@ -3622,6 +3745,7 @@ static void
 asd_hwi_abort_scb_done(struct asd_softc *asd, struct scb *scb, 
 		       struct asd_done_list *dl)
 {
+	struct scb		*scb_to_abort;
 //JD
 #ifdef ASD_DEBUG
 	asd_log(ASD_DBG_INFO, "asd_hwi_abort_scb_done: scb index(TC): 0x%x, TAG(0x%x), cmd LBA 0x%02x%02x%02x%02x - 0x%02x%02x is done\n",
@@ -3632,7 +3756,9 @@ asd_hwi_abort_scb_done(struct asd_softc *asd, struct scb *scb,
 			scb->io_ctx->scsi_cmd.cmnd[5],
 			scb->io_ctx->scsi_cmd.cmnd[7],
 			scb->io_ctx->scsi_cmd.cmnd[8]);
-	asd_log(ASD_DBG_INFO, "DL Opcode = 0x%x.\n", dl->opcode);
+	asd_log(ASD_DBG_INFO,
+		"asd_hwi_abort_scb_done: scb ptr=%p scb_abort ptr=%p\n",
+		scb, scb->io_ctx);
 #endif
 
 	/*
@@ -3662,12 +3788,20 @@ asd_hwi_abort_scb_done(struct asd_softc *asd, struct scb *scb,
 		 * has been issued to the target.
 		 * We should try next level error recovery.
 		 */
+		scb_to_abort=(struct scb *)scb->io_ctx;
+		asd_log(ASD_DBG_INFO, "protocol type=%x flags=%x \n",
+			scb->platform_data->targ->device_protocol_type,
+			scb_to_abort->flags);
 		if (scb->platform_data->targ->device_protocol_type
 					!= ASD_DEVICE_PROTOCOL_SCSI) {
-			scb->eh_state = SCB_EH_DONE;
-			scb->eh_status = SCB_EH_FAILED;
-			break;
+			if(!(scb_to_abort->flags & SCB_ABORT_DONE))
+			{
+				scb->eh_state = SCB_EH_DONE;
+				scb->eh_status = SCB_EH_FAILED;
+				break;
+			}
 		}
+
 		/* Fall thru */
 	case TASK_ABORTED_BY_ITNL_EXP:
 		/* Indicate that Abort succeeded. */
@@ -4052,6 +4186,7 @@ asd_hwi_reset_device(struct asd_softc *asd, struct scb *scb_to_reset,
 
 	asd_log(ASD_DBG_ERROR, "Curr State: 0x%x Status: 0x%x.\n",
 		scb->eh_state, scb->eh_status);
+	asd_log(ASD_DBG_ERROR, "scb_to_reset = %p \n",scb_to_reset);
 
 	switch (scb->eh_state) {
 	case SCB_EH_INITIATED:
@@ -4096,7 +4231,7 @@ asd_hwi_reset_device(struct asd_softc *asd, struct scb *scb_to_reset,
 		if (SCB_GET_SRC_PORT(scb_to_reset)->management_type == 
 							ASD_DEVICE_END) {
 			/* We or'ed it to remember its previous state. */
-			scb->eh_state |= SCB_EH_CLR_NXS_REQ;
+			scb->eh_state  = SCB_EH_CLR_NXS_REQ;
 		} else {
 			/*
 			 * For device attached behind expander,
@@ -4163,32 +4298,147 @@ asd_hwi_reset_device(struct asd_softc *asd, struct scb *scb_to_reset,
 		break;
 
 	case SCB_EH_CLR_NXS_REQ:
-	case (SCB_EH_CLR_NXS_REQ|SCB_EH_INITIATED):
-	case (SCB_EH_CLR_NXS_REQ|SCB_EH_PHY_REPORT_REQ):
 		/*
 	 	 * Prior to performing Link Reset or Hard Reset to the 
 		 * target, we need to clear the firmware's execution queue
 		 * and suspend the data transimission to the target.
 	 	 */
-		if (((scb->eh_state & SCB_EH_INITIATED) != 0) ||
-		    ((scb->eh_state & SCB_EH_PHY_REPORT_REQ) != 0)) {
-			asd_hwi_build_clear_nexus(scb, CLR_NXS_IT_OR_TI,
-					  	 (SUSPEND_TX | EXEC_Q),
-						  /*ctx*/0);
-			asd_push_post_stack(asd, scb, (void *) scb_to_reset,
-					    asd_hwi_reset_device_done);
-		} else {
-			/* 
-			 * Upon completion of Device Reset, we need to issue
-			 * CLEAR NEXUS to the firmware to free up the SCB
-		         * resume data transmission.
-			 * Also, we will be using the first post stack
-			 * we save at the beginning.
-			 */
-			asd_hwi_build_clear_nexus(scb, CLR_NXS_IT_OR_TI,
-						 (RESUME_TX|SEND_Q|NOT_IN_Q),
-					  	  /*ctx*/0);
+		asd_hwi_build_clear_nexus(scb, CLR_NXS_IT_OR_TI,
+					 (SUSPEND_TX | EXEC_Q),
+					  /*ctx*/0);
+		asd_push_post_stack(asd, scb, (void *) scb_to_reset,
+					asd_hwi_reset_device_done);
+
+		scb->flags |= (SCB_INTERNAL | SCB_ACTIVE | SCB_RECOVERY);
+		asd_setup_scb_timer(scb, (4 * HZ), asd_scb_eh_timeout);
+		asd_hwi_post_scb(asd, scb);
+		break;
+		case SCB_EH_RESUME_SENDQ:
+		scb_to_reset->eh_state = SCB_EH_RESUME_SENDQ;
+		scb_to_reset->eh_status =SCB_EH_SUCCEED;
+		scb_to_reset->platform_data->targ->flags &=
+							~ASD_TARG_IN_RECOVERY;
+		asd_hwi_free_scb(asd, scb);
+		asd_wakeup_sem(&asd->platform_data->ehandler_sem);
+		break;
+
+	case SCB_EH_DONE:
+		scb_to_reset->eh_state = scb->eh_state;
+		scb_to_reset->eh_status = scb->eh_status;
+		if(!(scb_to_reset->flags & SCB_ABORT_DONE))
+		{
+			/* scb not retutn from sequencer then
+			   set status to fail state */
+			scb_to_reset->eh_status = SCB_EH_FAILED;
 		}
+
+		if ((scb_to_reset->eh_state == SCB_EH_DONE) &&
+		    (scb_to_reset->eh_status == SCB_EH_FAILED)) {
+			/*
+			 * Failed to perform DEVICE RESET,
+			 * we shall procced with the next level of
+			 * error recovery (Port Reset).
+			 * We need to change the scb eh_state to
+			 * SCB_EH_PORT_RESET_REQ.
+			 */
+			scb_to_reset->eh_state = SCB_EH_PORT_RESET_REQ;
+			scb_to_reset->platform_data->targ->flags &=
+							~ASD_TARG_IN_RECOVERY;
+		}
+		asd_hwi_free_scb(asd, scb);
+		asd_wakeup_sem(&asd->platform_data->ehandler_sem);
+		break;
+
+	default:
+		asd_log(ASD_DBG_ERROR, "Invalid EH State 0x%x.\n",
+			scb->eh_state);
+
+		scb_to_reset->eh_state = SCB_EH_DONE;
+		scb_to_reset->eh_status = SCB_EH_FAILED;
+		asd_hwi_free_scb(asd, scb);
+		asd_wakeup_sem(&asd->platform_data->ehandler_sem);
+		break;
+	}
+}
+
+/*
+ * Function:
+ *	asd_hwi_reset_device()
+ *
+ * Description:
+ *	Issue a device reset to the failing device.
+ */
+static void
+asd_hwi_resume_sendq(struct asd_softc *asd, struct scb *scb_to_reset,
+		     struct scb *scb)
+{
+	ASD_LOCK_ASSERT(asd);
+
+	asd_log(ASD_DBG_ERROR, "Curr State: 0x%x Status: 0x%x.\n",
+		scb->eh_state, scb->eh_status);
+	asd_log(ASD_DBG_ERROR, "scb_to_reset = %p \n",scb_to_reset);
+
+	switch (scb->eh_state) {
+	case SCB_EH_INITIATED:
+	{
+		struct asd_target	*targ;
+		struct asd_device	*dev;
+
+		targ = scb_to_reset->platform_data->targ;
+		dev = scb_to_reset->platform_data->dev;
+		if ((targ == NULL) || (dev == NULL)) {
+			/* This shouldn't happen. */
+
+			scb->eh_state = SCB_EH_DONE;
+			scb->eh_status = SCB_EH_FAILED;
+			asd_hwi_resume_sendq(asd, scb_to_reset, scb);
+			break;
+		}
+
+		/*
+		 * DC: Currently we are not handling error recovery for
+		 *     expander.
+		 *     Logic for that will be added later on.
+		 */
+		if ((targ->device_protocol_type != ASD_DEVICE_PROTOCOL_SCSI) &&
+		    (targ->device_protocol_type != ASD_DEVICE_PROTOCOL_ATA)) {
+			scb->eh_state = SCB_EH_DONE;
+			scb->eh_status = SCB_EH_FAILED;
+			asd_hwi_resume_sendq(asd, scb_to_reset, scb);
+			break;
+		}
+
+		scb->platform_data->targ = targ;
+		scb->platform_data->dev = dev;
+
+		/*
+		 * Saving final post routine and the scb_to_reset in
+		 * the first post stack slot. We need to access the
+		 * scb_to_reset during the device reset process.
+		 */
+		asd_push_post_stack(asd, scb, (void *) scb_to_reset,
+			    asd_hwi_reset_device_done);
+
+		scb->eh_state = SCB_EH_RESUME_SENDQ;
+		asd_hwi_resume_sendq(asd, scb_to_reset, scb);
+		break;
+	}
+
+	case SCB_EH_RESUME_SENDQ:
+		/*
+		 * Upon completion of Device Reset, we need to issue
+		 * CLEAR NEXUS to the firmware to free up the SCB
+		     * resume data transmission.
+		 * Also, we will be using the first post stack
+		 * we save at the beginning.
+		 */
+		asd_hwi_build_clear_nexus(scb, CLR_NXS_IT_OR_TI,
+					 (RESUME_TX|SEND_Q|NOT_IN_Q),
+					  /*ctx*/0);
+
+		asd_push_post_stack(asd, scb, (void *) scb_to_reset,
+					asd_hwi_resume_sendq_done);
+
 		scb->flags |= (SCB_INTERNAL | SCB_ACTIVE | SCB_RECOVERY);
 		asd_setup_scb_timer(scb, (4 * HZ), asd_scb_eh_timeout);
 		asd_hwi_post_scb(asd, scb);
@@ -4226,7 +4476,52 @@ asd_hwi_reset_device(struct asd_softc *asd, struct scb *scb_to_reset,
 		break;
 	}
 }
+static void
+asd_hwi_resume_sendq_done(struct asd_softc *asd, struct scb *scb,
+			  struct asd_done_list *dl)
+{
+	asd_log(ASD_DBG_ERROR, "DL Opcode = 0x%x.\n", dl->opcode);
 
+	/*
+	 * There is a possibility that this post routine is called after
+	 * the SCB timedout. So, only delete the timer if the SCB hasn't
+	 * timedout.
+	 */
+	if (scb->eh_state != SCB_EH_TIMEDOUT)
+		del_timer_sync(&scb->platform_data->timeout);
+
+	switch (dl->opcode) {
+	case TASK_COMP_WO_ERR:
+		scb->eh_state = SCB_EH_DONE;
+		scb->eh_status = SCB_EH_SUCCEED;
+		break;
+
+	case TMF_F_W_TC_NOT_FOUND:
+	case TMF_F_W_TAG_NOT_FOUND:
+	case TMF_F_W_CONN_HNDL_NOT_FOUND:
+		scb->eh_state = SCB_EH_DONE;
+		scb->eh_status = SCB_EH_FAILED;
+		break;
+
+	case TASK_CLEARED:
+		/*
+		 * Previous error recovery SCB that timed-out and
+		 * was aborted.
+		 * All we need to do here is just free the scb.
+		 */
+		asd_log(ASD_DBG_ERROR, "task clear free scb=%p \n", scb);
+		asd_hwi_free_scb(asd, scb);
+		return;
+
+	default:
+		asd_log(ASD_DBG_ERROR, "Unhandled DL opcode.\n");
+		scb->eh_state = SCB_EH_DONE;
+		scb->eh_status = SCB_EH_FAILED;
+		break;
+	}
+
+	asd_hwi_resume_sendq(asd, (struct scb *) scb->io_ctx, scb);
+}
 static void
 asd_hwi_reset_device_done(struct asd_softc *asd, struct scb *scb,
 			  struct asd_done_list *dl)
@@ -4243,9 +4538,8 @@ asd_hwi_reset_device_done(struct asd_softc *asd, struct scb *scb,
 
 	switch (dl->opcode) {
 	case TASK_COMP_WO_ERR:
-	{	
-		if (((scb->eh_state & SCB_EH_INITIATED) != 0) ||
-		    ((scb->eh_state & SCB_EH_PHY_REPORT_REQ) != 0)) {
+		if(scb->eh_state==SCB_EH_CLR_NXS_REQ)
+		{
 			struct asd_port	*port;
 		
 			port = SCB_GET_SRC_PORT(scb);
@@ -4269,7 +4563,6 @@ asd_hwi_reset_device_done(struct asd_softc *asd, struct scb *scb,
 		}
 		scb->eh_status = SCB_EH_SUCCEED;
 		break;
-	}
 
 	case TMF_F_W_TC_NOT_FOUND:
 	case TMF_F_W_TAG_NOT_FOUND:
@@ -4284,6 +4577,7 @@ asd_hwi_reset_device_done(struct asd_softc *asd, struct scb *scb,
 		 * was aborted.
 		 * All we need to do here is just free the scb.
 		 */ 
+		asd_log(ASD_DBG_ERROR, "task clear free scb=%p \n", scb);
 		asd_hwi_free_scb(asd, scb);
 		return;
 
@@ -4400,7 +4694,7 @@ void dumpsmp(uint8_t	*smp_req)
 	uint32_t index;
 	if(smp_req==NULL) return;
 
-	asd_print("\nsmp_req: 0x%x", smp_req );
+	asd_print("\nsmp_req: 0x%x", *smp_req );
 
 	for( index = 0; index < sizeof(struct SMPRequest); index++)
 	{
@@ -4541,7 +4835,8 @@ asd_hwi_reset_exp_device(struct asd_softc *asd, struct scb *scb)
 	 */
 	asd_hwi_build_smp_phy_req(
 		port, PHY_CONTROL, phy_id,
-		((targ->transport_type == ASD_TRANSPORT_ATA) ? LINK_RESET :
+		((targ->transport_type == ASD_TRANSPORT_ATA
+		 || targ->transport_type ==ASD_TRANSPORT_STP) ? LINK_RESET :
 		 					       HARD_RESET));
 
 	/* Build a SMP REQUEST. */
@@ -4586,10 +4881,11 @@ asd_hwi_reset_exp_device_done(struct asd_softc *asd, struct scb *scb,
 			SMP_FUNCTION_ACCEPTED) {
 			if (scb->eh_state == SCB_EH_PHY_REPORT_REQ) {
 				asd_hwi_dump_phy_err_log(port, scb);
-//TEST				scb->eh_state = SCB_EH_DONE;
-				scb->eh_state = SCB_EH_DEV_RESET_REQ;
-			} else {
+				/* do the first time clear nexus after
+				   PHY report error */
 				scb->eh_state = SCB_EH_CLR_NXS_REQ;
+			} else {
+				scb->eh_state = SCB_EH_RESUME_SENDQ;
 			}
 			scb->eh_status = SCB_EH_SUCCEED;
 		} else {
@@ -4669,6 +4965,8 @@ asd_hwi_reset_port(struct asd_softc *asd, struct scb *scb_to_reset,
 
 	asd_log(ASD_DBG_ERROR, "Curr State: 0x%x Status: 0x%x.\n",
 		scb->eh_state, scb->eh_status);
+	asd_log(ASD_DBG_ERROR, "reset port scb=%p scb_to_reset = %p\n",
+		scb, scb_to_reset);
 
 	switch (scb->eh_state) {
 	case SCB_EH_INITIATED:
@@ -4789,6 +5087,8 @@ asd_hwi_reset_port(struct asd_softc *asd, struct scb *scb_to_reset,
 		/* Unfreeze all the targets. */
 		list_for_each_entry(targ, &port->targets, all_domain_targets) {
 			targ->qfrozen--;
+			asd_log(ASD_DBG_INFO, "clear freezen ptr=%p num=%d\n",
+				targ, targ->qfrozen);
 		}
 		scb_to_reset->eh_state = scb->eh_state;
 		scb_to_reset->eh_status = scb->eh_status;

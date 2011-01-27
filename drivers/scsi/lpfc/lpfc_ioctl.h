@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_ioctl.h 2791 2005-12-30 18:37:05Z sf_support $
+ * $Id: lpfc_ioctl.h 3037 2007-05-22 14:02:22Z sf_support $
  */
 
 #ifndef _H_LPFC_IOCTL
@@ -28,7 +28,7 @@
 #define MAX_LPFC_BRDS 32
 
 #define DFC_MAJOR_REV	80
-#define DFC_MINOR_REV	163
+#define DFC_MINOR_REV	164
 
 /* Duplicate definitions */
 /*   Make sure these stay in sync with their counterparts in the */
@@ -115,7 +115,8 @@
 #define LPFC_GET_DUMPREGION		0x71	/* Get Adapter Dump Region */
 #define LPFC_LOOPBACK_TEST              0x72    /* Run Loopback test */
 #define LPFC_LOOPBACK_MODE              0x73    /* Enter Loopback mode */
-/*  LPFC_LAST_IOCTL_USED 	        0x73 Last LPFC Ioctl used  */
+#define LPFC_TEMP_SENSOR_SUPPORT        0x74    /* Get temp sensor support */
+/*  LPFC_LAST_IOCTL_USED 	        0x74 Last LPFC Ioctl used  */
 
 
 
@@ -124,6 +125,7 @@
 #define FC_REG_RSCN_EVENT       0x2	/* Register for RSCN events */
 #define FC_REG_CT_EVENT         0x4	/* Register for CT request events */
 #define FC_REG_DUMP_EVENT       0x10    /* Register for Dump events */
+#define FC_REG_TEMPERATURE_EVENT 0x20   /* Register for temperature event */
 
 #define FC_REG_EVENT_MASK       0xff	/* event mask */
 
@@ -431,7 +433,9 @@ typedef struct dfcstat {
 	uint32_t elsRcvLOGO;
 	uint32_t elsRcvPRLO;
 	uint32_t elsRcvPRLI;
-	uint32_t elsRcvRRQ;
+	uint32_t elsRcvLIRR;
+	uint32_t elsRcvRPS;
+	uint32_t elsRcvRPL;
 	uint32_t frameRcvBcast;
 	uint32_t frameRcvMulti;
 	uint32_t strayXmitCmpl;

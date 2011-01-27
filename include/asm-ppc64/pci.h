@@ -235,6 +235,8 @@ extern int pci_read_irq_line(struct pci_dev *dev);
 
 extern void pcibios_add_platform_entries(struct pci_dev *dev);
 
+extern int pcibios_vaddr_is_ioport(void __iomem *address);
+
 #endif	/* __KERNEL__ */
 
 #endif /* __PPC64_PCI_H */

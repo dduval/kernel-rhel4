@@ -3,8 +3,8 @@
  *      For use with LSI Logic PCI chip/adapter(s)
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2005 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsil.com)
+ *  Copyright (c) 1999-2007 LSI Logic Corporation
+ *  (mailto:mpt_linux_developer@lsi.com)
  *
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -73,6 +73,7 @@
 MODULE_AUTHOR(MODULEAUTHOR);
 MODULE_DESCRIPTION(my_NAME);
 MODULE_LICENSE("GPL");
+MODULE_VERSION(my_VERSION);
 
 /* Command line args */
 #ifdef MPTSCSIH_ENABLE_DOMAIN_VALIDATION
@@ -145,12 +146,13 @@ static struct scsi_host_template mptspi_driver_template = {
 	.change_queue_depth 		= mptscsih_change_queue_depth,
 #endif
 	.eh_abort_handler		= mptscsih_abort,
+        .eh_device_reset_handler        = mptscsih_dev_reset,
 	.eh_bus_reset_handler		= mptscsih_bus_reset,
 	.eh_host_reset_handler		= mptscsih_host_reset,
 	.bios_param			= mptscsih_bios_param,
 	.can_queue			= MPT_SCSI_CAN_QUEUE,
 	.this_id			= -1,
-	.sg_tablesize			= MPT_SCSI_SG_DEPTH,
+	.sg_tablesize			= CONFIG_FUSION_MAX_SGE,
 	.max_sectors			= 8192,
 	.cmd_per_lun			= 7,
 	.use_clustering			= ENABLE_CLUSTERING,
@@ -189,8 +191,6 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	MPT_ADAPTER 		*ioc;
 	unsigned long		 flags;
 	int			 sz, ii;
-	int			 numSGE = 0;
-	int			 scale;
 	int			 ioc_cap;
 	u8			*mem;
 	int			error=0;
@@ -269,7 +269,7 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->name, mpt_can_queue, ioc->req_depth,
 		sh->can_queue));
 
-	sh->max_id = MPT_MAX_SCSI_DEVICES;
+	sh->max_id = ioc->DevicesPerBus;
 
 	sh->max_lun = MPT_LAST_LUN + 1;
 	sh->max_channel = 0;
@@ -278,36 +278,7 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Required entry.
 	 */
 	sh->unique_id = ioc->id;
-
-	/* Verify that we won't exceed the maximum
-	 * number of chain buffers
-	 * We can optimize:  ZZ = req_sz/sizeof(SGE)
-	 * For 32bit SGE's:
-	 *  numSGE = 1 + (ZZ-1)*(maxChain -1) + ZZ
-	 *               + (req_sz - 64)/sizeof(SGE)
-	 * A slightly different algorithm is required for
-	 * 64bit SGEs.
-	 */
-	scale = ioc->req_sz/(sizeof(dma_addr_t) + sizeof(u32));
-	if (sizeof(dma_addr_t) == sizeof(u64)) {
-		numSGE = (scale - 1) *
-		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 60) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
-	} else {
-		numSGE = 1 + (scale - 1) *
-		  (ioc->facts.MaxChainDepth-1) + scale +
-		  (ioc->req_sz - 64) / (sizeof(dma_addr_t) +
-		  sizeof(u32));
-	}
-
-	if (numSGE < sh->sg_tablesize) {
-		/* Reset this value */
-		dprintk((MYIOC_s_INFO_FMT
-		  "Resetting sg_tablesize to %d from %d\n",
-		  ioc->name, numSGE, sh->sg_tablesize));
-		sh->sg_tablesize = numSGE;
-	}
+	sh->sg_tablesize = ioc->sg_tablesize;
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
 	/* Set the pci device pointer in Scsi_Host structure.
@@ -336,29 +307,29 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dprintk((MYIOC_s_INFO_FMT "ScsiLookup @ %p, sz=%d\n",
 		 ioc->name, hd->ScsiLookup, sz));
 
-	/* Allocate memory for the device structures.
-	 * A non-Null pointer at an offset
-	 * indicates a device exists.
-	 * max_id = 1 + maximum id (hosts.h)
-	 */
-	sz = sh->max_id * sizeof(void *);
-	mem = kmalloc(sz, GFP_ATOMIC);
-	if (mem == NULL) {
-		error = -ENOMEM;
-		goto out_mptspi_probe;
+	for (ii=0; ii < ioc->NumberOfBuses; ii++) {
+		/* Allocate memory for the device structures.
+		 * A non-Null pointer at an offset
+		 * indicates a device exists.
+		 */
+		sz = ioc->DevicesPerBus * sizeof(void *);
+		mem = kmalloc(sz, GFP_ATOMIC);
+		if (mem == NULL) {
+			error = -ENOMEM;
+			goto out_mptspi_probe;
+		}
+
+		memset(mem, 0, sz);
+		ioc->Target_List[ii] = (struct _MPT_DEVICE *) mem;
+
+		dinitprintk((KERN_INFO
+		  " For Bus=%d, Target_List=%p sz=%d\n", ii, mem, sz));
 	}
-
-	memset(mem, 0, sz);
-	hd->Targets = (VirtDevice **) mem;
-
-	dprintk((KERN_INFO
-	  "  Targets @ %p, sz=%d\n", hd->Targets, sz));
 
 	/* Clear the TM flags
 	 */
 	hd->tmPending = 0;
 	hd->tmState = TM_STATE_NONE;
-	hd->resetPending = 0;
 	hd->abortSCpnt = NULL;
 
 	/* Clear the pointer used to store
@@ -368,16 +339,21 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 */
 	hd->cmdPtr = NULL;
 
-	/* Initialize this SCSI Hosts' timers
+	/* Initialize this IOC's  timers
 	 * To use, set the timer expires field
-	 * and add_timer
+	 * and add_timer.Used for internally
+         * generated commands.
 	 */
-	init_timer(&hd->timer);
-	hd->timer.data = (unsigned long) hd;
-	hd->timer.function = mptscsih_timer_expired;
+       init_timer(&hd->InternalCmdTimer);
+       hd->InternalCmdTimer.data = (unsigned long) hd;
+       hd->InternalCmdTimer.function = mptscsih_InternalCmdTimer_expired;
 
-	ioc->spi_data.Saf_Te = mpt_saf_te;
-	hd->mpt_pq_filter = mpt_pq_filter;
+       init_timer(&ioc->TMtimer);
+       ioc->TMtimer.data = (unsigned long) ioc;
+       ioc->TMtimer.function = mptscsih_TM_timeout;
+
+       ioc->spi_data.Saf_Te = mpt_saf_te;
+       hd->mpt_pq_filter = mpt_pq_filter;
 
 #ifdef MPTSCSIH_ENABLE_DOMAIN_VALIDATION
 	if (ioc->spi_data.maxBusWidth > mpt_width)
@@ -388,7 +364,6 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->spi_data.maxSyncOffset = 0;
 	}
 	ioc->spi_data.mpt_dv = mpt_dv;
-	hd->negoNvram = 0;
 
 	ddvprintk((MYIOC_s_INFO_FMT
 		"dv %x width %x factor %x saf_te %x mpt_pq_filter %x\n",
@@ -399,7 +374,7 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		mpt_saf_te,
 		mpt_pq_filter));
 #else
-	hd->negoNvram = MPT_SCSICFG_USE_NVRAM;
+
 	ddvprintk((MYIOC_s_INFO_FMT
 		"saf_te %x mpt_pq_filter %x\n",
 		ioc->name,
@@ -412,18 +387,18 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->spi_data.noQas |= MPT_TARGET_NO_NEGO_QAS;
 	else
 		ioc->spi_data.noQas = 0;
+/* enable domain validation flags */
 
 	for (ii=0; ii < MPT_MAX_SCSI_DEVICES; ii++)
-		ioc->spi_data.dvStatus[ii] =
-		  MPT_SCSICFG_NEGOTIATE;
+ioc->spi_data.dvStatus[ii] =
 
-	for (ii=0; ii < MPT_MAX_SCSI_DEVICES; ii++)
-		ioc->spi_data.dvStatus[ii] |=
-		  MPT_SCSICFG_DV_NOT_DONE;
+(MPT_SCSICFG_NEGOTIATE | MPT_SCSICFG_DV_NOT_DONE);
 
 	init_waitqueue_head(&hd->scandv_waitq);
 	hd->scandv_wait_done = 0;
 	hd->last_queue_full = 0;
+        init_waitqueue_head(&hd->TM_waitq);
+        hd->TM_wait_done = 0;
 
 	error = scsi_add_host (sh, &ioc->pcidev->dev);
 	if(error) {
@@ -438,6 +413,10 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		    MPI_SCSITASKMGMT_TASKTYPE_RESET_BUS,
 		    0, 0, 0, 0, 5 /* 5 second timeout */);
 	}
+
+       dnegoprintk((MYIOC_s_WARN_FMT "%s: writeSDP1: ALL_IDS\n",
+               ioc->name, __FUNCTION__));
+       mpt_writeSDP1(ioc, 0, 0, MPT_SCSICFG_ALL_IDS);
 
 	scsi_scan_host(sh);
 	return 0;
@@ -485,7 +464,7 @@ mptspi_init(void)
 
 	if (mpt_event_register(mptspiDoneCtx, mptscsih_event_process) == 0) {
 		devtprintk((KERN_INFO MYNAM
-		  ": Registered for IOC event notifications\n"));
+        ": Registered for IOC event notifications mptspiDoneCtx=%08x\n", mptspiDoneCtx));
 	}
 
 	if (mpt_reset_register(mptspiDoneCtx, mptscsih_ioc_reset) == 0) {

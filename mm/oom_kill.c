@@ -22,6 +22,7 @@
 #include <linux/jiffies.h>
 
 int oom_kill_enabled = 1;
+int sysctl_panic_on_oom;
 
 /* #define DEBUG */
 
@@ -198,6 +199,9 @@ static void oom_kill(void)
 		printk(KERN_INFO "Would have oom-killed but /proc/sys/vm/oom-kill is disabled\n");
 		return;
 	}
+
+	if (sysctl_panic_on_oom)
+		panic("out of memory. panic_on_oom is selected\n");
 
 	read_lock(&tasklist_lock);
 retry:

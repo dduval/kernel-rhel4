@@ -205,6 +205,10 @@
 #define PAGE_CODE_MASK			0x3f
 #define PAGE_CONTROL_MASK		0xc0
 #define LLBA_MASK			0x10
+#define PAGE_CONTROL_CURRENT		0x00
+#define PAGE_CONTROL_CHANGEABLE		0x40
+#define PAGE_CONTROL_DEFAULT		0x80
+#define PAGE_CONTROL_SAVED			0xC0
 
 // pages for MODE_SENSE & MODE_SELECT
 #define MODE_PARAMETER_HEADER_LENGTH_10		8
@@ -406,7 +410,9 @@ INLINE
 struct ata_resp_edb *
 asd_sata_get_edb(
 struct asd_softc	*asd,
-struct asd_done_list	*done_listp
+struct asd_done_list	*done_listp,
+struct scb **pescb,
+u_int *pedb_index
 );
 
 ASD_COMMAND_BUILD_STATUS
@@ -734,7 +740,8 @@ uint8_t *
 asd_sata_informational_exception_control_sense(
 struct asd_softc	*asd,
 struct asd_device 	*dev,
-uint8_t			*bufptr
+uint8_t			*bufptr,
+unsigned			page_control
 );
 
 uint8_t *
@@ -748,7 +755,8 @@ uint8_t *
 asd_sata_caching_sense(
 struct asd_softc	*asd,
 struct asd_device 	*dev,
-uint8_t			*bufptr
+uint8_t			*bufptr,
+unsigned			page_control
 );
 
 uint8_t *

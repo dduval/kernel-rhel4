@@ -32,6 +32,7 @@
 					 */
 #define MAX_FAILBACKTIME	5	/* Max suspend time before fail back */
 
+#define QLA_CMD_TIMER_MINIMUM	30
 #define QLA_CMD_TIMER_DELTA	3
 
 /* 

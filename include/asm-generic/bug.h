@@ -31,4 +31,23 @@
 } while (0)
 #endif
 
+#define WARN_ON_ONCE(condition)				\
+({							\
+	static int __warn_once = 1;			\
+	int __ret = 0;					\
+							\
+	if (unlikely((condition) && __warn_once)) {	\
+		__warn_once = 0;			\
+		WARN_ON(1);				\
+		__ret = 1;				\
+	}						\
+	__ret;						\
+})
+
+#ifdef CONFIG_SMP
+# define WARN_ON_SMP(x)			WARN_ON(x)
+#else
+# define WARN_ON_SMP(x)			do { } while (0)
+#endif
+
 #endif

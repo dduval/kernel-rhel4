@@ -270,11 +270,21 @@ static void do_process_ce(struct mem_ctl_info *mci, u16 error_one,
 	/* 0 = channel A, 1 = channel B */
 	channel = !(error_one & 1);
 
-	if (!pvt->map_type)
-		row = 7 - row;
 	/* e752x mc reads 34:6 of the DRAM linear address */
 	edac_mc_handle_ce(mci, page, offset_in_page(sec1_add << 4),
 			sec1_syndrome, row, channel, "e752x CE");
+}
+
+/* Remap csrow index numbers if map_type is "reverse"
+ */
+static inline int remap_csrow_index(struct mem_ctl_info *mci, int index)
+{
+	struct e752x_pvt *pvt = (struct e752x_pvt *) mci->pvt_info;
+
+	if (!pvt->map_type)
+		return (7 - index);
+
+	return index;
 }
 
 static inline void process_ce(struct mem_ctl_info *mci, u16 error_one,
@@ -823,6 +833,14 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	pci_read_config_dword(pdev, E752X_DRA, &dra);
 
 	/*
+	 * set the map type.  1 = normal, 0 = reversed
+	 * Must be set before csrow initialization in case csrow mapping
+	 * is reversed.
+	 */
+	pci_read_config_byte(mci->pdev, E752X_DRM, &stat8);
+	pvt->map_type = ((stat8 & 0x0f) > ((stat8 >> 4) & 0x0f));
+
+	/*
 	 * The dram row boundary (DRB) reg values are boundary address for
 	 * each DRAM row with a granularity of 64 or 128MB (single/dual
 	 * channel operation).  DRB regs are cumulative; therefore DRB7 will
@@ -833,7 +851,7 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 		u32 cumul_size;
 		/* mem_dev 0=x8, 1=x4 */
 		int mem_dev = (dra >> (index * 4 + 2)) & 0x3;
-		struct csrow_info *csrow = &mci->csrows[index];
+		struct csrow_info *csrow = &mci->csrows[remap_csrow_index(mci, index)];
 
 		mem_dev = (mem_dev == 2);
 		pci_read_config_byte(mci->pdev, E752X_DRB + index, &value);
@@ -901,10 +919,6 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 			}
 		}
 	}
-
-	/* set the map type.  1 = normal, 0 = reversed */
-	pci_read_config_byte(mci->pdev, E752X_DRM, &stat8);
-	pvt->map_type = ((stat8 & 0x0f) > ((stat8 >> 4) & 0x0f));
 
 	mci->edac_cap |= EDAC_FLAG_NONE;
 

@@ -15,20 +15,20 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
-#include <asm/uaccess.h>
-#include <asm/io.h>
-#include <asm/smp.h>
 #include <linux/interrupt.h>
 #include <linux/proc_fs.h>
 #include <linux/page-flags.h>
 #include <linux/swap.h>
 #include <linux/pagemap.h>
 #include <linux/sysctl.h>
-#include <asm/timer.h>
-//#include <linux/kernel_stat.h>
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
+#include <asm/appldata.h>
+#include <asm/timer.h>
+#include <asm/uaccess.h>
+#include <asm/io.h>
+#include <asm/smp.h>
 
 #include "appldata.h"
 
@@ -40,49 +40,6 @@
 
 #define TOD_MICRO	0x01000			/* nr. of TOD clock units
 						   for 1 microsecond */
-#ifndef CONFIG_ARCH_S390X
-
-#define APPLDATA_START_INTERVAL_REC 0x00   	/* Function codes for */
-#define APPLDATA_STOP_REC	    0x01	/* DIAG 0xDC	  */
-#define APPLDATA_GEN_EVENT_RECORD   0x02
-#define APPLDATA_START_CONFIG_REC   0x03
-
-#else
-
-#define APPLDATA_START_INTERVAL_REC 0x80
-#define APPLDATA_STOP_REC   	    0x81
-#define APPLDATA_GEN_EVENT_RECORD   0x82
-#define APPLDATA_START_CONFIG_REC   0x83
-
-#endif /* CONFIG_ARCH_S390X */
-
-
-/*
- * Parameter list for DIAGNOSE X'DC'
- */
-#ifndef CONFIG_ARCH_S390X
-struct appldata_parameter_list {
-	u16 diag;		/* The DIAGNOSE code X'00DC'          */
-	u8  function;		/* The function code for the DIAGNOSE */
-	u8  parlist_length;	/* Length of the parameter list       */
-	u32 product_id_addr;	/* Address of the 16-byte product ID  */
-	u16 reserved;
-	u16 buffer_length;	/* Length of the application data buffer  */
-	u32 buffer_addr;	/* Address of the application data buffer */
-};
-#else
-struct appldata_parameter_list {
-	u16 diag;
-	u8  function;
-	u8  parlist_length;
-	u32 unused01;
-	u16 reserved;
-	u16 buffer_length;
-	u32 unused02;
-	u64 product_id_addr;
-	u64 buffer_addr;
-};
-#endif /* CONFIG_ARCH_S390X */
 
 /*
  * /proc entries (sysctl)
@@ -198,46 +155,17 @@ static void appldata_work_fn(void *data)
 static int appldata_diag(char record_nr, u16 function, unsigned long buffer,
 			u16 length)
 {
-	unsigned long ry;
-	struct appldata_product_id {
-		char prod_nr[7];			/* product nr. */
-		char prod_fn[2];			/* product function */
-		char record_nr;				/* record nr. */
-		char version_nr[2];			/* version */
-		char release_nr[2];			/* release */
-		char mod_lvl[2];			/* modification lvl. */
-	} appldata_product_id = {
-	/* all strings are EBCDIC, record_nr is byte */
+	struct appldata_product_id id = {
 		.prod_nr    = {0xD3, 0xC9, 0xD5, 0xE4,
-				0xE7, 0xD2, 0xD9},	/* "LINUXKR" */
-		.prod_fn    = {0xD5, 0xD3},		/* "NL" */
+			       0xE7, 0xD2, 0xD9},	/* "LINUXKR" */
+		.prod_fn    = 0xD5D3,			/* "NL" */
 		.record_nr  = record_nr,
-		.version_nr = {0xF2, 0xF6},		/* "26" */
-		.release_nr = {0xF0, 0xF1},		/* "01" */
-		.mod_lvl    = {0xF0, 0xF0},		/* "00" */
-	};
-	struct appldata_parameter_list appldata_parameter_list = {
-				.diag = 0xDC,
-				.function = function,
-				.parlist_length =
-					sizeof(appldata_parameter_list),
-				.buffer_length = length,
-				.product_id_addr =
-					(unsigned long) &appldata_product_id,
-				.buffer_addr = virt_to_phys((void *) buffer)
+		.version_nr = 0xF2F6,			/* "26" */
+		.release_nr = 0xF0F1,			/* "01" */
+		.mod_lvl    = 0xF0F0,			/* "00" */
 	};
 
-	if (!MACHINE_IS_VM)
-		return -ENOSYS;
-	ry = -1;
-	asm volatile(
-			"diag %1,%0,0xDC\n\t"
-			: "=d" (ry)
-			: "d" (&appldata_parameter_list),
-			  "m" (appldata_parameter_list),
-			  "m" (appldata_product_id)
-			: "cc");
-	return (int) ry;
+	return appldata_asm(&id, function, (void *) buffer, length);
 }
 /************************ timer, work, DIAG <END> ****************************/
 

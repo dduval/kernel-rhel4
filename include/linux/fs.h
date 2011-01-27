@@ -127,6 +127,7 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define MS_POSIXACL	(1<<16)	/* VFS does not apply the umask */
 #define MS_ONE_SECOND	(1<<17)	/* fs has 1 sec time resolution (obsolete) */
 #define MS_TIME_GRAN	(1<<18)	/* fs has s_time_gran field */
+#define MS_NO_LEASES	(1<<19)	/* fs does not support leases */
 #define MS_HAS_INO64	(1<<29)	/* has 64-bit inode numbers */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
@@ -189,6 +190,7 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define IS_DEADDIR(inode)	((inode)->i_flags & S_DEAD)
 #define IS_NOCMTIME(inode)	((inode)->i_flags & S_NOCMTIME)
 #define IS_SWAPFILE(inode)	((inode)->i_flags & S_SWAPFILE)
+#define IS_NO_LEASES(inode)	__IS_FLG(inode, MS_NO_LEASES)
 
 /* the read-only stuff doesn't really belong here, but any other place is
    probably as bad and I don't want to create yet another include file. */

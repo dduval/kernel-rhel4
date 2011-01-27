@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -15,7 +15,6 @@
  *	qla4xxx_send_noop
  *	qla4xxx_conn_close_sess_logout
  *	qla4xxx_clear_database_entry
- *	qla4xxx_initialize_fw_cb
  *	qla4xxx_get_fw_version
  *	qla4xxx_get_firmware_state
  *	qla4xxx_get_fwddb_entry
@@ -33,8 +32,6 @@
 
 #include <linux/delay.h>
 
-extern int ql4xkeepalive;
-extern int ql4xdiscoverywait;
 extern void qla4xxx_isns_build_entity_id(scsi_qla_host_t *ha);
 extern int qla4xxx_eh_wait_for_active_target_commands(scsi_qla_host_t *ha, int target, int lun);
 
@@ -103,7 +100,7 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	intr_status = RD_REG_DWORD(&ha->reg->ctrl_status);
 	if (intr_status & CSR_SCSI_PROCESSOR_INTR) {
-		QL4PRINT(QLP2,
+		QL4PRINT(QLP5,
 			 printk("scsi%d: %s: Trying to execute a mailbox request, "
 				"while another one is interrupting\n"
 				"Service existing interrupt first\n",
@@ -121,7 +118,7 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 	 */
 	ha->f_start = jiffies;
 	ha->mbox_status_count = outCount;
-	for (i=0; i < outCount; i++) {
+	for (i=0; i < MBOX_REG_COUNT; i++) {
 		ha->mbox_status[i] = 0;
 	}
 
@@ -133,6 +130,9 @@ qla4xxx_mailbox_command(scsi_qla_host_t *ha,
 	/* Load all mailbox registers, except mailbox 0.*/
 	for (i = 1; i < inCount; i++) {
 		WRT_REG_DWORD(&ha->reg->mailbox[i], mbx_cmd[i]);
+	}
+	for (i = inCount; i < MBOX_REG_COUNT; i++) {
+		WRT_REG_DWORD(&ha->reg->mailbox[i], 0);
 	}
 
 	/* Write Mailbox 0 to alert the firmware that the mailbox registers
@@ -455,246 +455,84 @@ qla4xxx_clear_database_entry(scsi_qla_host_t *ha, uint16_t fw_ddb_index)
 	return(QLA_SUCCESS);
 }
 
-/**************************************************************************
- * qla4xxx_initialize_fw_cb
- *	This routine initializes the firmware control block for the
- *	specified adapter.
- *
- * Input:
- * 	ha - Pointer to host adapter structure.
- *
- * Returns:
- *	QLA_SUCCESS - Successfully initialized firmware ctrl block
- *	QLA_ERROR   - Failed to initialize firmware ctrl block
- *
- * Context:
- *	Kernel context.
- **************************************************************************/
 uint8_t
-qla4xxx_initialize_fw_cb(scsi_qla_host_t *ha)
+qla4xxx_set_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
+		 dma_addr_t init_fw_cb_dma)
 {
-	ADDRESS_CTRL_BLK  *init_fw_cb;
-	dma_addr_t	  init_fw_cb_dma;
-	uint32_t   mbox_cmd[MBOX_REG_COUNT];
-	uint32_t   mbox_sts[MBOX_REG_COUNT];
-	uint8_t    status = QLA_ERROR;
+	ENTER(__func__);
 
-	ENTER("qla4xxx_initialize_fw_cb");
-
-	ha->ifcb_size = 0x200 /* Default to Legacy IFCB Size */;
-
-	init_fw_cb = pci_alloc_consistent(ha->pdev, ha->ifcb_size,
-	  &init_fw_cb_dma);
-	if (init_fw_cb == NULL) {
-		printk("scsi%d: %s: Unable to alloc init_cb\n", ha->host_no,
-		    __func__);
-		return 10;
-	}
-	memset(init_fw_cb, 0, ha->ifcb_size);
-
-	/*
-	 * Get Initialize Firmware Control Block
-	 */
-	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
-	memset(&mbox_sts, 0, sizeof(mbox_sts));
-	mbox_cmd[0] = MBOX_CMD_GET_INIT_FW_CTRL_BLOCK;
-	mbox_cmd[2] = LSDW(init_fw_cb_dma);
-	mbox_cmd[3] = MSDW(init_fw_cb_dma);
-
-	if (qla4xxx_mailbox_command(ha, 5, 5, &mbox_cmd[0], &mbox_sts[0])
-	    != QLA_SUCCESS) {
-		QL4PRINT(QLP2,
-			 printk("scsi%d: %s: Failed to get init_fw_ctrl_blk\n",
-				ha->host_no, __func__));
-		{
-			int i;
-			for (i=0; i<MBOX_REG_COUNT; i++) {
-                                printk("mbox_cmd[%d] = %08x,     "
-                                       "mbox_sts[%d] = %08x\n",
-                                       i, mbox_cmd[i], i, mbox_sts[i]);
-			}
-		}
-		LEAVE("qla4xxx_initialize_fw_cb");
-		pci_free_consistent(ha->pdev, ha->ifcb_size,
-		    init_fw_cb, init_fw_cb_dma);
-		return (status);
-	}
-
-	QL4PRINT(QLP10, printk("scsi%d: Get Init Fw Ctrl Blk\n", ha->host_no));
-	qla4xxx_dump_bytes(QLP10, init_fw_cb, ha->ifcb_size);
-
-	/*
-	 * Initialize request and response queues
-	 */
-	qla4xxx_init_rings(ha);
-
-	/*
-	 * Fill in the request and response queue information
-	 */
-	init_fw_cb->ReqQConsumerIndex = cpu_to_le16(ha->request_out);
-	init_fw_cb->ComplQProducerIndex = cpu_to_le16(ha->response_in);
-	init_fw_cb->ReqQLen = __constant_cpu_to_le16(REQUEST_QUEUE_DEPTH);
-	init_fw_cb->ComplQLen = __constant_cpu_to_le16(RESPONSE_QUEUE_DEPTH);
-	init_fw_cb->ReqQAddrLo = cpu_to_le32(LSDW(ha->request_dma));
-	init_fw_cb->ReqQAddrHi = cpu_to_le32(MSDW(ha->request_dma));
-	init_fw_cb->ComplQAddrLo = cpu_to_le32(LSDW(ha->response_dma));
-	init_fw_cb->ComplQAddrHi = cpu_to_le32(MSDW(ha->response_dma));
-	init_fw_cb->ShadowRegBufAddrLo = cpu_to_le32(LSDW(ha->shadow_regs_dma));
-	init_fw_cb->ShadowRegBufAddrHi = cpu_to_le32(MSDW(ha->shadow_regs_dma));
-
-	/*
-	 * Set up required options
-	 */
-	init_fw_cb->FwOptions |=
-	    __constant_cpu_to_le16(FWOPT_SESSION_MODE | FWOPT_INITIATOR_MODE);
-	init_fw_cb->FwOptions &= __constant_cpu_to_le16(~FWOPT_TARGET_MODE);
-
-	/*
-	 * Save some info in adapter structure
-	 */
-	ha->firmware_options = le16_to_cpu(init_fw_cb->FwOptions);
-	ha->tcp_options = le16_to_cpu(init_fw_cb->TCPOptions);
-	ha->heartbeat_interval = init_fw_cb->HeartbeatInterval;
-	ha->isns_server_port_number =
-	    le16_to_cpu(init_fw_cb->iSNSServerPortNumber);
-
-	memcpy(ha->ip_address, init_fw_cb->IPAddr,
-	    MIN(sizeof(ha->ip_address), sizeof(init_fw_cb->IPAddr)));
-	memcpy(ha->subnet_mask, init_fw_cb->SubnetMask,
-	    MIN(sizeof(ha->subnet_mask), sizeof(init_fw_cb->SubnetMask)));
-	memcpy(ha->gateway, init_fw_cb->GatewayIPAddr,
-	    MIN(sizeof(ha->gateway), sizeof(init_fw_cb->GatewayIPAddr)));
-	memcpy(ha->isns_ip_address, init_fw_cb->iSNSIPAddr,
-	    MIN(sizeof(ha->isns_ip_address), sizeof(init_fw_cb->iSNSIPAddr)));
-	memcpy(ha->name_string, init_fw_cb->iSCSINameString,
-	    MIN(sizeof(ha->name_string), sizeof(init_fw_cb->iSCSINameString)));
-	memcpy(ha->alias, init_fw_cb->iSCSIAlias,
-	    MIN(sizeof(ha->alias), sizeof(init_fw_cb->iSCSIAlias)));
-
-	/* Save Command Line Paramater info */
-	ha->port_down_retry_count = (ql4xkeepalive != 0xDEAD)
-		? ql4xkeepalive : le16_to_cpu(init_fw_cb->KeepAliveTimeout);
-	ha->discovery_wait = ql4xdiscoverywait;
-
-	/*
-	 * Send Initialize Firmware Control Block
-	 */
-	QL4PRINT(QLP10, printk("scsi%d: Pre Set Init Fw Ctrl Blk\n",
-	    ha->host_no));
-	qla4xxx_dump_bytes(QLP10, init_fw_cb, ha->ifcb_size);
-
-	QL4PRINT(QLP7, printk("scsi%d: %s: init_fw cmd sent\n", ha->host_no,
-	    __func__));
-
+	memset(mbox_cmd, 0, sizeof(mbox_cmd[0]) * MBOX_REG_COUNT);
+	memset(mbox_sts, 0, sizeof(mbox_sts[0]) * MBOX_REG_COUNT);
 	mbox_cmd[0] = MBOX_CMD_INITIALIZE_FIRMWARE;
 	mbox_cmd[1] = 0;
 	mbox_cmd[2] = LSDW(init_fw_cb_dma);
 	mbox_cmd[3] = MSDW(init_fw_cb_dma);
-
-	if (qla4xxx_mailbox_command(ha, 6, 6, &mbox_cmd[0], &mbox_sts[0])
+	if (ha->ifcb_size > LEGACY_IFCB_SIZE){
+		mbox_cmd[4] = ha->ifcb_size;
+		mbox_cmd[5] = (IFCB_VER_MAX << 8) | IFCB_VER_MIN;
+	}
+	if (qla4xxx_mailbox_command(ha, 6, 6, mbox_cmd, mbox_sts)
 	    != QLA_SUCCESS) {
 		QL4PRINT(QLP2, printk("scsi%d: %s: "
 		    "MBOX_CMD_INITIALIZE_FIRMWARE failed w/ status %04X\n",
 		    ha->host_no, __func__, mbox_sts[0]));
-		LEAVE("qla4xxx_initialize_fw_cb");
-		pci_free_consistent(ha->pdev, ha->ifcb_size,
-		    init_fw_cb, init_fw_cb_dma);
-		return (status);
-	}
-
-	QL4PRINT(QLP7, printk("scsi%d: Post Set Init Fw Ctrl Blk\n",
-		    ha->host_no));
-	qla4xxx_dump_bytes(QLP7, init_fw_cb, ha->ifcb_size);
-
-	/* --- IP v4 --- */
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "IP Address            %d.%d.%d.%d\n", ha->host_no,
-		    __func__, ha->ip_address[0], ha->ip_address[1],
-		    ha->ip_address[2], ha->ip_address[3]));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "Subnet Mask           %d.%d.%d.%d\n", ha->host_no,
-		    __func__, init_fw_cb->SubnetMask[0],
-		    init_fw_cb->SubnetMask[1], init_fw_cb->SubnetMask[2],
-		    init_fw_cb->SubnetMask[3]));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "Default Gateway       %d.%d.%d.%d\n", ha->host_no,
-		    __func__, init_fw_cb->GatewayIPAddr[0],
-		    init_fw_cb->GatewayIPAddr[1], init_fw_cb->GatewayIPAddr[2],
-		    init_fw_cb->GatewayIPAddr[3]));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "Auto-Negotiate        %s\n", ha->host_no, __func__,
-		    ((le16_to_cpu(init_fw_cb->AddFwOptions) & 0x10) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "SLP Use DA Enable     %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_SLP_USE_DA_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "SLP UA Enable         %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_SLP_UA_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "DHCP Enable           %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_DHCP_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "DNS via DHCP Enable   %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_GET_DNS_VIA_DHCP_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "SLP via DHCP Enable   %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_GET_SLP_VIA_DHCP_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "Auto Discovery Enable %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_AUTO_DISCOVERY_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-#if ENABLE_ISNS
-		QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
-		    "iSNS Enable           %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_ISNS_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
-		    "Learn iSNS IP Addr Enable %s\n", ha->host_no, __func__,
-		    ((ha->tcp_options & TOPT_LEARN_ISNS_IP_ADDR_ENABLE) != 0)
-		    ? "ON" : "OFF"));
-		if (ha->tcp_options & TOPT_ISNS_ENABLE) {
-			set_bit(ISNS_FLAG_ISNS_ENABLED_IN_ISP, &ha->isns_flags);
-
-			QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
-			    "iSNS IP Address           %d.%d.%d.%d\n",
-			    ha->host_no, __func__, ha->isns_ip_address[0],
-			    ha->isns_ip_address[1], ha->isns_ip_address[2],
-			    ha->isns_ip_address[3]));
-			QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
-			    "iSNS Server Port Number   %d\n", ha->host_no,
-			    __func__, ha->isns_server_port_number));
+		{
+			int i;
+			for (i=0; i<MBOX_REG_COUNT; i++) {
+                                QL4PRINT(QLP2, printk("mbox_cmd[%d] = %08x,     "
+                                       "mbox_sts[%d] = %08x\n",
+                                       i, mbox_cmd[i], i, mbox_sts[i]));
+			}
 		}
-#endif
-
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "Heartbeat Enable      %s\n", ha->host_no, __func__,
-		    ((ha->firmware_options & FWOPT_HEARTBEAT_ENABLE) != 0) ?
-		    "ON" : "OFF"));
-		if (ha->firmware_options & FWOPT_HEARTBEAT_ENABLE)
-			QL4PRINT(QLP7, printk("scsi%d: %s: "
-			    "Heartbeat Interval    %d\n", ha->host_no, __func__,
-			    ha->heartbeat_interval));
-
-		QL4PRINT(QLP7, printk("scsi%d: %s: "
-		    "Execution Throttle %d\n", ha->host_no, __func__,
-		    le16_to_cpu(init_fw_cb->ExecThrottle)));
-
-		status = QLA_SUCCESS;
-
-	pci_free_consistent(ha->pdev, sizeof(INIT_FW_CTRL_BLK), init_fw_cb,
-	    init_fw_cb_dma);
-
-	LEAVE("qla4xxx_initialize_fw_cb");
-
-	return status;
+		LEAVE(__func__);
+		return (QLA_ERROR);
+	}
+	LEAVE(__func__);
+	return (QLA_SUCCESS);
 }
 
+uint8_t
+qla4xxx_get_ifcb(scsi_qla_host_t *ha, uint32_t *mbox_cmd, uint32_t *mbox_sts,
+		 dma_addr_t init_fw_cb_dma)
+{
+	ENTER(__func__);
+
+	memset(mbox_cmd, 0, sizeof(mbox_cmd[0]) * MBOX_REG_COUNT);
+	memset(mbox_sts, 0, sizeof(mbox_sts[0]) * MBOX_REG_COUNT);
+	mbox_cmd[0] = MBOX_CMD_GET_INIT_FW_CTRL_BLOCK;
+	mbox_cmd[2] = LSDW(init_fw_cb_dma);
+	mbox_cmd[3] = MSDW(init_fw_cb_dma);
+	if (init_fw_cb_dma != 0 && ha->ifcb_size > LEGACY_IFCB_SIZE){
+		mbox_cmd[4] = ha->ifcb_size;
+	}
+
+	if (qla4xxx_mailbox_command(ha, 5, 5, mbox_cmd, mbox_sts)
+	    != QLA_SUCCESS) {
+
+		if (init_fw_cb_dma == 0 &&
+		    mbox_sts[0] == MBOX_STS_COMMAND_PARAMETER_ERROR)
+		{
+			LEAVE(__func__);
+			return (QLA_SUCCESS);
+		}
+
+		QL4PRINT(QLP2, printk("scsi%d: %s: "
+                        "MBOX_CMD_GET_INIT_FW_CTRL_BLOCK failed w/ status %04X\n",
+                        ha->host_no, __func__, mbox_sts[0]));
+		{
+			int i;
+			for (i=0; i<MBOX_REG_COUNT; i++) {
+                                QL4PRINT(QLP2, printk("mbox_cmd[%d] = %08x,     "
+                                       "mbox_sts[%d] = %08x\n",
+                                       i, mbox_cmd[i], i, mbox_sts[i]));
+			}
+		}
+		LEAVE(__func__);
+		return (QLA_ERROR);
+	}
+	LEAVE(__func__);
+	return (QLA_SUCCESS);
+}
 
 /**************************************************************************
  * qla4xxx_get_dhcp_ip_address
@@ -716,8 +554,9 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 {
 	ADDRESS_CTRL_BLK  *init_fw_cb;
 	dma_addr_t	  init_fw_cb_dma;
-	uint32_t   mbox_cmd[MBOX_REG_COUNT];
-	uint32_t   mbox_sts[MBOX_REG_COUNT];
+	uint32_t     	  mbox_cmd[MBOX_REG_COUNT];
+	uint32_t     	  mbox_sts[MBOX_REG_COUNT];
+	uint8_t 	  ip_addr_str[IP_ADDR_STR_SIZE];
 
 	ENTER(__func__);
 
@@ -726,53 +565,88 @@ qla4xxx_get_dhcp_ip_address(scsi_qla_host_t *ha)
 	if (init_fw_cb == NULL) {
 		printk("scsi%d: %s: Unable to alloc init_cb\n", ha->host_no,
 		    __func__);
+		LEAVE(__func__);
 		return 10;
 	}
 
 	/*
 	 * Get Initialize Firmware Control Block
 	 */
-	memset(&mbox_cmd, 0, sizeof(mbox_cmd));
-	memset(&mbox_sts, 0, sizeof(mbox_sts));
 	memset(init_fw_cb, 0, ha->ifcb_size);
-	mbox_cmd[0] = MBOX_CMD_GET_INIT_FW_CTRL_BLOCK;
-	mbox_cmd[2] = LSDW(init_fw_cb_dma);
-	mbox_cmd[3] = MSDW(init_fw_cb_dma);
-
-	if (qla4xxx_mailbox_command(ha, 5, 1, &mbox_cmd[0], &mbox_sts[0])
+	if (qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma)
 	    != QLA_SUCCESS) {
 		QL4PRINT(QLP2,
 			 printk("scsi%d: %s: Failed to get init_fw_ctrl_blk\n",
 				ha->host_no, __func__));
-		LEAVE(__func__);
 		pci_free_consistent(ha->pdev, ha->ifcb_size,
 		    init_fw_cb, init_fw_cb_dma);
+		LEAVE(__func__);
 		return QLA_ERROR;
 	}
 
-	/*
-	 * Save IP Address
-	 */
-	memcpy(ha->ip_address, init_fw_cb->IPAddr,
-	    MIN(sizeof(ha->ip_address), sizeof(init_fw_cb->IPAddr)));
-	memcpy(ha->subnet_mask, init_fw_cb->SubnetMask,
-	    MIN(sizeof(ha->subnet_mask), sizeof(init_fw_cb->SubnetMask)));
-	memcpy(ha->gateway, init_fw_cb->GatewayIPAddr,
-	    MIN(sizeof(ha->gateway), sizeof(init_fw_cb->GatewayIPAddr)));
+	if ((ha->acb_version == ACB_NOT_SUPPORTED) || IS_IPv4_ENABLED(ha)) {
+		/*
+		 * Save IPv4 Address
+		 */
+		memcpy(ha->ip_address, init_fw_cb->IPAddr,
+		    MIN(sizeof(ha->ip_address), sizeof(init_fw_cb->IPAddr)));
+		memcpy(ha->subnet_mask, init_fw_cb->SubnetMask,
+		    MIN(sizeof(ha->subnet_mask), sizeof(init_fw_cb->SubnetMask)));
+		memcpy(ha->gateway, init_fw_cb->GatewayIPAddr,
+		    MIN(sizeof(ha->gateway), sizeof(init_fw_cb->GatewayIPAddr)));
 
-	QL4PRINT(QLP7, printk("scsi%d: %s: "
-	    "IP Address            %d.%d.%d.%d\n", ha->host_no,
-	    __func__, ha->ip_address[0], ha->ip_address[1],
-	    ha->ip_address[2], ha->ip_address[3]));
-	QL4PRINT(QLP7, printk("scsi%d: %s: "
-	    "Subnet Mask           %d.%d.%d.%d\n", ha->host_no,
-	    __func__, ha->subnet_mask[0], ha->subnet_mask[1],
-	    ha->subnet_mask[2], ha->subnet_mask[3]));
-	QL4PRINT(QLP7, printk("scsi%d: %s: "
-	    "Default Gateway       %d.%d.%d.%d\n", ha->host_no,
-	    __func__, ha->gateway[0], ha->gateway[1],
-	    ha->gateway[2], ha->gateway[3]));
+		IPv4Addr2Str(ha->ip_address, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IP Address            %s\n",
+		    ha->host_no, __func__, &ip_addr_str[0]));
+		
+		IPv4Addr2Str(ha->subnet_mask, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Subnet Mask           %s\n",
+		    ha->host_no, __func__, &ip_addr_str[0]));
+		
+		IPv4Addr2Str(ha->gateway, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Default Gateway       %s\n",
+		    ha->host_no, __func__, &ip_addr_str[0]));
+	}
+	if (IS_IPv6_ENABLED(ha)) {
+		/*
+		 * Save IPv6 Address
+		 */
 
+		ha->ipv6_link_local_addr[0] = 0xFE;
+		ha->ipv6_link_local_addr[1] = 0x80;
+		memcpy(&ha->ipv6_link_local_addr[8], init_fw_cb->IPv6InterfaceID,
+		    MIN(sizeof(ha->ipv6_link_local_addr)/2, sizeof(init_fw_cb->IPv6InterfaceID)));
+		memcpy(ha->ipv6_addr0, init_fw_cb->IPv6Addr0,
+		    MIN(sizeof(ha->ipv6_addr0), sizeof(init_fw_cb->IPv6Addr0)));
+		memcpy(ha->ipv6_addr1, init_fw_cb->IPv6Addr1,
+		    MIN(sizeof(ha->ipv6_addr1), sizeof(init_fw_cb->IPv6Addr1)));
+		memcpy(ha->ipv6_default_router_addr, init_fw_cb->IPv6DefaultRouterAddr,
+		    MIN(sizeof(ha->ipv6_default_router_addr), sizeof(init_fw_cb->IPv6DefaultRouterAddr)));
+
+
+		IPv6Addr2Str(ha->ipv6_link_local_addr, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 Link Local       %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+
+		IPv6Addr2Str(ha->ipv6_addr0, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 IP Address0      %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+
+		IPv6Addr2Str(ha->ipv6_addr1, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 IP Address1      %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+
+		IPv6Addr2Str(ha->ipv6_default_router_addr, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 Default Router   %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+	}
 
 	pci_free_consistent(ha->pdev, ha->ifcb_size, init_fw_cb,
 	    init_fw_cb_dma);
@@ -913,6 +787,7 @@ qla4xxx_get_fwddb_entry(scsi_qla_host_t *ha,
 	uint8_t         status = QLA_ERROR;
 	uint32_t	mbox_cmd[MBOX_REG_COUNT];
 	uint32_t	mbox_sts[MBOX_REG_COUNT];
+	uint8_t 	ip_addr_str[IP_ADDR_STR_SIZE];
 
 	ENTER(__func__);
 
@@ -946,15 +821,18 @@ qla4xxx_get_fwddb_entry(scsi_qla_host_t *ha,
 	}
 
 	if (fw_ddb_entry) {
+		if ((fw_ddb_entry->options & DDB_OPT_IPv6_DEVICE) != 0)	{
+			IPv6Addr2Str(fw_ddb_entry->RemoteIPAddr, &ip_addr_str[0]);
+		} else {
+			IPv4Addr2Str(fw_ddb_entry->RemoteIPAddr, &ip_addr_str[0]);
+		}
+
 		ql4_printk(KERN_INFO, ha,
 		    "DDB[%d] MB0 %04x Tot %d Next %d "
-		    "State %04x ConnErr %08x %d.%d.%d.%d:%04d \"%s\"\n",
+		    "State %04x ConnErr %08x %s:%04d \"%s\"\n",
 		    fw_ddb_index,
 		    mbox_sts[0], mbox_sts[2], mbox_sts[3], mbox_sts[4], mbox_sts[5],
-		    fw_ddb_entry->RemoteIPAddr[0],
-		    fw_ddb_entry->RemoteIPAddr[1],
-		    fw_ddb_entry->RemoteIPAddr[2],
-		    fw_ddb_entry->RemoteIPAddr[3],
+		    &ip_addr_str[0],
 		    le16_to_cpu(fw_ddb_entry->RemoteTCPPortNumber),
 		    fw_ddb_entry->iscsiName);
 	}
@@ -983,8 +861,7 @@ qla4xxx_get_fwddb_entry(scsi_qla_host_t *ha,
 
 	status = QLA_SUCCESS;
 
-	exit_get_fwddb:
-
+exit_get_fwddb:
 	LEAVE(__func__);
 	return(status);
 }

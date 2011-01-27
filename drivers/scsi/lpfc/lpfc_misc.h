@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_misc.h 2757 2005-12-09 18:21:44Z sf_support $
+ * $Id: lpfc_misc.h 2894 2006-03-28 16:47:45Z sf_support $
  */
 
 #ifndef _H_LPFC_MISC
@@ -116,7 +116,7 @@ int lpfc_scsi_lun_reset(struct lpfc_scsi_buf *, struct lpfc_hba *, uint32_t);
 int lpfc_scsi_tgt_reset(struct lpfc_scsi_buf *, struct lpfc_hba *, uint32_t);
 struct lpfc_iocbq *lpfc_prep_els_iocb(struct lpfc_hba *, uint8_t expectRsp,
 				      uint16_t, uint8_t, struct lpfc_nodelist *,
-				      uint32_t);
+				      uint32_t, uint32_t);
 struct lpfc_bindlist *lpfc_assign_scsid(struct lpfc_hba *,
 					struct lpfc_nodelist *, int);
 struct  lpfc_scsi_buf * lpfc_get_scsi_buf(struct lpfc_hba *phba, int gfp_flags);

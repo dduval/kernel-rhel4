@@ -263,7 +263,11 @@ static void set_pte_phys(unsigned long vaddr,
 			return;
 		}
 	}
-	new_pte = pfn_pte(phys >> PAGE_SHIFT, prot);
+	if (pgprot_val(prot))
+		new_pte = pfn_pte(phys >> PAGE_SHIFT, prot);
+	else
+		new_pte = __pte(0);
+
 	pte = pte_offset_kernel(pmd, vaddr);
 	if (!pte_none(*pte) &&
 	    pte_val(*pte) != (pte_val(new_pte) & __supported_pte_mask))

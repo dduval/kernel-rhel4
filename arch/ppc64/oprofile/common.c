@@ -166,11 +166,23 @@ int __init oprofile_arch_init(struct oprofile_operations **ops)
 			oprof_ppc64_ops.cpu_type = "ppc64/970";
 			break;
 
+		case PV_970MP:
+			model = &op_model_power4;
+			model->num_counters = 8;
+			oprof_ppc64_ops.cpu_type = "ppc64/970MP";
+			break;
+
 		case PV_POWER5:
 		case PV_POWER5p:
 			model = &op_model_power4;
 			model->num_counters = 6;
 			oprof_ppc64_ops.cpu_type = "ppc64/power5";
+			break;
+
+		case PV_POWER6:
+			model = &op_model_power4;
+			model->num_counters = 6;
+			oprof_ppc64_ops.cpu_type = "ppc64/power6";
 			break;
 
 		default:

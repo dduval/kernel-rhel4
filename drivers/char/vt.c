@@ -2491,7 +2491,7 @@ static int con_open(struct tty_struct *tty, struct file *filp)
 	int ret = 0;
 
 	acquire_console_sem();
-	if (!(test_and_set_bit(TTY_OPENED, &tty->flags))) {
+	if (tty->driver_data == NULL) {
 		ret = vc_allocate(currcons);
 		if (ret == 0) {
 			vt_cons[currcons]->vc_num = currcons;
@@ -2822,9 +2822,6 @@ void do_blank_screen(int entering_gfx)
 		}
 		return;
 	}
-	if (blank_state != blank_normal_wait)
-		return;
-	blank_state = blank_off;
 
 	/* entering graphics mode? */
 	if (entering_gfx) {
@@ -2832,9 +2829,14 @@ void do_blank_screen(int entering_gfx)
 		save_screen(currcons);
 		sw->con_blank(vc_cons[currcons].d, -1, 1);
 		console_blanked = fg_console + 1;
+		blank_state = blank_off;
 		set_origin(currcons);
 		return;
 	}
+
+	if (blank_state != blank_normal_wait)
+		return;
+	blank_state = blank_off;
 
 	/* don't blank graphics */
 	if (vcmode != KD_TEXT) {

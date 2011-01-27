@@ -1535,7 +1535,7 @@ static void release_dev(struct file * filp)
 	 * each iteration we avoid any problems.
 	 */
 	while (1) {
-		
+		down(&tty_sem);
 		tty_closing = tty->count <= 1;
 		o_tty_closing = o_tty &&
 			(o_tty->count <= (pty_master ? 1 : 0));
@@ -1566,6 +1566,7 @@ static void release_dev(struct file * filp)
 
 		printk(KERN_WARNING "release_dev: %s: read/write wait queue "
 				    "active!\n", tty_name(tty, buf));
+		up(&tty_sem);
 		schedule();
 	}	
 
@@ -1633,6 +1634,7 @@ static void release_dev(struct file * filp)
 	}
 
 	/* check whether both sides are closing ... */
+	up(&tty_sem);
 	if (!tty_closing || (o_tty && !o_tty_closing))
 		return;
 	
@@ -1797,7 +1799,6 @@ got_driver:
 		else
 			retval = -ENODEV;
 	}
-	set_bit(TTY_OPENED, &tty->flags);
 	filp->f_flags = saved_flags;
 
 	if (!retval && test_bit(TTY_EXCLUSIVE, &tty->flags) && !capable(CAP_SYS_ADMIN))
@@ -1882,8 +1883,6 @@ static int ptmx_open(struct inode * inode, struct file * filp)
 
 	check_tty_count(tty, "tty_open");
 	retval = ptm_driver->open(tty, filp);
-	set_bit(TTY_OPENED, &tty->flags);
-	set_bit(TTY_OPENED, &tty->link->flags);
 	if (!retval)
 		return 0;
 out1:

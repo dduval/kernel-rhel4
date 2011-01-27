@@ -228,6 +228,16 @@ struct smi_info
         struct task_struct *thread;
 };
 
+/* There can be 4 IO ports passed in (with or without IRQs), 4 addresses,
+   a default IO port, and 1 ACPI/SPMI address.  That sets SI_MAX_DRIVERS */
+
+#define SI_MAX_PARMS 8
+#define SI_MAX_DRIVERS ((SI_MAX_PARMS * 2) + 2)
+static struct smi_info *smi_infos[SI_MAX_DRIVERS] =
+{ NULL, NULL, NULL, NULL };
+static int force_kipmid[SI_MAX_PARMS];
+static int num_force_kipmid;
+
 static struct notifier_block *xaction_notifier_list;
 static int register_xaction_notifier(struct notifier_block * nb)
 {
@@ -959,6 +969,7 @@ static int smi_start_processing(void       *send_info,
 				ipmi_smi_t intf)
 {
 	struct smi_info *new_smi = send_info;
+	int             enable = 0;
 
 	new_smi->intf = intf;
 
@@ -970,7 +981,19 @@ static int smi_start_processing(void       *send_info,
 	new_smi->si_timer.expires = jiffies + SI_TIMEOUT_JIFFIES;
 	add_timer(&new_smi->si_timer);
 
- 	if (new_smi->si_type != SI_BT) {
+ 	/*
+	 * Check if the user forcefully enabled the daemon.
+	 */
+	if (new_smi->intf_num < num_force_kipmid)
+		enable = force_kipmid[new_smi->intf_num];
+	/*
+	 * The BT interface is efficient enough to not need a thread,
+	 * and there is no need for a thread if we have interrupts.
+	 */
+	else if ((new_smi->si_type != SI_BT) && (!new_smi->irq))
+		enable = 1;
+
+	if (enable) {
 		new_smi->thread = kthread_run(ipmi_thread, new_smi,
 					      "kipmi%d", new_smi->intf_num);
 		if (IS_ERR(new_smi->thread)) {
@@ -994,14 +1017,6 @@ static struct ipmi_smi_handlers handlers =
 	.set_run_to_completion  = set_run_to_completion,
 	.poll			= poll,
 };
-
-/* There can be 4 IO ports passed in (with or without IRQs), 4 addresses,
-   a default IO port, and 1 ACPI/SPMI address.  That sets SI_MAX_DRIVERS */
-
-#define SI_MAX_PARMS 8
-#define SI_MAX_DRIVERS ((SI_MAX_PARMS * 2) + 2)
-static struct smi_info *smi_infos[SI_MAX_DRIVERS] =
-{ NULL, NULL, NULL, NULL };
 
 #define DEVICE_NAME "ipmi_si"
 
@@ -1076,7 +1091,10 @@ MODULE_PARM_DESC(slave_addrs, "Set the default IPMB slave address for"
 		 " the controller.  Normally this is 0x20, but can be"
 		 " overridden by this parm.  This is an array indexed"
 		 " by interface number.");
-
+module_param_array(force_kipmid, int, num_force_kipmid, 0);
+MODULE_PARM_DESC(force_kipmid, "Force the kipmi daemon to be enabled (1) or"
+		 " disabled(0).  Normally the IPMI driver auto-detects"
+		 " this, but the value may be overridden by this parm.");
 
 #define IPMI_MEM_ADDR_SPACE 1
 #define IPMI_IO_ADDR_SPACE  2

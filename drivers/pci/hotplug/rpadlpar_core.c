@@ -270,8 +270,10 @@ static int dlpar_remove_phb(char *drc_name, struct device_node *dn)
 {
 	struct slot *slot;
 	int rc = 0;
+	struct pci_bus *bus;
 
-	if (!rpaphp_find_pci_bus(dn))
+	bus = rpaphp_find_pci_bus(dn);
+	if (!bus)
 		return -EINVAL;
 
 	slot = find_slot(dn);
@@ -283,7 +285,8 @@ static int dlpar_remove_phb(char *drc_name, struct device_node *dn)
 				__FUNCTION__, drc_name);
 			return -EIO;
 		}
-	}
+	} else
+		rpaphp_unconfig_pci_adapter(bus);
 
 	BUG_ON(!dn->phb);
 	rc = dlpar_remove_root_bus(dn->phb);
@@ -428,7 +431,8 @@ int dlpar_remove_pci_slot(char *drc_name, struct device_node *dn)
 				__FUNCTION__, drc_name);
 			return -EIO;
 		}
-	}
+	} else
+		rpaphp_unconfig_pci_adapter(bus);
 
 	if (unmap_bus_range(bus)) {
 		printk(KERN_ERR "%s: failed to unmap bus range\n",

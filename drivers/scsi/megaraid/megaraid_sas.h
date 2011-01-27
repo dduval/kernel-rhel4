@@ -18,20 +18,17 @@
 /**
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"00.00.03.05"
-#define MEGASAS_RELDATE				"Oct 02, 2006"
-#define MEGASAS_EXT_VERSION			"Mon Oct 02 11:21:32 PDT 2006"
+#define MEGASAS_VERSION				"00.00.03.13"
+#define MEGASAS_RELDATE				"Jun 12, 2007"
+#define MEGASAS_EXT_VERSION			"Tue Jun 12 12:35:50 PDT 2007"
 
 /*
  * Device IDs
  */
 #define	PCI_DEVICE_ID_LSI_SAS1078R		0x0060
 #define	PCI_DEVICE_ID_LSI_VERDE_ZCR		0x0413
-
-/*
- * Device IDs
- */
-#define	PCI_DEVICE_ID_LSI_VERDE_ZCR		0x0413
+#define	PCI_DEVICE_ID_LSI_SAS1064R		0x0411
+#define	PCI_DEVICE_ID_DELL_PERC5		0x0015
 
 /*
  * =====================================
@@ -122,6 +119,7 @@
 #define MR_FLUSH_DISK_CACHE			0x02
 
 #define MR_DCMD_CTRL_SHUTDOWN			0x01050000
+#define MR_DCMD_HIBERNATE_SHUTDOWN		0x01060000
 #define MR_ENABLE_DRIVE_SPINDOWN		0x01
 
 #define MR_DCMD_CTRL_EVENT_GET_INFO		0x01040100
@@ -541,8 +539,10 @@ struct megasas_ctrl_info {
 #define MEGASAS_DEFAULT_INIT_ID			-1
 #define MEGASAS_MAX_LUN				8
 #define MEGASAS_MAX_LD				64
+#define MEGASAS_DEFAULT_CMD_PER_LUN		128
 
 #define MEGASAS_DBG_LVL				1
+#define MEGASAS_FW_BUSY				1
 
 /*
  * When SCSI mid-layer calls driver's reset routine, driver waits for
@@ -556,6 +556,7 @@ struct megasas_ctrl_info {
 #define	MEGASAS_RESET_NOTICE_INTERVAL		5
 
 #define MEGASAS_IOCTL_CMD			0
+#define MEGASAS_DEFAULT_CMD_TIMEOUT		90
 
 /*
  * FW reports the maximum of number of commands that it can accept (maximum
@@ -1078,15 +1079,16 @@ struct megasas_instance {
 	struct megasas_register_set __iomem *reg_set;
 
 	s8 init_id;
-	u8 reserved[3];
 
 	u16 max_num_sge;
 	u16 max_fw_cmds;
 	u32 max_sectors_per_req;
+	u32 cmd_per_lun;
 
 	struct megasas_cmd **cmd_list;
 	struct list_head cmd_pool;
 	spinlock_t cmd_pool_lock;
+	spinlock_t completion_lock;
 	struct dma_pool *frame_dma_pool;
 	struct dma_pool *sense_dma_pool;
 
@@ -1109,6 +1111,9 @@ struct megasas_instance {
 
 	struct megasas_instance_template *instancet;
 	struct tasklet_struct isr_tasklet;
+
+	u8 flag;
+	unsigned long last_time;
 };
 
 #define MEGASAS_IS_LOGICAL(scp)						\

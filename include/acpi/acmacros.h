@@ -464,6 +464,8 @@
 
 #define ACPI_REPORT_METHOD_ERROR(s,n,p,e)   acpi_ns_report_method_error("ACPI",__LINE__,_COMPONENT, s, n, p, e);
 
+#define ACPI_INFO(plist)
+#define ACPI_EXCEPTION(plist)
 #endif
 
 /* Error reporting.  These versions pass thru the module and line# */

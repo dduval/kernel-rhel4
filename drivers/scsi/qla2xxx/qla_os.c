@@ -171,6 +171,19 @@ MODULE_PARM_DESC(ql2xfdmienable,
 		"Enables FDMI registratons "
 		"Default is 0 - no FDMI. 1 - perfom FDMI.");
 
+int ql2xqfullrampup = 120;
+module_param(ql2xqfullrampup, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(ql2xqfullrampup,
+		"Number of seconds to wait to begin to ramp-up the queue "
+		"depth for a device after a queue-full condition has been "
+		"detected.  Default is 120 seconds.");
+
+int ql2xcmdtimermin = QLA_CMD_TIMER_MINIMUM;
+module_param(ql2xcmdtimermin, int, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(ql2xcmdtimermin,
+		"Default is 30 seconds.");
+EXPORT_SYMBOL_GPL(ql2xcmdtimermin);
+
 /*
  * List of host adapters
  */
@@ -304,9 +317,6 @@ qla2x00_stop_timer(scsi_qla_host_t *ha)
 
 void qla2x00_cmd_timeout(srb_t *);
 
-static __inline__ void qla2x00_callback(scsi_qla_host_t *, struct scsi_cmnd *);
-static __inline__ void sp_put(struct scsi_qla_host * ha, srb_t *sp);
-static __inline__ void sp_get(struct scsi_qla_host * ha, srb_t *sp);
 static __inline__ void
 qla2x00_delete_from_done_queue(scsi_qla_host_t *, srb_t *); 
 
@@ -324,8 +334,8 @@ qla2x00_delete_from_done_queue(scsi_qla_host_t *, srb_t *);
 *      back to the pool it has to be the vis_ha.	 
 *      So rely on struct scsi_cmnd to get the vis_ha and not on sp. 		 	
 */
-static inline void
-qla2x00_callback(scsi_qla_host_t *ha, struct scsi_cmnd *cmd)
+static void
+qla2x00_callback(scsi_qla_host_t *ha, struct scsi_cmnd *cmd, srb_t *orig_sp)
 {
 	srb_t *sp = (srb_t *) CMD_SP(cmd);
 	scsi_qla_host_t *vis_ha;
@@ -338,19 +348,21 @@ qla2x00_callback(scsi_qla_host_t *ha, struct scsi_cmnd *cmd)
 
 	if (sp == NULL) {
 		qla_printk(KERN_INFO, ha,
-			"%s(): **** CMD derives a NULL SP\n",
-			__func__);
-                DEBUG2(BUG();)
+		    "%s(): **** CMD<%ld:%d:%d:%d> %p %ld derives a NULL SP "
+		    "tmo=%d osp=%p.\n", __func__, ha->host_no, cmd->device->channel,
+		    cmd->device->id, cmd->device->lun, cmd, cmd->serial_number,
+		    cmd->timeout_per_command, orig_sp);
+		if (orig_sp) {
+			orig_sp->cmd = NULL;
+			add_to_free_queue(vis_ha, orig_sp);
+		}
+
 		return;
 	}
 
 	/*
 	 * If command status is not DID_BUS_BUSY then go ahead and freed sp.
 	 */
-	/*
-	 * Cancel command timeout
-	 */
-	qla2x00_delete_timer_from_cmd(sp);
 
 	/*
 	 * Put SP back in the free queue
@@ -395,7 +407,7 @@ qla2x00_callback(scsi_qla_host_t *ha, struct scsi_cmnd *cmd)
 * Returns:
 *
 **************************************************************************/
-static inline void
+void
 sp_put(struct scsi_qla_host * ha, srb_t *sp)
 {
         if (atomic_read(&sp->ref_count) == 0) {
@@ -411,8 +423,9 @@ sp_put(struct scsi_qla_host * ha, srb_t *sp)
                 return;
         }
 
-        qla2x00_callback(ha, sp->cmd);
+        qla2x00_callback(ha, sp->cmd, sp);
 }
+EXPORT_SYMBOL_GPL(sp_put);
 
 /**************************************************************************
 * sp_get
@@ -426,42 +439,41 @@ sp_put(struct scsi_qla_host * ha, srb_t *sp)
 * Returns:
 *
 **************************************************************************/
-static inline void
+void
 sp_get(struct scsi_qla_host * ha, srb_t *sp)
 {
         atomic_inc(&sp->ref_count);
+}
+EXPORT_SYMBOL_GPL(sp_get);
 
-        if (atomic_read(&sp->ref_count) > 2) {
-		qla_printk(KERN_INFO, ha,
-			"%s(): **** SP->ref_count greater than two\n",
-			__func__);
-                DEBUG2(BUG();)
+static inline void 
+qla2x00_cleanse_sp(scsi_qla_host_t *ha, srb_t *sp)
+{
+	qla2x00_delete_timer_from_cmd(sp);
+	if (sp->flags & SRB_DMA_VALID) {
+		sp->flags &= ~SRB_DMA_VALID;
 
-		return;
+		/* Release memory used for this I/O */
+		if (sp->cmd->use_sg) {
+			pci_unmap_sg(ha->pdev, sp->cmd->request_buffer,
+			    sp->cmd->use_sg, sp->cmd->sc_data_direction);
+		} else if (sp->cmd->request_bufflen) {
+			pci_unmap_page(ha->pdev, sp->dma_handle,
+			    sp->cmd->request_bufflen,
+			    sp->cmd->sc_data_direction);
+		}
 	}
 }
 
-static inline void 
-qla2x00_delete_from_done_queue(scsi_qla_host_t *dest_ha, srb_t *sp) 
+static inline void
+qla2x00_delete_from_done_queue(scsi_qla_host_t *dest_ha, srb_t *sp)
 {
 	/* remove command from done list */
 	list_del_init(&sp->list);
 	dest_ha->done_q_cnt--;
 	sp->state = SRB_NO_QUEUE_STATE;
 
-	if (sp->flags & SRB_DMA_VALID) {
-		sp->flags &= ~SRB_DMA_VALID;
-
-		/* Release memory used for this I/O */
-		if (sp->cmd->use_sg) {
-			pci_unmap_sg(dest_ha->pdev, sp->cmd->request_buffer,
-			    sp->cmd->use_sg, sp->cmd->sc_data_direction);
-		} else if (sp->cmd->request_bufflen) {
-			pci_unmap_page(dest_ha->pdev, sp->dma_handle,
-			    sp->cmd->request_bufflen,
-			    sp->cmd->sc_data_direction);
-		}
-	}
+	qla2x00_cleanse_sp(dest_ha, sp);
 }
 
 static int qla2x00_do_dpc(void *data);
@@ -835,10 +847,10 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*fn)(struct scsi_cmnd *))
 	 * aborts are called.
 	 */
 	if ((cmd->timeout_per_command / HZ) > QLA_CMD_TIMER_DELTA)
-		qla2x00_add_timer_to_cmd(sp,
+		qla2x00_add_timer_to_cmd(ha, sp,
 		    (cmd->timeout_per_command / HZ) - QLA_CMD_TIMER_DELTA);
 	else
-		qla2x00_add_timer_to_cmd(sp, cmd->timeout_per_command / HZ);
+		sp->flags |= SRB_NO_TIMER;
 
 	if (l >= ha->max_luns) {
 		cmd->result = DID_NO_CONNECT << 16;
@@ -846,6 +858,7 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*fn)(struct scsi_cmnd *))
 
 		spin_lock_irq(ha->host->host_lock);
 
+		qla2x00_delete_timer_from_cmd(sp);
 		sp_put(ha, sp);
 
 		return (0);
@@ -899,8 +912,9 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*fn)(struct scsi_cmnd *))
 		cmd->result = DID_NO_CONNECT << 16;
 		sp->err_id = SRB_ERR_PORT;
 
-		spin_lock_irq(ha->host->host_lock);
+ 		spin_lock_irq(ha->host->host_lock);
 
+		qla2x00_delete_timer_from_cmd(sp);
 		sp_put(ha, sp);
 
 		return (0);
@@ -998,7 +1012,7 @@ qla2x00_queuecommand(struct scsi_cmnd *cmd, void (*fn)(struct scsi_cmnd *))
  *    Found : 1
  */
 static int
-qla2x00_eh_wait_on_command(scsi_qla_host_t *ha, struct scsi_cmnd *cmd)
+qla2x00_eh_wait_on_command(scsi_qla_host_t *ha, struct scsi_cmnd *cmd, int got_ref)
 {
 #define ABORT_POLLING_PERIOD	HZ
 #define ABORT_WAIT_TIME		((10 * HZ) / (ABORT_POLLING_PERIOD))
@@ -1021,17 +1035,29 @@ qla2x00_eh_wait_on_command(scsi_qla_host_t *ha, struct scsi_cmnd *cmd)
 			 * to OS.
 			*/
 			if (cmd == rp->cmd) {
-				found++;
 				DEBUG3(printk("%s: found in done queue.\n",
 				    __func__);)
+				qla2x00_delete_from_done_queue(ha, rp);
+				found++;
 				break;
 			}
 		}
 		spin_unlock_irqrestore(&ha->list_lock, flags);
 
+		/* Checking to see if its returned to OS */
+		rp = (srb_t *) CMD_SP(cmd);
+		if (rp == NULL) {
+			done++;
+			break;
+		}
+
+		if (got_ref && (atomic_read(&rp->ref_count) == 1)) {
+			done++;
+			break;
+		}
+
 		/* Complete the cmd right away. */
 		if (found) { 
-			qla2x00_delete_from_done_queue(ha, rp);
 			sp_put(ha, rp);
 			done++;
 			break;
@@ -1121,9 +1147,11 @@ qla2x00_set_isp_flags(scsi_qla_host_t *ha)
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP2422:
 		ha->device_type |= DT_ISP2422;
+		ha->device_type |= DT_IIDMA;
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP2432:
 		ha->device_type |= DT_ISP2432;
+		ha->device_type |= DT_IIDMA;
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP5422:
 		ha->device_type |= DT_ISP5422;
@@ -1190,6 +1218,7 @@ int
 qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 {
 	int		i;
+	int		got_ref = 0;
 	int		return_status = FAILED;
 	os_lun_t	*q;
 	scsi_qla_host_t *ha;
@@ -1230,11 +1259,6 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 	l = cmd->device->lun;
 	q = GET_LU_Q(vis_ha, t, l);
 
-	qla_printk(KERN_INFO, ha, 
-	    "%s scsi(%ld:%d:%d:%d): cmd_timeout_in_sec=0x%x.\n", __func__,
-	    ha->host_no, (int)b, (int)t, (int)l,
-	    cmd->timeout_per_command / HZ);
-
 	/*
 	 * if no LUN queue then something is very wrong!!!
 	 */
@@ -1246,10 +1270,13 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 		return return_status;
 	}
 
-	DEBUG2(printk("scsi(%ld): ABORTing cmd=%p sp=%p jiffies = 0x%lx, "
-	    "timeout=%x, dpc_flags=%lx, vis_ha->dpc_flags=%lx q->flag=%lx\n",
-	    ha->host_no, cmd, sp, jiffies, cmd->timeout_per_command / HZ,
-	    ha->dpc_flags, vis_ha->dpc_flags, q->q_flag));
+	qla_printk(KERN_INFO, ha, "scsi(%ld:%d:%d:%d): ABORTing cmd=%p "
+	    "sp=%p flags=%x state=%x ext_hist=%x jiffies = 0x%lx, timeout=%x, "
+	    "dpc_flags=%lx, vis_ha->dpc_flags=%lx q->flag=%lx ha=%p vis_ha=%p sp->ha=%p\n",
+	    ha->host_no, (int)b, (int)t, (int)l, cmd, sp, sp->flags,
+	    sp->state, sp->ext_history, jiffies,
+	    cmd->timeout_per_command / HZ, ha->dpc_flags, vis_ha->dpc_flags,
+	    q->q_flag, ha, vis_ha, sp->ha);
 	DEBUG2(qla2x00_print_scsi_cmd(cmd));
 
 	spin_unlock_irq_dump(vis_ha->host->host_lock);
@@ -1272,16 +1299,16 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 		 * And proceed to post completion to scsi mid layer.
 		 */
 		return_status = SUCCESS;
+		qla2x00_delete_from_done_queue(ha, rp);
 		found++;
-		qla2x00_delete_from_done_queue(ha, sp);
 
 		break;
 	} /* list_for_each_safe() */
 	spin_unlock_irqrestore(&ha->list_lock, flags);
 
 	/*
-	 * Return immediately if the aborted command was already in the done
-	 * queue
+	 * Found command. Remove it from done list.
+	 * And proceed to post completion to scsi mid layer.
 	 */
 	if (found) {
 		qla_printk(KERN_INFO, ha,
@@ -1304,112 +1331,131 @@ qla2xxx_eh_abort(struct scsi_cmnd *cmd)
 		if (cmd != rp->cmd)
 			continue;
 
-
-		DEBUG2(printk("qla2xxx_eh_abort: found "
-		    "in retry queue. SP=%p\n", sp);)
+		printk("%s: found in retry queue (%d). SP=%p flags=%d "
+		    "sp->ha=%p ha=%p\n", __func__, ha->retry_q_cnt, sp,
+		    sp->flags, sp->ha, ha);
 
 		__del_from_retry_queue(ha, rp);
-		cmd->result = DID_ABORT << 16;
-		__add_to_done_queue(ha, rp);
-
-		return_status = SUCCESS;
 		found++;
-
 		break;
-
-	} 
+	}
 	spin_unlock_irqrestore(&ha->list_lock, flags);
+	if (found) {
+		return_status = SUCCESS;
+		qla2x00_cleanse_sp(ha, sp);
+		cmd->result = DID_ABORT << 16;
+		sp_put(ha, sp);
+		goto eh_abort_complete;
+	}
+
+	spin_lock_irqsave(&ha->list_lock, flags);
+	list_for_each_safe(list, temp, &ha->scsi_retry_queue) {
+	 	rp = list_entry(list, srb_t, list);
+		if (cmd != rp->cmd)
+			continue;
+
+		printk("%s: found in scsi-retry queue (%d). SP=%p "
+			"flags=%d sp->ha=%p ha=%p\n", __func__,
+			ha->scsi_retry_q_cnt, sp, sp->flags, sp->ha, ha);
+
+		__del_from_scsi_retry_queue(ha, rp);
+		found++;
+		break;
+	}
+	spin_unlock_irqrestore(&ha->list_lock, flags);
+	if (found) {
+		return_status = SUCCESS;
+		qla2x00_cleanse_sp(ha, sp);
+		cmd->result = DID_ABORT << 16;
+		sp_put(ha, sp);
+		goto eh_abort_complete;
+	}
 
 
 	/*
 	 * Our SP pointer points at the command we want to remove from the
 	 * pending queue providing we haven't already sent it to the adapter.
 	 */
-	if (!found) {
-		DEBUG3(printk("qla2xxx_eh_abort: searching sp %p "
-		    "in pending queue.\n", sp);)
+	DEBUG3(printk("qla2xxx_eh_abort: searching sp %p "
+	    "in pending queue.\n", sp));
 
-		spin_lock_irqsave(&vis_ha->list_lock, flags);
-		list_for_each_safe(list, temp, &vis_ha->pending_queue) {
-			rp = list_entry(list, srb_t, list);
+	spin_lock_irqsave(&vis_ha->list_lock, flags);
+	list_for_each_safe(list, temp, &vis_ha->pending_queue) {
+		rp = list_entry(list, srb_t, list);
+		if (rp->cmd != cmd)
+			continue;
+		/* Remove srb from LUN queue. */
+		rp->flags |= SRB_ABORTED;
 
-			if (rp->cmd != cmd)
-				continue;
+		DEBUG2(printk("qla2xxx_eh_abort: Cmd in pending queue."
+		    " serial_number %ld.\n",
+		rp->cmd->serial_number));
 
-			/* Remove srb from LUN queue. */
-			rp->flags |=  SRB_ABORTED;
+		__del_from_pending_queue(vis_ha, rp);
+		found++;
+		break;
+	} /* list_for_each_safe() */
+	spin_unlock_irqrestore(&vis_ha->list_lock, flags);
+	if (found) {
+		return_status = SUCCESS;
+		qla2x00_cleanse_sp(ha, sp);
+		cmd->result = DID_ABORT << 16;
+		sp_put(ha, sp);
+		goto eh_abort_complete;
+	}
 
-			DEBUG2(printk("qla2xxx_eh_abort: Cmd in pending queue."
-			    " serial_number %ld.\n",
-			    sp->cmd->serial_number);)
+	DEBUG3(printk("qla2xxx_eh_abort: searching sp %p "
+	    "in outstanding queue.\n", sp));
+	spin_lock_irqsave(&ha->hardware_lock, flags);
+	for (i = 1; i < MAX_OUTSTANDING_COMMANDS; i++) {
+		sp = ha->outstanding_cmds[i];
 
-			__del_from_pending_queue(vis_ha, rp);
-			cmd->result = DID_ABORT << 16;
+		if (sp == NULL)
+			continue;
+		if (sp->cmd != cmd)
+			continue;
 
-			__add_to_done_queue(vis_ha, rp);
+		printk("qla2xxx_eh_abort(%ld): aborting sp %p "
+		    "from RISC. pid=%ld sp->state=%x q->q_flag=%lx\n",
+		    ha->host_no, sp, sp->cmd->serial_number,
+		    sp->state, q->q_flag);
 
-			return_status = SUCCESS;
+		/* Get a reference to the sp and drop the lock.*/
+		sp_get(ha, sp);
+		got_ref++;
 
-			found++;
-			break;
-		} /* list_for_each_safe() */
-		spin_unlock_irqrestore(&vis_ha->list_lock, flags);
-	} /*End of if !found */
-
-	if (!found) {  /* find the command in our active list */
-		DEBUG3(printk("qla2xxx_eh_abort: searching sp %p "
-		    "in outstanding queue.\n", sp);)
-
-		spin_lock_irqsave(&ha->hardware_lock, flags);
-		for (i = 1; i < MAX_OUTSTANDING_COMMANDS; i++) {
-			sp = ha->outstanding_cmds[i];
-
-			if (sp == NULL)
-				continue;
-
-			if (sp->cmd != cmd)
-				continue;
-
-			DEBUG2(printk("qla2xxx_eh_abort(%ld): aborting sp %p "
-			    "from RISC. pid=%ld sp->state=%x q->q_flag=%lx\n",
-			    ha->host_no, sp, sp->cmd->serial_number,
-			    sp->state, q->q_flag);)
-
-			/* Get a reference to the sp and drop the lock.*/
-			sp_get(ha, sp);
-
-			spin_unlock_irqrestore(&ha->hardware_lock, flags);
-
-			if (qla2x00_abort_command(ha, sp)) {
-				DEBUG2(printk("qla2xxx_eh_abort: abort_command "
-				    "mbx failed.\n");)
-				return_status = FAILED;
-			} else {
-				DEBUG3(printk("qla2xxx_eh_abort: abort_command "
-				    " mbx success.\n");)
-				return_status = SUCCESS;
-			}
-
-			sp_put(ha,sp);
-
-			spin_lock_irqsave(&ha->hardware_lock, flags);
-
-			/*
-			 * Regardless of mailbox command status, go check on
-			 * done queue just in case the sp is already done.
-			 */
-			break;
-
-		}/*End of for loop */
 		spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
-	} /*End of if !found */
+		if (qla2x00_abort_command(ha, sp)) {
+			DEBUG2(printk("qla2xxx_eh_abort: abort_command "
+			    "mbx failed.\n"));
+			return_status = FAILED;
+		} else {
+			DEBUG3(printk("qla2xxx_eh_abort: abort_command "
+			    " mbx success.\n"));
+			return_status = SUCCESS;
+		}
+
+		spin_lock_irqsave(&ha->hardware_lock, flags);
+
+		/*
+		 * Regardless of mailbox command status, go check on
+		 * done queue just in case the sp is already done.
+		 */
+		found++;
+		break;
+
+	} /*End of for loop */
+	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 	/* Waiting for our command in done_queue to be returned to OS.*/
-	if (qla2x00_eh_wait_on_command(ha, cmd) != 0) {
+	if (qla2x00_eh_wait_on_command(ha, cmd, got_ref) != 0) {
 		DEBUG2(printk("qla2xxx_eh_abort: cmd returned back to OS.\n");)
 		return_status = SUCCESS;
 	}
+
+        if (got_ref)
+                sp_put(ha, sp);
 
 	if (return_status == FAILED)
 		qla_printk(KERN_INFO, ha,
@@ -1459,7 +1505,7 @@ qla2x00_eh_wait_for_pending_target_commands(scsi_qla_host_t *ha, unsigned int t)
 			cmd = sp->cmd;
 			spin_unlock_irqrestore(&ha->hardware_lock, flags);
 			if (cmd->device->id == t) {
-				if (!qla2x00_eh_wait_on_command(ha, cmd)) {
+				if (!qla2x00_eh_wait_on_command(ha, cmd, 0)) {
 					status = 1;
 					break;
 				}
@@ -1539,13 +1585,11 @@ qla2xxx_eh_device_reset(struct scsi_cmnd *cmd)
 	set_bit(TQF_SUSPENDED, &tq->flags);
 
 	qla_printk(KERN_INFO, ha,
-	    "scsi(%ld:%d:%d:%d): DEVICE RESET ISSUED.\n", ha->host_no, b, t, l);
-
-	DEBUG2(printk(KERN_INFO
-	    "scsi(%ld): DEVICE_RESET cmd=%p jiffies = 0x%lx, timeout=%x, "
-	    "dpc_flags=%lx, status=%x allowed=%d cmd.state=%x\n",
-	    ha->host_no, cmd, jiffies, cmd->timeout_per_command / HZ,
-	    ha->dpc_flags, cmd->result, cmd->allowed, cmd->state));
+	    "scsi(%ld:%d:%d:%d): DEVICE_RESET cmd=%p jiffies = 0x%lx, "
+	    "timeout=%x, dpc_flags=%lx, status=%x allowed=%d ha=%p "
+	    "vis_ha=%p.\n", ha->host_no, b, t, l, cmd, jiffies,
+	    cmd->timeout_per_command / HZ, ha->dpc_flags, cmd->result,
+	    cmd->allowed, ha, vis_ha);
 
 	spin_unlock_irq_dump(vis_ha->host->host_lock);
 
@@ -1670,7 +1714,7 @@ qla2x00_eh_wait_for_pending_commands(scsi_qla_host_t *ha)
 		if (sp) {
 			cmd = sp->cmd;
 			spin_unlock_irqrestore(&ha->hardware_lock, flags);
-			status = qla2x00_eh_wait_on_command(ha, cmd);
+			status = qla2x00_eh_wait_on_command(ha, cmd, 0);
 			if (status == 0)
 				break;
 		}
@@ -2275,6 +2319,7 @@ int qla2x00_probe_one(struct pci_dev *pdev, struct qla_board_info *brd_info)
 		    pdev->irq);
 		goto probe_failed;
 	}
+	ha->flags.inta_enabled = 1;
 	host->irq = pdev->irq;
 
 	/* Initialized the timer */
@@ -2441,8 +2486,10 @@ qla2x00_free_device(scsi_qla_host_t *ha)
 		}
 	}
 
+	ha->flags.online = 0;
+
 	/* Stop currently executing firmware. */
-	qla2x00_stop_firmware(ha);
+	qla2x00_try_to_stop_firmware(ha);
 
 	/* turn-off interrupts on the card */
 	if (ha->interrupts_on)
@@ -2450,10 +2497,8 @@ qla2x00_free_device(scsi_qla_host_t *ha)
 
 	qla2x00_mem_free(ha);
 
-	ha->flags.online = 0;
-
 	/* Detach interrupts */
-	if (ha->pdev->irq)
+	if (ha->flags.inta_enabled)
 		free_irq(ha->pdev->irq, ha);
 
 #ifdef ENABLE_MSI
@@ -3558,7 +3603,7 @@ __qla2x00_do_dpc(scsi_qla_host_t *ha)
 				    FCS_DEVICE_LOST) {
 
 					__del_from_retry_queue(ha, sp);
-					sp->cmd->result = DID_BUS_BUSY << 16;
+					sp->cmd->result = DID_IMM_RETRY << 16;
 					sp->cmd->host_scribble =
 					    (unsigned char *) NULL;
 					__add_to_done_queue(ha, sp);
@@ -3866,7 +3911,7 @@ qla2x00_abort_queues(scsi_qla_host_t *ha, uint8_t doneqflg)
 		__del_from_pending_queue(ha, sp);
 
 		/* Set ending status. */
-		sp->cmd->result = DID_BUS_BUSY << 16;
+		sp->cmd->result = DID_IMM_RETRY << 16;
 
 		__add_to_done_queue(ha, sp);
 	}
@@ -4120,6 +4165,19 @@ qla2x00_timer(scsi_qla_host_t *ha)
 	qla2x00_restart_timer(ha, WATCH_INTERVAL);
 }
 
+static inline void
+qla2x00_extend_scsi_ml_timeout(struct scsi_cmnd *cmd, int timeout)
+{
+	srb_t *sp = (srb_t *) CMD_SP(cmd);
+	unsigned long our_jiffies;
+
+	if (del_timer(&cmd->eh_timeout)) {
+		our_jiffies = (timeout * HZ) + cmd->eh_timeout.expires;
+		mod_timer(&cmd->eh_timeout, our_jiffies);
+		sp->ext_history |= 1;
+	}
+}
+
 /*
  * qla2x00_extend_timeout
  *      This routine will extend the timeout to the specified value.
@@ -4134,28 +4192,23 @@ void
 qla2x00_extend_timeout(struct scsi_cmnd *cmd, int timeout) 
 {
 	srb_t *sp = (srb_t *) CMD_SP(cmd);
+	unsigned long our_jiffies;
 
-    	sp->ext_history= 0; 
+	if (sp->flags & SRB_NO_TIMER)
+		return;
+
+	sp->ext_history = 0;
 	sp->e_start = jiffies;
-	if (del_timer(&cmd->eh_timeout)) {
-		u_long our_jiffies;
 
-		our_jiffies = (timeout * HZ) + cmd->eh_timeout.expires;
-		mod_timer(&cmd->eh_timeout,our_jiffies);
-		sp->ext_history |= 1;
-	}
+	qla2x00_extend_scsi_ml_timeout(cmd, timeout);
 
-	if (del_timer(&sp->timer)) {
-		u_long our_jiffies;
-		/* 
-		 * Our internal timer should timeout before the midlayer has a
-		 * chance begin the abort process
-		 */
-		our_jiffies = (timeout * HZ) + sp->timer.expires;
-		mod_timer(&sp->timer,our_jiffies - (QLA_CMD_TIMER_DELTA * HZ));
-
-    	 	sp->ext_history |= 2;
-	}
+	/*
+	 * Our internal timer should timeout before the midlayer has a
+	 * chance to begin the abort process.
+	 */
+	our_jiffies = (timeout * HZ) + sp->timer.expires;
+	mod_timer(&sp->timer, our_jiffies - (QLA_CMD_TIMER_DELTA * HZ));
+	sp->ext_history |= 2;
 }
 
 /**************************************************************************
@@ -4176,15 +4229,25 @@ qla2x00_cmd_timeout(srb_t *sp)
 {
 	int t, l;
 	int processed;
+	int timer_extended = 0;
 	scsi_qla_host_t *vis_ha, *dest_ha;
 	struct scsi_cmnd *cmd;
 	unsigned long flags, cpu_flags;
 	fc_port_t *fcport;
 
 	cmd = sp->cmd;
+	if (!cmd) {
+		qla_printk(KERN_WARNING, sp->ha,
+		    "Command Timeout: command is NULL, already returned to OS "
+		    "sp=%p flags=%x ext_hist=%x.\n", sp, sp->flags,
+		    sp->ext_history);
+		return;
+	}
+
 	vis_ha = (scsi_qla_host_t *)cmd->device->host->hostdata;
 
-	DEBUG3(printk("cmd_timeout: Entering sp->state = %x\n", sp->state));
+	DEBUG2(printk("scsi(%ld): Command timeout: sp=%p sp->state=%x\n",
+	    vis_ha->host_no, sp, sp->state));
 
 	t = cmd->device->id;
 	l = cmd->device->lun;
@@ -4218,8 +4281,9 @@ qla2x00_cmd_timeout(srb_t *sp)
 			else
 				sp->err_id = SRB_ERR_PORT;
 		} else {
-			cmd->result = DID_BUS_BUSY << 16;
+			cmd->result = DID_IMM_RETRY << 16;
 		}
+		sp_put(vis_ha, sp);     /* release timer reference as expired */
 		__add_to_done_queue(vis_ha, sp);
 		processed++;
 	} 
@@ -4253,17 +4317,19 @@ qla2x00_cmd_timeout(srb_t *sp)
 		 */
 		if ((atomic_read(&fcport->state) == FCS_DEVICE_DEAD) ||
 		    atomic_read(&dest_ha->loop_state) == LOOP_DEAD) {
-			qla2x00_extend_timeout(cmd, EXTEND_CMD_TIMEOUT);
+			qla2x00_extend_scsi_ml_timeout(cmd,
+				EXTEND_CMD_TIMEOUT);
 			cmd->result = DID_NO_CONNECT << 16;
 			if (atomic_read(&dest_ha->loop_state) == LOOP_DOWN) 
 				sp->err_id = SRB_ERR_LOOP;
 			else
 				sp->err_id = SRB_ERR_PORT;
 		} else {
-			cmd->result = DID_BUS_BUSY << 16;
+			cmd->result = DID_IMM_RETRY << 16;
 		}
 
-		__add_to_done_queue(dest_ha, sp);
+		sp_put(vis_ha, sp);     /* release timer reference as expired */
+ 		__add_to_done_queue(dest_ha, sp);
 		processed++;
 	} 
 	spin_unlock_irqrestore(&dest_ha->list_lock, flags);
@@ -4276,13 +4342,13 @@ qla2x00_cmd_timeout(srb_t *sp)
 	spin_lock_irqsave(&dest_ha->list_lock, cpu_flags);
 	if (sp->state == SRB_DONE_STATE) {
 		/* IO in done_q  -- leave it */
-		DEBUG(printk("scsi(%ld): Found in Done queue pid %ld sp=%p.\n",
+		DEBUG2(printk("scsi(%ld): Found in Done queue pid %ld sp=%p.\n",
 		    dest_ha->host_no, cmd->serial_number, sp));
 	} else if (sp->state == SRB_SUSPENDED_STATE) {
-		DEBUG(printk("scsi(%ld): Found SP %p in suspended state  "
+		DEBUG2(printk("scsi(%ld): Found SP %p in suspended state  "
 		    "- pid %ld:\n",
 		    dest_ha->host_no, sp, cmd->serial_number));
-		DEBUG(qla2x00_dump_buffer((uint8_t *)sp, sizeof(srb_t));)
+		DEBUG2(qla2x00_dump_buffer((uint8_t *)sp, sizeof(srb_t));)
 	} else if (sp->state == SRB_ACTIVE_STATE) {
 		/*
 		 * IO is with ISP find the command in our active list.
@@ -4292,7 +4358,7 @@ qla2x00_cmd_timeout(srb_t *sp)
 		if (sp == dest_ha->outstanding_cmds[
 		    (unsigned long)sp->cmd->host_scribble]) {
 
-			DEBUG(printk("scsi(%ld): Found in ISP pid=%ld "
+			DEBUG2(printk("scsi(%ld): Found in ISP pid=%ld "
 			    "hdl=%ld\n", dest_ha->host_no, cmd->serial_number,
 			    (unsigned long)sp->cmd->host_scribble));
 
@@ -4303,35 +4369,38 @@ qla2x00_cmd_timeout(srb_t *sp)
 				 * Extend the timer so that the firmware can
 				 * properly return the IOCB.
 				 */
-				DEBUG(printk("cmd_timeout: Extending timeout "
-				    "of FCP2 tape command!\n"));
+				DEBUG3(printk("scsi(%ld): Extending timeout "
+				    "of command!\n", ha->host_no));
 				qla2x00_extend_timeout(sp->cmd,
 				    EXTEND_CMD_TIMEOUT);
+				timer_extended = 1;
 			}
 			sp->state = SRB_ACTIVE_TIMEOUT_STATE;
 			spin_unlock_irqrestore(&dest_ha->hardware_lock, flags);
 		} else {
 			spin_unlock_irqrestore(&dest_ha->hardware_lock, flags);
-			printk(KERN_INFO 
-				"qla_cmd_timeout: State indicates it is with "
-				"ISP, But not in active array\n");
+			qla_printk(KERN_INFO, vis_ha,
+				"cmd_timeout: State indicates it is with "
+				"ISP, But not in active array.\n");
 		}
 		spin_lock_irqsave(&dest_ha->list_lock, cpu_flags);
 	} else if (sp->state == SRB_ACTIVE_TIMEOUT_STATE) {
-		DEBUG(printk("qla2100%ld: Found in Active timeout state"
-				"pid %ld, State = %x., \n",
+		DEBUG2(printk("scsi(%ld): Found in Active timeout state "
+				"pid %ld, State = %x.\n",
 				dest_ha->host_no,
 				sp->cmd->serial_number, sp->state);)
 	} else {
 		/* EMPTY */
-		DEBUG2(printk("cmd_timeout%ld: LOST command state = "
-				"0x%x, sp=%p\n",
-				vis_ha->host_no, sp->state,sp);)
+		DEBUG2(printk("scsi(%ld): LOST command state = 0x%x, sp=%p\n",
+		    vis_ha->host_no, sp->state,sp));
 
 		qla_printk(KERN_INFO, vis_ha,
 			"cmd_timeout: LOST command state = 0x%x\n", sp->state);
 	}
 	spin_unlock_irqrestore(&dest_ha->list_lock, cpu_flags);
+
+	if (!timer_extended)
+		sp_put(vis_ha, sp);
 
 	DEBUG3(printk("cmd_timeout: Leaving\n");)
 }
@@ -4362,13 +4431,13 @@ qla2x00_done(scsi_qla_host_t *old_ha)
 	 */
 	spin_lock_irqsave(&old_ha->list_lock, flags);
 	list_splice_init(&old_ha->done_queue, &local_sp_list);
+	old_ha->done_q_cnt = 0;
 	spin_unlock_irqrestore(&old_ha->list_lock, flags);
 
 	/*
 	 * All done commands are in the local queue, now do the call back.
 	 */
 	list_for_each_entry_safe(sp, sptemp, &local_sp_list, list) {
-		old_ha->done_q_cnt--;
         	sp->state = SRB_NO_QUEUE_STATE;
 
 		/* remove command from local list */

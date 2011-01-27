@@ -53,6 +53,7 @@ static char *id = SNDRV_DEFAULT_STR1;
 static char *model;
 static int position_fix;
 static int probe_mask = -1;
+static int single_cmd;
 
 module_param(index, int, 0444);
 MODULE_PARM_DESC(index, "Index value for Intel HD audio interface.");
@@ -64,6 +65,8 @@ module_param(position_fix, int, 0444);
 MODULE_PARM_DESC(position_fix, "Fix DMA pointer (0 = auto, 1 = none, 2 = POSBUF, 3 = FIFO size).");
 module_param(probe_mask, int, 0444);
 MODULE_PARM_DESC(probe_mask, "Bitmask to probe codecs (default = -1).");
+module_param(single_cmd, bool, 0444);
+MODULE_PARM_DESC(single_cmd, "Use single command to communicate with codecs (for debugging only).");
 
 
 /* just for backward compatibility */
@@ -265,6 +268,8 @@ struct azx_dev {
 	unsigned int format_val;	/* format value to be set in the controller and the codec */
 	unsigned char stream_tag;	/* assigned stream */
 	unsigned char index;		/* stream index */
+	/* for sanity check of position buffer */
+	unsigned int period_intr;
 
 	unsigned int opened: 1;
 	unsigned int running: 1;
@@ -327,6 +332,7 @@ struct azx {
 	/* flags */
 	int position_fix;
 	unsigned int initialized: 1;
+	unsigned int single_cmd :1;
 
 	u32 pci_cfg_state[64 / sizeof(u32)];
 };
@@ -1151,10 +1157,20 @@ static snd_pcm_uframes_t azx_pcm_pointer(snd_pcm_substream_t *substream)
 	struct azx_dev *azx_dev = get_azx_dev(substream);
 	unsigned int pos;
 
-	if (chip->position_fix == POS_FIX_POSBUF) {
+	if (chip->position_fix == POS_FIX_POSBUF ||
+	    chip->position_fix == POS_FIX_AUTO) {
 		/* use the position buffer */
-		pos = *azx_dev->posbuf;
+		pos = le32_to_cpu(*azx_dev->posbuf);
+		if (chip->position_fix == POS_FIX_AUTO &&
+		    azx_dev->period_intr == 1 && ! pos) {
+			printk(KERN_WARNING
+			       "hda-intel: Invalid position buffer, "
+			       "using LPIB read method instead.\n");
+			chip->position_fix = POS_FIX_NONE;
+			goto read_lpib;
+		}
 	} else {
+	read_lpib:
 		/* read LPIB */
 		pos = azx_sd_readl(azx_dev, SD_LPIB);
 		if (chip->position_fix == POS_FIX_FIFO)
@@ -1393,6 +1409,33 @@ static int azx_dev_free(snd_device_t *device)
 }
 
 /*
+ * white/black-listing for position_fix
+ */
+static struct snd_pci_quirk position_fix_list[] __devinitdata = {
+	SND_PCI_QUIRK(0x1028, 0x01cc, "Dell D820", POS_FIX_NONE),
+	SND_PCI_QUIRK(0x1028, 0x01de, "Dell Precision 390", POS_FIX_NONE),
+	SND_PCI_QUIRK(0x103c, 0x12ff, "HP xw4550", POS_FIX_NONE),
+	{}
+};
+
+static int __devinit check_position_fix(struct azx *chip, int fix)
+{
+	const struct snd_pci_quirk *q;
+
+	if (fix == POS_FIX_AUTO) {
+		q = snd_pci_quirk_lookup(chip->pci, position_fix_list);
+		if (q) {
+			snd_printdd(KERN_INFO
+				    "hda_intel: position_fix set to %d "
+				    "for device %04x:%04x\n",
+				    q->value, q->subvendor, q->subdevice);
+			return q->value;
+		}
+	}
+	return fix;
+}
+
+/*
  * constructor
  */
 static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
@@ -1425,7 +1468,9 @@ static int __devinit azx_create(snd_card_t *card, struct pci_dev *pci,
 	chip->irq = -1;
 	chip->driver_type = driver_type;
 
-	chip->position_fix = position_fix ? position_fix : POS_FIX_POSBUF;
+	chip->position_fix = check_position_fix(chip, position_fix);
+
+	chip->single_cmd = single_cmd;
 
 #if BITS_PER_LONG != 64
 	/* Fix up base address on ULI M5461 */

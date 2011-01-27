@@ -57,6 +57,7 @@ extern int panic_timeout;
 extern int C_A_D;
 extern int sysctl_overcommit_memory;
 extern int sysctl_overcommit_ratio;
+extern int sysctl_panic_on_oom;
 extern int max_threads;
 extern int sysrq_enabled;
 extern int core_uses_pid;
@@ -70,6 +71,7 @@ extern int printk_ratelimit_jiffies;
 extern int printk_ratelimit_burst;
 extern int percpu_pagelist_fraction;
 extern int wake_balance;
+extern int sysctl_drop_caches;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 int unknown_nmi_panic;
@@ -749,6 +751,14 @@ static ctl_table vm_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 	{
+		.ctl_name	= VM_PANIC_ON_OOM,
+		.procname	= "panic_on_oom",
+		.data		= &sysctl_panic_on_oom,
+		.maxlen		= sizeof(sysctl_panic_on_oom),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
 		.ctl_name	= VM_OVERCOMMIT_RATIO,
 		.procname	= "overcommit_ratio",
 		.data		= &sysctl_overcommit_ratio,
@@ -930,7 +940,6 @@ static ctl_table vm_table[] = {
 		.proc_handler   = &proc_dointvec_minmax,
 		.strategy       = &sysctl_intvec,
 		.extra1         = &zero,
-		.extra2         = &one_hundred,
 	},
  	{
 		.ctl_name	= VM_PERCPU_PAGELIST_FRACTION,
@@ -952,6 +961,26 @@ static ctl_table vm_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
 		.extra2		= &one_hundred,
+	},
+	{
+		.ctl_name	= VM_INACTIVE_PERCENT,
+		.procname	= "inactive_percent",
+		.data		= &vm_inactive_percent,
+		.maxlen		= sizeof(vm_inactive_percent),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+		.extra2		= &one_hundred,
+	},
+	{
+		.ctl_name	= VM_DROP_PAGECACHE,
+		.procname	= "drop_caches",
+		.data		= &sysctl_drop_caches,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= drop_caches_sysctl_handler,
+		.strategy	= &sysctl_intvec,
 	},
 	{ .ctl_name = 0 }
 };

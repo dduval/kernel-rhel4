@@ -90,13 +90,13 @@ static int pci_mmcfg_read(int seg, int bus, int devfn, int reg, int len, u32 *va
 
 	switch (len) {
 	case 1:
-		*value = readb(mmcfg_virt_addr + reg);
+		*value = mmio_config_readb(mmcfg_virt_addr + reg);
 		break;
 	case 2:
-		*value = readw(mmcfg_virt_addr + reg);
+		*value = mmio_config_readw(mmcfg_virt_addr + reg);
 		break;
 	case 4:
-		*value = readl(mmcfg_virt_addr + reg);
+		*value = mmio_config_readl(mmcfg_virt_addr + reg);
 		break;
 	}
 
@@ -123,13 +123,13 @@ static int pci_mmcfg_write(int seg, int bus, int devfn, int reg, int len, u32 va
 
 	switch (len) {
 	case 1:
-		writeb(value, mmcfg_virt_addr + reg);
+		mmio_config_writeb(mmcfg_virt_addr + reg, value);
 		break;
 	case 2:
-		writew(value, mmcfg_virt_addr + reg);
+		mmio_config_writew(mmcfg_virt_addr + reg, value);
 		break;
 	case 4:
-		writel(value, mmcfg_virt_addr + reg);
+		mmio_config_writel(mmcfg_virt_addr + reg, value);
 		break;
 	}
 

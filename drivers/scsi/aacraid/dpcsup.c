@@ -74,7 +74,7 @@ unsigned int aac_response_normal(struct aac_queue * q)
 		u32 index = le32_to_cpu(entry->addr);
 		fast = index & 0x01;
 		fib = &dev->fibs[index >> 2];
-		hwfib = fib->hw_fib;
+		hwfib = fib->hw_fib_va;
 		
 		aac_consumer_free(dev, q, HostNormRespQueue);
 		/*
@@ -85,10 +85,9 @@ unsigned int aac_response_normal(struct aac_queue * q)
 		 *	continue. The caller has already been notified that
 		 *	the fib timed out.
 		 */
-		if (!(fib->flags & FIB_CONTEXT_FLAG_TIMED_OUT)) {
-			list_del(&fib->queue);
+		if (!(fib->flags & FIB_CONTEXT_FLAG_TIMED_OUT))
 			dev->queues->queue[AdapNormCmdQueue].numpending--;
-		} else {
+		else {
 			printk(KERN_WARNING "aacraid: FIB timeout (%x).\n", fib->flags);
 			printk(KERN_DEBUG"aacraid: hwfib=%p fib index=%i fib=%p\n",hwfib, hwfib->header.SenderData,fib);
 			continue;
@@ -125,18 +124,22 @@ unsigned int aac_response_normal(struct aac_queue * q)
 		} else {
 			unsigned long flagv;
 			spin_lock_irqsave(&fib->event_lock, flagv);
-			fib->done = 1;
+			if (!fib->done)
+				fib->done = 1;
 			up(&fib->event_wait);
 			spin_unlock_irqrestore(&fib->event_lock, flagv);
 			FIB_COUNTER_INCREMENT(aac_config.NormalRecved);
+			if (fib->done == 2) {
+				aac_fib_complete(fib);
+				aac_fib_free(fib);
+			}
 		}
 		consumed++;
 		spin_lock_irqsave(q->lock, flags);
 	}
 
-	if (consumed > aac_config.peak_fibs) {
+	if (consumed > aac_config.peak_fibs)
 		aac_config.peak_fibs = consumed;
-	}
 	if (consumed == 0) 
 		aac_config.zero_fibs++;
 
@@ -197,7 +200,7 @@ unsigned int aac_command_normal(struct aac_queue *q)
 		INIT_LIST_HEAD(&fib->fiblink);
 		fib->type = FSAFS_NTC_FIB_CONTEXT;
 		fib->size = sizeof(struct fib);
-		fib->hw_fib = hw_fib;
+		fib->hw_fib_va = hw_fib;
 		fib->data = hw_fib->data;
 		fib->dev = dev;
 		
@@ -213,7 +216,7 @@ unsigned int aac_command_normal(struct aac_queue *q)
 			 *	Set the status of this FIB
 			 */
 			*(__le32 *)hw_fib->data = cpu_to_le32(ST_OK);
-			fib_adapter_complete(fib, sizeof(u32));
+			aac_fib_adapter_complete(fib, sizeof(u32));
 			spin_lock_irqsave(q->lock, flags);
 		}		
 	}
@@ -258,12 +261,12 @@ unsigned int aac_intr_normal(struct aac_dev * dev, u32 Index)
 			return 1;
 		}
 		memset(hw_fib, 0, sizeof(struct hw_fib));
-		memcpy(hw_fib, (struct hw_fib *)(((char *)(dev->regs.sa)) + (index & ~0x00000002L)), sizeof(struct hw_fib));
+		memcpy(hw_fib, (struct hw_fib *)(((unsigned long)(dev->regs.sa)) + (index & ~0x00000002L)), sizeof(struct hw_fib));
 		memset(fib, 0, sizeof(struct fib));
 		INIT_LIST_HEAD(&fib->fiblink);
 		fib->type = FSAFS_NTC_FIB_CONTEXT;
 		fib->size = sizeof(struct fib);
-		fib->hw_fib = hw_fib;
+		fib->hw_fib_va = hw_fib;
 		fib->data = hw_fib->data;
 		fib->dev = dev;
 	
@@ -275,7 +278,7 @@ unsigned int aac_intr_normal(struct aac_dev * dev, u32 Index)
 	} else {
 		int fast = index & 0x01;
 		struct fib * fib = &dev->fibs[index >> 2];
-		struct hw_fib * hwfib = fib->hw_fib;
+		struct hw_fib * hwfib = fib->hw_fib_va;
 
 		/*
 		 *	Remove this fib from the Outstanding I/O queue.
@@ -291,7 +294,6 @@ unsigned int aac_intr_normal(struct aac_dev * dev, u32 Index)
 			return 0;
 		}
 
-		list_del(&fib->queue);
 		dev->queues->queue[AdapNormCmdQueue].numpending--;
 
 		if (fast) {
@@ -325,7 +327,8 @@ unsigned int aac_intr_normal(struct aac_dev * dev, u32 Index)
 			unsigned long flagv;
 	  		dprintk((KERN_INFO "event_wait up\n"));
 			spin_lock_irqsave(&fib->event_lock, flagv);
-			fib->done = 1;
+			if (!fib->done)
+				fib->done = 1;
 			up(&fib->event_wait);
 			spin_unlock_irqrestore(&fib->event_lock, flagv);
 			FIB_COUNTER_INCREMENT(aac_config.NormalRecved);

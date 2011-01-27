@@ -572,6 +572,9 @@ struct ich_laptop {
 static const struct ich_laptop ich_laptop[] = {
 	/* devid, subvendor, subdev */
 	{ 0x27DF, 0x0005, 0x0280 },	/* ICH7 on Acer 5602WLMi */
+	{ 0x27DF, 0x1025, 0x0110 },	/* ICH7 on Acer 3682WLMi */
+	{ 0x27DF, 0x1043, 0x1267 },	/* ICH7 on Asus W5F */
+	{ 0x24CA, 0x1025, 0x0061 },	/* ICH4 on ACER Aspire 2023WLMi */
 	/* end marker */
 	{ 0, }
 };
@@ -779,7 +782,7 @@ static void do_pata_set_dmamode (struct ata_port *ap, struct ata_device *adev, i
 	u16 master_data;
 	u8 speed		= adev->dma_mode;
 	int devid		= adev->devno + 2 * ap->port_no;
-	u8 udma_enable;
+	u8 udma_enable		= 0;
 
 	static const	 /* ISP  RTC */
 	u8 timings[][2]	= { { 0, 0 },
@@ -789,7 +792,8 @@ static void do_pata_set_dmamode (struct ata_port *ap, struct ata_device *adev, i
 			    { 2, 3 }, };
 
 	pci_read_config_word(dev, master_port, &master_data);
-	pci_read_config_byte(dev, 0x48, &udma_enable);
+	if (ap->udma_mask)
+		pci_read_config_byte(dev, 0x48, &udma_enable);
 
 	if (speed >= XFER_UDMA_0) {
 		unsigned int udma = adev->dma_mode - XFER_UDMA_0;

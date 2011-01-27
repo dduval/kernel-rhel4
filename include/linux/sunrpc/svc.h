@@ -318,4 +318,23 @@ int		   svc_register(struct svc_serv *, int, unsigned short);
 void		   svc_wake_up(struct svc_serv *);
 void		   svc_reserve(struct svc_rqst *rqstp, int space);
 
+/*
+ * When we want to reduce the size of the reserved space in the response
+ * buffer, we need to take into account the size of any checksum data that
+ * may be at the end of the packet. This is difficult to determine exactly
+ * for all cases without actually generating the checksum, so we just use a
+ * static value.
+ */
+static inline void 
+svc_reserve_auth(struct svc_rqst *rqstp, int space)
+{
+	int			added_space = 0;
+
+	switch(rqstp->rq_authop->flavour) {
+		case RPC_AUTH_GSS:
+			added_space = RPC_MAX_AUTH_SIZE;
+	}
+	return svc_reserve(rqstp, space + added_space);
+}
+
 #endif /* SUNRPC_SVC_H */

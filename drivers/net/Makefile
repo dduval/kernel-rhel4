@@ -7,6 +7,8 @@ ifeq ($(CONFIG_ISDN_PPP),y)
 endif
 
 obj-$(CONFIG_E1000) += e1000/
+obj-$(CONFIG_E1000E) += e1000e/
+obj-$(CONFIG_IGB) += igb/
 obj-$(CONFIG_IBM_EMAC) += ibm_emac/
 obj-$(CONFIG_IXGB) += ixgb/
 obj-$(CONFIG_BONDING) += bonding/
@@ -183,6 +185,7 @@ obj-$(CONFIG_DL2K) += dl2k.o
 obj-$(CONFIG_R8169) += r8169.o
 obj-$(CONFIG_AMD8111_ETH) += amd8111e.o
 obj-$(CONFIG_IBMVETH) += ibmveth.o
+obj-$(CONFIG_CHELSIO_T3) += cxgb3/
 obj-$(CONFIG_EHEA) += ehea/
 obj-$(CONFIG_S2IO) += s2io.o
 obj-$(CONFIG_SMC91X) += smc91x.o
@@ -199,6 +202,7 @@ obj-$(CONFIG_NET_WIRELESS) += wireless/
 obj-$(CONFIG_NET_TULIP) += tulip/
 obj-$(CONFIG_HAMRADIO) += hamradio/
 obj-$(CONFIG_IRDA) += irda/
+obj-$(CONFIG_NETXEN_NIC) += netxen/
 
 obj-$(CONFIG_NETCONSOLE) += netconsole.o
 obj-$(CONFIG_NETDUMP) += netdump.o

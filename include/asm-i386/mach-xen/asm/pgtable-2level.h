@@ -55,6 +55,9 @@ static inline void set_pmd(pmd_t *pmdptr, pmd_t pmd)
  	mm_track(pmdptr);
 	xen_l2_entry_update((pmdptr), (pmd));
 }
+
+#define pte_clear(xp)	do { set_pte(xp, __pte(0)); } while (0)
+
 #define set_pgd(pgdptr, pgdval) (*(pgdptr) = pgdval)
 
 #define pgd_page(pgd) \

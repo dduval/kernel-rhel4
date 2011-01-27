@@ -101,7 +101,7 @@ static int ipr_auto_create = 1;
 
 /* This table describes the differences between DMA controller chips */
 static const struct ipr_chip_cfg_t ipr_chip_cfg[] = {
-	{ /* Gemstone, Citrine, and Obsidian */
+	{ /* Gemstone, Citrine, Obsidian, and Obsidian-E */
 		.mailbox = 0x0042C,
 		.cache_line_size = 0x20,
 		{
@@ -138,6 +138,7 @@ static const struct ipr_chip_t ipr_chip[] = {
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE, &ipr_chip_cfg[0] },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_OBSIDIAN, &ipr_chip_cfg[0] },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN, &ipr_chip_cfg[0] },
+	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN_E, &ipr_chip_cfg[0] },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_SNIPE, &ipr_chip_cfg[1] },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_SCAMP, &ipr_chip_cfg[1] }
 };
@@ -598,10 +599,8 @@ static int ipr_save_pcix_cmd_reg(struct ipr_ioa_cfg *ioa_cfg)
 {
 	int pcix_cmd_reg = pci_find_capability(ioa_cfg->pdev, PCI_CAP_ID_PCIX);
 
-	if (pcix_cmd_reg == 0) {
-		dev_err(&ioa_cfg->pdev->dev, "Failed to save PCI-X command register\n");
-		return -EIO;
-	}
+	if (pcix_cmd_reg == 0)
+		return 0;
 
 	if (pci_read_config_word(ioa_cfg->pdev, pcix_cmd_reg + PCI_X_CMD,
 				 &ioa_cfg->saved_pcix_cmd_reg) != PCIBIOS_SUCCESSFUL) {
@@ -630,10 +629,6 @@ static int ipr_set_pcix_cmd_reg(struct ipr_ioa_cfg *ioa_cfg)
 			dev_err(&ioa_cfg->pdev->dev, "Failed to setup PCI-X command register\n");
 			return -EIO;
 		}
-	} else {
-		dev_err(&ioa_cfg->pdev->dev,
-			"Failed to setup PCI-X command register\n");
-		return -EIO;
 	}
 
 	return 0;
@@ -1256,18 +1251,22 @@ static void ipr_log_array_error(struct ipr_ioa_cfg *ioa_cfg,
 
 /**
  * ipr_log_hex_data - Log additional hex IOA error data.
+ * @ioa_cfg:	ioa config struct
  * @data:		IOA error data
  * @len:		data length
  *
  * Return value:
  * 	none
  **/
-static void ipr_log_hex_data(u32 *data, int len)
+static void ipr_log_hex_data(struct ipr_ioa_cfg *ioa_cfg, u32 *data, int len)
 {
 	int i;
 
 	if (len == 0)
 		return;
+
+	if (ioa_cfg->log_level <= IPR_DEFAULT_LOG_LEVEL)
+		len = min_t(int, len, IPR_DEFAULT_MAX_ERROR_DUMP);
 
 	for (i = 0; i < len / 4; i += 4) {
 		ipr_err("%08X: %08X %08X %08X %08X\n", i*4,
@@ -1297,7 +1296,7 @@ static void ipr_log_enhanced_dual_ioa_error(struct ipr_ioa_cfg *ioa_cfg,
 	ipr_err("%s\n", error->failure_reason);
 	ipr_err("Remote Adapter VPD:\n");
 	ipr_log_ext_vpd(&error->vpd);
-	ipr_log_hex_data(error->data,
+	ipr_log_hex_data(ioa_cfg, error->data,
 			 be32_to_cpu(hostrcb->hcam.length) -
 			 (offsetof(struct ipr_hostrcb_error, u) +
 			  offsetof(struct ipr_hostrcb_type_17_error, data)));
@@ -1322,10 +1321,223 @@ static void ipr_log_dual_ioa_error(struct ipr_ioa_cfg *ioa_cfg,
 	ipr_err("%s\n", error->failure_reason);
 	ipr_err("Remote Adapter VPD:\n");
 	ipr_log_vpd(&error->vpd);
-	ipr_log_hex_data(error->data,
+	ipr_log_hex_data(ioa_cfg, error->data,
 			 be32_to_cpu(hostrcb->hcam.length) -
 			 (offsetof(struct ipr_hostrcb_error, u) +
 			  offsetof(struct ipr_hostrcb_type_07_error, data)));
+}
+
+static const struct {
+	u8 active;
+	char *desc;
+} path_active_desc[] = {
+	{ IPR_PATH_NO_INFO, "Path" },
+	{ IPR_PATH_ACTIVE, "Active path" },
+	{ IPR_PATH_NOT_ACTIVE, "Inactive path" }
+};
+
+static const struct {
+	u8 state;
+	char *desc;
+} path_state_desc[] = {
+	{ IPR_PATH_STATE_NO_INFO, "has no path state information available" },
+	{ IPR_PATH_HEALTHY, "is healthy" },
+	{ IPR_PATH_DEGRADED, "is degraded" },
+	{ IPR_PATH_FAILED, "is failed" }
+};
+
+/**
+ * ipr_log_fabric_path - Log a fabric path error
+ * @hostrcb:	hostrcb struct
+ * @fabric:		fabric descriptor
+ *
+ * Return value:
+ * 	none
+ **/
+static void ipr_log_fabric_path(struct ipr_hostrcb *hostrcb,
+				struct ipr_hostrcb_fabric_desc *fabric)
+{
+	int i, j;
+	u8 path_state = fabric->path_state;
+	u8 active = path_state & IPR_PATH_ACTIVE_MASK;
+	u8 state = path_state & IPR_PATH_STATE_MASK;
+
+	for (i = 0; i < ARRAY_SIZE(path_active_desc); i++) {
+		if (path_active_desc[i].active != active)
+			continue;
+
+		for (j = 0; j < ARRAY_SIZE(path_state_desc); j++) {
+			if (path_state_desc[j].state != state)
+				continue;
+
+			if (fabric->cascaded_expander == 0xff && fabric->phy == 0xff) {
+				ipr_hcam_err(hostrcb, "%s %s: IOA Port=%d\n",
+					     path_active_desc[i].desc, path_state_desc[j].desc,
+					     fabric->ioa_port);
+			} else if (fabric->cascaded_expander == 0xff) {
+				ipr_hcam_err(hostrcb, "%s %s: IOA Port=%d, Phy=%d\n",
+					     path_active_desc[i].desc, path_state_desc[j].desc,
+					     fabric->ioa_port, fabric->phy);
+			} else if (fabric->phy == 0xff) {
+				ipr_hcam_err(hostrcb, "%s %s: IOA Port=%d, Cascade=%d\n",
+					     path_active_desc[i].desc, path_state_desc[j].desc,
+					     fabric->ioa_port, fabric->cascaded_expander);
+			} else {
+				ipr_hcam_err(hostrcb, "%s %s: IOA Port=%d, Cascade=%d, Phy=%d\n",
+					     path_active_desc[i].desc, path_state_desc[j].desc,
+					     fabric->ioa_port, fabric->cascaded_expander, fabric->phy);
+			}
+			return;
+		}
+	}
+
+	ipr_err("Path state=%02X IOA Port=%d Cascade=%d Phy=%d\n", path_state,
+		fabric->ioa_port, fabric->cascaded_expander, fabric->phy);
+}
+
+static const struct {
+	u8 type;
+	char *desc;
+} path_type_desc[] = {
+	{ IPR_PATH_CFG_IOA_PORT, "IOA port" },
+	{ IPR_PATH_CFG_EXP_PORT, "Expander port" },
+	{ IPR_PATH_CFG_DEVICE_PORT, "Device port" },
+	{ IPR_PATH_CFG_DEVICE_LUN, "Device LUN" }
+};
+
+static const struct {
+	u8 status;
+	char *desc;
+} path_status_desc[] = {
+	{ IPR_PATH_CFG_NO_PROB, "Functional" },
+	{ IPR_PATH_CFG_DEGRADED, "Degraded" },
+	{ IPR_PATH_CFG_FAILED, "Failed" },
+	{ IPR_PATH_CFG_SUSPECT, "Suspect" },
+	{ IPR_PATH_NOT_DETECTED, "Missing" },
+	{ IPR_PATH_INCORRECT_CONN, "Incorrectly connected" }
+};
+
+static const char *link_rate[] = {
+	"unknown",
+	"disabled",
+	"phy reset problem",
+	"spinup hold",
+	"port selector",
+	"unknown",
+	"unknown",
+	"unknown",
+	"1.5Gbps",
+	"3.0Gbps",
+	"unknown",
+	"unknown",
+	"unknown",
+	"unknown",
+	"unknown",
+	"unknown"
+};
+
+/**
+ * ipr_log_path_elem - Log a fabric path element.
+ * @hostrcb:	hostrcb struct
+ * @cfg:		fabric path element struct
+ *
+ * Return value:
+ * 	none
+ **/
+static void ipr_log_path_elem(struct ipr_hostrcb *hostrcb,
+			      struct ipr_hostrcb_config_element *cfg)
+{
+	int i, j;
+	u8 type = cfg->type_status & IPR_PATH_CFG_TYPE_MASK;
+	u8 status = cfg->type_status & IPR_PATH_CFG_STATUS_MASK;
+
+	if (type == IPR_PATH_CFG_NOT_EXIST)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(path_type_desc); i++) {
+		if (path_type_desc[i].type != type)
+			continue;
+
+		for (j = 0; j < ARRAY_SIZE(path_status_desc); j++) {
+			if (path_status_desc[j].status != status)
+				continue;
+
+			if (type == IPR_PATH_CFG_IOA_PORT) {
+				ipr_hcam_err(hostrcb, "%s %s: Phy=%d, Link rate=%s, WWN=%08X%08X\n",
+					     path_status_desc[j].desc, path_type_desc[i].desc,
+					     cfg->phy, link_rate[cfg->link_rate & IPR_PHY_LINK_RATE_MASK],
+					     be32_to_cpu(cfg->wwid[0]), be32_to_cpu(cfg->wwid[1]));
+			} else {
+				if (cfg->cascaded_expander == 0xff && cfg->phy == 0xff) {
+					ipr_hcam_err(hostrcb, "%s %s: Link rate=%s, WWN=%08X%08X\n",
+						     path_status_desc[j].desc, path_type_desc[i].desc,
+						     link_rate[cfg->link_rate & IPR_PHY_LINK_RATE_MASK],
+						     be32_to_cpu(cfg->wwid[0]), be32_to_cpu(cfg->wwid[1]));
+				} else if (cfg->cascaded_expander == 0xff) {
+					ipr_hcam_err(hostrcb, "%s %s: Phy=%d, Link rate=%s, "
+						     "WWN=%08X%08X\n", path_status_desc[j].desc,
+						     path_type_desc[i].desc, cfg->phy,
+						     link_rate[cfg->link_rate & IPR_PHY_LINK_RATE_MASK],
+						     be32_to_cpu(cfg->wwid[0]), be32_to_cpu(cfg->wwid[1]));
+				} else if (cfg->phy == 0xff) {
+					ipr_hcam_err(hostrcb, "%s %s: Cascade=%d, Link rate=%s, "
+						     "WWN=%08X%08X\n", path_status_desc[j].desc,
+						     path_type_desc[i].desc, cfg->cascaded_expander,
+						     link_rate[cfg->link_rate & IPR_PHY_LINK_RATE_MASK],
+						     be32_to_cpu(cfg->wwid[0]), be32_to_cpu(cfg->wwid[1]));
+				} else {
+					ipr_hcam_err(hostrcb, "%s %s: Cascade=%d, Phy=%d, Link rate=%s "
+						     "WWN=%08X%08X\n", path_status_desc[j].desc,
+						     path_type_desc[i].desc, cfg->cascaded_expander, cfg->phy,
+						     link_rate[cfg->link_rate & IPR_PHY_LINK_RATE_MASK],
+						     be32_to_cpu(cfg->wwid[0]), be32_to_cpu(cfg->wwid[1]));
+				}
+			}
+			return;
+		}
+	}
+
+	ipr_hcam_err(hostrcb, "Path element=%02X: Cascade=%d Phy=%d Link rate=%s "
+		     "WWN=%08X%08X\n", cfg->type_status, cfg->cascaded_expander, cfg->phy,
+		     link_rate[cfg->link_rate & IPR_PHY_LINK_RATE_MASK],
+		     be32_to_cpu(cfg->wwid[0]), be32_to_cpu(cfg->wwid[1]));
+}
+
+/**
+ * ipr_log_fabric_error - Log a fabric error.
+ * @ioa_cfg:	ioa config struct
+ * @hostrcb:	hostrcb struct
+ *
+ * Return value:
+ * 	none
+ **/
+static void ipr_log_fabric_error(struct ipr_ioa_cfg *ioa_cfg,
+				 struct ipr_hostrcb *hostrcb)
+{
+	struct ipr_hostrcb_type_20_error *error;
+	struct ipr_hostrcb_fabric_desc *fabric;
+	struct ipr_hostrcb_config_element *cfg;
+	int i, add_len;
+
+	error = &hostrcb->hcam.u.error.u.type_20_error;
+	error->failure_reason[sizeof(error->failure_reason) - 1] = '\0';
+	ipr_hcam_err(hostrcb, "%s\n", error->failure_reason);
+
+	add_len = be32_to_cpu(hostrcb->hcam.length) -
+		(offsetof(struct ipr_hostrcb_error, u) +
+		 offsetof(struct ipr_hostrcb_type_20_error, desc));
+
+	for (i = 0, fabric = error->desc; i < error->num_entries; i++) {
+		ipr_log_fabric_path(hostrcb, fabric);
+		for_each_fabric_cfg(fabric, cfg)
+			ipr_log_path_elem(hostrcb, cfg);
+
+		add_len -= be16_to_cpu(fabric->length);
+		fabric = (struct ipr_hostrcb_fabric_desc *)
+			((unsigned long)fabric + be16_to_cpu(fabric->length));
+	}
+
+	ipr_log_hex_data(ioa_cfg, (u32 *)fabric, add_len);
 }
 
 /**
@@ -1339,7 +1551,7 @@ static void ipr_log_dual_ioa_error(struct ipr_ioa_cfg *ioa_cfg,
 static void ipr_log_generic_error(struct ipr_ioa_cfg *ioa_cfg,
 				  struct ipr_hostrcb *hostrcb)
 {
-	ipr_log_hex_data(hostrcb->hcam.u.raw.data,
+	ipr_log_hex_data(ioa_cfg, hostrcb->hcam.u.raw.data,
 			 be32_to_cpu(hostrcb->hcam.length));
 }
 
@@ -1401,13 +1613,7 @@ static void ipr_handle_log_data(struct ipr_ioa_cfg *ioa_cfg,
 	if (!ipr_error_table[error_index].log_hcam)
 		return;
 
-	if (ipr_is_device(&hostrcb->hcam.u.error.failing_dev_res_addr)) {
-		ipr_res_err(ioa_cfg, hostrcb->hcam.u.error.failing_dev_res_addr,
-			    "%s\n", ipr_error_table[error_index].error);
-	} else {
-		dev_err(&ioa_cfg->pdev->dev, "%s\n",
-			ipr_error_table[error_index].error);
-	}
+	ipr_hcam_err(hostrcb, "%s\n", ipr_error_table[error_index].error);
 
 	/* Set indication we have logged an error */
 	ioa_cfg->errors_logged++;
@@ -1443,6 +1649,9 @@ static void ipr_handle_log_data(struct ipr_ioa_cfg *ioa_cfg,
 		break;
 	case IPR_HOST_RCB_OVERLAY_ID_17:
 		ipr_log_enhanced_dual_ioa_error(ioa_cfg, hostrcb);
+		break;
+	case IPR_HOST_RCB_OVERLAY_ID_20:
+		ipr_log_fabric_error(ioa_cfg, hostrcb);
 		break;
 	case IPR_HOST_RCB_OVERLAY_ID_1:
 	case IPR_HOST_RCB_OVERLAY_ID_DEFAULT:
@@ -2981,7 +3190,6 @@ static int ipr_alloc_dump(struct ipr_ioa_cfg *ioa_cfg)
 	struct ipr_dump *dump;
 	unsigned long lock_flags = 0;
 
-	ENTER;
 	dump = kzalloc(sizeof(struct ipr_dump), GFP_KERNEL);
 
 	if (!dump) {
@@ -3008,7 +3216,6 @@ static int ipr_alloc_dump(struct ipr_ioa_cfg *ioa_cfg)
 	}
 	spin_unlock_irqrestore(ioa_cfg->host->host_lock, lock_flags);
 
-	LEAVE;
 	return 0;
 }
 
@@ -3800,7 +4007,7 @@ static int ipr_cancel_op(struct scsi_cmnd * scsi_cmd)
 	ioa_cfg = (struct ipr_ioa_cfg *)scsi_cmd->device->host->hostdata;
 	res = scsi_cmd->device->hostdata;
 
-	if (!res || (!ipr_is_gscsi(res) && !ipr_is_vset_device(res)))
+	if (!res || !ipr_is_gscsi(res))
 		return FAILED;
 
 	list_for_each_entry(ipr_cmd, &ioa_cfg->pending_q, queue) {
@@ -4758,7 +4965,7 @@ static int ipr_queuecommand(struct scsi_cmnd *scsi_cmd,
  * Return value:
  * 	0 on success / other on failure
  **/
-int ipr_ioctl(struct scsi_device *sdev, int cmd, void __user *arg)
+static int ipr_ioctl(struct scsi_device *sdev, int cmd, void __user *arg)
 {
 	struct ipr_resource_entry *res;
 
@@ -6244,7 +6451,6 @@ static int ipr_reset_restore_cfg_space(struct ipr_cmnd *ipr_cmd)
 	int rc;
 
 	ENTER;
-	pci_unblock_user_cfg_access(ioa_cfg->pdev);
 	rc = pci_restore_state(ioa_cfg->pdev, ioa_cfg->pci_cfg_buf);
 
 	if (rc != PCIBIOS_SUCCESSFUL) {
@@ -6285,6 +6491,24 @@ static int ipr_reset_restore_cfg_space(struct ipr_cmnd *ipr_cmd)
 }
 
 /**
+ * ipr_reset_bist_done - BIST has completed on the adapter.
+ * @ipr_cmd:	ipr command struct
+ *
+ * Description: Unblock config space and resume the reset process.
+ *
+ * Return value:
+ * 	IPR_RC_JOB_CONTINUE
+ **/
+static int ipr_reset_bist_done(struct ipr_cmnd *ipr_cmd)
+{
+	ENTER;
+	pci_unblock_user_cfg_access(ipr_cmd->ioa_cfg->pdev);
+	ipr_cmd->job_step = ipr_reset_restore_cfg_space;
+	LEAVE;
+	return IPR_RC_JOB_CONTINUE;
+}
+
+/**
  * ipr_reset_start_bist - Run BIST on the adapter.
  * @ipr_cmd:	ipr command struct
  *
@@ -6306,13 +6530,55 @@ static int ipr_reset_start_bist(struct ipr_cmnd *ipr_cmd)
 		ipr_cmd->ioasa.ioasc = cpu_to_be32(IPR_IOASC_PCI_ACCESS_ERROR);
 		rc = IPR_RC_JOB_CONTINUE;
 	} else {
-		ipr_cmd->job_step = ipr_reset_restore_cfg_space;
+		ipr_cmd->job_step = ipr_reset_bist_done;
 		ipr_reset_start_timer(ipr_cmd, IPR_WAIT_FOR_BIST_TIMEOUT);
 		rc = IPR_RC_JOB_RETURN;
 	}
 
 	LEAVE;
 	return rc;
+}
+
+/**
+ * ipr_reset_slot_reset_done - Clear PCI reset to the adapter
+ * @ipr_cmd:	ipr command struct
+ *
+ * Description: This clears PCI reset to the adapter and delays two seconds.
+ *
+ * Return value:
+ * 	IPR_RC_JOB_RETURN
+ **/
+static int ipr_reset_slot_reset_done(struct ipr_cmnd *ipr_cmd)
+{
+	ENTER;
+	pci_set_pcie_reset_state(ipr_cmd->ioa_cfg->pdev, pci_reset_normal);
+	ipr_cmd->job_step = ipr_reset_bist_done;
+	ipr_reset_start_timer(ipr_cmd, IPR_WAIT_FOR_BIST_TIMEOUT);
+	LEAVE;
+	return IPR_RC_JOB_RETURN;
+}
+
+/**
+ * ipr_reset_slot_reset - Reset the PCI slot of the adapter.
+ * @ipr_cmd:	ipr command struct
+ *
+ * Description: This asserts PCI reset to the adapter.
+ *
+ * Return value:
+ * 	IPR_RC_JOB_RETURN
+ **/
+static int ipr_reset_slot_reset(struct ipr_cmnd *ipr_cmd)
+{
+	struct ipr_ioa_cfg *ioa_cfg = ipr_cmd->ioa_cfg;
+	struct pci_dev *pdev = ioa_cfg->pdev;
+
+	ENTER;
+	pci_block_user_cfg_access(pdev);
+	pci_set_pcie_reset_state(pdev, pci_reset_pcie_warm_reset);
+	ipr_cmd->job_step = ipr_reset_slot_reset_done;
+	ipr_reset_start_timer(ipr_cmd, IPR_PCI_RESET_TIMEOUT);
+	LEAVE;
+	return IPR_RC_JOB_RETURN;
 }
 
 /**
@@ -6354,7 +6620,7 @@ static int ipr_reset_wait_to_start_bist(struct ipr_cmnd *ipr_cmd)
 		ipr_cmd->u.time_left -= IPR_CHECK_FOR_RESET_TIMEOUT;
 		ipr_reset_start_timer(ipr_cmd, IPR_CHECK_FOR_RESET_TIMEOUT);
 	} else {
-		ipr_cmd->job_step = ipr_reset_start_bist;
+		ipr_cmd->job_step = ioa_cfg->reset;
 		rc = IPR_RC_JOB_CONTINUE;
 	}
 
@@ -6387,7 +6653,7 @@ static int ipr_reset_alert(struct ipr_cmnd *ipr_cmd)
 		writel(IPR_UPROCI_RESET_ALERT, ioa_cfg->regs.set_uproc_interrupt_reg);
 		ipr_cmd->job_step = ipr_reset_wait_to_start_bist;
 	} else {
-		ipr_cmd->job_step = ipr_reset_start_bist;
+		ipr_cmd->job_step = ioa_cfg->reset;
 	}
 
 	ipr_cmd->u.time_left = IPR_WAIT_FOR_RESET_TIMEOUT;
@@ -6855,6 +7121,7 @@ static int __devinit ipr_alloc_mem(struct ipr_ioa_cfg *ioa_cfg)
 
 		ioa_cfg->hostrcb[i]->hostrcb_dma =
 			ioa_cfg->hostrcb_dma[i] + offsetof(struct ipr_hostrcb, hcam);
+		ioa_cfg->hostrcb[i]->ioa_cfg = ioa_cfg;
 		list_add_tail(&ioa_cfg->hostrcb[i]->queue, &ioa_cfg->hostrcb_free_q);
 	}
 
@@ -6986,9 +7253,6 @@ static const struct ipr_chip_cfg_t * __devinit
 ipr_get_chip_cfg(const struct pci_device_id *dev_id)
 {
 	int i;
-
-	if (dev_id->driver_data)
-		return (const struct ipr_chip_cfg_t *)dev_id->driver_data;
 
 	for (i = 0; i < ARRAY_SIZE(ipr_chip); i++)
 		if (ipr_chip[i].vendor == dev_id->vendor &&
@@ -7126,6 +7390,12 @@ static int __devinit ipr_probe_ioa(struct pci_dev *pdev,
 			pdev->irq, rc);
 		goto cleanup_nolog;
 	}
+
+	if (dev_id->driver_data & IPR_USE_PCI_WARM_RESET) {
+		ioa_cfg->needs_warm_reset = 1;
+		ioa_cfg->reset = ipr_reset_slot_reset;
+	} else
+		ioa_cfg->reset = ipr_reset_start_bist;
 
 	spin_lock(&ipr_driver_lock);
 	list_add_tail(&ioa_cfg->queue, &ipr_ioa_head);
@@ -7339,50 +7609,43 @@ static void ipr_shutdown(struct device *dev)
 
 static struct pci_device_id ipr_pci_table[] __devinitdata = {
 	{ PCI_VENDOR_ID_MYLEX, PCI_DEVICE_ID_IBM_GEMSTONE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_5702,
-		0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_5702, 0, 0, 0 },
 	{ PCI_VENDOR_ID_MYLEX, PCI_DEVICE_ID_IBM_GEMSTONE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_5703,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_5703, 0, 0, 0 },
 	{ PCI_VENDOR_ID_MYLEX, PCI_DEVICE_ID_IBM_GEMSTONE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_573D,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_573D, 0, 0, 0 },
 	{ PCI_VENDOR_ID_MYLEX, PCI_DEVICE_ID_IBM_GEMSTONE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_573E,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_573E, 0, 0, 0 },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571B,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571B, 0, 0, 0 },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572E,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572E, 0, 0, 0 },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571A,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571A, 0, 0, 0 },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_575B,
-		0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_575B, 0, 0, 0 },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_OBSIDIAN,
-	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572A,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572A, 0, 0, 0 },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_OBSIDIAN,
-	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572B,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572B, 0, 0, 0 },
+	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_OBSIDIAN,
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_575C, 0, 0, 0 },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN,
-	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572A,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572A, 0, 0, 0 },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN,
-	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572B,
-	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572B, 0, 0, 0 },
+	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN,
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_575C, 0, 0, 0 },
+	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_OBSIDIAN_E,
+	      PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_57B7, 0, 0, IPR_USE_PCI_WARM_RESET},
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_SNIPE,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_2780,
-		0, 0, (kernel_ulong_t)&ipr_chip_cfg[1] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_2780, 0, 0, 0 },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_SCAMP,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571E,
-		0, 0, (kernel_ulong_t)&ipr_chip_cfg[1] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571E, 0, 0, 0 },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_SCAMP,
-		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571F,
-		0, 0, (kernel_ulong_t)&ipr_chip_cfg[1] },
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571F, 0, 0, 0 },
+	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_SCAMP,
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_572F, 0, 0, 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, ipr_pci_table);

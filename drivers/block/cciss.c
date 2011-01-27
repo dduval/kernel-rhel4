@@ -38,6 +38,7 @@
 #include <linux/hdreg.h>
 #include <linux/spinlock.h>
 #include <linux/compat.h>
+#include <linux/reboot.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/div64.h>
@@ -48,13 +49,13 @@
 #include <linux/diskdump.h>
 
 #define CCISS_DRIVER_VERSION(maj,min,submin) ((maj<<16)|(min<<8)|(submin))
-#define DRIVER_NAME "HP CISS Driver (v 2.6.14.RH2)"
-#define DRIVER_VERSION CCISS_DRIVER_VERSION(2,6,14)
+#define DRIVER_NAME "HP CISS Driver (v 2.6.16.RH1)"
+#define DRIVER_VERSION CCISS_DRIVER_VERSION(2,6,16)
 
 /* Embedded module documentation macros - see modules.h */
 MODULE_AUTHOR("Hewlett-Packard Company");
-MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 2.6.14.RH2");
-MODULE_VERSION("2.6.14");
+MODULE_DESCRIPTION("Driver for HP Controller SA5xxx SA6xxx version 2.6.16.RH1");
+MODULE_VERSION("2.6.16");
 MODULE_SUPPORTED_DEVICE("HP SA5i SA5i+ SA532 SA5300 SA5312 SA641 SA642 SA6400"
 			" SA6i P600 P800 P400 E200 E200i");
 MODULE_LICENSE("GPL");
@@ -101,6 +102,10 @@ const struct pci_device_id cciss_pci_device_id[] = {
 		0x103C, 0x3214, 0, 0, 0},
 	{ PCI_VENDOR_ID_HP, PCI_DEVICE_ID_HP_CISSD,
 		0x103C, 0x3215, 0, 0, 0},
+	{PCI_VENDOR_ID_HP, PCI_DEVICE_ID_HP_CISSC,
+	     	0x103c, 0x3237},
+	{PCI_VENDOR_ID_HP, PCI_ANY_ID, PCI_ANY_ID, PCI_ANY_ID,
+		PCI_CLASS_STORAGE_RAID << 8, 0xffff << 8, 0},
 	{0,}
 };
 MODULE_DEVICE_TABLE(pci, cciss_pci_device_id);
@@ -130,6 +135,8 @@ static struct board_type products[] = {
 	{ 0x3213103C, "Smart Array E200i", &SA5_access},
 	{ 0x3214103C, "Smart Array E200i", &SA5_access},
 	{ 0x3215103C, "Smart Array E200i", &SA5_access},
+	{ 0x3237103C, "Smart Array E500", &SA5_access},
+	{ 0xFFFF103C, "Unknown Smart Array", &SA5_access},
 };
 
 /* How long to wait (in millesconds) for board to go into simple mode */
@@ -139,7 +146,7 @@ static struct board_type products[] = {
 /*define how many times we will try a command because of bus resets */
 #define MAX_CMD_RETRIES 3
 
-#define READ_AHEAD 	0	/* controller handles the read-ahead */
+#define READ_AHEAD 	1024
 #define MAX_CTLR	32	/* max number of supported controllers */ 
 #define NR_CMDS		384	/* # commands that can be outstanding */
 
@@ -147,6 +154,7 @@ static struct board_type products[] = {
 #define MAX_CTLR_ORIG 	8
 
 static ctlr_info_t *hba[MAX_CTLR];
+static int notify_count=0;
 
 static void do_cciss_request(request_queue_t *q);
 static irqreturn_t do_cciss_intr(int irq, void *dev_id, struct pt_regs *regs);
@@ -163,6 +171,8 @@ static void cciss_read_capacity(int ctlr, int logvol, int withirq,
 			sector_t *total_size, unsigned int *block_size);
 static void cciss_read_capacity_16(int ctlr, int logvol, int withirq,
 			sector_t *total_size, unsigned int *block_size);
+static int cciss_notify_reboot(struct notifier_block *this,
+				unsigned long code, void *x);
 static void cciss_geometry_inquiry(int ctlr, int logvol,
 			int withirq, sector_t total_size,
 			unsigned int block_size, InquiryData_struct *inq_buff,
@@ -351,6 +361,38 @@ static struct block_device_operations cciss_fops  = {
         .ioctl		= cciss_ioctl,
 	.revalidate_disk= cciss_revalidate,
 };
+
+static struct notifier_block cciss_notifier = {
+	.notifier_call  = cciss_notify_reboot,
+};
+
+static int cciss_notify_reboot(struct notifier_block *this,
+                            unsigned long code, void *x)
+{
+	int i, return_code;
+	char flush_buf[4];
+
+	if ((code == SYS_DOWN) || (code == SYS_HALT) ||
+		(code == SYS_POWER_OFF)) {
+		printk(KERN_INFO "cciss: stopping all cciss devices.\n");
+		/* double check that all controller entrys have been removed */
+		for (i = 0; i < MAX_CTLR; i++) {
+			if (hba[i] != NULL) {
+				printk(KERN_WARNING "cciss: removing "
+						"controller %d\n", i);
+				/* write all data in battery backed cache to disks */
+				memset(flush_buf, 0, 4);
+				return_code = sendcmd(CCISS_CACHE_FLUSH, i, flush_buf, 4,
+						 0, 0, 	0, NULL, TYPE_CMD, 0, 0);
+				if(return_code != IO_OK) {
+						printk(KERN_WARNING "Error Flushing "
+							"cache on controller %d\n", i);
+				}
+			}
+		}
+	}
+	return NOTIFY_DONE;
+}
 
 /*
  * Enqueuing and dequeuing functions for cmdlists.
@@ -3291,7 +3333,8 @@ static int cciss_pci_init(ctlr_info_t *c, struct pci_dev *pdev)
 			    (board_id == 0x3212103C) ||
 			    (board_id == 0x3213103C) ||
 			    (board_id == 0x3214103C) ||
-			    (board_id == 0x3215103C)) {
+			    (board_id == 0x3215103C) ||
+			    (board_id == 0xFFFF103C)) {
 				c->max_nr_cmds = 120;
 			} else {
 				c->max_nr_cmds = 384;
@@ -3312,6 +3355,24 @@ static int cciss_pci_init(ctlr_info_t *c, struct pci_dev *pdev)
 	{
 		printk("Does not appear to be a valid CISS config table\n");
 		return -1;
+	}
+
+	/* We didn't find the controller in our list. We know the
+	 * signature is valid. If it's an HP device let's try to
+	 * bind to the device and fire it up. Otherwise we bail.
+	 */
+	if (i == ARRAY_SIZE(products)) {
+		if (subsystem_vendor_id == PCI_VENDOR_ID_HP) {
+			c->product_name = products[ARRAY_SIZE(products)-1].product_name;
+			c->access = *(products[ARRAY_SIZE(products)-1].access);
+			printk(KERN_WARNING "cciss: This is an unknown "
+				"Smart Array controller.\n");
+		} else {
+			printk(KERN_WARNING "cciss: Sorry, I don't know how"
+				" to access the Smart Array controller %08lx\n",
+					(unsigned long)board_id);
+			return -1;
+		}
 	}
 
 #ifdef CONFIG_X86
@@ -3640,6 +3701,11 @@ static int __devinit cciss_init_one(struct pci_dev *pdev,
 			they are used */
         memset(hba[i]->cmd_pool_bits, 0, ((hba[i]->max_nr_cmds+BITS_PER_LONG-1)/BITS_PER_LONG)*sizeof(unsigned long));
 
+	if (notify_count == 0) {
+		register_reboot_notifier(&cciss_notifier);
+		notify_count=1;
+	}
+
 #ifdef CCISS_DEBUG	
 	printk(KERN_DEBUG "Scanning for drives on controller cciss%d\n",i);
 #endif /* CCISS_DEBUG */
@@ -3885,6 +3951,8 @@ static void __exit cleanup_cciss_module(void)
 
 	unregister_cciss_ioctl32();
 	pci_unregister_driver(&cciss_pci_driver);
+	unregister_reboot_notifier(&cciss_notifier);
+	notify_count = 0;
 	/* double check that all controller entrys have been removed */
 	for (i=0; i< MAX_CTLR; i++) 
 	{

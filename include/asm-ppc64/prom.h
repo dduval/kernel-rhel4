@@ -189,6 +189,7 @@ struct device_node {
 	int	status;			/* Current device status (non-zero is bad) */
 	int	eeh_mode;		/* See eeh.h for possible EEH_MODEs */
 	int	eeh_config_addr;
+	int	eeh_pe_config_addr;
 	int	pci_ext_config_space;	/* for pci devices */
 	struct  pci_controller *phb;	/* for pci devices */
 	struct	iommu_table *iommu_table;	/* for phb's or bridges */

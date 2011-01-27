@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc.h 2885 2006-03-06 21:39:34Z sf_support $
+ * $Id: lpfc.h 3039 2007-05-22 14:40:23Z sf_support $
  */
 
 #ifndef _H_LPFC
@@ -32,12 +32,11 @@ struct lpfc_sli2_slim;
 					   requests */
 #define LPFC_MAX_NS_RETRY	3	/* Number of retry attempts to contact
 					   the NameServer  before giving up. */
-#define LPFC_DFT_HBA_Q_DEPTH	2048	/* max cmds per hba */
-#define LPFC_LC_HBA_Q_DEPTH	1024	/* max cmds per low cost hba */
-#define LPFC_LP101_HBA_Q_DEPTH	128	/* max cmds per low cost hba */
-
 /* Define the SLIM2 page size. */
 #define LPFC_SLIM2_PAGE_AREA  8192
+
+#define LPFC_HB_MBOX_INTERVAL   5      /* Heart beat interval in seconds. */
+#define LPFC_HB_MBOX_TIMEOUT    30     /* Heart beat timeout  in seconds. */
 
 /* Define macros for 64 bit support */
 #define putPaddrLow(addr)    ((uint32_t) (0xffffffff & (u64)(addr)))
@@ -135,7 +134,9 @@ struct lpfc_stats {
 	uint32_t elsRcvLOGO;
 	uint32_t elsRcvPRLO;
 	uint32_t elsRcvPRLI;
-	uint32_t elsRcvRRQ;
+	uint32_t elsRcvLIRR;
+	uint32_t elsRcvRPS;
+	uint32_t elsRcvRPL;
 	uint32_t elsXmitFLOGI;
 	uint32_t elsXmitPLOGI;
 	uint32_t elsXmitPRLI;
@@ -229,6 +230,7 @@ struct lpfc_hba {
 	struct timer_list fc_disctmo;	/* Discovery rescue timer */
 	struct timer_list fc_fdmitmo;	/* fdmi timer */
 	struct timer_list fc_scantmo;	/* scsi scan host timer */
+	struct timer_list fc_lnkdwntmo;	/* Used for nodev tmo on link down */
 
 
 	void *fc_evt_head;	/* waiting for event queue */
@@ -281,6 +283,7 @@ struct lpfc_hba {
 #define FC_SCSI_SCAN_TMO        0x4000 	/* scsi scan timer running */
 #define FC_ABORT_DISCOVERY      0x8000 	/* we want to abort discovery */
 #define FC_NDISC_ACTIVE         0x10000	/* NPort discovery active */
+#define FC_BYPASSED_MODE        0x20000	/* NPort is in bypassed mode */
 
 	uint32_t fc_topology;	/* link topology, from LINK INIT */
 
@@ -321,6 +324,8 @@ struct lpfc_hba {
 	uint32_t cfg_log_verbose;
 	uint32_t cfg_lun_queue_depth;
 	uint32_t cfg_nodev_tmo;
+	uint32_t cfg_linkdown_tmo;
+	uint32_t cfg_pci_max_read;
 	uint32_t cfg_hba_queue_depth;
 	uint32_t cfg_fcp_class;
 	uint32_t cfg_use_adisc;
@@ -331,6 +336,8 @@ struct lpfc_hba {
 	uint32_t cfg_cr_delay;
 	uint32_t cfg_cr_count;
 	uint32_t cfg_multi_ring_support;
+	uint32_t cfg_multi_ring_rctl;
+	uint32_t cfg_multi_ring_type;
 	uint32_t cfg_fdmi_on;
 	uint32_t cfg_fcp_bind_method;
 	uint32_t cfg_discovery_threads;
@@ -340,6 +347,7 @@ struct lpfc_hba {
 	uint32_t cfg_discovery_min_wait;
 #define CFG_DISC_INFINITE_WAIT (600)
 	uint32_t cfg_discovery_wait_limit;
+	uint64_t cfg_soft_wwpn;
 
 	lpfc_vpd_t vpd;		/* vital product data */
 
@@ -365,6 +373,8 @@ struct lpfc_hba {
 #define WORKER_ELS_TMO                 0x2 	/* ELS timeout */
 #define WORKER_MBOX_TMO                0x4 	/* MBOX timeout */
 #define WORKER_FDMI_TMO                0x8 	/* FDMI timeout */
+#define WORKER_LNKDWN_TMO              0x10 	/* Linkdown timeout */
+#define WORKER_HB_TMO                  0x20    /* Heart beat timeout */
 
 	unsigned long pci_bar0_map;     /* Physical address for PCI BAR0 */
 	unsigned long pci_bar2_map;     /* Physical address for PCI BAR2 */
@@ -382,6 +392,7 @@ struct lpfc_hba {
 	wait_queue_head_t rscnevtwq;
 	wait_queue_head_t ctevtwq;
 	wait_queue_head_t dumpevtwq;
+	wait_queue_head_t tempevtwq;
 
 	uint8_t brd_no;		/* FC board number */
 
@@ -399,6 +410,7 @@ struct lpfc_hba {
 #define VPD_PORT            0x8         /* valid vpd port data */
 #define VPD_MASK            0xf         /* mask for any vpd data */
 
+	uint8_t soft_wwpn_enable;
 	struct timer_list els_tmofunc;
 
   	void *link_stats;
@@ -425,6 +437,15 @@ struct lpfc_hba {
 	struct list_head freebufList;
 	struct list_head ctrspbuflist;
 	struct list_head rnidrspbuflist;
+
+	struct timer_list hatt_tmo;
+	unsigned long hatt_jiffies;
+	/* Fields used for heart beat. */
+	unsigned long last_completion_time;
+	struct timer_list hb_tmofunc;
+	uint8_t hb_outstanding;
+
+	uint8_t temp_sensor_support;
 };
 
 /* event mask definitions */
@@ -432,6 +453,11 @@ struct lpfc_hba {
 #define FC_REG_RSCN_EVENT       0x2	/* Register for RSCN events */
 #define FC_REG_CT_EVENT         0x4	/* Register for CT request events */
 #define FC_REG_DUMP_EVENT       0x10    /* Register for Dump events */
+#define FC_REG_TEMPERATURE_EVENT 0x20   /* Register for temperature event */
+
+#define LPFC_CRIT_TEMP          0x1
+#define LPFC_THRESHOLD_TEMP     0x2
+#define LPFC_NORMAL_TEMP        0x3
 
 #define FC_FSTYPE_ALL 0xffff	/* match on all fsTypes */
 
@@ -467,5 +493,25 @@ struct rnidrsp {
 	struct list_head list;
 	uint32_t data;
 };
+
+static inline void lpfc_u64_to_wwn(u64 inm, u8 *wwn)
+{
+	wwn[0] = (inm >> 56) & 0xff;
+	wwn[1] = (inm >> 48) & 0xff;
+	wwn[2] = (inm >> 40) & 0xff;
+	wwn[3] = (inm >> 32) & 0xff;
+	wwn[4] = (inm >> 24) & 0xff;
+	wwn[5] = (inm >> 16) & 0xff;
+	wwn[6] = (inm >> 8) & 0xff;
+	wwn[7] = inm & 0xff;
+}
+
+static inline u64 lpfc_wwn_to_u64(u8 *wwn)
+{
+	return (u64)wwn[0] << 56 | (u64)wwn[1] << 48 |
+	    (u64)wwn[2] << 40 | (u64)wwn[3] << 32 |
+	    (u64)wwn[4] << 24 | (u64)wwn[5] << 16 |
+	    (u64)wwn[6] <<  8 | (u64)wwn[7];
+}
 
 #endif				/* _H_LPFC */

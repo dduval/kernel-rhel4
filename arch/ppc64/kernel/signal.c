@@ -133,9 +133,6 @@ static long setup_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs,
 
 	flush_fp_to_thread(current);
 
-	/* Make sure signal doesn't get spurrious FP exceptions */
-	current->thread.fpscr = 0;
-
 #ifdef CONFIG_ALTIVEC
 	err |= __put_user(v_regs, &sc->v_regs);
 
@@ -205,6 +202,10 @@ static long restore_sigcontext(struct pt_regs *regs, sigset_t *set, int sig,
 
 	if (!sig)
 		regs->gpr[13] = save_r13;
+
+	/* Force reload of FP/VEC */
+	regs->msr &= ~(MSR_FP | MSR_FE0 | MSR_FE1 | MSR_VEC);
+
 	err |= __copy_from_user(&current->thread.fpr, &sc->fp_regs, FP_REGS_SIZE);
 	if (set != NULL)
 		err |=  __get_user(set->sig[0], &sc->oldmask);
@@ -226,9 +227,6 @@ static long restore_sigcontext(struct pt_regs *regs, sigset_t *set, int sig,
 	else
 		current->thread.vrsave = 0;
 #endif /* CONFIG_ALTIVEC */
-
-	/* Force reload of FP/VEC */
-	regs->msr &= ~(MSR_FP | MSR_FE0 | MSR_FE1 | MSR_VEC);
 
 	return err;
 }
@@ -372,7 +370,7 @@ long sys_rt_sigreturn(unsigned long r3, unsigned long r4, unsigned long r5,
 	 */
 	do_sigaltstack(&uc->uc_stack, NULL, regs->gpr[1]);
 
-	return regs->result;
+	return 0;
 
 badframe:
 #if DEBUG_SIG
@@ -450,6 +448,9 @@ static void setup_rt_frame(int signr, struct k_sigaction *ka, siginfo_t *info,
 	if (err)
 		goto badframe;
 
+	/* Make sure signal doesn't get spurrious FP exceptions */
+	current->thread.fpscr = 0;
+
 	if (test_thread_flag(TIF_SINGLESTEP))
 		ptrace_notify(SIGTRAP);
 
@@ -492,6 +493,8 @@ static inline void syscall_restart(struct pt_regs *regs, struct k_sigaction *ka)
 		 * we only get here if there is a handler, we dont restart.
 		 */
 		regs->result = -EINTR;
+		regs->gpr[3] = EINTR;
+		/* note cr0.SO is already set */
 		break;
 	case -ERESTARTSYS:
 		/* ERESTARTSYS means to restart the syscall if there is no
@@ -499,6 +502,7 @@ static inline void syscall_restart(struct pt_regs *regs, struct k_sigaction *ka)
 		 */
 		if (!(ka->sa.sa_flags & SA_RESTART)) {
 			regs->result = -EINTR;
+			regs->gpr[3] = EINTR;
 			break;
 		}
 		/* fallthrough */

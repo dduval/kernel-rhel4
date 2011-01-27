@@ -33,6 +33,10 @@ struct statfs;
 #define msleep(x) { set_current_state(TASK_UNINTERRUPTIBLE); schedule_timeout(x * HZ / 1000); }
 #endif
 
+#ifndef __user
+#define __user
+#endif
+
 /*
  *****************************************************************
  * All Prototypes
@@ -51,7 +55,7 @@ extern void _FreeXid(unsigned int);
 #define FreeXid(curr_xid) {_FreeXid(curr_xid); cFYI(1,("CIFS VFS: leaving %s (xid = %d) rc = %d",__FUNCTION__,curr_xid,(int)rc));}
 extern char *build_path_from_dentry(struct dentry *);
 extern char *build_wildcard_path_from_dentry(struct dentry *direntry);
-extern void renew_parental_timestamps(struct dentry *direntry);
+/* extern void renew_parental_timestamps(struct dentry *direntry);*/
 extern int SendReceive(const unsigned int /* xid */ , struct cifsSesInfo *,
 			struct smb_hdr * /* input */ ,
 			struct smb_hdr * /* out */ ,
@@ -59,10 +63,14 @@ extern int SendReceive(const unsigned int /* xid */ , struct cifsSesInfo *,
 extern int SendReceive2(const unsigned int /* xid */ , struct cifsSesInfo *,
 			struct kvec *, int /* nvec to send */, 
 			int * /* type of buf returned */ , const int long_op);
+extern int SendReceiveBlockingLock(const unsigned int /* xid */ , struct cifsTconInfo *,
+				struct smb_hdr * /* input */ ,
+				struct smb_hdr * /* out */ ,
+				int * /* bytes returned */);
 extern int checkSMBhdr(struct smb_hdr *smb, __u16 mid);
-extern int checkSMB(struct smb_hdr *smb, __u16 mid, int length);
+extern int checkSMB(struct smb_hdr *smb, __u16 mid, unsigned int length);
 extern int is_valid_oplock_break(struct smb_hdr *smb, struct TCP_Server_Info *);
-extern int is_size_safe_to_change(struct cifsInodeInfo *);
+extern int is_size_safe_to_change(struct cifsInodeInfo *, __u64 eof);
 extern struct cifsFileInfo *find_writable_file(struct cifsInodeInfo *);
 extern unsigned int smbCalcSize(struct smb_hdr *ptr);
 extern unsigned int smbCalcSize_LE(struct smb_hdr *ptr);
@@ -86,10 +94,13 @@ extern void DeleteOplockQEntry(struct oplock_q_entry *);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
 extern struct timespec cifs_NTtimeToUnix(u64 /* utc nanoseconds since 1601 */ );
 extern u64 cifs_UnixTimeToNT(struct timespec);
+extern struct timespec cnvrtDosUnixTm(__u16 date, __u16 time);
 #else
 extern u64 cifs_UnixTimeToNT(time_t);
 extern time_t cifs_NTtimeToUnix(u64 /* utc nanoseconds since 1601 */ );
+extern time_t cnvrtDosUnixTm(__u16 date, __u16 time);
 #endif
+extern __le64 cnvrtDosCifsTm(__u16 date, __u16 time);
 
 extern int cifs_get_inode_info(struct inode **pinode,
 			const unsigned char *search_path, 
@@ -127,6 +138,7 @@ extern int CIFSFindClose(const int, struct cifsTconInfo *tcon,
 extern int CIFSSMBQPathInfo(const int xid, struct cifsTconInfo *tcon,
 			const unsigned char *searchName,
 			FILE_ALL_INFO * findData,
+			int legacy /* whether to use old info level */,
 			const struct nls_table *nls_codepage, int remap);
 extern int SMBQueryInformation(const int xid, struct cifsTconInfo *tcon,
                         const unsigned char *searchName,
@@ -353,9 +365,4 @@ extern int CIFSSMBSetPosixACL(const int xid, struct cifsTconInfo *tcon,
 		const struct nls_table *nls_codepage, int remap_special_chars);
 extern int CIFSGetExtAttr(const int xid, struct cifsTconInfo *tcon,
                 const int netfid, __u64 * pExtAttrBits, __u64 *pMask);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 16)
-#if LINUX_VERSION_CODE != KERNEL_VERSION(2, 6, 9)
-extern void * kzalloc(size_t size, unsigned flgs); /* workaround RHEL4 */
-#endif
-#endif
 #endif			/* _CIFSPROTO_H */

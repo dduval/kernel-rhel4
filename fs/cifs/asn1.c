@@ -17,7 +17,6 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -27,6 +26,9 @@
 #include "cifsglob.h"
 #include "cifs_debug.h"
 #include "cifsproto.h"
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+#include <linux/config.h>
+#endif
 
 /*****************************************************************************
  *

@@ -657,8 +657,9 @@ EXPORT_SYMBOL(posix_locks_deadlock);
  * at the head of the list, but that's secret knowledge known only to
  * flock_lock_file and posix_lock_file.
  */
-static int flock_lock_file(struct file *filp, struct file_lock *new_fl)
+static int flock_lock_file(struct file *filp, struct file_lock *request)
 {
+	struct file_lock *new_fl = NULL;
 	struct file_lock **before;
 	struct inode * inode = filp->f_dentry->d_inode;
 	int error = 0;
@@ -673,17 +674,20 @@ static int flock_lock_file(struct file *filp, struct file_lock *new_fl)
 			continue;
 		if (filp != fl->fl_file)
 			continue;
-		if (new_fl->fl_type == fl->fl_type)
+		if (request->fl_type == fl->fl_type)
 			goto out;
 		found = 1;
 		locks_delete_lock(before);
 		break;
 	}
-	unlock_kernel();
 
-	if (new_fl->fl_type == F_UNLCK)
-		return 0;
+	if (request->fl_type == F_UNLCK)
+		goto out;
 
+	error = -ENOMEM;
+	new_fl = locks_alloc_lock();
+	if (new_fl == NULL)
+		goto out;
 	/*
 	 * If a higher-priority process was blocked on the old file lock,
 	 * give it the opportunity to lock the file.
@@ -691,26 +695,28 @@ static int flock_lock_file(struct file *filp, struct file_lock *new_fl)
 	if (found)
 		cond_resched();
 
-	lock_kernel();
 	for_each_lock(inode, before) {
 		struct file_lock *fl = *before;
 		if (IS_POSIX(fl))
 			break;
 		if (IS_LEASE(fl))
 			continue;
-		if (!flock_locks_conflict(new_fl, fl))
+		if (!flock_locks_conflict(request, fl))
 			continue;
 		error = -EAGAIN;
-		if (new_fl->fl_flags & FL_SLEEP) {
-			locks_insert_block(fl, new_fl);
-		}
+		if (request->fl_flags & FL_SLEEP)
+			locks_insert_block(fl, request);
 		goto out;
 	}
+	locks_copy_lock(new_fl, request);
 	locks_insert_lock(&inode->i_flock, new_fl);
+	new_fl = NULL;
 	error = 0;
 
 out:
 	unlock_kernel();
+	if (new_fl)
+		locks_free_lock(new_fl);
 	return error;
 }
 
@@ -1237,6 +1243,9 @@ int fcntl_setlease(unsigned int fd, struct file *filp, long arg)
 	dentry = filp->f_dentry;
 	inode = dentry->d_inode;
 
+	if (IS_NO_LEASES(inode))
+		return -EINVAL;
+
 	if ((current->fsuid != inode->i_uid) && !capable(CAP_LEASE))
 		return -EACCES;
 	if (!S_ISREG(inode->i_mode))
@@ -1399,9 +1408,7 @@ asmlinkage long sys_flock(unsigned int fd, unsigned int cmd)
 		error = flock_lock_file_wait(filp, lock);
 
  out_free:
-	if (list_empty(&lock->fl_link)) {
-		locks_free_lock(lock);
-	}
+	locks_free_lock(lock);
 
  out_putf:
 	fput(filp);

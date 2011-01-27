@@ -60,7 +60,6 @@ extern void usb_host_cleanup(void);
 const char *usbcore_name = "usbcore";
 
 int nousb;		/* Disable USB when built into kernel image */
-			/* Not honored on modular build */
 
 
 static int generic_probe (struct device *dev)
@@ -1279,18 +1278,8 @@ struct bus_type usb_bus_type = {
 	.resume =	usb_generic_resume,
 };
 
-#ifndef MODULE
-
-static int __init usb_setup_disable(char *str)
-{
-	nousb = 1;
-	return 1;
-}
-
 /* format to disable USB on kernel command line is: nousb */
-__setup("nousb", usb_setup_disable);
-
-#endif
+__module_param_call("", nousb, param_set_bool, param_get_bool, &nousb, 0444);
 
 /*
  * for external read access to <nousb>

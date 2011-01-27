@@ -19,7 +19,6 @@
 #include <linux/module.h>
 #include <asm/ebcdic.h>
 #include "hypfs.h"
-#include "hypfs_diag.h"
 
 #define HYPFS_MAGIC 0x687970	/* ASCII 'hyp' */
 #define TMP_SIZE 64		/* size of temporary buffers */
@@ -59,15 +58,26 @@ static void hypfs_add_dentry(struct dentry *dentry)
 	hypfs_last_dentry = dentry;
 }
 
+static inline int hypfs_positive(struct dentry *dentry)
+{
+	return dentry->d_inode && !d_unhashed(dentry);
+}
+
 static void hypfs_remove(struct dentry *dentry)
 {
 	struct dentry *parent;
 
 	parent = dentry->d_parent;
-	if (S_ISDIR(dentry->d_inode->i_mode))
-		simple_rmdir(parent->d_inode, dentry);
-	else
-		simple_unlink(parent->d_inode, dentry);
+	if (!parent || !parent->d_inode)
+		return;
+	down(&parent->d_inode->i_sem);
+	if (hypfs_positive(dentry)) {
+		if (S_ISDIR(dentry->d_inode->i_mode))
+			simple_rmdir(parent->d_inode, dentry);
+		else
+			simple_unlink(parent->d_inode, dentry);
+	}
+	up(&parent->d_inode->i_sem);
 	d_delete(dentry);
 	dput(dentry);
 }
@@ -184,7 +194,10 @@ static ssize_t hypfs_aio_write(struct kiocb *iocb, const char __user *buf,
 		goto out;
 	}
 	hypfs_delete_tree(sb->s_root);
-	rc = hypfs_diag_create_files(sb, sb->s_root);
+	if (MACHINE_IS_VM)
+		rc = hypfs_vm_create_files(sb, sb->s_root);
+	else
+		rc = hypfs_diag_create_files(sb, sb->s_root);
 	if (rc) {
 		printk(KERN_ERR "hypfs: Update failed\n");
 		hypfs_delete_tree(sb->s_root);
@@ -281,7 +294,10 @@ static int hypfs_fill_super(struct super_block *sb, void *data, int silent)
 		rc = -ENOMEM;
 		goto err_alloc;
 	}
-	rc = hypfs_diag_create_files(sb, root_dentry);
+	if (MACHINE_IS_VM)
+		rc = hypfs_vm_create_files(sb, root_dentry);
+	else
+		rc = hypfs_diag_create_files(sb, root_dentry);
 	if (rc)
 		goto err_tree;
 	sbi->update_file = hypfs_create_update_file(sb, root_dentry);
@@ -291,6 +307,7 @@ static int hypfs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	hypfs_update_update(sb);
 	sb->s_root = root_dentry;
+	printk(KERN_INFO "hypfs: Hypervisor filesystem mounted\n");
 	return 0;
 
 err_tree:
@@ -333,13 +350,17 @@ static struct dentry *hypfs_create_file(struct super_block *sb,
 	qname.name = name;
 	qname.len = strlen(name);
 	qname.hash = full_name_hash(name, qname.len);
+	down(&parent->d_inode->i_sem);
 	dentry = lookup_one_len(name, parent, strlen(name));
-	if (IS_ERR(dentry))
-		return ERR_PTR(-ENOMEM);
+	if (IS_ERR(dentry)) {
+		dentry = ERR_PTR(-ENOMEM);
+		goto fail;
+	}
 	inode = hypfs_make_inode(sb, mode);
 	if (!inode) {
 		dput(dentry);
-		return ERR_PTR(-ENOMEM);
+		dentry = ERR_PTR(-ENOMEM);
+		goto fail;
 	}
 	if (mode & S_IFREG) {
 		inode->i_fop = &hypfs_file_ops;
@@ -356,6 +377,8 @@ static struct dentry *hypfs_create_file(struct super_block *sb,
 	inode->u.generic_ip = data;
 	d_instantiate(dentry, inode);
 	dget(dentry);
+fail:
+	up(&parent->d_inode->i_sem);
 	return dentry;
 }
 
@@ -368,7 +391,6 @@ struct dentry *hypfs_mkdir(struct super_block *sb, struct dentry *parent,
 	if (IS_ERR(dentry))
 		return dentry;
 	hypfs_add_dentry(dentry);
-	parent->d_inode->i_nlink++;
 	return dentry;
 }
 
@@ -456,11 +478,15 @@ static int __init hypfs_init(void)
 {
 	int rc;
 
-	if (MACHINE_IS_VM)
-		return -ENODATA;
-	if (hypfs_diag_init()) {
-		rc = -ENODATA;
-		goto fail_diag;
+	if (MACHINE_IS_VM) {
+		if (hypfs_vm_init())
+			/* no diag 2fc, just exit */
+			return -ENODATA;
+	} else {
+		if (hypfs_diag_init()) {
+			rc = -ENODATA;
+			goto fail_diag;
+		}
 	}
 	rc = subsystem_register(&hypervisor_subsys);
 	if (rc)
@@ -480,7 +506,8 @@ fail_filesystem:
 fail_sysfs_s390:
 	subsystem_unregister(&hypervisor_subsys);
 fail_sysfs_hyper:
-	hypfs_diag_exit();
+	if (!MACHINE_IS_VM)
+		hypfs_diag_exit();
 fail_diag:
 	printk(KERN_ERR "hypfs: Initialization failed with rc = %i.\n", rc);
 	return rc;
@@ -488,7 +515,8 @@ fail_diag:
 
 static void __exit hypfs_exit(void)
 {
-	hypfs_diag_exit();
+	if (!MACHINE_IS_VM)
+		hypfs_diag_exit();
 	unregister_filesystem(&hypfs_type);
 	subsystem_unregister(&s390_subsys);
 	subsystem_unregister(&hypervisor_subsys);

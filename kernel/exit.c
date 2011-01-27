@@ -572,7 +572,7 @@ static inline void reparent_thread(task_t *p, task_t *father, int traced)
 	if (p->exit_state == EXIT_ZOMBIE && p->exit_signal != -1 &&
 	    thread_group_empty(p))
 		do_notify_parent(p, p->exit_signal);
-	
+
 	/*
 	 * process group orphan check
 	 * Case ii: Our child is in a different pgrp

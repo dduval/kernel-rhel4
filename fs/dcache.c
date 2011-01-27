@@ -1181,6 +1181,19 @@ void d_delete(struct dentry * dentry)
 	spin_unlock(&dcache_lock);
 }
 
+static void __d_rehash(struct dentry * entry, struct hlist_head *list)
+{
+
+	entry->d_flags &= ~DCACHE_UNHASHED;
+	entry->d_bucket = list;
+	hlist_add_head_rcu(&entry->d_hash, list);
+}
+
+static void _d_rehash(struct dentry * entry)
+{
+	__d_rehash(entry, d_hash(entry->d_parent, entry->d_name.hash));
+}
+
 /**
  * d_rehash	- add an entry back to the hash
  * @entry: dentry to add to the hash
@@ -1265,7 +1278,7 @@ static void switch_names(struct dentry *dentry, struct dentry *target)
  */
  
 /**
- * d_move - move a dentry
+ * d_move_locked - move a dentry
  * @dentry: entry to move
  * @target: new dentry
  *
@@ -1273,12 +1286,13 @@ static void switch_names(struct dentry *dentry, struct dentry *target)
  * dcache entries should not be moved in this way.
  */
 
-void d_move(struct dentry * dentry, struct dentry * target)
+static void d_move_locked(struct dentry * dentry, struct dentry * target)
 {
+	struct hlist_head *list;
+
 	if (!dentry->d_inode)
 		printk(KERN_WARNING "VFS: moving negative dcache entry\n");
 
-	spin_lock(&dcache_lock);
 	write_seqlock(&rename_lock);
 	/*
 	 * XXXX: do we really need to take target->d_lock?
@@ -1300,9 +1314,11 @@ void d_move(struct dentry * dentry, struct dentry * target)
 	if (dentry->d_bucket != target->d_bucket) {
 		hlist_del_rcu(&dentry->d_hash);
 already_unhashed:
-		dentry->d_bucket = target->d_bucket;
-		hlist_add_head_rcu(&dentry->d_hash, target->d_bucket);
-		dentry->d_flags &= ~DCACHE_UNHASHED;
+		if (target->d_flags & DCACHE_UNHASHED)
+			list = d_hash(target->d_parent, target->d_name.hash);
+		else
+			list = target->d_bucket;
+		__d_rehash(dentry, list);
 	}
 
 	/* Unhash the target: dput() will then get rid of it */
@@ -1344,7 +1360,248 @@ already_unhashed:
 	spin_unlock(&target->d_lock);
 	spin_unlock(&dentry->d_lock);
 	write_sequnlock(&rename_lock);
+}
+
+/**
+ * d_move - move a dentry
+ * @dentry: entry to move
+ * @target: new dentry
+ *
+ * Update the dcache to reflect the move of a file name. Negative
+ * dcache entries should not be moved in this way.
+ */
+
+void d_move(struct dentry * dentry, struct dentry * target)
+{
+	spin_lock(&dcache_lock);
+	d_move_locked(dentry, target);
 	spin_unlock(&dcache_lock);
+}
+
+/*
+ * Helper that returns 1 if p1 is a parent of p2, else 0
+ */
+static int d_isparent(struct dentry *p1, struct dentry *p2)
+{
+	struct dentry *p;
+
+	for (p = p2; p->d_parent != p; p = p->d_parent) {
+		if (p->d_parent == p1)
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * This helper attempts to cope with remotely renamed directories
+ *
+ * It assumes that the caller is already holding
+ * dentry->d_parent->d_inode->i_mutex and the dcache_lock
+ *
+ * Note: If ever the locking in lock_rename() changes, then please
+ * remember to update this too...
+ *
+ * On return, dcache_lock will have been unlocked.
+ */
+static struct dentry *__d_unalias(struct dentry *dentry, struct dentry *alias)
+{
+	struct semaphore *m1 = NULL, *m2 = NULL;
+	struct dentry *ret;
+
+	/* If alias and dentry share a parent, then no extra locks required */
+	if (alias->d_parent == dentry->d_parent)
+		goto out_unalias;
+
+	/* Check for loops */
+	ret = ERR_PTR(-ELOOP);
+	if (d_isparent(alias, dentry))
+		goto out_err;
+
+	/* See lock_rename() */
+	ret = ERR_PTR(-EBUSY);
+	if (down_trylock(&dentry->d_sb->s_vfs_rename_sem))
+		goto out_err;
+	m1 = &dentry->d_sb->s_vfs_rename_sem;
+	if (down_trylock(&alias->d_parent->d_inode->i_sem))
+		goto out_err;
+	m2 = &alias->d_parent->d_inode->i_sem;
+out_unalias:
+	d_move_locked(alias, dentry);
+	ret = alias;
+out_err:
+        spin_unlock(&dcache_lock);
+	if (m2)
+		up(m2);
+	if (m1)
+		up(m1);
+	return ret;
+}
+
+/*
+ * Prepare an anonymous dentry for life in the superblock's dentry tree as a
+ * named dentry in place of the dentry to be replaced.
+ */
+static void __d_materialise_dentry(struct dentry *dentry, struct dentry *anon)
+{
+	struct dentry *dparent, *aparent;
+
+	switch_names(dentry, anon);
+	do_switch(dentry->d_name.len, anon->d_name.len);
+	do_switch(dentry->d_name.hash, anon->d_name.hash);
+
+	dparent = dentry->d_parent;
+	aparent = anon->d_parent;
+
+	dentry->d_parent = (aparent == anon) ? dentry : aparent;
+	list_del(&dentry->d_child);
+	if (!IS_ROOT(dentry))
+		list_add(&dentry->d_child, &dentry->d_parent->d_subdirs);
+	else
+		INIT_LIST_HEAD(&dentry->d_child);
+
+	anon->d_parent = (dparent == dentry) ? anon : dparent;
+	list_del(&anon->d_child);
+	if (!IS_ROOT(anon))
+		list_add(&anon->d_child, &anon->d_parent->d_subdirs);
+	else
+		INIT_LIST_HEAD(&anon->d_child);
+
+	anon->d_flags &= ~DCACHE_DISCONNECTED;
+}
+
+/**
+ * d_instantiate_unique - instantiate a non-aliased dentry
+ * @entry: dentry to instantiate
+ * @inode: inode to attach to this dentry
+ *
+ * Fill in inode information in the entry. On success, it returns NULL.
+ * If an unhashed alias of "entry" already exists, then we return the
+ * aliased dentry instead and drop one reference to inode.
+ *
+ * Note that in order to avoid conflicts with rename() etc, the caller
+ * had better be holding the parent directory semaphore.
+ *
+ * This also assumes that the inode count has been incremented
+ * (or otherwise set) by the caller to indicate that it is now
+ * in use by the dcache.
+ */
+static struct dentry *__d_instantiate_unique(struct dentry *entry,
+					struct inode *inode)
+{
+	struct dentry *alias;
+	int len = entry->d_name.len;
+	const char *name = entry->d_name.name;
+	unsigned int hash = entry->d_name.hash;
+
+	if (!inode) {
+		entry->d_inode = NULL;
+		return NULL;
+	}
+
+	list_for_each_entry(alias, &inode->i_dentry, d_alias) {
+		struct qstr *qstr = &alias->d_name;
+
+		if (qstr->hash != hash)
+			continue;
+		if (alias->d_parent != entry->d_parent)
+			continue;
+		if (qstr->len != len)
+			continue;
+		if (memcmp(qstr->name, name, len))
+			continue;
+		dget_locked(alias);
+		return alias;
+	}
+
+	list_add(&entry->d_alias, &inode->i_dentry);
+	entry->d_inode = inode;
+	//fsnotify_d_instantiate(entry, inode);
+	return NULL;
+}
+
+struct dentry *d_materialise_unique(struct dentry *dentry, struct inode *inode)
+{
+	struct dentry *actual;
+
+	BUG_ON(!d_unhashed(dentry));
+
+	spin_lock(&dcache_lock);
+
+	if (!inode) {
+		actual = dentry;
+		dentry->d_inode = NULL;
+		goto found_lock;
+	}
+
+	if (S_ISDIR(inode->i_mode)) {
+		struct dentry *alias;
+
+		/* Does an aliased dentry already exist? */
+		alias = __d_find_alias(inode, 0);
+		if (alias) {
+			actual = alias;
+			/* Is this an anonymous mountpoint that we could splice
+			 * into our tree? */
+			if (IS_ROOT(alias)) {
+				spin_lock(&alias->d_lock);
+				__d_materialise_dentry(dentry, alias);
+				__d_drop(alias);
+				goto found;
+			}
+			/* Nope, but we must(!) avoid directory aliasing */
+			actual = __d_unalias(dentry, alias);
+			if (IS_ERR(actual))
+				dput(alias);
+			goto out_nolock;
+		}
+	}
+
+	/* Add a unique reference */
+	actual = __d_instantiate_unique(dentry, inode);
+	if (!actual)
+		actual = dentry;
+	else if (unlikely(!d_unhashed(actual)))
+		goto shouldnt_be_hashed;
+
+found_lock:
+	spin_lock(&actual->d_lock);
+found:
+	_d_rehash(actual);
+	spin_unlock(&actual->d_lock);
+	spin_unlock(&dcache_lock);
+out_nolock:
+	if (actual == dentry) {
+		security_d_instantiate(dentry, inode);
+		return NULL;
+	}
+
+	iput(inode);
+	return actual;
+
+shouldnt_be_hashed:
+	spin_unlock(&dcache_lock);
+	BUG();
+	goto shouldnt_be_hashed;
+}
+
+struct dentry *d_instantiate_unique(struct dentry *entry, struct inode *inode)
+{
+	struct dentry *result;
+
+	BUG_ON(!list_empty(&entry->d_alias));
+
+	spin_lock(&dcache_lock);
+	result = __d_instantiate_unique(entry, inode);
+	spin_unlock(&dcache_lock);
+
+	if (!result) {
+		security_d_instantiate(entry, inode);
+		return NULL;
+	}
+
+	BUG_ON(!d_unhashed(result));
+	iput(inode);
+	return result;
 }
 
 /**
@@ -1751,6 +2008,8 @@ EXPORT_SYMBOL(d_instantiate);
 EXPORT_SYMBOL(d_invalidate);
 EXPORT_SYMBOL(d_lookup);
 EXPORT_SYMBOL(d_move);
+EXPORT_SYMBOL_GPL(d_materialise_unique);
+EXPORT_SYMBOL(d_instantiate_unique);
 EXPORT_SYMBOL(d_path);
 EXPORT_SYMBOL(d_prune_aliases);
 EXPORT_SYMBOL(d_rehash);

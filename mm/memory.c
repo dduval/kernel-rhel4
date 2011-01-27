@@ -83,6 +83,24 @@ EXPORT_SYMBOL(high_memory);
 EXPORT_SYMBOL(vmalloc_earlyreserve);
 
 /*
+ * If a p?d_bad entry is found while walking page tables, report
+ * the error, before resetting entry to p?d_none.  Usually (but
+ * very seldom) called out from the p?d_none_or_clear_bad macros.
+ */
+
+void pgd_clear_bad(pgd_t *pgd)
+{
+        pgd_ERROR(*pgd);
+        pgd_clear(pgd);
+}
+
+void pmd_clear_bad(pmd_t *pmd)
+{
+        pmd_ERROR(*pmd);
+        pmd_clear(pmd);
+}
+
+/*
  * We special-case the C-O-W ZERO_PAGE, because it's such
  * a common occurrence (no need to read the page to know
  * that it's zero - better for the cache and memory subsystem).
@@ -1795,6 +1813,7 @@ retry:
 		entry = mk_pte(new_page, vma->vm_page_prot);
 		if (write_access)
 			entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+		lazy_mmu_prot_update(entry);
 		set_pte(page_table, entry);
 		if (anon) {
 			lru_cache_add_active(new_page);
@@ -1812,7 +1831,6 @@ retry:
 
 	/* no need to invalidate: a not-present page shouldn't be cached */
 	update_mmu_cache(vma, address, entry);
-	lazy_mmu_prot_update(entry);
 	spin_unlock(&mm->page_table_lock);
 out:
 	return ret;
@@ -2037,8 +2055,8 @@ static int __init gate_vma_init(void)
 	gate_vma.vm_mm = NULL;
 	gate_vma.vm_start = FIXADDR_USER_START;
 	gate_vma.vm_end = FIXADDR_USER_END;
-	gate_vma.vm_page_prot = PAGE_READONLY;
-	gate_vma.vm_flags = 0;
+	gate_vma.vm_flags = VM_READ | VM_MAYREAD | VM_EXEC | VM_MAYEXEC;
+	gate_vma.vm_page_prot = __P101;
 	return 0;
 }
 __initcall(gate_vma_init);

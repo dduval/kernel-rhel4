@@ -18,6 +18,8 @@
  */
 #include "qla_def.h"
 
+#include <scsi/scsi_tcq.h>
+
 static void qla2x00_mbx_completion(scsi_qla_host_t *, uint16_t);
 static void qla2x00_async_event(scsi_qla_host_t *, uint16_t *);
 static void qla2x00_process_completed_request(struct scsi_qla_host *, uint32_t);
@@ -527,6 +529,8 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 			set_bit(RESET_MARKER_NEEDED, &ha->dpc_flags);
 		}
 		set_bit(REGISTER_FC4_NEEDED, &ha->dpc_flags);
+
+		ha->flags.gpsc_supported = 1;
 		break;
 
 	case MBA_CHG_IN_CONNECTION:	/* Change in connection mode */
@@ -684,6 +688,47 @@ qla2x00_async_event(scsi_qla_host_t *ha, uint16_t *mb)
 	}
 }
 
+static inline void
+qla2x00_ramp_up_queue_depth(scsi_qla_host_t *ha, srb_t *sp)
+{
+	fc_port_t *fcport;
+	struct scsi_device *sdev, *isdev;
+
+	sdev = sp->cmd->device;
+	if (sdev->queue_depth >= ql2xmaxqdepth)
+		return;
+
+	fcport = sp->fclun->fcport;
+	if (time_before(jiffies,
+	    fcport->last_ramp_up + ql2xqfullrampup * HZ))
+		return;
+	if (time_before(jiffies,
+	    fcport->last_queue_full + ql2xqfullrampup * HZ))
+		return;
+
+	shost_for_each_device(isdev, sdev->host) {
+		if (isdev->channel != sdev->channel || isdev->id != sdev->id)
+			continue;
+
+		if (ql2xmaxqdepth <= isdev->queue_depth)
+			continue;
+
+		if (isdev->ordered_tags)
+			scsi_adjust_queue_depth(isdev, MSG_ORDERED_TAG,
+						isdev->queue_depth + 1);
+		else
+			scsi_adjust_queue_depth(isdev, MSG_SIMPLE_TAG,
+						isdev->queue_depth + 1);
+
+		fcport->last_ramp_up = jiffies;
+
+		DEBUG2(qla_printk(KERN_INFO, ha,
+			  "scsi(%ld:%d:%d:%d): Queue depth adjusted-up to %d.\n",
+			  ha->host_no, isdev->channel, isdev->id, isdev->lun,
+			  isdev->queue_depth));
+	}
+}
+
 /**
  * qla2x00_process_completed_request() - Process a Fast Post response.
  * @ha: SCSI driver HA context
@@ -713,12 +758,28 @@ qla2x00_process_completed_request(struct scsi_qla_host *ha, uint32_t index)
 		if (ha->actthreads)
 			ha->actthreads--;
 		sp->lun_queue->out_cnt--;
+
+		if (sp->cmd == NULL) {
+			DEBUG2(printk("scsi(%ld): Command already returned "
+			    "back to caller pkt->handle=%d sp=%p "
+			    "sp->state:%d\n", ha->host_no, index, sp,
+			    sp->state));
+			qla_printk(KERN_WARNING, ha,
+			    "Command is NULL: already returned to caller "
+			    "handle=%x sp=%p flags=%x ext_hist=%x.\n", index,
+			    sp, sp->flags, sp->ext_history);
+
+			return;
+                }
+
 		CMD_COMPL_STATUS(sp->cmd) = 0L;
 		CMD_SCSI_STATUS(sp->cmd) = 0L;
 
 		/* Save ISP completion status */
 		sp->cmd->result = DID_OK << 16;
 		sp->fo_retry_cnt = 0;
+
+		qla2x00_ramp_up_queue_depth(ha, sp);
 		add_to_done_queue(ha, sp);
 	} else {
 		DEBUG2(printk("scsi(%ld): Invalid ISP SCSI completion handle\n",
@@ -833,12 +894,12 @@ qla2x00_process_response_queue(struct scsi_qla_host *ha)
 static void
 qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 {
-	int		ret;
 	srb_t		*sp;
 	os_lun_t	*lq;
 	os_tgt_t	*tq;
 	fc_port_t	*fcport;
 	struct scsi_cmnd *cp;
+	struct scsi_device *isdev;
 	sts_entry_t *sts;
 	struct sts_entry_24xx *sts24;
 	uint16_t	comp_status;
@@ -889,8 +950,9 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		    "pkt->handle=%d sp=%p sp->state:%d\n",
 		    ha->host_no, sts->handle, sp, sp->state));
 		qla_printk(KERN_WARNING, ha,
-		    "Command is NULL: already returned to OS (sp=%p)\n", sp);
-
+		    "Command is NULL: already returned to OS "
+		    "handle=%x sp=%p flags=%x ext_hist=%x.\n", sts->handle,
+		    sp, sp->flags, sp->ext_history);
 		return;
 	}
 
@@ -981,6 +1043,7 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 	 */
 	switch (comp_status) {
 	case CS_COMPLETE:
+	case CS_QUEUE_FULL:
 		if (scsi_status == 0) {
 			cp->result = DID_OK << 16;
 			break;
@@ -1009,8 +1072,33 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		}
 
 		cp->result = DID_OK << 16 | lscsi_status;
-		if (lscsi_status == SS_BUSY_CONDITION)
+
+		if (lscsi_status == SAM_STAT_TASK_SET_FULL) {
+			DEBUG2(printk(KERN_INFO
+			    "scsi(%ld): QUEUE FULL status detected "
+			    "0x%x-0x%x.\n", ha->host_no, comp_status,
+			    scsi_status));
+
+			/* Adjust queue depth for all luns on the port. */
+			fcport = sp->fclun->fcport;
+			fcport->last_queue_full = jiffies;
+			shost_for_each_device(isdev, cp->device->host) {
+				if (isdev->channel != cp->device->channel ||
+				    isdev->id != cp->device->id)
+					continue;
+
+				if (!scsi_track_queue_full(isdev,
+				    isdev->queue_depth - 1))
+					continue;
+
+				DEBUG2(qla_printk(KERN_INFO, ha,
+				    "scsi(%ld:%d:%d:%d): Queue depth "
+				    "adjusted-down to %d.\n", ha->host_no,
+				    isdev->channel, isdev->id, isdev->lun,
+				    isdev->queue_depth));
+			}
 			break;
+		}
 
 		if (lscsi_status != SS_CHECK_CONDITION)
 			break;
@@ -1076,6 +1164,38 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 			cp->result = DID_OK << 16 | lscsi_status;
 			if (lscsi_status == SS_BUSY_CONDITION)
 				break;
+
+			if (lscsi_status == SAM_STAT_TASK_SET_FULL) {
+				DEBUG2(printk(KERN_INFO
+				    "scsi(%ld): QUEUE FULL status detected "
+				    "0x%x-0x%x.\n", ha->host_no, comp_status,
+				    scsi_status));
+
+				/*
+				 * Adjust queue depth for all luns on the
+				 * port.
+				 */
+				fcport = sp->fclun->fcport;
+				fcport->last_queue_full = jiffies;
+				shost_for_each_device(isdev, cp->device->host) {
+					if (isdev->channel !=
+					    cp->device->channel ||
+					    isdev->id != cp->device->id)
+						continue;
+
+					if (!scsi_track_queue_full(isdev,
+					    isdev->queue_depth - 1))
+						continue;
+
+					DEBUG2(qla_printk(KERN_INFO, ha,
+					    "scsi(%ld:%d:%d:%d): Queue depth "
+					    "adjusted-down to %d.\n",
+					    ha->host_no, isdev->channel,
+					    isdev->id, isdev->lun,
+					    isdev->queue_depth));
+				}
+				break;
+			}
 
 			if (lscsi_status != SS_CHECK_CONDITION)
 				break;
@@ -1260,27 +1380,6 @@ qla2x00_status_entry(scsi_qla_host_t *ha, void *pkt)
 		}
 		break;
 
-	case CS_QUEUE_FULL:
-		DEBUG2(printk(KERN_INFO
-		    "scsi(%ld): QUEUE FULL status detected 0x%x-0x%x.\n",
-		    ha->host_no, comp_status, scsi_status));
-
-		/* SCSI Mid-Layer handles device queue full */
-
-		cp->result = DID_OK << 16 | lscsi_status; 
-
-		/* TODO: ??? */
-		/* Adjust queue depth */
-		ret = scsi_track_queue_full(cp->device,
-		    sp->lun_queue->out_cnt - 1);
-		if (ret) {
-			qla_printk(KERN_INFO, ha,
-			    "scsi(%ld:%d:%d:%d): Queue depth adjusted to %d.\n",
-			    ha->host_no, cp->device->channel, cp->device->id,
-			    cp->device->lun, ret);
-		}
-		break;
-
 	default:
 		DEBUG3(printk("scsi(%ld): Error detected (unknown status) "
 		    "0x%x-0x%x.\n", ha->host_no, comp_status, scsi_status));
@@ -1316,10 +1415,10 @@ qla2x00_status_cont_entry(scsi_qla_host_t *ha, sts_cont_entry_t *pkt)
 		if (cp == NULL) {
 			DEBUG2(printk("%s(): Cmd already returned back to OS "
 			    "sp=%p sp->state:%d\n", __func__, sp, sp->state));
-			qla_printk(KERN_INFO, ha,
-			    "cmd is NULL: already returned to OS (sp=%p)\n",
-			    sp); 
-
+			qla_printk(KERN_WARNING, ha,
+			    "Command is NULL: already returned to OS "
+			    "sp=%p flags=%x ext_hist=%x.\n", sp, sp->flags,
+			    sp->ext_history);
 			ha->status_srb = NULL;
 			return;
 		}
@@ -1441,6 +1540,17 @@ qla2x00_ms_entry(scsi_qla_host_t *ha, ms_iocb_entry_t *pkt)
 
 		set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 		return;
+	}
+	if (sp->cmd == NULL) {
+		DEBUG2(printk("scsi(%ld): Command already returned back to MS "
+		    "caller pkt->handle=%d sp=%p sp->state:%d\n",
+		    ha->host_no, pkt->handle1, sp, sp->state));
+		qla_printk(KERN_WARNING, ha,
+		   "Command is NULL: already returned to MS caller "
+		   "handle=%x sp=%p flags=%x ext_hist=%x.\n", pkt->handle1,
+		   sp, sp->flags, sp->ext_history);
+
+	return;
 	}
 
 	CMD_COMPL_STATUS(sp->cmd) = le16_to_cpu(pkt->status);
@@ -1711,6 +1821,17 @@ qla24xx_ms_entry(scsi_qla_host_t *ha, struct ct_entry_24xx *pkt)
 
 		set_bit(ISP_ABORT_NEEDED, &ha->dpc_flags);
 		return;
+	}
+	if (sp->cmd == NULL) {
+		DEBUG2(printk("scsi(%ld): Command already returned back to MS "
+		    "caller pkt->handle=%d sp=%p sp->state:%d\n",
+		    ha->host_no, pkt->handle, sp, sp->state));
+		qla_printk(KERN_WARNING, ha,
+		    "Command is NULL: already returned to MS caller "
+		    "handle=%x sp=%p flags=%x ext_hist=%x.\n", pkt->handle,
+		    sp, sp->flags, sp->ext_history);
+
+	return;
 	}
 
 	CMD_COMPL_STATUS(sp->cmd) = le16_to_cpu(pkt->comp_status);

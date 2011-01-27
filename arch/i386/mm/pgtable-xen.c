@@ -88,8 +88,11 @@ static void set_pte_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
 		return;
 	}
 	pte = pte_offset_kernel(pmd, vaddr);
-	/* <pfn,flags> stored as-is, to permit clearing entries */
-	set_pte(pte, pfn_pte(pfn, flags));
+	if (pgprot_val(flags))
+		/* <pfn,flags> stored as-is, to permit clearing entries */
+		set_pte(pte, pfn_pte(pfn, flags));
+	else
+		pte_clear(pte);
 
 	/*
 	 * It's enough to flush this one mapping.
@@ -120,8 +123,11 @@ static void set_pte_pfn_ma(unsigned long vaddr, unsigned long pfn,
 		return;
 	}
 	pte = pte_offset_kernel(pmd, vaddr);
-	/* <pfn,flags> stored as-is, to permit clearing entries */
-	set_pte(pte, pfn_pte_ma(pfn, flags));
+	if (pgprot_val(flags))
+		/* <pfn,flags> stored as-is, to permit clearing entries */
+		set_pte(pte, pfn_pte_ma(pfn, flags));
+	else
+		pte_clear(pte);
 
 	/*
 	 * It's enough to flush this one mapping.
@@ -211,7 +217,7 @@ struct page *pte_alloc_one(struct mm_struct *mm, unsigned long address)
 	struct page *pte;
 
 #ifdef CONFIG_HIGHPTE
-	pte = alloc_pages(GFP_KERNEL|__GFP_HIGHMEM|__GFP_REPEAT|__GFP_WIRED, 0);
+	pte = alloc_pages(GFP_KERNEL|__GFP_HIGHMEM|__GFP_REPEAT, 0);
 #else
 	pte = alloc_pages(GFP_KERNEL|__GFP_REPEAT, 0);
 #endif
@@ -300,11 +306,6 @@ void pgd_ctor(void *__pgd, kmem_cache_t *cache, unsigned long unused)
 	unsigned long flags;
 
 	if (PTRS_PER_PMD > 1) {
-		if (!xen_feature(XENFEAT_pae_pgdir_above_4gb)) {
-			int rc = xen_create_contiguous_region(
-				(unsigned long)pgd, 0, 32);
-			BUG_ON(rc);
-		}
 		if (HAVE_SHARED_KERNEL_PMD)
 			memcpy((pgd_t *)pgd + USER_PTRS_PER_PGD,
 			       swapper_pg_dir + USER_PTRS_PER_PGD,
@@ -351,83 +352,107 @@ void pgd_ctor(void *__pgd, kmem_cache_t *cache, unsigned long unused)
 #endif 		/* XXXAP */
 }
 
+/* never called when PTRS_PER_PMD > 1 */
 void pgd_dtor(void *pgd, kmem_cache_t *cache, unsigned long unused)
 {
 	unsigned long flags; /* can be called from interrupt context */
 
-	if (PTRS_PER_PMD > 1) {
-		if (!xen_feature(XENFEAT_pae_pgdir_above_4gb))
-			xen_destroy_contiguous_region((unsigned long)pgd, 0);
-	} else {
-		spin_lock_irqsave(&pgd_lock, flags);
-		pgd_list_del(pgd);
-		spin_unlock_irqrestore(&pgd_lock, flags);
+	spin_lock_irqsave(&pgd_lock, flags);
+	pgd_list_del(pgd);
+	spin_unlock_irqrestore(&pgd_lock, flags);
 
-		pgd_test_and_unpin(pgd);
-	}
+	pgd_test_and_unpin(pgd);
 }
 
 pgd_t *pgd_alloc(struct mm_struct *mm)
 {
 	int i;
 	pgd_t *pgd = kmem_cache_alloc(pgd_cache, GFP_KERNEL);
+	pmd_t **pmd;
+	unsigned long flags;
 
 	pgd_test_and_unpin(pgd);
 
 	if (PTRS_PER_PMD == 1 || !pgd)
 		return pgd;
 
-	/*
-	 * In the 4G userspace case alias the top 16 MB virtual
-	 * memory range into the user mappings as well (these
-	 * include the trampoline and CPU data structures).
-	 */
-	for (i = 0; i < USER_PTRS_PER_PGD; ++i) {
-		pmd_t *pmd;
+	if (HAVE_SHARED_KERNEL_PMD) {
+		for (i = 0; i < USER_PTRS_PER_PGD; ++i) {
+			pmd_t *pmd;
 
-		if (TASK_SIZE > PAGE_OFFSET && i == USER_PTRS_PER_PGD - 1)
-			pmd = kmem_cache_alloc(kpmd_cache, GFP_KERNEL);
-		else
-			pmd = kmem_cache_alloc(pmd_cache, GFP_KERNEL);
+			if (TASK_SIZE > PAGE_OFFSET && i == USER_PTRS_PER_PGD - 1)
+				pmd = kmem_cache_alloc(kpmd_cache, GFP_KERNEL);
+			else
+				pmd = kmem_cache_alloc(pmd_cache, GFP_KERNEL);
 
-		if (!pmd)
-			goto out_oom;
-		set_pgd(&pgd[i], __pgd(1 + __pa((u64)((u32)pmd))));
-	}
-
-	if (!HAVE_SHARED_KERNEL_PMD) {
-		unsigned long flags;
-
-		for (i = USER_PTRS_PER_PGD; i < PTRS_PER_PGD; i++) {
-			pmd_t *pmd = kmem_cache_alloc(pmd_cache, GFP_KERNEL);
 			if (!pmd)
 				goto out_oom;
-			set_pgd(&pgd[USER_PTRS_PER_PGD], __pgd(1 + __pa(pmd)));
+			set_pgd(&pgd[i], __pgd(1 + __pa((u64)((u32)pmd))));
 		}
-
-		spin_lock_irqsave(&pgd_lock, flags);
-		for (i = USER_PTRS_PER_PGD; i < PTRS_PER_PGD; i++) {
-			unsigned long v = (unsigned long)i << PGDIR_SHIFT;
-			pgd_t *kpgd = pgd_offset_k(v);
-			pmd_t *kpmd = pmd_offset(kpgd, v);
-			pmd_t *pmd = (void *)__va(pgd_val(pgd[i])-1);
-			memcpy(pmd, kpmd, PAGE_SIZE);
-			make_lowmem_page_readonly(
-				pmd, XENFEAT_writable_page_tables);
-		}
-		pgd_list_add(pgd);
-		spin_unlock_irqrestore(&pgd_lock, flags);
+		return pgd;
 	}
+
+	/*                                                                      
+	 * We can race save/restore (if we sleep during a GFP_KERNEL memory     
+	 * allocation). We therefore store virtual addresses of pmds as they    
+	 * do not change across save/restore, and poke the machine addresses    
+	 * into the pgdir under the pgd_lock.                                   
+	 */
+	pmd = kmalloc(PTRS_PER_PGD * sizeof(pmd_t *), GFP_KERNEL);
+	if (!pmd) {
+		kmem_cache_free(pgd_cache, pgd);
+		return NULL;
+	}
+
+	/* Allocate pmds, remember virtual addresses. */
+	for (i = 0; i < PTRS_PER_PGD; i++) {
+		pmd[i] = kmem_cache_alloc(pmd_cache, GFP_KERNEL);
+		if (!pmd[i])
+			goto out_oom;
+	}
+
+	spin_lock_irqsave(&pgd_lock, flags);
+
+	/* Protect against save/restore: move below 4GB under pgd_lock. */
+	if (!xen_feature(XENFEAT_pae_pgdir_above_4gb)) {
+		int rc = xen_create_contiguous_region(
+			(unsigned long)pgd, 0, 32);
+		if (rc) {
+			spin_unlock_irqrestore(&pgd_lock, flags);
+			goto out_oom;
+		}
+	}
+
+	for (i = USER_PTRS_PER_PGD; i < PTRS_PER_PGD; i++) {
+		unsigned long v = (unsigned long)i << PGDIR_SHIFT;
+		pgd_t *kpgd = pgd_offset_k(v);
+		pmd_t *kpmd = pmd_offset(kpgd, v);
+		memcpy(pmd[i], kpmd, PAGE_SIZE);
+		make_lowmem_page_readonly(
+			pmd[i], XENFEAT_writable_page_tables);
+	}
+
+	/* It is safe to poke machine addresses of pmds under the pmd_lock. */
+	for (i=0; i < PTRS_PER_PGD; i++)
+		set_pgd(&pgd[i], __pgd(1 + __pa(pmd[i])));
+
+	/* Ensure this pgd gets picked up and pinned on save/restore. */
+	pgd_list_add(pgd);
+
+	spin_unlock_irqrestore(&pgd_lock, flags);
+
+	kfree(pmd);
 
 	return pgd;
 out_oom:
-	/*
-	 * we don't have to handle the kpmd_cache here, since it's the
-	 * last allocation, and has either nothing to free or when it
-	 * succeeds the whole operation succeeds.
-	 */
-	for (i--; i >= 0; i--)
-		kmem_cache_free(pmd_cache, (void *)__va(pgd_val(pgd[i])-1));
+	if (HAVE_SHARED_KERNEL_PMD) {
+		for (i--; i >= 0; i--)
+			kmem_cache_free(pmd_cache, (void *)__va(pgd_val(pgd[i])-1));
+	} else {
+		for (i--; i >= 0; i--)
+			kmem_cache_free(pmd_cache, pmd[i]);
+		kfree(pmd);
+	}
 	kmem_cache_free(pgd_cache, pgd);
 	return NULL;
 }
@@ -466,6 +491,10 @@ void pgd_free(pgd_t *pgd)
 				memset(pmd, 0, PTRS_PER_PMD*sizeof(pmd_t));
 				kmem_cache_free(pmd_cache, pmd);
 			}
+
+			if (!xen_feature(XENFEAT_pae_pgdir_above_4gb))
+				xen_destroy_contiguous_region(
+					(unsigned long)pgd, 0);
 		}
 	}
 	/* in the non-PAE case, free_pgtables() clears user pgd entries */
@@ -653,12 +682,23 @@ void mm_unpin(struct mm_struct *mm)
 void mm_pin_all(void)
 {
 	struct page *page;
+
+	/* Only pgds on the pgd_list please: none hidden in the slab cache. */
+	kmem_cache_shrink(pgd_cache);
+
 	if (xen_feature(XENFEAT_writable_page_tables))
 		return;
+
 	for (page = pgd_list; page; page = (struct page *)page->index) {
 		if (!test_bit(PG_pinned, &page->flags))
 			__pgd_pin((pgd_t *)page_address(page));
 	}
+}
+
+void _arch_dup_mmap(struct mm_struct *mm)
+{
+	if (!test_bit(PG_pinned, &virt_to_page(mm->pgd)->flags))
+		mm_pin(mm);
 }
 
 void _arch_exit_mmap(struct mm_struct *mm)

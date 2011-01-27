@@ -428,13 +428,11 @@ qla2x00_start_scsi(srb_t *sp)
 	 * Allocate at least 5 (+ QLA_CMD_TIMER_DELTA) seconds for RISC timeout.
 	 */
 	timeout = (uint32_t)(cmd->timeout_per_command / HZ);
-	if (timeout > 65535)
+	if (sp->flags & SRB_NO_TIMER || timeout > FW_MAX_TIMEOUT)
 		cmd_pkt->timeout = __constant_cpu_to_le16(0);
-	else if (timeout > 25)
+	else
 		cmd_pkt->timeout = cpu_to_le16((uint16_t)timeout -
 		    (5 + QLA_CMD_TIMER_DELTA));
-	else
-		cmd_pkt->timeout = cpu_to_le16((uint16_t)timeout);
 
 	/* Load SCSI command packet. */
 	memcpy(cmd_pkt->scsi_cdb, cmd->cmnd, cmd->cmd_len);
@@ -880,7 +878,7 @@ qla24xx_start_scsi(srb_t *sp)
 
 	/* Update timeout. */
 	timeout = (uint32_t)(cmd->timeout_per_command / HZ);
-	if (timeout > FW_MAX_TIMEOUT)
+	if (sp->flags & SRB_NO_TIMER || timeout > FW_MAX_TIMEOUT)
 		cmd_pkt->timeout =
 		    __constant_cpu_to_le16(FW_MAX_TIMEOUT);
 	else if (timeout > 25)

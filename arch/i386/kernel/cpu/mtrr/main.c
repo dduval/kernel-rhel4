@@ -643,7 +643,7 @@ static int __init mtrr_init(void)
  			   don't support PAE */
  			size_or_mask = 0xfff00000;	/* 32 bits */
  			size_and_mask = 0;
-		}			
+		}
 	} else {
 		switch (boot_cpu_data.x86_vendor) {
 		case X86_VENDOR_AMD:

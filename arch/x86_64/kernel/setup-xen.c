@@ -593,7 +593,7 @@ void __init setup_arch(char **cmdline_p)
 	kernel_end = 0;         /* dummy */
 	screen_info = SCREEN_INFO;
 
-	if (xen_start_info->flags & SIF_INITDOMAIN) {
+	if (is_initial_xendomain()) {
 		/* This is drawn from a dump from vgacon:startup in
 		 * standard Linux. */
 		screen_info.orig_video_mode = 3;
@@ -878,7 +878,7 @@ void __init setup_arch(char **cmdline_p)
 		}
 	}
 
-	if ( ! (xen_start_info->flags & SIF_INITDOMAIN))
+	if (!is_initial_xendomain())
 	{
 		acpi_disabled = 1;
 #ifdef  CONFIG_ACPI
@@ -956,7 +956,7 @@ void __init setup_arch(char **cmdline_p)
 		set_iopl.iopl = 1;
 		HYPERVISOR_physdev_op(PHYSDEVOP_set_iopl, &set_iopl);
 
-		if (xen_start_info->flags & SIF_INITDOMAIN) {
+		if (is_initial_xendomain()) {
 			if (!(xen_start_info->flags & SIF_PRIVILEGED))
 				panic("Xen granted us console access "
 					"but not privileged status");

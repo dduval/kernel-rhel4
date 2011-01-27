@@ -22,10 +22,6 @@
 #include <linux/jffs2.h>
 #include "nodelist.h"
 
-extern int generic_file_open(struct inode *, struct file *) __attribute__((weak));
-extern loff_t generic_file_llseek(struct file *file, loff_t offset, int origin) __attribute__((weak));
-
-
 int jffs2_fsync(struct file *filp, struct dentry *dentry, int datasync)
 {
 	struct inode *inode = dentry->d_inode;

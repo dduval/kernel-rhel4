@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_util_ioctl.c 2886 2006-03-07 21:56:50Z sf_support $
+ * $Id: lpfc_util_ioctl.c 3037 2007-05-22 14:02:22Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -332,11 +332,6 @@ lpfc_process_ioctl_util(LPFCCMDINPUT_t *cip)
 		((DfcRevInfo *) dataout)->a_Major = DFC_MAJOR_REV;
 		((DfcRevInfo *) dataout)->a_Minor = DFC_MINOR_REV;
 		cip->lpfc_outsz = sizeof (DfcRevInfo);
-		printk(KERN_INFO
-		       "lpfcdfc: %d:1608 libdfc get rev Data: x%x x%x\n",
-		       cip->lpfc_brd,
-		       DFC_MAJOR_REV,
-		       DFC_MINOR_REV);
 		rc = 0;
 		break;
 
@@ -392,6 +387,10 @@ lpfc_process_ioctl_util(LPFCCMDINPUT_t *cip)
 
 	case LPFC_HBA_GET_EVENT:
 		rc = lpfc_ioctl_hba_get_event(phba, cip, dataout, total_mem);
+		break;
+
+	case LPFC_TEMP_SENSOR_SUPPORT:
+		rc = (phba->temp_sensor_support) ? 0 : ENODEV;
 		break;
 
 	case LPFC_HBA_SET_EVENT:
@@ -512,7 +511,7 @@ lpfc_ioctl_read_pci(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 	cnt = (ulong) cip->lpfc_arg2;
 	destp = (uint32_t *) dataout;
 
-	if ((cnt + offset) > 256) {
+	if ((cnt + offset) > 4096) {
 		rc = ERANGE;
 		return (rc);
 	}
@@ -1316,7 +1315,7 @@ lpfc_ioctl_send_els(struct lpfc_hba * phba,
 		rpi = pndl->nlp_rpi;
 	}
 
-	cmdiocbq = lpfc_prep_els_iocb(phba, 1, cmdsize, 0, pndl, elscmd);
+	cmdiocbq = lpfc_prep_els_iocb(phba, 1, cmdsize, 0, pndl, pndl->nlp_DID, elscmd);
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	if (rpi == 0) {
 		kfree(pndl);
@@ -1565,7 +1564,7 @@ lpfc_ioctl_send_mgmt_cmd(struct lpfc_hba * phba,
 				lpfc_nlp_init(phba, pndl, finddid);
 				pndl->nlp_state = NLP_STE_PLOGI_ISSUE;
 				lpfc_nlp_list(phba, pndl, NLP_PLOGI_LIST);
-				if (lpfc_issue_els_plogi(phba, pndl, 0)) {
+				if (lpfc_issue_els_plogi(phba, finddid, 0)) {
 					lpfc_nlp_list(phba, pndl, NLP_JUST_DQ);
 					kfree(pndl);
 					rc = ENODEV;
@@ -1772,6 +1771,27 @@ send_mgmt_cmd_free_cmdiocbq:
 send_mgmt_cmd_exit:
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	return rc;
+}
+
+static void
+lpfc_sli_ioctl_mbox_cmpl(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
+{
+	struct lpfc_dmabuf *mp1, *mp2;
+
+	mp1 = (struct lpfc_dmabuf *) (pmb->context1);
+	mp2 = (struct lpfc_dmabuf *) (pmb->context2);
+
+	if (mp1) {
+		lpfc_mbuf_free(phba, mp1->virt, mp1->phys);
+		kfree(mp1);
+	}
+
+	if (mp2) {
+		lpfc_mbuf_free(phba, mp2->virt, mp2->phys);
+		kfree(mp2);
+	}
+	mempool_free( pmb, phba->mbox_mem_pool);
+	return;
 }
 
 int
@@ -2016,12 +2036,13 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 			} else {
 				spin_unlock_irqrestore(phba->host->host_lock,
 						       iflag);
-				timeleft = schedule_timeout(LPFC_MBOX_TMO * HZ);
+				timeleft = schedule_timeout(
+				   lpfc_mbox_tmo_val(phba, pmb->mbxCommand) * HZ);
 				spin_lock_irqsave(phba->host->host_lock, iflag);
 				pmboxq->context1 = NULL;
 				/* if schedule_timeout returns 0, we timed out
 				   and were not woken up */
-				if (timeleft == 0) {
+				if ((timeleft == 0) || signal_pending(current)) {
 					retval = MBX_TIMEOUT;
 				} else {
 					retval = MBX_SUCCESS;
@@ -2035,7 +2056,10 @@ lpfc_ioctl_mbox(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 
 	if (mbxstatus == MBX_TIMEOUT) {
 		rc = EBUSY;
-		goto lpfc_ioctl_mbox_free_pmboxq;
+		pmboxq->mbox_cmpl = lpfc_sli_ioctl_mbox_cmpl;
+		pmboxq->context1 = pbfrnfo;
+		pmboxq->context2 = pxmitbuf;
+		goto lpfc_ioctl_mbox_free_pmbox;
 	} else if (mbxstatus != MBX_SUCCESS) {
 		rc = ENODEV;
 		goto lpfc_ioctl_mbox_free_pmboxq;
@@ -2538,6 +2562,7 @@ lpfc_ioctl_hba_get_event(struct lpfc_hba * phba,
 	uint32_t total_mem = data_size;
 	unsigned long iflag;
 	struct list_head head, *pos, *tmp_pos;
+	temp_event_info_t temp_event_info;
 
 	no_more = 1;
 
@@ -2588,6 +2613,13 @@ lpfc_ioctl_hba_get_event(struct lpfc_hba * phba,
 
 			switch (offset) {
 			case FC_REG_LINK_EVENT:
+				break;
+			case FC_REG_TEMPERATURE_EVENT:
+				temp_event_info.event_type = ep->evt_data0;
+				temp_event_info.temp = (unsigned long) ep->evt_data1;
+				memcpy(dataout, (char *)&temp_event_info,
+				       sizeof (temp_event_info));
+				cip->lpfc_outsz = sizeof (temp_event_info);
 				break;
 			case FC_REG_RSCN_EVENT:
 				/* Return data length */
@@ -2728,6 +2760,8 @@ lpfc_sleep_event(struct lpfc_hba * phba, fcEVTHDR_t * ep)
 		return (lpfc_sleep(phba, &phba->ctevtwq, 0));
 	case FC_REG_DUMP_EVENT:
 		return (lpfc_sleep(phba, &phba->dumpevtwq, 0));
+	case FC_REG_TEMPERATURE_EVENT:
+		return (lpfc_sleep(phba, &phba->tempevtwq, 0));
 	}
 	return (0);
 }
@@ -2775,6 +2809,12 @@ lpfc_ioctl_hba_set_event(struct lpfc_hba * phba,
 					 * before dropping events for this event
 					 * id.  */
           break;
+	case FC_REG_TEMPERATURE_EVENT:
+		type = (void *)0;
+		found = LPFC_MAX_EVENT;	/* Number of events we can queue up + 1,
+					 * before dropping events for this event
+					 * id.  */
+		break;
 	default:
 		found = 0;
 		rc = EINTR;
@@ -2855,6 +2895,7 @@ lpfc_ioctl_hba_set_event(struct lpfc_hba * phba,
 	case FC_REG_RSCN_EVENT:
 	case FC_REG_LINK_EVENT:
 	case FC_REG_DUMP_EVENT:
+	case FC_REG_TEMPERATURE_EVENT:
 		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		if (rc || lpfc_sleep_event(phba, ehp)) {
 			rc = EINTR;
@@ -3233,7 +3274,14 @@ lpfc_ioctl_loopback_mode(struct lpfc_hba *phba,
 
 loopback_mode_exit:
 	scsi_unblock_requests(phba->host);
-	mempool_free(pmboxq, phba->mbox_mem_pool);
+	/*
+	 * Let SLI layer release mboxq if mbox command completed after timeout.
+	 */
+	if (mbxstatus == MBX_TIMEOUT)
+		pmboxq->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
+	else
+		mempool_free( pmboxq, phba->mbox_mem_pool);
+
 	return rc;
 }
 
@@ -3293,10 +3341,17 @@ lpfc_ioctl_loopback_test(struct lpfc_hba *phba,
 
 	mbxstatus = lpfc_sli_issue_mbox_wait(phba, pmboxq, LPFC_MBOX_TMO);
 	if ((mbxstatus != MBX_SUCCESS) || (pmboxq->mb.mbxStatus)) {
-		lpfc_mbuf_free(phba, dmp->virt, dmp->phys);
-		kfree(dmp);
-		rc = ENODEV;
-		goto loopback_free_mbox;
+		/* If mailbox timedout let SLI free the resources */
+		if ( mbxstatus == MBX_TIMEOUT) {
+			pmboxq->context1 = dmp;
+			pmboxq->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
+			goto loopback_exit;
+		} else {
+			lpfc_mbuf_free(phba, dmp->virt, dmp->phys);
+			kfree(dmp);
+			rc = ENODEV;
+			goto loopback_free_mbox;
+		}
 	}
 
 	rpi = pmboxq->mb.un.varWords[0];
@@ -3624,6 +3679,12 @@ loopback_unreg_login:
 	mbxstatus = lpfc_sli_issue_mbox_wait(phba, pmboxq, LPFC_MBOX_TMO);
 	if ((mbxstatus != MBX_SUCCESS) || (pmboxq->mb.mbxStatus)) {
 		rc = EIO;
+	}
+
+	/* If mailbox timedout let SLI free the resources */
+	if ( mbxstatus == MBX_TIMEOUT) {
+		pmboxq->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
+		goto loopback_exit;
 	}
 loopback_free_mbox:
 	mempool_free(pmboxq, phba->mbox_mem_pool);

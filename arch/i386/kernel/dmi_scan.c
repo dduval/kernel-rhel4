@@ -228,6 +228,14 @@ static __init int ignore_timer_override(struct dmi_blacklist *d)
 	acpi_skip_timer_override = 1;
 	return 0;
 }
+
+static __init int disable_ioapic(struct dmi_blacklist *d)
+{
+	printk(KERN_NOTICE "%s detected, forcing noapic\n", 
+		d->ident);
+	disable_ioapic_setup();	
+}
+
 #endif
 
 #ifdef	CONFIG_ACPI_PCI
@@ -395,6 +403,10 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 			MATCH(DMI_BOARD_VENDOR, "IBM"),
 			MATCH(DMI_PRODUCT_NAME, "eserver xSeries 440"),
 			NO_MATCH, NO_MATCH }},
+	{ disable_ioapic, "IBM ThinkCentre S50 p/n 8183", {
+			MATCH(DMI_BOARD_VENDOR, "IBM"),
+			MATCH(DMI_PRODUCT_NAME, "8183LU3"),
+			NO_MATCH, NO_MATCH }},
 
 	/*
 	 * Systems with nForce2 BIOS timer override bug
@@ -478,6 +490,15 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 		} },
 	{ disable_pci_mmconf, "HP DL585 G2", {
 		MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
+	{ disable_pci_mmconf, "Intel DG965MQ", {
+		MATCH(DMI_BOARD_VENDOR, "Intel Corporation"),
+		MATCH(DMI_BOARD_NAME, "DG965MQ"),
+		NO_MATCH, NO_MATCH
+		} },
+	{ disable_pci_mmconf, "Intel D26928", {
+		MATCH(DMI_BOARD_NAME, "D26928"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
 #endif

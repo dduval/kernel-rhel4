@@ -3,6 +3,7 @@
 #include <linux/string.h>
 #include <asm/semaphore.h>
 #include <linux/seq_file.h>
+#include <linux/cpufreq.h>
 
 #ifdef CONFIG_XEN
 int smp_num_cores = 1;
@@ -32,7 +33,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		"pni", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, "syscall", NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, "mp", "nx", NULL, "mmxext", NULL,
-		NULL, "fxsr_opt", NULL, NULL, NULL, "lm", "3dnowext", "3dnow",
+		NULL, "fxsr_opt", "pdpe1gb", "rdtscp", NULL, "lm", "3dnowext", "3dnow",
 
 		/* Transmeta-defined */
 		"recovery", "longrun", NULL, "lrti", NULL, NULL, NULL, NULL,
@@ -50,7 +51,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		/* Intel-defined (#2) */
 		"pni", NULL, NULL, "monitor", "ds_cpl", NULL, NULL, "est",
 		"tm2", NULL, "cid", NULL, NULL, NULL, "xtpr", NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, "popcnt",
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* VIA/Cyrix/Centaur-defined */
@@ -60,8 +61,9 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
 		/* AMD-defined (#2) */
-		"lahf_lm", "cmp_legacy", "svm", NULL, "cr8legacy", NULL, NULL, NULL,
- 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"lahf_lm", "cmp_legacy", "svm", "extapic", "cr8legacy", "abm", 
+		"sse4a", "misalignsse",
+		"3dnowprefetch", "osvw", "ibs", NULL, NULL, NULL, NULL, NULL,
  		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
  		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 
@@ -91,8 +93,11 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		seq_printf(m, "stepping\t: unknown\n");
 
 	if ( cpu_has(c, X86_FEATURE_TSC) ) {
+		unsigned int freq = cpufreq_quick_get(n);
+		if (!freq)
+			freq = cpu_khz;
 		seq_printf(m, "cpu MHz\t\t: %lu.%03lu\n",
-			cpu_khz / 1000, (cpu_khz % 1000));
+			freq / 1000, (freq % 1000));
 	}
 
 	/* Cache size */

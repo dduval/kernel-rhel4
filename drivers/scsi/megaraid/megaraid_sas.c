@@ -10,11 +10,13 @@
  *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: megaraid_sas.c 
- * Version	: v00.00.03.05
+ * Version	: v00.00.03.13
  *
  * Authors:
- * 	Sreenivas Bagalkote	<Sreenivas.Bagalkote@lsil.com>
- * 	Sumant Patro		<Sumant.Patro@lsil.com>
+ *	(email-id : megaraidlinux@lsi.com)
+ * 	Sreenivas Bagalkote
+ * 	Sumant Patro
+ *	Bo Yang
  *
  * List of supported controllers
  *
@@ -36,6 +38,7 @@
 #include <asm/uaccess.h>
 #include <linux/fs.h>
 #include <linux/ioctl32.h>
+#include <linux/blkdev.h>
 #include <linux/compat.h>
 #include <linux/diskdump.h>
 
@@ -45,9 +48,40 @@
 #include <scsi/scsi_host.h>
 #include "megaraid_sas.h"
 
+/*
+ * modules parameters for driver
+ */
+
+/*
+ * Fast driver load option, skip scanning for physical devices during load.
+ * This would result in physical devices being skipped during driver load
+ * time. These can be later added though, using /proc/scsi/scsi
+ */
+static unsigned int fast_load = 0;
+module_param_named(fast_load, fast_load, int, 0);
+MODULE_PARM_DESC(fast_load,
+	"megasas: Faster loading of the driver, skips physical devices! (default=0)");
+
+/*
+ * Number of sectors per IO command
+ * Will be set in megasas_init_mfi if user does not provide
+ */
+static unsigned int max_sectors = 0;
+module_param_named(max_sectors, max_sectors, int, 0);
+MODULE_PARM_DESC(max_sectors,
+	"Maximum number of sectors per IO command");
+
+/*
+ * Number of cmds per logical unit
+ */
+static unsigned int cmd_per_lun = MEGASAS_DEFAULT_CMD_PER_LUN;
+module_param_named(cmd_per_lun, cmd_per_lun, int, 0);
+MODULE_PARM_DESC(cmd_per_lun,
+	"Maximum number of commands per logical unit (default=128)");
+
 MODULE_LICENSE("GPL");
 MODULE_VERSION(MEGASAS_VERSION);
-MODULE_AUTHOR("sreenivas.bagalkote@lsil.com");
+MODULE_AUTHOR("megaraidlinux@lsi.com");
 MODULE_DESCRIPTION("LSI Logic MegaRAID SAS Driver");
 
 /*
@@ -85,6 +119,9 @@ static struct fasync_struct *megasas_async_queue;
 static DECLARE_MUTEX(megasas_async_queue_mutex);
 static u32 megasas_dbg_lvl;
 
+static void
+megasas_complete_cmd(struct megasas_instance *instance, struct megasas_cmd *cmd,
+		     u8 alt_status);
 static int
 megasas_deplete_reply_queue(struct megasas_instance *instance, u8 alt_status);
 static void megasas_flush_cache(struct megasas_instance *instance);
@@ -861,6 +898,10 @@ megasas_queue_command(struct scsi_cmnd *scmd, void (*done) (struct scsi_cmnd *))
 	scmd->scsi_done = done;
 	scmd->result = 0;
 
+	/* Don't process if we have already declared adapter dead */
+	if (instance->hw_crit_error)
+		return SCSI_MLQUEUE_HOST_BUSY;
+
 	if (MEGASAS_IS_LOGICAL(scmd) &&
 	    (scmd->device->id >= MEGASAS_MAX_LD || scmd->device->lun)) {
 		scmd->result = DID_BAD_TARGET << 16;
@@ -872,6 +913,10 @@ megasas_queue_command(struct scsi_cmnd *scmd, void (*done) (struct scsi_cmnd *))
 			case SYNCHRONIZE_CACHE:
 				if (crashdump_mode()) 
 					megasas_flush_cache(instance);
+				else {
+					scmd->result = (DID_OK << 16);
+					goto out_done;
+				}
 			case REQUEST_SENSE:
 			case MODE_SELECT:
 			case MODE_SENSE:
@@ -898,6 +943,8 @@ megasas_queue_command(struct scsi_cmnd *scmd, void (*done) (struct scsi_cmnd *))
 		goto out_return_cmd;
 
 	cmd->scmd = scmd;
+	scmd->SCp.ptr = (char *)cmd;
+	scmd->SCp.sent_command = jiffies;
 
 	/*
 	 * Issue the command to the FW
@@ -914,6 +961,62 @@ megasas_queue_command(struct scsi_cmnd *scmd, void (*done) (struct scsi_cmnd *))
  out_done:
 	done(scmd);
 	return 0;
+}
+
+/**
+ * megasas_complete_cmd_dpc	 -	Returns FW's controller structure
+ * @instance_addr:			Address of adapter soft state
+ *
+ * Tasklet to complete cmds
+ */
+void megasas_complete_cmd_dpc(unsigned long instance_addr)
+{
+	u32 producer;
+	u32 consumer;
+	u32 context;
+	struct megasas_cmd *cmd;
+	struct megasas_instance *instance = (struct megasas_instance *)instance_addr;
+	unsigned long flags;
+
+	/* If we have already declared adapter dead, donot complete cmds */
+	if (instance->hw_crit_error)
+		return;
+
+	spin_lock_irqsave(&instance->completion_lock, flags);
+
+	producer = *instance->producer;
+	consumer = *instance->consumer;
+
+	while (consumer != producer) {
+		context = instance->reply_queue[consumer];
+
+		cmd = instance->cmd_list[context];
+
+		megasas_complete_cmd(instance, cmd, DID_OK);
+
+		consumer++;
+		if (consumer == (instance->max_fw_cmds + 1)) {
+			consumer = 0;
+		}
+	}
+
+	*instance->consumer = producer;
+	spin_unlock_irqrestore(&instance->completion_lock, flags);
+
+	/*
+	 * Check if we can restore can_queue
+	 */
+	if (instance->flag & MEGASAS_FW_BUSY
+		&& time_after(jiffies, instance->last_time + 5 * HZ)
+		&& atomic_read(&instance->fw_outstanding) < 17) {
+
+		spin_lock_irqsave(instance->host->host_lock, flags);
+		instance->flag &= ~MEGASAS_FW_BUSY;
+		instance->host->can_queue =
+				instance->max_fw_cmds - MEGASAS_INT_CMDS;
+
+		spin_unlock_irqrestore(instance->host->host_lock, flags);
+	}
 }
 
 /**
@@ -939,14 +1042,19 @@ static int megasas_wait_for_outstanding(struct megasas_instance *instance)
 		if (!(i % MEGASAS_RESET_NOTICE_INTERVAL)) {
 			printk(KERN_NOTICE "megasas: [%2d]waiting for %d "
 			       "commands to complete\n",i,outstanding);
-		}
+			/*
+			 * Call cmd completion routine. Cmd to be
+			 * be completed directly without depending on isr.
+			 */
+			megasas_complete_cmd_dpc((unsigned long)instance);
+ 		}
 
 		/*
 		* In crash dump mode cannot complete cmds in interrupt context
 		* Complete cmds from here
 		*/
 		if (crashdump_mode()) {
-			megasas_deplete_reply_queue(instance, DID_OK);
+			tasklet_schedule(&instance->isr_tasklet);
 			diskdump_update();
 		}
 
@@ -983,9 +1091,9 @@ static int megasas_generic_reset(struct scsi_cmnd *scmd)
 
 	instance = (struct megasas_instance *)scmd->device->host->hostdata;
 
-	printk(KERN_NOTICE "megasas: RESET -%ld cmd=%x <c=%d t=%d l=%d>\n",
+	printk(KERN_NOTICE "megasas: RESET -%ld cmd=%x <c=%d t=%d l=%d> retries=%x\n",
 	       scmd->serial_number, scmd->cmnd[0], scmd->device->channel,
-	       scmd->device->id, scmd->device->lun);
+	       scmd->device->id, scmd->device->lun, scmd->retries);
 
 	if (instance->hw_crit_error) {
 		printk(KERN_ERR "megasas: cannot recover from previous reset "
@@ -1005,6 +1113,39 @@ static int megasas_generic_reset(struct scsi_cmnd *scmd)
 	spin_lock(scmd->device->host->host_lock);
 
 	return ret_val;
+}
+
+ /**
+ * megasas_reset_timer - quiesce the adapter if required
+ * @scmd:		scsi cmnd
+ *
+ * Sets the FW busy flag and reduces the host->can_queue if the
+ * cmd has not been completed within the timeout period.
+ */
+static enum
+scsi_eh_timer_return megasas_reset_timer(struct scsi_cmnd *scmd)
+{
+	struct megasas_cmd *cmd = (struct megasas_cmd *)scmd->SCp.ptr;
+	struct megasas_instance *instance;
+	unsigned long flags;
+
+	if (time_after(jiffies, (unsigned long)scmd->SCp.sent_command +
+				(MEGASAS_DEFAULT_CMD_TIMEOUT * 2) * HZ)) {
+		return EH_NOT_HANDLED;
+	}
+
+	instance = cmd->instance;
+	if (!(instance->flag & MEGASAS_FW_BUSY)) {
+		/* FW is busy, throttle IO */
+		spin_lock_irqsave(instance->host->host_lock, flags);
+
+		instance->host->can_queue = 16;
+		instance->last_time = jiffies;
+		instance->flag |= MEGASAS_FW_BUSY;
+
+		spin_unlock_irqrestore(instance->host->host_lock, flags);
+	}
+	return EH_RESET_TIMER;
 }
 
 /**
@@ -1030,11 +1171,54 @@ static int megasas_reset_bus_host(struct scsi_cmnd *scmd)
 	int ret;
 
 	/*
-	 * Frist wait for all commands to complete
+	 * First wait for all commands to complete
 	 */
 	ret = megasas_generic_reset(scmd);
 
 	return ret;
+}
+
+/**
+ * megasas_bios_param - Returns disk geometry for a disk
+ * @sdev: 		device handle
+ * @bdev:		block device
+ * @capacity:		drive capacity
+ * @geom:		geometry parameters
+ */
+static int
+megasas_bios_param(struct scsi_device *sdev, struct block_device *bdev,
+		 sector_t capacity, int geom[])
+{
+	int heads;
+	int sectors;
+	sector_t cylinders;
+	unsigned long tmp;
+	/* Default heads (64) & sectors (32) */
+	heads = 64;
+	sectors = 32;
+
+	tmp = heads * sectors;
+	cylinders = capacity;
+
+	sector_div(cylinders, tmp);
+
+	/*
+	 * Handle extended translation size for logical drives > 1Gb
+	 */
+
+	if (capacity >= 0x200000) {
+		heads = 255;
+		sectors = 63;
+		tmp = heads*sectors;
+		cylinders = capacity;
+		sector_div(cylinders, tmp);
+	}
+
+	geom[0] = heads;
+	geom[1] = sectors;
+	geom[2] = cylinders;
+
+	return 0;
 }
 
 /**
@@ -1070,7 +1254,7 @@ static int megasas_slave_configure(struct scsi_device *sdev)
 	* The RAID firmware may require extended timeouts
 	*/
 	if(sdev->channel >= MEGASAS_MAX_PD_CHANNELS)
-		sdev->timeout = 90 * HZ ;
+		sdev->timeout = MEGASAS_DEFAULT_CMD_TIMEOUT * HZ;
 	return 0;
 }
 
@@ -1111,6 +1295,40 @@ megasas_diskdump_poll(struct scsi_device *device)
 	megasas_isr(0, instance, NULL);
 }
 
+static struct megasas_instance *megasas_lookup_instance(u16 host_no)
+{
+	int i;
+
+	for (i = 0; i < megasas_mgmt_info.max_index; i++) {
+
+		if ((megasas_mgmt_info.instance[i]) &&
+		    (megasas_mgmt_info.instance[i]->host->host_no == host_no))
+			return megasas_mgmt_info.instance[i];
+	}
+
+	return NULL;
+}
+
+static int megasas_slave_alloc(struct scsi_device *sdev) {
+	struct megasas_instance *instance ;
+	int tmp_fastload = fast_load;
+	instance = megasas_lookup_instance(sdev->host->host_no);
+
+	if (tmp_fastload && sdev->channel < MEGASAS_MAX_PD_CHANNELS) {
+		if ((sdev->id == MEGASAS_MAX_DEV_PER_CHANNEL -1) &&
+			(sdev->channel == MEGASAS_MAX_PD_CHANNELS - 1)) {
+			/* If fast load option was set and scan for last device is
+			 * over, reset the fast_load flag so that during a possible
+			 * next scan, devices can be made available
+			 */
+			fast_load = 0;
+		}
+		return -ENXIO;
+	}
+
+	return 0;
+}
+
 /*
  * Scsi host template for megaraid_sas driver
  */
@@ -1120,10 +1338,13 @@ static struct scsi_host_template megasas_template = {
 	.name = "LSI Logic SAS based MegaRAID driver",
 	.proc_name = "megaraid_sas",
 	.slave_configure = megasas_slave_configure,
+	.slave_alloc = megasas_slave_alloc,
 	.queuecommand = megasas_queue_command,
 	.eh_device_reset_handler = megasas_reset_device,
 	.eh_bus_reset_handler = megasas_reset_bus_host,
 	.eh_host_reset_handler = megasas_reset_bus_host,
+	.eh_timed_out = megasas_reset_timer,
+	.bios_param = megasas_bios_param,
 	.use_clustering = ENABLE_CLUSTERING,
 	.dump_sanity_check = megasas_diskdump_sanity_check,
 	.dump_poll = megasas_diskdump_poll,
@@ -1221,12 +1442,15 @@ megasas_unmap_sgbuf(struct megasas_instance *instance, struct megasas_cmd *cmd)
  * 				an alternate status (as in the case of aborted
  * 				commands)
  */
-static inline void
+static void
 megasas_complete_cmd(struct megasas_instance *instance, struct megasas_cmd *cmd,
 		     u8 alt_status)
 {
 	int exception = 0;
 	struct megasas_header *hdr = &cmd->frame->hdr;
+
+	if (cmd->scmd)
+		cmd->scmd->SCp.ptr = NULL;
 
 	switch (hdr->cmd) {
 
@@ -1359,7 +1583,7 @@ megasas_complete_cmd(struct megasas_instance *instance, struct megasas_cmd *cmd,
  * 					SCSI mid-layer instead of the status
  * 					returned by the FW
  */
-static int
+static inline int
 megasas_deplete_reply_queue(struct megasas_instance *instance, u8 alt_status)
 {
 
@@ -1367,14 +1591,17 @@ megasas_deplete_reply_queue(struct megasas_instance *instance, u8 alt_status)
 	 * Check if it is our interrupt
 	 * Clear the interrupt 
 	 */
-	if(instance->instancet->clear_intr(instance->reg_set))
+	if (instance->instancet->clear_intr(instance->reg_set))
 		return IRQ_NONE;
 
+	if( instance->hw_crit_error)
+		goto out_done;
 	/* 
 	* Schedule the tasklet for cmd completion 
 	*/
 	tasklet_schedule(&instance->isr_tasklet);
 
+out_done:
 	return IRQ_HANDLED;
 }
 
@@ -1540,7 +1767,7 @@ static void megasas_teardown_frame_pool(struct megasas_instance *instance)
 				      cmd->frame_phys_addr);
 
 		if (cmd->sense)
-			pci_pool_free(instance->sense_dma_pool, cmd->frame,
+			pci_pool_free(instance->sense_dma_pool, cmd->sense,
 				      cmd->sense_phys_addr);
 	}
 
@@ -1816,39 +2043,6 @@ megasas_get_ctrl_info(struct megasas_instance *instance,
 }
 
 /**
- * megasas_complete_cmd_dpc	 -	Returns FW's controller structure
- * @instance_addr:			Address of adapter soft state
- *
- * Tasklet to complete cmds
- */
-void megasas_complete_cmd_dpc(unsigned long instance_addr)
-{
-	u32 producer;
-	u32 consumer;
-	u32 context;
-	struct megasas_cmd *cmd;
-	struct megasas_instance *instance = (struct megasas_instance *)instance_addr;
-
-	producer = *instance->producer;
-	consumer = *instance->consumer;
-
-	while (consumer != producer) {
-		context = instance->reply_queue[consumer];
-
-		cmd = instance->cmd_list[context];
-
-		megasas_complete_cmd(instance, cmd, DID_OK);
-
-		consumer++;
-		if (consumer == (instance->max_fw_cmds + 1)) {
-			consumer = 0;
-		}
-	}
-
-	*instance->consumer = producer;
-}
-
-/**
  * megasas_init_mfi -	Initializes the FW
  * @instance:		Adapter soft state
  *
@@ -1979,7 +2173,7 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	init_frame->data_xfer_len = sizeof(struct megasas_init_queue_info);
 
 	/*
-	 * disable the intr before fire the init frame to FW 
+	 * disable the intr before firing the init frame to FW
 	 */	
 	instance->instancet->disable_intr(instance->reg_set);
 	
@@ -2272,6 +2466,29 @@ static int megasas_start_aen(struct megasas_instance *instance)
 				    class_locale.word);
 }
 
+static ssize_t
+sysfs_max_sectors_read(struct kobject *kobj, char *buf, loff_t off, size_t count)
+{
+	struct Scsi_Host *host = class_to_shost(container_of(kobj,
+					struct class_device, kobj));
+	struct megasas_instance *instance =
+				(struct megasas_instance *)host->hostdata;
+
+	count = sprintf(buf,"%u\n", instance->max_sectors_per_req);
+
+	return count+1;
+}
+
+static struct bin_attribute sysfs_max_sectors_attr = {
+	.attr = {
+		.name = "max_sectors",
+		.mode = S_IRUSR|S_IRGRP|S_IROTH,
+		.owner = THIS_MODULE,
+	},
+	.size = 7,
+	.read = sysfs_max_sectors_read,
+};
+
 /**
  * megasas_io_attach -	Attaches this driver to SCSI mid-layer
  * @instance:		Adapter soft state
@@ -2279,6 +2496,7 @@ static int megasas_start_aen(struct megasas_instance *instance)
 static int megasas_io_attach(struct megasas_instance *instance)
 {
 	struct Scsi_Host *host = instance->host;
+	int error;
 
 	/*
 	 * Export parameters required by SCSI mid-layer
@@ -2288,8 +2506,35 @@ static int megasas_io_attach(struct megasas_instance *instance)
 	host->can_queue = instance->max_fw_cmds - MEGASAS_INT_CMDS;
 	host->this_id = instance->init_id;
 	host->sg_tablesize = instance->max_num_sge;
+
+	/*
+	 * Check if the module parameter value for max_sectors can be used
+	 */
+	if (max_sectors && max_sectors < instance->max_sectors_per_req)
+		instance->max_sectors_per_req = max_sectors;
+	else {
+		if (max_sectors)
+			printk(KERN_INFO "megasas: max_sectors should be > 0 and"
+				"<= %d\n",instance->max_sectors_per_req);
+	}
+
 	host->max_sectors = instance->max_sectors_per_req;
-	host->cmd_per_lun = 128;
+
+	/*
+	 * Check if the module parameter value for cmd_per_lun can be used
+	 */
+	instance->cmd_per_lun = MEGASAS_DEFAULT_CMD_PER_LUN;
+	if (cmd_per_lun && cmd_per_lun <= MEGASAS_DEFAULT_CMD_PER_LUN)
+		instance->cmd_per_lun = cmd_per_lun;
+	else
+		printk(KERN_INFO "megasas: cmd_per_lun should be > 0 and"
+				"<= %d\n",MEGASAS_DEFAULT_CMD_PER_LUN);
+
+	host->cmd_per_lun = instance->cmd_per_lun;
+
+	printk(KERN_DEBUG "megasas: max_sectors : 0x%x, cmd_per_lun : 0x%x\n",
+			instance->max_sectors_per_req, instance->cmd_per_lun);
+
 	host->max_channel = MEGASAS_MAX_CHANNELS - 1;
 	host->max_id = MEGASAS_MAX_DEV_PER_CHANNEL;
 	host->max_lun = MEGASAS_MAX_LUN;
@@ -2304,10 +2549,26 @@ static int megasas_io_attach(struct megasas_instance *instance)
 	}
 
 	/*
+	 * Create sysfs entries for module paramaters
+	 */
+	error = sysfs_create_bin_file(&instance->host->shost_classdev.kobj,
+			&sysfs_max_sectors_attr);
+	if (error) {
+		printk(KERN_INFO "megasas: Error in creating the sysfs entry max_sectors.\n");
+		goto out_remove_host;
+	}
+
+	/*
 	 * Trigger SCSI to scan our drives
 	 */
+
 	scsi_scan_host(host);
+
 	return 0;
+
+out_remove_host:
+	scsi_remove_host(host);
+	return error;
 }
 
 /**
@@ -2404,6 +2665,7 @@ megasas_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	init_waitqueue_head(&instance->abort_cmd_wait_q);
 
 	spin_lock_init(&instance->cmd_pool_lock);
+	spin_lock_init(&instance->completion_lock);
 
 	sema_init(&instance->aen_mutex, 1);
 	sema_init(&instance->ioctl_sem, MEGASAS_INT_CMDS);
@@ -2417,6 +2679,8 @@ megasas_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	instance->init_id = MEGASAS_DEFAULT_INIT_ID;
 
 	megasas_dbg_lvl = 0;
+	instance->flag = 0;
+	instance->last_time = 0;
 
 	/*
 	 * Initialize MFI Firmware
@@ -2584,6 +2848,7 @@ static void megasas_detach_one(struct pci_dev *pdev)
 	instance = pci_get_drvdata(pdev);
 	host = instance->host;
 
+	sysfs_remove_bin_file(&host->shost_classdev.kobj, &sysfs_max_sectors_attr);
 	scsi_remove_host(instance->host);
 	megasas_flush_cache(instance);
 	megasas_shutdown_controller(instance);
@@ -2748,9 +3013,9 @@ megasas_mgmt_fw_ioctl(struct megasas_instance *instance,
 	 * For each user buffer, create a mirror buffer and copy in
 	 */
 	for (i = 0; i < ioc->sge_count; i++) {
-		kbuff_arr[i] = pci_alloc_consistent(instance->pdev,
+		kbuff_arr[i] = dma_alloc_coherent(&instance->pdev->dev,
 						    ioc->sgl[i].iov_len,
-						    &buf_handle);
+						    &buf_handle, GFP_KERNEL);
 		if (!kbuff_arr[i]) {
 			printk(KERN_DEBUG "megasas: Failed to alloc "
 			       "kernel SGL buffer for IOCTL \n");
@@ -2777,8 +3042,8 @@ megasas_mgmt_fw_ioctl(struct megasas_instance *instance,
 	}
 
 	if (ioc->sense_len) {
-		sense = pci_alloc_consistent(instance->pdev, ioc->sense_len,
-					     &sense_handle);
+		sense = dma_alloc_coherent(&instance->pdev->dev, ioc->sense_len,
+					     &sense_handle, GFP_KERNEL);
 		if (!sense) {
 			error = -ENOMEM;
 			goto out;
@@ -2837,32 +3102,18 @@ megasas_mgmt_fw_ioctl(struct megasas_instance *instance,
 
       out:
 	if (sense) {
-		pci_free_consistent(instance->pdev, ioc->sense_len,
+		dma_free_coherent(&instance->pdev->dev, ioc->sense_len,
 				    sense, sense_handle);
 	}
 
 	for (i = 0; i < ioc->sge_count && kbuff_arr[i]; i++) {
-		pci_free_consistent(instance->pdev,
+		dma_free_coherent(&instance->pdev->dev,
 				    kern_sge32[i].length,
 				    kbuff_arr[i], kern_sge32[i].phys_addr);
 	}
 
 	megasas_return_cmd(instance, cmd);
 	return error;
-}
-
-static struct megasas_instance *megasas_lookup_instance(u16 host_no)
-{
-	int i;
-
-	for (i = 0; i < megasas_mgmt_info.max_index; i++) {
-
-		if ((megasas_mgmt_info.instance[i]) &&
-		    (megasas_mgmt_info.instance[i]->host->host_no == host_no))
-			return megasas_mgmt_info.instance[i];
-	}
-
-	return NULL;
 }
 
 static int megasas_mgmt_ioctl_fw(struct file *file, unsigned long arg)
@@ -2988,7 +3239,7 @@ static int megasas_mgmt_compat_ioctl_fw(struct file *file, unsigned long arg)
 	return error;
 }
 
-static long
+static int
 megasas_mgmt_compat_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg,
 			  struct file *file)
 {

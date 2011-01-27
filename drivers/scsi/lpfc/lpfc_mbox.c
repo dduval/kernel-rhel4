@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mbox.c 2791 2005-12-30 18:37:05Z sf_support $
+ * $Id: lpfc_mbox.c 3039 2007-05-22 14:40:23Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -77,6 +77,40 @@ lpfc_read_nv(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	mb = &pmb->mb;
 	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
 	mb->mbxCommand = MBX_READ_NV;
+	mb->mbxOwner = OWN_HOST;
+	return;
+}
+
+/**********************************************/
+/*  lpfc_heart_beat  Issue a HEART_BEAT       */
+/*                mailbox command             */
+/**********************************************/
+void
+lpfc_heart_beat(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
+{
+	MAILBOX_t *mb;
+
+	mb = &pmb->mb;
+	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
+	mb->mbxCommand = MBX_HEARTBEAT;
+	mb->mbxOwner = OWN_HOST;
+	return;
+}
+
+/**********************************************/
+/*  lpfc_config_async  Issue a                */
+/*  MBX_ASYNC_EVT_ENABLE mailbox command      */
+/**********************************************/
+void
+lpfc_config_async(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb,
+		uint32_t ring)
+{
+	MAILBOX_t *mb;
+
+	mb = &pmb->mb;
+	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
+	mb->mbxCommand = MBX_ASYNCEVT_ENABLE;
+	mb->un.varCfgAsyncEvent.ring = ring;
 	mb->mbxOwner = OWN_HOST;
 	return;
 }
@@ -212,6 +246,9 @@ lpfc_init_link(struct lpfc_hba * phba,
 		break;
 	}
 
+	/* Enable asynchronous ABTS responses from firmware */
+	mb->un.varInitLnk.link_flags |= FLAGS_IMED_ABORT;
+
 	/* NEW_FEATURE
 	 * Setting up the link speed
 	 */
@@ -221,6 +258,7 @@ lpfc_init_link(struct lpfc_hba * phba,
 			case LINK_SPEED_1G:
 			case LINK_SPEED_2G:
 			case LINK_SPEED_4G:
+			case LINK_SPEED_8G:
 				mb->un.varInitLnk.link_flags |=
 							FLAGS_LINK_SPEED;
 				mb->un.varInitLnk.link_speed = linkspeed;
@@ -306,8 +344,8 @@ lpfc_unreg_did(struct lpfc_hba * phba, uint32_t did, LPFC_MBOXQ_t * pmb)
 }
 
 /***********************************************/
-
-/*                  command to write slim      */
+/*  lpfc_set_slim  Issue a SET_SLIM            */
+/*                 command to write slim       */
 /***********************************************/
 void
 lpfc_set_slim(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint32_t addr,
@@ -318,17 +356,8 @@ lpfc_set_slim(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb, uint32_t addr,
 	mb = &pmb->mb;
 	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
 
-	/* addr = 0x090597 is AUTO ABTS disable for ELS commands */
-	/* addr = 0x052198 is DELAYED ABTS enable for ELS commands */
-
-	/*
-	 * Always turn on DELAYED ABTS for ELS timeouts
-	 */
-	if ((addr == 0x052198) && (value == 0))
-		value = 1;
-
-	mb->un.varWords[0] = addr;
-	mb->un.varWords[1] = value;
+	mb->un.varSetSlim.varNumber = addr;
+	mb->un.varSetSlim.varValue = value;
 
 	mb->mbxCommand = MBX_SET_SLIM;
 	mb->mbxOwner = OWN_HOST;
@@ -348,6 +377,23 @@ lpfc_read_config(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
 
 	mb->mbxCommand = MBX_READ_CONFIG;
+	mb->mbxOwner = OWN_HOST;
+	return;
+}
+
+/*************************************************/
+/*  lpfc_read_lnk_stat  Issue a READ LINK STATUS */
+/*                mailbox command                */
+/*************************************************/
+void
+lpfc_read_lnk_stat(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
+{
+	MAILBOX_t *mb;
+
+	mb = &pmb->mb;
+	memset(pmb, 0, sizeof (LPFC_MBOXQ_t));
+
+	mb->mbxCommand = MBX_READ_LNK_STAT;
 	mb->mbxOwner = OWN_HOST;
 	return;
 }
@@ -572,6 +618,9 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	phba->slim2p->pcb.mbAddrHigh = putPaddrHigh(pdma_addr);
 	phba->slim2p->pcb.mbAddrLow = putPaddrLow(pdma_addr);
 
+	/* Always Host Group Pointer is in SLIM */
+	mb->un.varCfgPort.hps = 1;
+
 	/*
 	 * Setup Host Group ring pointer.
 	 *
@@ -678,4 +727,20 @@ lpfc_mbox_get(struct lpfc_hba * phba)
 	}
 
 	return mbq;
+}
+
+int
+lpfc_mbox_tmo_val(struct lpfc_hba *phba, int cmd)
+{
+	switch (cmd) {
+	case MBX_WRITE_NV:	/* 0x03 */
+	case MBX_UPDATE_CFG:	/* 0x1B */
+	case MBX_DOWN_LOAD:	/* 0x1C */
+	case MBX_DEL_LD_ENTRY:	/* 0x1D */
+	case MBX_LOAD_AREA:	/* 0x81 */
+	case MBX_FLASH_WR_ULA:  /* 0x98 */
+	case MBX_LOAD_EXP_ROM:	/* 0x9C */
+		return LPFC_MBOX_TMO_FLASH_CMD;
+	}
+	return LPFC_MBOX_TMO;
 }

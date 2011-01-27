@@ -37,7 +37,7 @@
 #include <linux/ctype.h>
 #endif
 
-void
+static void
 renew_parental_timestamps(struct dentry *direntry)
 {
 	/* BB check if there is a way to get the kernel to do this or if we really need this */
@@ -52,7 +52,8 @@ char *
 build_path_from_dentry(struct dentry *direntry)
 {
 	struct dentry *temp;
-	int namelen = 0;
+	int namelen;
+	int pplen;
 	char *full_path;
 	char dirsep;
 
@@ -62,7 +63,9 @@ build_path_from_dentry(struct dentry *direntry)
 		when the server crashed */
 
 	dirsep = CIFS_DIR_SEP(CIFS_SB(direntry->d_sb));
+	pplen = CIFS_SB(direntry->d_sb)->prepathlen;
 cifs_bp_rename_retry:
+	namelen = pplen; 
 	for (temp = direntry; !IS_ROOT(temp);) {
 		namelen += (1 + temp->d_name.len);
 		temp = temp->d_parent;
@@ -76,7 +79,6 @@ cifs_bp_rename_retry:
 	if(full_path == NULL)
 		return full_path;
 	full_path[namelen] = 0;	/* trailing null */
-
 	for (temp = direntry; !IS_ROOT(temp);) {
 		namelen -= 1 + temp->d_name.len;
 		if (namelen < 0) {
@@ -85,7 +87,7 @@ cifs_bp_rename_retry:
 			full_path[namelen] = dirsep;
 			strncpy(full_path + namelen + 1, temp->d_name.name,
 				temp->d_name.len);
-			cFYI(0, (" name: %s ", full_path + namelen));
+			cFYI(0, ("name: %s", full_path + namelen));
 		}
 		temp = temp->d_parent;
 		if(temp == NULL) {
@@ -94,18 +96,23 @@ cifs_bp_rename_retry:
 			return NULL;
 		}
 	}
-	if (namelen != 0) {
+	if (namelen != pplen) {
 		cERROR(1,
-		       ("We did not end path lookup where we expected namelen is %d",
+		       ("did not end path lookup where expected namelen is %d",
 			namelen));
-		/* presumably this is only possible if we were racing with a rename 
+		/* presumably this is only possible if racing with a rename 
 		of one of the parent directories  (we can not lock the dentries
 		above us to prevent this, but retrying should be harmless) */
 		kfree(full_path);
-		namelen = 0;
 		goto cifs_bp_rename_retry;
 	}
-
+	/* DIR_SEP already set for byte  0 / vs \ but not for
+	   subsequent slashes in prepath which currently must
+	   be entered the right way - not sure if there is an alternative
+	   since the '\' is a valid posix character so we can not switch
+	   those safely to '/' if any are found in the middle of the prepath */
+	/* BB test paths to Windows with '/' in the midst of prepath */
+	strncpy(full_path,CIFS_SB(direntry->d_sb)->prepath,pplen);
 	return full_path;
 }
 
@@ -139,10 +146,12 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 	char *full_path = NULL;
 	FILE_ALL_INFO * buf = NULL;
 	struct inode *newinode = NULL;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 	struct cifsFileInfo * pCifsFile = NULL;
 	struct cifsInodeInfo * pCifsInode;
-	int disposition = FILE_OVERWRITE_IF;
 	int write_only = FALSE;
+#endif
+	int disposition = FILE_OVERWRITE_IF;
 
 	xid = GetXid();
 
@@ -287,6 +296,10 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 			pCifsFile->invalidHandle = FALSE;
 			pCifsFile->closePend     = FALSE;
 			init_MUTEX(&pCifsFile->fh_sem);
+			init_MUTEX(&pCifsFile->lock_sem);
+			INIT_LIST_HEAD(&pCifsFile->llist);
+			atomic_set(&pCifsFile->wrtPending,0);
+
 			/* set the following in open now 
 				pCifsFile->pfile = file; */
 			write_lock(&GlobalSMBSeslock);
@@ -311,19 +324,24 @@ cifs_create(struct inode *inode, struct dentry *direntry, int mode)
 			}
 			write_unlock(&GlobalSMBSeslock);
 		}
+	}
+cifs_create_out:
 #else /* 2.4 does not pass open flags so must reopen on cifs_open */
 		CIFSSMBClose(xid, pTcon, fileHandle);
+	}
 #endif
-	} 
-cifs_create_out:
 	kfree(buf);
 	kfree(full_path);
 	FreeXid(xid);
 	return rc;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode, 
-		dev_t device_number) 
+		dev_t device_number)
+#else
+int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode, int device_number)
+#endif
 {
 	int rc = -EPERM;
 	int xid;
@@ -445,9 +463,13 @@ int cifs_mknod(struct inode *inode, struct dentry *direntry, int mode,
 	return rc;
 }
 
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 struct dentry *
 cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry, struct nameidata *nd)
+#else
+struct dentry *
+cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry)
+#endif
 {
 	int xid;
 	int rc = 0; /* to get around spurious gcc warning, set to zero here */
@@ -541,8 +563,13 @@ cifs_lookup(struct inode *parent_dir_inode, struct dentry *direntry, struct name
 	return ERR_PTR(rc);
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 static int
 cifs_d_revalidate(struct dentry *direntry, struct nameidata *nd)
+#else
+static int
+cifs_d_revalidate(struct dentry *direntry, int flags)
+#endif
 {
 	int isValid = 1;
 

@@ -86,5 +86,6 @@
 /* Linux uses GCC */
 
 #include "acgcc.h"
+#define ACPI_FREE(a)            kfree(a)
 
 #endif /* __ACLINUX_H__ */

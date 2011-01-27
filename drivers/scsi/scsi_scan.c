@@ -688,7 +688,7 @@ static int scsi_probe_and_add_lun(struct Scsi_Host *host,
 	if (!sreq)
 		goto out_free_sdev;
 	result = kmalloc(256, GFP_ATOMIC |
-			(host->unchecked_isa_dma) ? __GFP_DMA : 0);
+			 ((host->unchecked_isa_dma) ? __GFP_DMA : 0));
 	if (!result)
 		goto out_free_sreq;
 
@@ -713,6 +713,36 @@ static int scsi_probe_and_add_lun(struct Scsi_Host *host,
 		SCSI_LOG_SCAN_BUS(3, printk(KERN_INFO
 					"scsi scan: peripheral qualifier of 3,"
 					" no device added\n"));
+		res = SCSI_SCAN_LUN_IGNORED;
+
+		if (!sdevp)
+			scsi_scan_remove(sdev);
+		goto out_free_result;
+	}
+
+	/*
+	 * Some targets may set slight variations of PQ and PDT to signal
+	 * that no LUN is present, so don't add sdev in these cases.
+	 * Two specific examples are:
+	 * 1) NetApp targets: return PQ=1, PDT=0x1f
+	 * 2) USB UFI: returns PDT=0x1f, with the PQ bits being "reserved"
+	 *    in the UFI 1.0 spec (we cannot rely on reserved bits).
+	 *
+	 * References:
+	 * 1) SCSI SPC-3, pp. 145-146
+	 * PQ=1: "A peripheral device having the specified peripheral
+	 * device type is not connected to this logical unit. However, the
+	 * device server is capable of supporting the specified peripheral
+	 * device type on this logical unit."
+	 * PDT=0x1f: "Unknown or no device type"
+	 * 2) USB UFI 1.0, p. 20
+	 * PDT=00h Direct-access device (floppy)
+	 * PDT=1Fh none (no FDD connected to the requested logical unit)
+	 */
+	if ((result[0] >> 5) == 1 && (result[0] & 0x1f) == 0x1f) {
+		SCSI_LOG_SCAN_BUS(3, printk(KERN_INFO
+					"scsi scan: peripheral device type"
+					" of 31, no device added\n"));
 		res = SCSI_SCAN_LUN_IGNORED;
 
 		if (!sdevp)
@@ -852,7 +882,7 @@ static void scsi_sequential_lun_scan(struct Scsi_Host *shost, uint channel,
  *     Given a struct scsi_lun of: 0a 04 0b 03 00 00 00 00, this function returns
  *     the integer: 0x0b030a04
  **/
-static int scsilun_to_int(struct scsi_lun *scsilun)
+int scsilun_to_int(struct scsi_lun *scsilun)
 {
 	int i;
 	unsigned int lun;
@@ -863,6 +893,7 @@ static int scsilun_to_int(struct scsi_lun *scsilun)
 			      scsilun->scsi_lun[i + 1]) << (i * 8));
 	return lun;
 }
+EXPORT_SYMBOL(scsilun_to_int);
 
 /**
  * scsi_report_lun_scan - Scan using SCSI REPORT LUN results

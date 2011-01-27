@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.c 2905 2006-04-13 17:11:39Z sf_support $
+ * $Id: lpfc_sli.c 3039 2007-05-22 14:40:23Z sf_support $
  */
 
 #include <linux/version.h>
@@ -109,7 +109,8 @@ static uint8_t lpfc_sli_iocb_cmd_type[CMD_MAX_IOCB_CMD] = {
 	LPFC_SOL_IOCB,		/* CMD_FCP_TRSP_CX         0x23 */
 	/* 0x24 - 0x80 */
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
-	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
+	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
+	LPFC_SOL_IOCB,		/* CMD_FCP_AUTO_TRSP_CX    0x29 */
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
 	/* 0x30 */
@@ -152,7 +153,7 @@ static uint8_t lpfc_sli_iocb_cmd_type[CMD_MAX_IOCB_CMD] = {
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
 	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
-	LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
+	LPFC_UNSOL_IOCB,   LPFC_UNKNOWN_IOCB, LPFC_UNKNOWN_IOCB,
 	LPFC_UNKNOWN_IOCB,
 	/* 0x80 */
 	LPFC_UNKNOWN_IOCB,
@@ -226,6 +227,55 @@ static uint8_t lpfc_sli_iocb_cmd_type[CMD_MAX_IOCB_CMD] = {
 	LPFC_SOL_IOCB,
 	LPFC_UNSOL_IOCB
 };
+
+/* maximum allowed intr latency in milliseconds */
+#define MAX_INTR_LATENCY 90
+
+static void
+lpfc_toggle_host_control_register(struct lpfc_hba *phba)
+{
+	unsigned long hc_copy = readl(phba->HCregaddr);
+	unsigned long bit_mask = HC_MBINT_ENA | HC_R0INT_ENA | HC_R1INT_ENA |
+		HC_R2INT_ENA | HC_R3INT_ENA | HC_LAINT_ENA;
+	unsigned long inverted_hc_copy = ( hc_copy & ~bit_mask);
+
+	writel(inverted_hc_copy, phba->HCregaddr);
+	readl(phba->HCregaddr);
+
+	writel(hc_copy, phba->HCregaddr);
+	readl(phba->HCregaddr);
+}
+
+/*
+ * Timer to check if there is a lost interrupt.
+ * This is a work around for lost interrupt on a specific model
+ * of PCIe server.
+ */
+void
+lpfc_hatt_timeout(unsigned long ptr)
+{
+	struct lpfc_hba *phba = (struct lpfc_hba *)ptr;
+	unsigned long ha_copy = readl(phba->HAregaddr);
+
+	mod_timer(&phba->hatt_tmo, jiffies + HZ/10);
+
+	if (!ha_copy) {
+		phba->hatt_jiffies = 0;
+		return;
+	}
+
+	if (!phba->hatt_jiffies) {
+		phba->hatt_jiffies = jiffies;
+		return;
+	}
+
+	if ((phba->hatt_jiffies + (HZ * MAX_INTR_LATENCY)/1000) < jiffies) {
+		lpfc_printf_log(phba, KERN_ERR, LOG_SLI,
+			"%d:0314 Unprocessed Host attention x%lx.\n",
+			phba->brd_no, ha_copy);
+		lpfc_toggle_host_control_register(phba);
+	}
+}
 
 static void
 lpfc_sli_wake_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq)
@@ -408,6 +458,7 @@ lpfc_sli_next_iotag(struct lpfc_hba * phba, struct lpfc_sli_ring * pring)
 	LPFC_RING_INIT_t *pringinit;
 	struct lpfc_sli *psli;
 	uint32_t search_start;
+	uint32_t i;
 
 	psli = &phba->sli;
 	pringinit = &psli->sliinit.ringinit[pring->ringno];
@@ -416,7 +467,16 @@ lpfc_sli_next_iotag(struct lpfc_hba * phba, struct lpfc_sli_ring * pring)
 		pringinit->iotag_ctr++;
 		if (pringinit->iotag_ctr >= pringinit->iotag_max)
 			pringinit->iotag_ctr = 1;
-		return pringinit->iotag_ctr;
+		search_start = pringinit->iotag_ctr;
+
+		/* If we are NOT fast lookup, ensure iotag is unique
+		 * across all rings.
+		 */
+		for (i = 0; i < pring->ringno; i++) {
+			pringinit = &psli->sliinit.ringinit[i];
+			search_start += pringinit->iotag_max;
+		}
+		return search_start;
 	}
 
 	search_start = pringinit->iotag_ctr;
@@ -455,7 +515,7 @@ lpfc_sli_submit_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	 * Alloocate and set up an iotag
 	 */
 	if ((nextiocb->iocb.ulpIoTag =
-	     lpfc_sli_next_iotag(phba, &psli->ring[psli->fcp_ring])) == 0)
+	     lpfc_sli_next_iotag(phba, pring)) == 0)
 		return (1);
 
 	/*
@@ -633,6 +693,8 @@ lpfc_sli_chk_mbx_command(uint8_t mbxCommand)
 	case MBX_FLASH_WR_ULA:
 	case MBX_SET_DEBUG:
 	case MBX_LOAD_EXP_ROM:
+	case MBX_HEARTBEAT:
+	case MBX_ASYNCEVT_ENABLE:
 		ret = mbxCommand;
 		break;
 	default:
@@ -715,6 +777,7 @@ lpfc_sli_handle_mb_event(struct lpfc_hba * phba)
 		}
 
 	      mbout:
+		phba->last_completion_time = jiffies;
 		psli->mbox_active = NULL;
 		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 		del_timer_sync(&psli->mbox_tmo);
@@ -872,6 +935,23 @@ lpfc_sli_process_unsol_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	match = 0;
 	ringno = pring->ringno;
 	irsp = &(saveq->iocb);
+
+	if (irsp->ulpCommand == CMD_ASYNC_STATUS) {
+		pringinit = &psli->sliinit.ringinit[ringno];
+		if (pringinit->lpfc_sli_rcv_async_status)
+			pringinit->lpfc_sli_rcv_async_status(phba, pring, saveq);
+		else
+			lpfc_printf_log(phba,
+					KERN_WARNING,
+					LOG_SLI,
+					"%d:0316 Ring %d handler: unexpected "
+					"ASYNC_STATUS iocb received evt_code "
+					"0x%x\n", phba->brd_no,
+					pring->ringno,
+					irsp->un.asyncstat.evt_code);
+		return 1;
+	}
+
 	if (irsp->ulpCommand == CMD_RET_XRI_BUF64_CX) {
 		for (match = 0; match < irsp->ulpBdeCount; match++) {
 			mp = lpfc_sli_ringpostbuf_get(phba, pring,
@@ -1233,6 +1313,7 @@ lpfc_sli_handle_ring_event(struct lpfc_hba * phba,
 		if (++pring->rspidx >= portRspMax) {
 			pring->rspidx = 0;
 		}
+		phba->last_completion_time = jiffies;
 
 		/* Let the HBA know what IOCB slot will be the next one the
 		 * driver will read a response from.
@@ -1347,6 +1428,7 @@ lpfc_sli_handle_ring_event(struct lpfc_hba * phba,
 						     phba->iocb_mem_pool);
 					}
 				}
+				free_saveq = 1;
 			} else if (type == LPFC_UNKNOWN_IOCB) {
 				if (irsp->ulpCommand == CMD_ADAPTER_MSG) {
 
@@ -1372,6 +1454,7 @@ lpfc_sli_handle_ring_event(struct lpfc_hba * phba,
 						irsp->ulpIoTag,
 						irsp->ulpContext);
 				}
+				free_saveq = 1;
 			}
 
 			if (free_saveq) {
@@ -1383,12 +1466,12 @@ lpfc_sli_handle_ring_event(struct lpfc_hba * phba,
 					list_for_each_entry_safe(rspiocbp,
 						 next_iocb,
 						 &pring->iocb_continueq, list) {
-					list_del_init(&rspiocbp->list);
-					mempool_free(rspiocbp,
-						     phba->iocb_mem_pool);
+						list_del_init(&rspiocbp->list);
+						mempool_free(rspiocbp,
+							phba->iocb_mem_pool);
 					}
 				}
-			mempool_free( saveq, phba->iocb_mem_pool);
+				mempool_free( saveq, phba->iocb_mem_pool);
 			}
 		}
 
@@ -1448,6 +1531,7 @@ lpfc_intr_prep(struct lpfc_hba * phba)
 	 */
 	writel((ha_copy & ~(HA_LATT | HA_ERATT)), phba->HAregaddr);
 	readl(phba->HAregaddr); /* flush */
+	phba->hatt_jiffies = 0;
 	return (ha_copy);
 }				/* lpfc_intr_prep */
 
@@ -1848,6 +1932,73 @@ lpfc_sli_brdreset(struct lpfc_hba * phba)
 }
 
 int
+lpfc_sli_set_dma_length(struct lpfc_hba * phba, uint32_t polling)
+{
+	uint32_t dma_length;
+	LPFC_MBOXQ_t *mbox;
+	int ret = 0;
+
+	switch (phba->cfg_pci_max_read) {
+		case 512:
+			dma_length = SLIM_VAL_MAX_DMA_512;
+			break;
+		case 1024:
+			dma_length = SLIM_VAL_MAX_DMA_1024;
+			break;
+		case 2048:
+			dma_length = SLIM_VAL_MAX_DMA_2048;
+			break;
+		case 4096:
+			dma_length = SLIM_VAL_MAX_DMA_4096;
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	mbox = mempool_alloc(phba->mbox_mem_pool, GFP_ATOMIC);
+	if (!mbox)
+		goto failed;
+
+	lpfc_set_slim(phba, mbox, SLIM_VAR_MAX_DMA_LENGTH, dma_length);
+
+	if (polling)
+		ret = lpfc_sli_issue_mbox(phba, mbox, MBX_POLL);
+	else
+		ret = lpfc_sli_issue_mbox_wait(phba, mbox,
+			LPFC_MBOX_TMO * 2);
+
+	if (ret != MBX_SUCCESS) {
+		if (mbox->mb.mbxStatus != MBXERR_UNKNOWN_CMD)
+			lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
+				"%d:0443 Adapter failed to set maximum"
+				" DMA length mbxStatus x%x \n",
+				phba->brd_no, mbox->mb.mbxStatus)
+		else
+			lpfc_printf_log(phba, KERN_INFO, LOG_INIT,
+				"%d:0444 Adapter failed to set maximum"
+				" DMA length mbxStatus x%x \n",
+				phba->brd_no, mbox->mb.mbxStatus);
+		goto failed;
+	}
+
+	mempool_free( mbox, phba->mbox_mem_pool);
+	return 0;
+
+failed:
+	/* If mailbox command failed, reset the value to default value */
+	phba->cfg_pci_max_read = 2048;
+	if (ret == MBX_TIMEOUT) {
+		mbox->mbox_cmpl = lpfc_sli_def_mbox_cmpl;
+		return -EPERM;
+	} else if (mbox) {
+		mempool_free( mbox, phba->mbox_mem_pool);
+		return -EPERM;
+	} else
+		return -ENOMEM;
+
+}
+
+int
 lpfc_sli_brdrestart(struct lpfc_hba * phba)
 {
 	MAILBOX_t *mb;
@@ -1901,7 +2052,9 @@ lpfc_sli_brdrestart(struct lpfc_hba * phba)
 		LPFC_MDELAY(2000);
 	}
 
+	spin_lock_irq(phba->host->host_lock);
 	lpfc_hba_down_post(phba);
+	spin_unlock_irq_dump(phba->host->host_lock);
 
 	return 0;
 }
@@ -2082,6 +2235,8 @@ top:
 		mempool_free( pmb, phba->mbox_mem_pool);
 		return -ENXIO;
 	}
+
+	lpfc_sli_set_dma_length(phba,1);
 
 	if ((rc = lpfc_sli_ring_map(phba))) {
 		phba->hba_state = LPFC_HBA_ERROR;
@@ -2339,8 +2494,12 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 			LOG_MBOX_CANNOT_ISSUE_DATA( phba, mb, psli, flag);
 			return (MBX_NOT_FINISHED);
 		}
-		/* timeout active mbox command */
-		mod_timer(&psli->mbox_tmo, jiffies + HZ * LPFC_MBOX_TMO);
+		/* Timeout active mbox command.
+		 * Various commands can take several minutes to
+		 * complete in a worse case senerio.
+		 */
+		mod_timer(&psli->mbox_tmo, (jiffies +
+			(HZ * lpfc_mbox_tmo_val(phba, mb->mbxCommand))));
 	}
 
 	/* Mailbox cmd <cmd> issue */
@@ -2423,11 +2582,14 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 		/* Read the HBA Host Attention Register */
 		ha_copy = readl(phba->HAregaddr);
 
+		i = lpfc_mbox_tmo_val(phba, mb->mbxCommand);
+		i *= 1000; /* Convert to ms */
+
 		/* Wait for command to complete */
 		while (((word0 & OWN_CHIP) == OWN_CHIP) ||
 		       (!(ha_copy & HA_MBATT) &&
 			(phba->hba_state > LPFC_WARM_START))) {
-			if (i++ >= 5000) {
+			if ((i-- <= 0) || (ha_copy & HA_ERATT)) {
 				psli->sliinit.sli_flag &= ~LPFC_SLI_MBOX_ACTIVE;
 				spin_unlock_irqrestore(phba->host->host_lock,
 						       drvr_flag);
@@ -3542,7 +3704,7 @@ lpfc_sli_issue_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq,
 		if ((timeleft == 0) || signal_pending(current))
 			retval = MBX_TIMEOUT;
 		else
-			retval = MBX_SUCCESS;
+			retval = pmboxq->mb.mbxStatus;
 	}
 
 

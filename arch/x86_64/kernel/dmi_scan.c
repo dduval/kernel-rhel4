@@ -298,6 +298,15 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 		MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
+	{ disable_pci_mmconf, "Intel DG965MQ", {
+		MATCH(DMI_BOARD_VENDOR, "Intel Corporation"),
+		MATCH(DMI_BOARD_NAME, "DG965MQ"),
+		NO_MATCH, NO_MATCH
+		} },
+	{ disable_pci_mmconf, "Intel D26928", {
+		MATCH(DMI_BOARD_NAME, "D26928"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
 	{ disable_pci_mmconf, "ASUS A8N-SLI Premium", {
 		MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
 		MATCH(DMI_BOARD_NAME, "A8N-SLI Premium"),

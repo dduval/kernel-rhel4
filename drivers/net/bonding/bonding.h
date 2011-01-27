@@ -145,6 +145,7 @@ struct bond_params {
 	int xmit_policy;
 	int miimon;
 	int arp_interval;
+	int arp_validate;
 	int use_carrier;
 	int updelay;
 	int downdelay;
@@ -164,7 +165,8 @@ struct slave {
 	struct slave *next;
 	struct slave *prev;
 	s16    delay;
-	u32    jiffies;
+	unsigned long jiffies;
+	unsigned long last_arp_rx;
 	s8     link;    /* one of BOND_LINK_XXXX */
 	s8     state;   /* one of BOND_STATE_XXXX */
 	u32    original_flags;
@@ -212,6 +214,7 @@ struct bonding {
 	struct   bond_params params;
 	struct   list_head vlan_list;
 	struct   vlan_group *vlgrp;
+	struct   packet_type arp_mon_pt;
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	struct   netpoll *netpoll;
 #endif
@@ -245,6 +248,25 @@ extern inline struct bonding *bond_get_bond_by_slave(struct slave *slave)
 	return (struct bonding *)slave->dev->master->priv;
 }
 
+#define BOND_ARP_VALIDATE_NONE		0
+#define BOND_ARP_VALIDATE_ACTIVE	(1 << BOND_STATE_ACTIVE)
+#define BOND_ARP_VALIDATE_BACKUP	(1 << BOND_STATE_BACKUP)
+#define BOND_ARP_VALIDATE_ALL		(BOND_ARP_VALIDATE_ACTIVE | \
+					 BOND_ARP_VALIDATE_BACKUP)
+
+extern inline int slave_do_arp_validate(struct bonding *bond, struct slave *slave)
+{
+	return bond->params.arp_validate & (1 << slave->state);
+}
+
+extern inline unsigned long slave_last_rx(struct bonding *bond, struct slave *slave)
+{
+	if (slave_do_arp_validate(bond, slave))
+		return slave->last_arp_rx;
+
+	return slave->dev->last_rx;
+}
+
 extern inline void bond_set_slave_inactive_flags(struct slave *slave)
 {
 	struct bonding *bond = slave->dev->master->priv;
@@ -252,12 +274,14 @@ extern inline void bond_set_slave_inactive_flags(struct slave *slave)
 	    bond->params.mode != BOND_MODE_ALB)
 		slave->state = BOND_STATE_BACKUP;
 	slave->dev->priv_flags |= IFF_SLAVE_INACTIVE;
+	if (slave_do_arp_validate(bond, slave))
+		slave->dev->priv_flags |= IFF_SLAVE_NEEDARP;
 }
 
 extern inline void bond_set_slave_active_flags(struct slave *slave)
 {
 	slave->state = BOND_STATE_ACTIVE;
-	slave->dev->priv_flags &= ~IFF_SLAVE_INACTIVE;
+	slave->dev->priv_flags &= ~(IFF_SLAVE_INACTIVE | IFF_SLAVE_NEEDARP);
 }
 
 extern inline void bond_set_master_3ad_flags(struct bonding *bond)
@@ -282,6 +306,8 @@ extern inline void bond_unset_master_alb_flags(struct bonding *bond)
 
 struct vlan_entry *bond_next_vlan(struct bonding *bond, struct vlan_entry *curr);
 int bond_dev_queue_xmit(struct bonding *bond, struct sk_buff *skb, struct net_device *slave_dev);
+void bond_register_arp(struct bonding *);
+void bond_unregister_arp(struct bonding *);
 
 #endif /* _LINUX_BONDING_H */
 

@@ -1,7 +1,9 @@
 /*
  * IBM PowerPC eBus Infrastructure Support.
  *
- *  Authors: Heiko J Schick <schickhj@de.ibm.com>
+ *  Authors:
+ *    Heiko J Schick <schickhj@de.ibm.com>
+ *    Joachim Fenkes <fenkes@de.ibm.com>
  *
  *  Copyright (c) 2005 IBM Corporation
  *
@@ -48,11 +50,11 @@
 
 #define EBUS_NAME "ebus"
 
-static struct ibmebus_dev ebus_bus_device = { /* fake "parent" device */
-	.name = ebus_bus_device.ofdev.dev.bus_id,
-	.ofdev.dev.bus_id = EBUS_NAME,
-	.ofdev.dev.bus = &ibmebus_bus_type,
+static struct device ebus_bus_device = { /* fake "parent" device */
+	.bus_id = EBUS_NAME
 };
+
+struct bus_type ibmebus_bus_type;
 
 void *ibmebus_alloc_coherent(struct device *dev,
 			     size_t size,
@@ -177,68 +179,47 @@ static void __devinit ebus_dev_release(struct device *dev)
 	kfree(to_ibmebus_dev(dev));
 }
 
-static ssize_t ebusdev_show_name(struct device *dev,
-				 char *buf)
-{
-	return sprintf(buf, "%s\n", to_ibmebus_dev(dev)->name);
-}
-static DEVICE_ATTR(name, S_IRUSR | S_IRGRP | S_IROTH, ebusdev_show_name, NULL);
-
-static struct ibmebus_dev* __devinit ebus_register_main(
-	struct ibmebus_dev *ebusdev, char *name)
+static int __devinit ebus_register_main(struct ibmebus_dev *ebusdev, char *name)
 {
 	ebusdev->name = name;
-	ebusdev->ofdev.dev.parent     = &ebus_bus_device.ofdev.dev;
+	ebusdev->ofdev.dev.parent     = &ebus_bus_device;
 	ebusdev->ofdev.dev.bus        = &ibmebus_bus_type;
 	ebusdev->ofdev.dev.release    = ebus_dev_release;
 
 	if (of_device_register(&ebusdev->ofdev)) {
 		printk(KERN_ERR "%s: failed to register device %s\n",
 		       __FUNCTION__, ebusdev->ofdev.dev.bus_id);
-		return NULL;
+		return -ENODEV;
 	}
 
-	device_create_file(&ebusdev->ofdev.dev, &dev_attr_name);
-
-	return ebusdev;
+	return 0;
 }
 
 struct ibmebus_dev* __devinit ebus_register_dtnode(struct device_node *dn)
 {
 	struct ibmebus_dev *ebusdev;
-	char *loc_code;
-	int length;
-
-	loc_code = (char *)get_property(dn, "ibm,loc-code", NULL);
-	if (!loc_code) {
-                printk(KERN_WARNING "%s: node %s missing 'ibm,loc-code'\n",
-		       __FUNCTION__, dn->name ? dn->name : "<unknown>");
-		return NULL;
-        }
-
-	if (strlen(loc_code) == 0) {
-	        printk(KERN_WARNING "%s: 'ibm,loc-code' is invalid\n",
-		       __FUNCTION__);
-		return NULL;
-	}
+	int i, len, bus_len;
 
 	ebusdev = kmalloc(sizeof(struct ibmebus_dev), GFP_KERNEL);
 	if (!ebusdev) {
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 	}
 	memset(ebusdev, 0, sizeof(struct ibmebus_dev));
 
 	ebusdev->ofdev.node = of_node_get(dn);
 
-	length = strlen(loc_code);
-	strncpy(ebusdev->ofdev.dev.bus_id, loc_code
-		+ length - min(length, BUS_ID_SIZE - 1),
-		min(length, BUS_ID_SIZE - 1));
+	len = strlen(dn->full_name + 1);
+	bus_len = min(len, BUS_ID_SIZE - 1);
+	memcpy(ebusdev->ofdev.dev.bus_id, dn->full_name + 1
+	       + (len - bus_len), bus_len);
+	for (i = 0; i < bus_len; i++)
+		if (ebusdev->ofdev.dev.bus_id[i] == '/')
+			ebusdev->ofdev.dev.bus_id[i] = '_';
 
 	/* register with generic device framework */
-	if (ebus_register_main(ebusdev, dn->name) == NULL) {
+	if (ebus_register_main(ebusdev, dn->name)) {
 		kfree(ebusdev);
-		return NULL;
+		return ERR_PTR(-ENODEV);
 	}
 
 	return ebusdev;
@@ -256,19 +237,23 @@ static void probe_bus(char* name)
 	of_node_put(dn);
 }
 
+static int ibmebus_unregister_device(struct ibmebus_dev *dev)
+{
+	of_device_unregister(&dev->ofdev);
+
+	return 0;
+}
+
 struct ebusdev_find_info
 {
 	struct ibmebus_dev *dev;
 	const char *name;
 };
 
-static int ebus_cmp_dev(struct device *dev, void *data)
+static int ebus_cmp_name(struct device *dev, void *data)
 {
        struct ebusdev_find_info *info = data;
        struct device_node *dn = to_of_device(dev)->node;
-
-       if (strcmp(dev->bus_id, EBUS_NAME) == 0)
-	       return 0;
 
        if (strcmp(dn->name, info->name) == 0) {
 	       info->dev = to_ibmebus_dev(dev);
@@ -278,34 +263,64 @@ static int ebus_cmp_dev(struct device *dev, void *data)
        return 0;
 }
 
-struct ibmebus_dev *ebus_device_find(const char *name)
+static int ebus_cmp_path(struct device *dev, void *data)
+{
+       struct ebusdev_find_info *info = data;
+       struct device_node *dn = to_of_device(dev)->node;
+
+       if (dn->full_name && (strcasecmp(info->name, dn->full_name) == 0)) {
+	       info->dev = to_ibmebus_dev(dev);
+	       return 1;
+       }
+
+       return 0;
+}
+
+struct ibmebus_dev *ebus_device_find(const char *name,
+				     int (*matcher)(struct device *, void *))
 {
 	struct ebusdev_find_info info = { .dev = NULL,
 					  .name = name };
 
-	bus_for_each_dev(&ibmebus_bus_type, NULL, &info, ebus_cmp_dev);
+	bus_for_each_dev(&ibmebus_bus_type, NULL, &info, matcher);
 
 	return info.dev;
 }
 
-int ibmebus_register_driver(struct ibmebus_driver *ebusdrv)
+void ibmebus_remove_devices_by_id(struct of_device_id *idt)
 {
-	struct of_device_id *idt;
-	struct ibmebus_dev *dev = NULL;
-
-	ebusdrv->driver.name   = ebusdrv->name;
-	ebusdrv->driver.bus    = &ibmebus_bus_type;
-	ebusdrv->driver.probe  = ebus_bus_probe;
-	ebusdrv->driver.remove = ebus_bus_remove;
-
-	idt = ebusdrv->id_table;
+	struct ibmebus_dev *dev;
 	while (strlen(idt->name) > 0) {
-		dev = ebus_device_find(idt->name);
+		dev = ebus_device_find(idt->name, ebus_cmp_name);
+		if (dev)
+			ibmebus_unregister_device(dev);
+		idt++;
+	}
+}
+
+void ibmebus_add_devices_by_id(struct of_device_id *idt)
+{
+	struct ibmebus_dev *dev;
+	while (strlen(idt->name) > 0) {
+		dev = ebus_device_find(idt->name, ebus_cmp_name);
 		if (dev == NULL) {
 			probe_bus(idt->name);
 		}
 		idt++;
 	}
+}
+
+int ibmebus_register_driver(struct ibmebus_driver *ebusdrv)
+{
+	ebusdrv->driver.name   = ebusdrv->name;
+	ebusdrv->driver.bus    = &ibmebus_bus_type;
+	ebusdrv->driver.probe  = ebus_bus_probe;
+	ebusdrv->driver.remove = ebus_bus_remove;
+
+	/* remove all supported devices first, in case someone
+	 * probed them manually before registering the driver */
+	ibmebus_remove_devices_by_id(ebusdrv->id_table);
+	ibmebus_add_devices_by_id(ebusdrv->id_table);
 
 	return driver_register(&ebusdrv->driver);
 }
@@ -361,9 +376,100 @@ static int ebus_bus_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
+static ssize_t name_show(struct device *dev, char *buf)
+{
+	struct ibmebus_dev *ebus_dev = to_ibmebus_dev(dev);
+	return sprintf(buf, "%s\n", ebus_dev->name);
+}
+
+static struct device_attribute ibmebus_dev_attrs[] = {
+	__ATTR_RO(name),
+	__ATTR_NULL
+};
+
+static char *ibmebus_chomp(const char *in, size_t count)
+{
+	char *out = (char*)kmalloc(count + 1, GFP_KERNEL);
+	if (!out)
+		return NULL;
+
+	memcpy(out, in, count);
+	out[count] = '\0';
+	if (out[count - 1] == '\n')
+		out[count - 1] = '\0';
+
+	return out;
+}
+
+static ssize_t ibmebus_store_probe(struct bus_type *bus,
+				   const char *buf, size_t count)
+{
+	struct device_node *dn = NULL;
+	struct ibmebus_dev *dev;
+	char *path;
+	ssize_t rc;
+
+	path = ibmebus_chomp(buf, count);
+	if (!path)
+		return -ENOMEM;
+
+	if (ebus_device_find(path, ebus_cmp_path)) {
+		printk(KERN_WARNING "%s: %s has already been probed\n",
+		       __FUNCTION__, path);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	if ((dn = of_find_node_by_path(path))) {
+		dev = ebus_register_dtnode(dn);
+		of_node_put(dn);
+		rc = IS_ERR(dev) ? PTR_ERR(dev) : count;
+	} else {
+		printk(KERN_WARNING "%s: no such device node: %s\n",
+		       __FUNCTION__, path);
+		rc = -ENODEV;
+	}
+
+out:
+	kfree(path);
+	return rc;
+}
+
+static ssize_t ibmebus_store_remove(struct bus_type *bus,
+				    const char *buf, size_t count)
+{
+	struct ibmebus_dev *dev;
+	char *path;
+
+	path = ibmebus_chomp(buf, count);
+	if (!path)
+		return -ENOMEM;
+
+	if ((dev = ebus_device_find(path, ebus_cmp_path))) {
+		ibmebus_unregister_device(dev);
+
+		kfree(path);
+		return count;
+	} else {
+		printk(KERN_WARNING "%s: %s not on the bus\n",
+		       __FUNCTION__, path);
+
+		kfree(path);
+		return -ENODEV;
+	}
+}
+
+static struct bus_attribute ibmebus_bus_attrs[] = {
+	__ATTR(probe, S_IWUSR, NULL, ibmebus_store_probe),
+	__ATTR(remove, S_IWUSR, NULL, ibmebus_store_remove),
+	__ATTR_NULL
+};
+
 struct bus_type ibmebus_bus_type = {
-	.name = "ibmebus",
-	.match = ebus_bus_match,
+	.name      = "ibmebus",
+	.match     = ebus_bus_match,
+	.dev_attrs = ibmebus_dev_attrs,
+	.bus_attrs = ibmebus_bus_attrs
 };
 EXPORT_SYMBOL(ibmebus_bus_type);
 
@@ -379,7 +485,7 @@ static int __init ebus_bus_init(void)
 		return err;
 	}
 
-	err = device_register(&ebus_bus_device.ofdev.dev);
+	err = device_register(&ebus_bus_device);
 	if (err) {
 		printk(KERN_WARNING "%s: device_register returned %i\n",
 		       __FUNCTION__, err);
@@ -396,7 +502,7 @@ static int __init ebus_init(void)
 
 static void __exit ebus_exit(void)
 {
-	device_unregister(&ebus_bus_device.ofdev.dev);
+	device_unregister(&ebus_bus_device);
 	bus_unregister(&ibmebus_bus_type);
 
 	return;

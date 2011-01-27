@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_disc.h 2757 2005-12-09 18:21:44Z sf_support $
+ * $Id: lpfc_disc.h 2895 2006-03-28 16:54:42Z sf_support $
  */
 
 #ifndef  _H_LPFC_DISC
@@ -102,6 +102,7 @@ struct lpfc_nodelist {
 
 	uint16_t        nlp_rpi;
 	uint16_t        nlp_state;		/* state transition indicator */
+	uint16_t        nlp_prev_state;		/* state transition indicator */
 	uint16_t        nlp_xri;		/* output exchange id for RPI */
 	uint16_t        nlp_sid;		/* scsi id */
 #define NLP_NO_SID              0xffff
@@ -174,6 +175,7 @@ struct lpfc_node_farp_pend {
 #define NLP_NPR_ADISC      0x2000000	/* Issue ADISC when dq'ed from
 					   NPR list */
 #define NLP_DELAY_REMOVE   0x4000000	/* Defer removal till end of DSM */
+#define NLP_NODEV_REMOVE   0x8000000	/* Defer removal till end of discovery */
 
 /* Defines for list searchs */
 #define NLP_SEARCH_MAPPED    0x1	/* search mapped */

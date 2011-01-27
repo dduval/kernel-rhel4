@@ -44,6 +44,7 @@ __add_to_done_queue(struct scsi_qla_host * ha, srb_t * sp)
         list_add_tail(&sp->list,&ha->done_queue);
         ha->done_q_cnt++;
 	sp->ha = ha;
+	qla2x00_delete_timer_from_cmd(sp);
 }
 
 static inline void 
@@ -115,6 +116,17 @@ add_to_scsi_retry_queue(struct scsi_qla_host * ha, srb_t * sp)
         spin_unlock_irqrestore(&ha->list_lock, flags);
 }
 
+static inline void
+qla2x00_queue_check(srb_t *sp)
+{
+	if (!sp->cmd) {
+		printk("%s(%ld): sp->cmd==0 SP=%p sp->ha=%p state=%d, flags=%d "
+		    "ext_history=%d\n", __func__, sp->ha->host_no, sp,
+		    sp->ha, sp->state, sp->flags, sp->ext_history);
+		BUG_ON(!sp->cmd);
+	}
+}
+
 /*
  * __del_from_retry_queue
  *      Function used to remove a command block from the
@@ -133,11 +145,13 @@ add_to_scsi_retry_queue(struct scsi_qla_host * ha, srb_t * sp)
 static inline void 
 __del_from_retry_queue(struct scsi_qla_host * ha, srb_t * sp)
 {
-        list_del_init(&sp->list);
+	DEBUG2(qla2x00_queue_check(sp));
 
-        sp->flags &= ~(SRB_WATCHDOG | SRB_BUSY);
-        sp->state = SRB_NO_QUEUE_STATE;
-        ha->retry_q_cnt--;
+	list_del_init(&sp->list);
+
+	sp->flags &= ~(SRB_WATCHDOG | SRB_BUSY);
+	sp->state = SRB_NO_QUEUE_STATE;
+	ha->retry_q_cnt--;
 }
 
 /*
@@ -154,6 +168,8 @@ __del_from_retry_queue(struct scsi_qla_host * ha, srb_t * sp)
 static inline void 
 __del_from_scsi_retry_queue(struct scsi_qla_host * ha, srb_t * sp)
 {
+	DEBUG2(qla2x00_queue_check(sp));
+
         list_del_init(&sp->list);
 
         ha->scsi_retry_q_cnt--;
@@ -280,6 +296,8 @@ add_to_pending_queue_head(struct scsi_qla_host *ha, srb_t *sp)
 static inline void
 __del_from_pending_queue(struct scsi_qla_host *ha, srb_t *sp)
 {
+	DEBUG2(qla2x00_queue_check(sp));
+
 	list_del_init(&sp->list);
 	ha->qthreads--;
 	sp->state = SRB_NO_QUEUE_STATE;
@@ -316,6 +334,8 @@ static inline void add_to_failover_queue(struct scsi_qla_host * ha, srb_t * sp)
 static inline void __del_from_failover_queue(struct scsi_qla_host * ha, srb_t *
                 sp)
 {
+	DEBUG2(qla2x00_queue_check(sp));
+
         ha->failover_cnt--;
         list_del_init(&sp->list);
         sp->state = SRB_NO_QUEUE_STATE;

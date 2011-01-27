@@ -187,7 +187,7 @@ static int newseg (key_t key, int shmflg, size_t size)
 	if (size < SHMMIN || size > shm_ctlmax)
 		return -EINVAL;
 
-	if (shm_tot + numpages >= shm_ctlall)
+	if (shm_tot + numpages > shm_ctlall)
 		return -ENOSPC;
 
 	shp = ipc_rcu_alloc(sizeof(*shp));

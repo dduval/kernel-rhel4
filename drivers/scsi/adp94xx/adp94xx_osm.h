@@ -71,18 +71,46 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
 #include <linux/blk.h>
 #include "sd.h"
-#endif
-#include <linux/blkdev.h>
-
-#include "scsi.h"
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
 #include "hosts.h"
+#include "scsi.h"
 #else
+#include <linux/moduleparam.h>
 #include <scsi/scsi_host.h>
+#include <scsi/scsi_driver.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
+#include <scsi/scsi_request.h>
 #endif
+#include <scsi/scsi.h>
+#include <scsi/scsi_eh.h>
+#include <scsi/scsi_tcq.h>
+#include <scsi/scsi_device.h>
+#include <scsi/scsi_cmnd.h>
 #include <scsi/scsicam.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,15)
+#include "scsi_priv.h"
+#endif
+#endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
+typedef struct scsi_cmnd Scsi_Cmnd;
+typedef struct scsi_device Scsi_Device;
+typedef struct scsi_request Scsi_Request;
+typedef struct scsi_host_template Scsi_Host_Template;
+#endif
+#ifndef TRUE
+#define TRUE 1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+#ifndef SCSI_DATA_READ
+#define SCSI_DATA_READ  DMA_FROM_DEVICE
+#define SCSI_DATA_WRITE DMA_TO_DEVICE
+#define SCSI_DATA_UNKNOWN DMA_BIDIRECTIONAL
+#define SCSI_DATA_NONE  DMA_NONE
+#define scsi_to_pci_dma_dir(_a) (_a)
+#endif
+#include <linux/blkdev.h>
 #define __packed __attribute__ ((packed))
 
 /* Driver name */
@@ -92,8 +120,8 @@
 #define ASD_MINOR_VERSION 	0
 #ifdef SEQUENCER_UPDATE
 #define ASD_BUILD_VERSION 	8
-#define ASD_RELEASE_VERSION 	6
-#define ASD_DRIVER_VERSION	"1.0.8"
+#define ASD_RELEASE_VERSION 	13
+#define ASD_DRIVER_VERSION	"1.0.8-13"
 #else
 #define ASD_BUILD_VERSION 	7
 #define ASD_RELEASE_VERSION 	5
@@ -662,7 +690,7 @@ struct asd_ddb_data {
 #define SATA_USES_UDMA			0x0400
 
 /*
- * Defines for the features_enabled member
+ * Defines for the features_enabled member (to store capability)
  */
 #define WRITE_CACHE_FEATURE_ENABLED	0x0001
 #define READ_AHEAD_FEATURE_ENABLED	0x0002

@@ -1,7 +1,7 @@
-/*******************************************************************
+/********************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_fcp.c 2905 2006-04-13 17:11:39Z sf_support $
+ * $Id: lpfc_fcp.c 3039 2007-05-22 14:40:23Z sf_support $
  */
 
 #include <linux/version.h>
@@ -260,6 +260,9 @@ lpfc_speed_show(struct class_device *cdev, char *buf)
 	struct Scsi_Host *host = class_to_shost(cdev);
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
 	int len = 0;
+	if (phba->fc_linkspeed == LA_8GHZ_LINK)
+		len += snprintf(buf + len, PAGE_SIZE-len, "8 Gigabit\n");
+	else
 	if (phba->fc_linkspeed == LA_4GHZ_LINK)
 		len += snprintf(buf + len, PAGE_SIZE-len, "4 Gigabit\n");
 	else
@@ -1101,6 +1104,103 @@ static CLASS_DEVICE_ATTR(disc_plogi, S_IRUGO, lpfc_disc_plogi_show, NULL);
 static CLASS_DEVICE_ATTR(disc_unused, S_IRUGO, lpfc_disc_unused_show, NULL);
 static CLASS_DEVICE_ATTR(outfcpio, S_IRUGO, lpfc_outfcpio_show, NULL);
 
+static char *lpfc_soft_wwpn_key = "C99G71SL8032A";
+
+static ssize_t
+lpfc_soft_wwpn_enable_store(struct class_device *cdev, const char *buf,
+				size_t count)
+{
+	struct Scsi_Host *host = class_to_shost(cdev);
+	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
+	unsigned int cnt = count;
+
+	/*
+	 * We're doing a simple sanity check for soft_wwpn setting.
+	 * We require that the user write a specific key to enable
+	 * the soft_wwpn attribute to be settable. Once the attribute
+	 * is written, the enable key resets. If further updates are
+	 * desired, the key must be written again to re-enable the
+	 * attribute.
+	 *
+	 * The "key" is not secret - it is a hardcoded string shown
+	 * here. The intent is to protect against the random user or
+	 * application that is just writing attributes.
+	 */
+
+	/* count may include a LF at end of string */
+	if (buf[cnt-1] == '\n')
+		cnt--;
+
+	if ((cnt != strlen(lpfc_soft_wwpn_key)) ||
+	    (strncmp(buf, lpfc_soft_wwpn_key, strlen(lpfc_soft_wwpn_key)) != 0))
+		return -EINVAL;
+
+	phba->soft_wwpn_enable = 1;
+	return count;
+}
+static CLASS_DEVICE_ATTR(lpfc_soft_wwpn_enable, S_IWUSR, NULL,
+				lpfc_soft_wwpn_enable_store);
+
+static ssize_t
+lpfc_soft_wwpn_show(struct class_device *cdev, char *buf) {
+	struct Scsi_Host *host = class_to_shost(cdev);
+	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
+	return snprintf(buf, PAGE_SIZE, "0x%llx\n",
+			(unsigned long long)phba->cfg_soft_wwpn); }
+
+
+static ssize_t
+lpfc_soft_wwpn_store(struct class_device *cdev, const char *buf, size_t count)
+{
+	struct Scsi_Host *host = class_to_shost(cdev);
+	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
+	unsigned int i, j, cnt=count;
+	u8 wwpn[8];
+
+	/* count may include a LF at end of string */
+	if (buf[cnt-1] == '\n')
+		cnt--;
+
+	if (!phba->soft_wwpn_enable || (cnt < 16) || (cnt > 18) ||
+	    ((cnt == 17) && (*buf++ != 'x')) ||
+	    ((cnt == 18) && ((*buf++ != '0') || (*buf++ != 'x'))))
+		return -EINVAL;
+
+	phba->soft_wwpn_enable = 0;
+
+	memset(wwpn, 0, sizeof(wwpn));
+
+	/* Validate and store the new name */
+	for (i=0, j=0; i < 16; i++) {
+		if ((*buf >= 'a') && (*buf <= 'f'))
+			j = ((j << 4) | ((*buf++ -'a') + 10));
+		else if ((*buf >= 'A') && (*buf <= 'F'))
+			j = ((j << 4) | ((*buf++ -'A') + 10));
+		else if ((*buf >= '0') && (*buf <= '9'))
+			j = ((j << 4) | (*buf++ -'0'));
+		else
+			return -EINVAL;
+		if (i % 2) {
+			wwpn[i/2] = j & 0xff;
+			j = 0;
+		}
+	}
+	phba->cfg_soft_wwpn = lpfc_wwn_to_u64(wwpn);
+
+	dev_printk(KERN_NOTICE, &phba->pcidev->dev,
+		   "lpfc%d: Reinitializing to use soft_wwpn\n", phba->brd_no);
+
+	lpfc_offline(phba);
+	lpfc_sli_brdrestart(phba);
+	lpfc_online(phba);
+
+	return count;
+}
+static CLASS_DEVICE_ATTR(lpfc_soft_wwpn, S_IRUGO | S_IWUSR,\
+			 lpfc_soft_wwpn_show, lpfc_soft_wwpn_store);
+
+
+
 /*
 # lpfc_log_verbose: Only turn this flag on if you are willing to risk being
 # deluged with LOTS of information.
@@ -1111,7 +1211,6 @@ static CLASS_DEVICE_ATTR(outfcpio, S_IRUGO, lpfc_outfcpio_show, NULL);
 # LOG_MBOX                      0x4        Mailbox events
 # LOG_INIT                      0x8        Initialization events
 # LOG_LINK_EVENT                0x10       Link events
-# LOG_IP                        0x20       IP traffic history
 # LOG_FCP                       0x40       FCP traffic history
 # LOG_NODE                      0x80       Node table events
 # LOG_MISC                      0x400      Miscellaneous events
@@ -1165,8 +1264,18 @@ LPFC_ATTR_R(scan_down, 1, 0, 1,
 # until the timer expires. Value range is [0,255]. Default value is 20.
 # NOTE: this MUST be less then the SCSI Layer command timeout - 1.
 */
-LPFC_ATTR_RW(nodev_tmo, 30, 0, 255,
+LPFC_ATTR_RW(nodev_tmo, 20, 0, 255,
 	     "Seconds driver will hold I/O waiting for a device to come back");
+
+/*
+# lpfc_linkdown_tmo: If set, will hold all I/O errors on devices that disappear,
+# after a link down event, until the timer expires. Value range is [0,254].
+# MUST be less then lpfc_nodev_tmo if set. Default value is 0.
+# If not set, lpfc_nodev_tmo is used.
+# NOTE: this MUST be less then the SCSI Layer command timeout - 1.
+*/
+LPFC_ATTR_RW(linkdown_tmo, 0, 0, 254,
+	     "Seconds driver will hold I/O waiting for a device to come back after a link down");
 
 /*
 # lpfc_topology:  link topology for init link
@@ -1187,9 +1296,10 @@ LPFC_ATTR_R(topology, 0, 0, 6, "Select Fibre Channel topology");
 #       1  = 1 Gigabaud
 #       2  = 2 Gigabaud
 #       4  = 4 Gigabaud
-# Value range is [0,4]. Default value is 0.
+#       8  = 8 Gigabaud
+# Value range is [0,8]. Default value is 0.
 */
-LPFC_ATTR_R(link_speed, 0, 0, 4, "Select link speed");
+LPFC_ATTR_R(link_speed, 0, 0, 8, "Select link speed");
 
 /*
 # lpfc_fcp_class:  Determines FC class to use for the FCP protocol.
@@ -1244,6 +1354,22 @@ LPFC_ATTR(cr_count, 1, 1, 255, "A count of I/O completions after which an "
 LPFC_ATTR(multi_ring_support, LPFC_1_PRIMARY_RING, LPFC_1_PRIMARY_RING,
 	     LPFC_2_PRIMARY_RING, "Determines number of primary SLI rings to "
 	     "spread IOCB entries across");
+
+/*
+# lpfc_multi_ring_rctl:  If lpfc_multi_ring_support is enabled, this
+# identifies what rctl value to configure the additional ring for.
+# Value range is [1,0xff]. Default value is 4 (Unsolicated Data).
+*/
+LPFC_ATTR(multi_ring_rctl, FC_UNSOL_DATA, 1,
+	     255, "Identifies RCTL for additional ring configuration");
+
+/*
+# lpfc_multi_ring_type:  If lpfc_multi_ring_support is enabled, this
+# identifies what type value to configure the additional ring for.
+# Value range is [1,0xff]. Default value is 5 (LLC/SNAP).
+*/
+LPFC_ATTR(multi_ring_type, FC_LLC_SNAP, 1,
+	     255, "Identifies TYPE for additional ring configuration");
 
 /*
 # lpfc_fdmi_on: controls FDMI support.
@@ -1301,6 +1427,54 @@ LPFC_ATTR_RW(discovery_wait_limit, CFG_DISC_INFINITE_WAIT, 0,
 	     CFG_DISC_INFINITE_WAIT,
 	     "The maximum number of seconds driver waits for the discovery "
 	     "to complete");
+
+/*
+# lpfc_pci_max_read:  Maximum DMA read byte count. This parameter can have
+# values 512, 1024, 2048, 4096. Default value is 2048.
+*/
+static int lpfc_pci_max_read = 2048;
+module_param(lpfc_pci_max_read, int, 0);
+MODULE_PARM_DESC(lpfc_pci_max_read,
+                 "Maximum DMA read byte count. Allowed values:"
+			" 512,1024,2048,4096." );
+static ssize_t
+lpfc_pci_max_read_show(struct class_device *cdev, char *buf)
+{
+	struct Scsi_Host *host = class_to_shost(cdev);
+	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
+	uint32_t val = 0;
+	val = phba->cfg_pci_max_read;
+	return snprintf(buf, PAGE_SIZE, "%d\n", val);
+}
+
+static int
+lpfc_pci_max_read_init(struct lpfc_hba *phba, int val)
+{
+	phba->cfg_pci_max_read = 2048;
+	if ((val == 512) || (val == 1024) || (val == 2048)
+		|| (val == 4096))
+		phba->cfg_pci_max_read = val;
+	return 0;
+}
+static int
+lpfc_pci_max_read_set(struct lpfc_hba *phba, int val)
+{
+	uint32_t prev_val;
+	int ret;
+
+	prev_val = phba->cfg_pci_max_read;
+	phba->cfg_pci_max_read = val;
+	if ((ret = lpfc_sli_set_dma_length(phba, 0))) {
+		phba->cfg_pci_max_read = prev_val;
+		return ret;
+	} else
+		return 0;
+}
+
+lpfc_param_store(pci_max_read)
+
+static CLASS_DEVICE_ATTR(lpfc_pci_max_read, S_IRUGO | S_IWUSR,
+                         lpfc_pci_max_read_show, lpfc_pci_max_read_store);
 
 static ssize_t
 sysfs_ctlreg_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
@@ -1670,8 +1844,14 @@ lpfc_get_starget_loss_tmo(struct scsi_target *starget)
 	/*
 	 * Return the driver's global value for device loss timeout plus
 	 * five seconds to allow the driver's nodev timer to run.
+	 * This should be lpfc_nodev_tmo or lpfc_linkdown_tmo, which ever is
+	 * greater.
 	 */
 	fc_starget_dev_loss_tmo(starget) = lpfc_nodev_tmo + 5;
+
+	/* Sanity check the value of lpfc_linkdown_tmo */
+	if (lpfc_nodev_tmo < lpfc_linkdown_tmo)
+		lpfc_linkdown_tmo = 0;
 }
 
 static void
@@ -1681,10 +1861,15 @@ lpfc_set_starget_loss_tmo(struct scsi_target *starget, uint32_t timeout)
 	 * The driver doesn't have a per-target timeout setting.  Set
 	 * this value globally. Keep lpfc_nodev_tmo >= 1.
 	 */
-	if (timeout)
+	if (timeout) {
 		lpfc_nodev_tmo = timeout;
-	else
+		if (timeout < lpfc_linkdown_tmo)
+			lpfc_linkdown_tmo = timeout - 1;
+	}
+	else {
 		lpfc_nodev_tmo = 1;
+		lpfc_linkdown_tmo = 0;
+	}
 }
 
 #ifdef RHEL_U3_FC_XPORT
@@ -1885,6 +2070,10 @@ lpfc_slave_configure(struct scsi_device *sdev)
 		 */
 		target->starget = sdev->sdev_target;
 		fc_starget_dev_loss_tmo(target->starget) = lpfc_nodev_tmo + 5;
+
+		/* Sanity check the value of lpfc_linkdown_tmo */
+		if (lpfc_nodev_tmo < lpfc_linkdown_tmo)
+			lpfc_linkdown_tmo = 0;
 	}
 #endif /* RHEL_FC */
 
@@ -1910,6 +2099,10 @@ lpfc_slave_destroy(struct scsi_device *sdev)
 					kfree(target);
 					phba->device_queue_hash[i] = NULL;
 				}
+#ifdef RHEL_FC
+				if (!target->slavecnt)
+					target->starget = NULL;
+#endif
 				sdev->hostdata = NULL;
 				return;
 			}
@@ -1954,7 +2147,9 @@ static struct class_device_attribute *lpfc_host_attrs[] = {
 	&class_device_attr_lpfc_log_verbose,
 	&class_device_attr_lpfc_lun_queue_depth,
 	&class_device_attr_lpfc_hba_queue_depth,
+	&class_device_attr_lpfc_pci_max_read,
 	&class_device_attr_lpfc_nodev_tmo,
+	&class_device_attr_lpfc_linkdown_tmo,
 	&class_device_attr_lpfc_fcp_class,
 	&class_device_attr_lpfc_use_adisc,
 	&class_device_attr_lpfc_ack0,
@@ -1980,6 +2175,8 @@ static struct class_device_attribute *lpfc_host_attrs[] = {
 	&class_device_attr_lpfc_linkup_wait_limit,
 	&class_device_attr_lpfc_discovery_min_wait,
 	&class_device_attr_lpfc_discovery_wait_limit,
+	&class_device_attr_lpfc_soft_wwpn,
+	&class_device_attr_lpfc_soft_wwpn_enable,
 	NULL,
 };
 
@@ -2042,9 +2239,6 @@ static struct scsi_host_template driver_template = {
 	.eh_abort_handler	= lpfc_abort_handler,
 	.eh_device_reset_handler= lpfc_reset_lun_handler,
 	.eh_bus_reset_handler	= lpfc_reset_bus_handler,
-#if defined(RHEL_FC)
-	.eh_timed_out		= fc_timed_out,
-#endif
 	.slave_alloc		= lpfc_slave_alloc,
 	.slave_configure	= lpfc_slave_configure,
 	.slave_destroy		= lpfc_slave_destroy,
@@ -2087,10 +2281,63 @@ lpfc_extra_ring_setup( struct lpfc_hba *phba)
 	pring->iotag_max = 4096;
 	pring->num_mask = 1;
 	pring->prt[0].profile = 0;	/* Mask 0 */
-	pring->prt[0].rctl = FC_UNSOL_DATA;
-	pring->prt[0].type = 5;
+	pring->prt[0].rctl = phba->cfg_multi_ring_rctl;
+	pring->prt[0].type = phba->cfg_multi_ring_type;
 	pring->prt[0].lpfc_sli_rcv_unsol_event = NULL;
 	return 0;
+}
+
+void
+lpfc_sli_async_event_handler(struct lpfc_hba * phba,
+	struct lpfc_sli_ring * pring, struct lpfc_iocbq * iocbq)
+{
+	IOCB_t *icmd;
+	uint16_t evt_code;
+	unsigned long temp;
+	uint32_t evt_type = 0;
+
+	icmd = &iocbq->iocb;
+	evt_code = icmd->un.asyncstat.evt_code;
+	temp = icmd->ulpContext;
+
+	if ((evt_code != ASYNC_TEMP_WARN) &&
+		(evt_code != ASYNC_TEMP_SAFE)) {
+		lpfc_printf_log(phba,
+			KERN_ERR,
+			LOG_SLI,
+			"%d:0327 Ring %d handler: unexpected ASYNC_STATUS"
+			" evt_code 0x%x\n",
+			phba->brd_no,
+			pring->ringno,
+			icmd->un.asyncstat.evt_code);
+		return;
+	}
+
+	if (evt_code == ASYNC_TEMP_WARN) {
+		evt_type = LPFC_THRESHOLD_TEMP;
+		lpfc_printf_log(phba,
+				KERN_WARNING,
+				LOG_TEMP,
+				"%d:0339 Adapter is very hot, please take "
+				"corrective action. temperature : %ld Celsius\n",
+				phba->brd_no,
+				temp);
+	}
+	if (evt_code == ASYNC_TEMP_SAFE) {
+		evt_type = LPFC_NORMAL_TEMP;
+		lpfc_printf_log(phba,
+				KERN_INFO,
+				LOG_TEMP,
+				"%d:0340 Adapter temperature is OK now. "
+				"temperature : %ld Celsius\n",
+				phba->brd_no,
+				temp);
+	}
+
+	/* Send temperature change event to applications */
+	lpfc_put_event(phba, HBA_EVENT_TEMP, evt_type,
+			(void *)temp, 0,0);
+
 }
 
 static int
@@ -2103,7 +2350,7 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 	psli->sliinit.num_rings = MAX_CONFIGURED_RINGS;
 	psli->fcp_ring = LPFC_FCP_RING;
 	psli->next_ring = LPFC_FCP_NEXT_RING;
-	psli->ip_ring = LPFC_IP_RING;
+	psli->extra_ring = LPFC_EXTRA_RING;
 
 	for (i = 0; i < psli->sliinit.num_rings; i++) {
 		pring = &psli->sliinit.ringinit[i];
@@ -2122,7 +2369,7 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 			pring->fast_iotag = pring->iotag_max;
 			pring->num_mask = 0;
 			break;
-		case LPFC_IP_RING:	/* ring 1 - IP */
+		case LPFC_EXTRA_RING:	/* ring 1 - Other protocols */
 			/* numCiocb and numRiocb are used in config_port */
 			pring->numCiocb = SLI2_IOCB_CMD_R1_ENTRIES;
 			pring->numRiocb = SLI2_IOCB_RSP_R1_ENTRIES;
@@ -2135,6 +2382,8 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 			pring->fast_iotag = 0;
 			pring->iotag_ctr = 0;
 			pring->iotag_max = 4096;
+			pring->lpfc_sli_rcv_async_status =
+				lpfc_sli_async_event_handler;
 			pring->num_mask = 5;
 			pring->prt[0].profile = 0;	/* Mask 0 */
 			pring->prt[0].rctl = FC_ELS_REQ;
@@ -2177,7 +2426,7 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 				phba->brd_no, totiocb, MAX_SLI2_IOCB);
 	}
 
-	if (lpfc_multi_ring_support == LPFC_2_PRIMARY_RING)
+	if (phba->cfg_multi_ring_support == LPFC_2_PRIMARY_RING)
 		lpfc_extra_ring_setup(phba);
 
 	psli->sliinit.sli_flag = 0;
@@ -2221,6 +2470,8 @@ lpfc_get_cfgparam(struct lpfc_hba *phba)
 	lpfc_cr_delay_init(phba, lpfc_cr_delay);
 	lpfc_cr_count_init(phba, lpfc_cr_count);
 	lpfc_multi_ring_support_init(phba, lpfc_multi_ring_support);
+	lpfc_multi_ring_rctl_init(phba, lpfc_multi_ring_rctl);
+	lpfc_multi_ring_type_init(phba, lpfc_multi_ring_type);
 	lpfc_lun_queue_depth_init(phba, lpfc_lun_queue_depth);
 	lpfc_fcp_class_init(phba, lpfc_fcp_class);
 	lpfc_use_adisc_init(phba, lpfc_use_adisc);
@@ -2228,6 +2479,8 @@ lpfc_get_cfgparam(struct lpfc_hba *phba)
 	lpfc_topology_init(phba, lpfc_topology);
 	lpfc_scan_down_init(phba, lpfc_scan_down);
 	lpfc_nodev_tmo_init(phba, lpfc_nodev_tmo);
+	lpfc_linkdown_tmo_init(phba, lpfc_linkdown_tmo);
+	lpfc_pci_max_read_init(phba, lpfc_pci_max_read);
 	lpfc_link_speed_init(phba, lpfc_link_speed);
 	lpfc_fdmi_on_init(phba, lpfc_fdmi_on);
 	lpfc_discovery_threads_init(phba, lpfc_discovery_threads);
@@ -2236,27 +2489,9 @@ lpfc_get_cfgparam(struct lpfc_hba *phba)
 	lpfc_discovery_min_wait_init(phba, lpfc_discovery_min_wait);
 	lpfc_discovery_wait_limit_init(phba, lpfc_discovery_wait_limit);
 	phba->cfg_scsi_hotplug = 0;
+	phba->cfg_soft_wwpn = 0L;
 
-	switch (phba->pcidev->device) {
-	case PCI_DEVICE_ID_LP101:
-	case PCI_DEVICE_ID_BSMB:
-	case PCI_DEVICE_ID_ZSMB:
-		phba->cfg_hba_queue_depth = LPFC_LP101_HBA_Q_DEPTH;
-		break;
-	case PCI_DEVICE_ID_RFLY:
-	case PCI_DEVICE_ID_PFLY:
-	case PCI_DEVICE_ID_BMID:
-	case PCI_DEVICE_ID_ZMID:
-	case PCI_DEVICE_ID_TFLY:
-		phba->cfg_hba_queue_depth = LPFC_LC_HBA_Q_DEPTH;
-		break;
-	default:
-		phba->cfg_hba_queue_depth = LPFC_DFT_HBA_Q_DEPTH;
-	}
-
-	if (phba->cfg_hba_queue_depth > lpfc_hba_queue_depth) {
-		lpfc_hba_queue_depth_init(phba, lpfc_hba_queue_depth);
-	}
+	lpfc_hba_queue_depth_init(phba, lpfc_hba_queue_depth);
 	return;
 }
 
@@ -2338,6 +2573,13 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	init_timer(&phba->fc_scantmo);
 	phba->fc_scantmo.function = lpfc_scan_timeout;
 	phba->fc_scantmo.data = (unsigned long)phba;
+	init_timer(&phba->fc_lnkdwntmo);
+	phba->fc_lnkdwntmo.function = lpfc_linkdown_timeout;
+	phba->fc_lnkdwntmo.data = (unsigned long)phba;
+
+	init_timer(&phba->hb_tmofunc);
+	phba->hb_tmofunc.function = lpfc_hb_timeout;
+	phba->hb_tmofunc.data = (unsigned long)phba;
 
 	init_timer(&phba->fc_fdmitmo);
 	phba->fc_fdmitmo.function = lpfc_fdmi_tmo;
@@ -2349,6 +2591,11 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	init_timer(&psli->mbox_tmo);
 	psli->mbox_tmo.function = lpfc_mbox_timeout;
 	psli->mbox_tmo.data = (unsigned long)phba;
+
+	/* This timer is to check for un processed host attention */
+	init_timer(&phba->hatt_tmo);
+	phba->hatt_tmo.function = lpfc_hatt_timeout;
+	phba->hatt_tmo.data = (unsigned long)phba;
 
 	/* Assign an unused board number */
  	phba->brd_no = lpfc_get_brd_no(phba);
@@ -2388,6 +2635,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	init_waitqueue_head(&phba->rscnevtwq);
 	init_waitqueue_head(&phba->ctevtwq);
 	init_waitqueue_head(&phba->dumpevtwq);
+	init_waitqueue_head(&phba->tempevtwq);
 
 	pci_set_master(pdev);
 	retval = pci_set_mwi(pdev);
@@ -2496,6 +2744,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	sysfs_create_bin_file(&host->shost_classdev.kobj, &sysfs_mbox_attr);
 	scsi_scan_host(host);
 	phba->fc_flag &= ~FC_LOADING;
+	mod_timer(&phba->hatt_tmo, jiffies + HZ/10);
 	return 0;
 
 out_hba_down:
@@ -2699,6 +2948,18 @@ static struct pci_device_id lpfc_id_table[] = {
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP11000S,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LPE11000S,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_MID,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_SMB,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_DCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_SCSP,
+		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_SAT_S,
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0 }
 };

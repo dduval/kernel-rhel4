@@ -32,7 +32,6 @@
  */
 
 #include <linux/version.h>
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
@@ -40,10 +39,6 @@
 #include <linux/init.h>
 #include <linux/namei.h>
 #include <linux/pci.h>
-
-#ifdef DEFINE_MUTEX
-#define USING_MUTEXES
-#endif
 
 #include "ipath_kernel.h"
 
@@ -66,14 +61,13 @@ static int ipathfs_mknod(struct inode *dir, struct dentry *dentry,
 	inode->i_mode = mode;
 	inode->i_uid = 0;
 	inode->i_gid = 0;
-	inode->i_blksize = PAGE_CACHE_SIZE;
 	inode->i_blocks = 0;
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
-	inode->u.generic_ip = data;
+	inode->i_private = data;
 	if ((mode & S_IFMT) == S_IFDIR) {
 		inode->i_op = &simple_dir_inode_operations;
-		inode->i_nlink++;
-		dir->i_nlink++;
+		inc_nlink(inode);
+		inc_nlink(dir);
 	}
 
 	inode->i_fop = fops;
@@ -92,22 +86,14 @@ static int create_file(const char *name, mode_t mode,
 	int error;
 
 	*dentry = NULL;
-#if !defined(USING_MUTEXES)
-	down(&parent->d_inode->i_sem);
-#else
 	mutex_lock(&parent->d_inode->i_mutex);
-#endif
 	*dentry = lookup_one_len(name, parent, strlen(name));
 	if (!IS_ERR(dentry))
 		error = ipathfs_mknod(parent->d_inode, *dentry,
 				      mode, fops, data);
 	else
 		error = PTR_ERR(dentry);
-#if !defined(USING_MUTEXES)
-	up(&parent->d_inode->i_sem);
-#else
 	mutex_unlock(&parent->d_inode->i_mutex);
-#endif
 
 	return error;
 }
@@ -132,7 +118,7 @@ static ssize_t atomic_counters_read(struct file *file, char __user *buf,
 	u16 i;
 	struct ipath_devdata *dd;
 
-	dd = file->f_dentry->d_inode->u.generic_ip;
+	dd = file->f_dentry->d_inode->i_private;
 
 	for (i = 0; i < NUM_COUNTERS; i++)
 		counters[i] = ipath_snap_cntr(dd, i);
@@ -152,7 +138,7 @@ static ssize_t atomic_node_info_read(struct file *file, char __user *buf,
 	struct ipath_devdata *dd;
 	u64 guid;
 
-	dd = file->f_dentry->d_inode->u.generic_ip;
+	dd = file->f_dentry->d_inode->i_private;
 
 	guid = be64_to_cpu(dd->ipath_guid);
 
@@ -191,7 +177,7 @@ static ssize_t atomic_port_info_read(struct file *file, char __user *buf,
 	u32 tmp, tmp2;
 	struct ipath_devdata *dd;
 
-	dd = file->f_dentry->d_inode->u.generic_ip;
+	dd = file->f_dentry->d_inode->i_private;
 
 	/* so we only initialize non-zero fields. */
 	memset(portinfo, 0, sizeof portinfo);
@@ -338,7 +324,7 @@ static ssize_t flash_read(struct file *file, char __user *buf,
 		goto bail;
 	}
 
-	dd = file->f_dentry->d_inode->u.generic_ip;
+	dd = file->f_dentry->d_inode->i_private;
 	if (ipath_eeprom_read(dd, pos, tmp, count)) {
 		ipath_dev_err(dd, "failed to read from flash\n");
 		ret = -ENXIO;
@@ -370,18 +356,15 @@ static ssize_t flash_write(struct file *file, const char __user *buf,
 
 	pos = *ppos;
 
-	if ( pos < 0) {
+	if (pos != 0) {
 		ret = -EINVAL;
 		goto bail;
 	}
 
-	if (pos >= sizeof(struct ipath_flash)) {
-		ret = 0;
+	if (count != sizeof(struct ipath_flash)) {
+		ret = -EINVAL;
 		goto bail;
 	}
-
-	if (count > sizeof(struct ipath_flash) - pos)
-		count = sizeof(struct ipath_flash) - pos;
 
 	tmp = kmalloc(count, GFP_KERNEL);
 	if (!tmp) {
@@ -394,7 +377,7 @@ static ssize_t flash_write(struct file *file, const char __user *buf,
 		goto bail_tmp;
 	}
 
-	dd = file->f_dentry->d_inode->u.generic_ip;
+	dd = file->f_dentry->d_inode->i_private;
 	if (ipath_eeprom_write(dd, pos, tmp, count)) {
 		ret = -ENXIO;
 		ipath_dev_err(dd, "failed to write to flash\n");
@@ -496,11 +479,7 @@ static int remove_device_files(struct super_block *sb,
 	int ret;
 
 	root = dget(sb->s_root);
-#if !defined(USING_MUTEXES)
-	down(&root->d_inode->i_sem);
-#else
 	mutex_lock(&root->d_inode->i_mutex);
-#endif
 	snprintf(unit, sizeof unit, "%02d", dd->ipath_unit);
 	dir = lookup_one_len(unit, root, strlen(unit));
 
@@ -518,11 +497,7 @@ static int remove_device_files(struct super_block *sb,
 	ret = simple_rmdir(root->d_inode, dir);
 
 bail:
-#if !defined(USING_MUTEXES)
-	up(&root->d_inode->i_sem);
-#else
 	mutex_unlock(&root->d_inode->i_mutex);
-#endif
 	dput(root);
 	return ret;
 }
@@ -563,26 +538,14 @@ bail:
 	return ret;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
-static int ipathfs_get_sb(struct file_system_type *fs_type, int flags,
-			const char *dev_name, void *data, struct vfsmount *mnt)
-{
-	int ret = get_sb_single(fs_type, flags, data,
-				    ipathfs_fill_super, mnt);
-	if (ret >= 0)
-		ipath_super = mnt->mnt_sb;
-	return ret;
-}
-#else
 static struct super_block *ipathfs_get_sb(struct file_system_type *fs_type,
-				        int flags, const char *dev_name,
-					void *data)
+					  int flags, const char *dev_name,
+					  void *data)
 {
 	ipath_super = get_sb_single(fs_type, flags, data,
 				    ipathfs_fill_super);
 	return ipath_super;
 }
-#endif
 
 static void ipathfs_kill_super(struct super_block *s)
 {

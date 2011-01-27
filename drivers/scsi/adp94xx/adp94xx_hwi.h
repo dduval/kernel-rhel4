@@ -79,6 +79,9 @@ struct asd_nd_phydesc_format;
 						 * Max supported built-in
 						 * SCB sites
 						 */
+#ifdef EXTENDED_SCB
+#define ASD_EXTENDED_SCB_NUMBER 512
+#endif
 #define ASD_RSVD_SCBS		11		/* Reserved SCBs */
 #define ASD_MAX_EDBS_PER_SCB	7		/* 
 						 * Max number of Empty
@@ -109,14 +112,19 @@ asd_calc_free_scb_sites(u_int max_scbs)
 			usable_scb_sites--;
 #endif
 	}
-	
+
 	return (usable_scb_sites);
 }
 
 #define ASD_USABLE_SCB_SITES	asd_calc_free_scb_sites(ASD_MAX_SCB_SITES)
 
+#ifndef EXTENDED_SCB
 #define ASD_MAX_ALLOCATED_SCBS	\
 	(ASD_USABLE_SCB_SITES - (ASD_MAX_EDBS/ASD_MAX_EDBS_PER_SCB))
+#else
+#define ASD_MAX_ALLOCATED_SCBS	\
+	(ASD_USABLE_SCB_SITES + ASD_EXTENDED_SCB_NUMBER - (ASD_MAX_EDBS/ASD_MAX_EDBS_PER_SCB))
+#endif
 
 #define ASD_MAX_USABLE_SCBS	ASD_USABLE_SCB_SITES
 
@@ -182,7 +190,7 @@ typedef enum {
 	SCB_EH_PHY_REPORT_REQ	= 0x1000
 } scb_eh_state;
 
-#define SCB_EH_LEVEL_MASK	0x00F0
+#define SCB_EH_LEVEL_MASK	0x0FF0
 
 typedef enum {
 	SCB_EH_SUCCEED,
@@ -197,7 +205,8 @@ typedef enum {
 	SCB_PENDING		= 0x08,
 	SCB_INTERNAL		= 0x10,
 	SCB_RECOVERY		= 0x20,
-	SCB_RESERVED		= 0x40
+	SCB_RESERVED		= 0x40,
+	SCB_ABORT_DONE		= 0x80
 } scb_flag;
 
 /* Data structures used to manage CSMI commands */
@@ -652,6 +661,10 @@ struct asd_softc {
 #ifdef ASD_DEBUG
 	unsigned		 debug_flag;
 #endif
+#ifdef EXTENDED_SCB
+	struct map_node		ext_scb_map;
+	bus_dma_tag_t		ext_scb_dmat;
+#endif
 };
 
 
@@ -766,6 +779,10 @@ void	asd_hwi_dump_ssp_smp_ddb_site(struct asd_softc *asd, u_int site_no);
 void	asd_hwi_dump_ddb_site(struct asd_softc *asd, u_int site_no);
 #endif
 #endif
+void asd_hwi_dump_ddb_site_raw(struct asd_softc *asd, uint16_t site_no);
+void asd_hwi_dump_ddb_sites_raw(struct asd_softc *asd);
+void asd_hwi_dump_scb_site_raw(struct asd_softc *asd, uint16_t site_no);
+void asd_hwi_dump_scb_sites_raw(struct asd_softc *asd);
 
 #ifdef SEQUENCER_UPDATE
 struct asd_step_data {

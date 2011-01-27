@@ -103,9 +103,10 @@ nlmclnt_block(struct nlm_host *host, struct file_lock *fl, u32 *statp)
 /*
  * The server lockd has called us back to tell us the lock was granted
  */
-u32
-nlmclnt_grant(struct nlm_lock *lock)
+u32 nlmclnt_grant(const struct sockaddr_in *addr, const struct nlm_lock *lock)
 {
+	const struct file_lock *fl = &lock->fl;
+	const struct nfs_fh *fh = &lock->fh;
 	struct nlm_wait	*block;
 
 	/*
@@ -113,8 +114,14 @@ nlmclnt_grant(struct nlm_lock *lock)
 	 * Warning: must not use cookie to match it!
 	 */
 	for (block = nlm_blocked; block; block = block->b_next) {
-		if (nlm_compare_locks(block->b_lock, &lock->fl))
-			break;
+		struct file_lock *fl_blocked = block->b_lock;
+		if (!nlm_compare_locks(fl_blocked, fl))
+			continue;
+		if (!nlm_cmp_addr(&block->b_host->h_addr, addr))
+			continue;
+		if (nfs_compare_fh(NFS_FH(fl_blocked->fl_file->f_dentry->d_inode) ,fh) != 0)
+			continue;
+		break;
 	}
 
 	/* Ooops, no blocked request found. */

@@ -62,6 +62,7 @@ static int __initdata smp_b_stepping;
 int smp_num_siblings = 1;
 /* Number of CPU cores per package */
 int smp_num_cores = 1;
+EXPORT_SYMBOL(smp_num_cores);
 int phys_proc_id[NR_CPUS]; /* Package ID of each logical CPU */
 int cpu_core_id[NR_CPUS]; /* Core ID of each logical CPU */
 EXPORT_SYMBOL(cpu_core_id);

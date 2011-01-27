@@ -120,6 +120,11 @@ static void __init check_hlt(void)
 	}
 #ifndef CONFIG_XEN
 	__asm__ __volatile__("hlt ; hlt ; hlt ; hlt");
+#else
+	halt();
+	halt();
+	halt();
+	halt();
 #endif
 	printk("OK.\n");
 }

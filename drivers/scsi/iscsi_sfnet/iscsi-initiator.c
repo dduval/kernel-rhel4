@@ -136,6 +136,7 @@ iscsi_slave_configure(struct scsi_device *sdev)
 {
 	int depth = 1, tag = 0;
 
+	blk_queue_bounce_limit(sdev->request_queue, BLK_BOUNCE_ANY);
         /*
 	 * TODO (one day) - when tcq is not supported we should
 	 * internally queue a command to have one ready to go right

@@ -610,6 +610,8 @@ extern int sysctl_tcp_bic_low_window;
 extern int sysctl_tcp_bic_beta;
 extern int sysctl_tcp_moderate_rcvbuf;
 extern int sysctl_tcp_tso_win_divisor;
+extern int sysctl_tcp_workaround_signed_windows;
+extern int sysctl_tcp_slow_start_after_idle;
 
 extern atomic_t tcp_memory_allocated;
 extern atomic_t tcp_sockets_allocated;
@@ -1379,7 +1381,8 @@ static inline void tcp_cwnd_validate(struct sock *sk, struct tcp_opt *tp)
 		if (tcp_get_pcount(&tp->packets_out) > tp->snd_cwnd_used)
 			tp->snd_cwnd_used = tcp_get_pcount(&tp->packets_out);
 
-		if ((s32)(tcp_time_stamp - tp->snd_cwnd_stamp) >= tp->rto)
+		if (sysctl_tcp_slow_start_after_idle &&
+		    (s32)(tcp_time_stamp - tp->snd_cwnd_stamp) >= tp->rto)
 			tcp_cwnd_application_limited(sk);
 	}
 }

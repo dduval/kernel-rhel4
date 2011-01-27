@@ -19,6 +19,14 @@
 #include <asm/current.h>
 #include <asm/of_device.h>
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
+#define vlan_group_set_device(vlan_group, vlan_id, net_device)  \
+{                                                               \
+        if (vlan_group)                                         \
+                vlan_group->vlan_devices[vlan_id] = net_device; \
+}
+#endif
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,18)
 #define netdev_alloc_skb(dev, len) old_dev_alloc_skb(dev, len)
 
@@ -43,6 +51,10 @@ static inline void* kzalloc(size_t size, unsigned int flags)
 		memset(ptr, 0, size);
 	return ptr;
 }
+#endif
+
+#ifndef IRQF_DISABLED
+#define IRQF_DISABLED SA_INTERRUPT
 #endif
 
 #define H_LONG_BUSY_START_RANGE		9900  /* Start of long busy range */
@@ -383,4 +395,19 @@ inline static long plpar_hcall_9arg_9ret(unsigned long opcode,
 }
 
 #endif	/* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,17) */
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
+
+#define PLPAR_HCALL9_BUFSIZE 10
+
+static inline long plpar_hcall9(u64 opcode, u64 *outs, u64 arg1, u64 arg2, u64 arg3, u64 arg4,
+	     u64 arg5, u64 arg6, u64 arg7, u64 arg8, u64 arg9)
+{
+	return plpar_hcall_9arg_9ret(opcode,arg1, arg2, arg3, arg4,
+				       arg5, arg6, arg7, arg8, arg9, &outs[0],
+				       &outs[1], &outs[2], &outs[3], &outs[4],
+				       &outs[5], &outs[6], &outs[7], &outs[7]);
+};
+#endif
+
 #endif	/* __BACKLEVEL_KERNEL_H__ */

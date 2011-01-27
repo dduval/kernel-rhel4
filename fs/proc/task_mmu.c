@@ -2,6 +2,9 @@
 #include <linux/hugetlb.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
+#include <linux/pagemap.h>
+#include <linux/mempolicy.h>
+#include <linux/highmem.h>
 #include <asm/elf.h>
 #include <asm/uaccess.h>
 
@@ -96,6 +99,112 @@ static int show_map(struct seq_file *m, void *v)
 	return 0;
 }
 
+struct mem_size_stats
+{
+	unsigned long resident;
+	unsigned long shared_clean;
+	unsigned long shared_dirty;
+	unsigned long private_clean;
+	unsigned long private_dirty;
+};
+
+static void smaps_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
+				unsigned long addr, unsigned long end,
+				struct mem_size_stats *mss)
+{
+	pte_t *pte, ptent;
+	unsigned long pfn;
+	struct page *page;
+
+	pte = pte_offset_map(pmd, addr);
+	do {
+		ptent = *pte;
+		if (pte_none(ptent) || !pte_present(ptent))
+			continue;
+
+		mss->resident += PAGE_SIZE;
+		pfn = pte_pfn(ptent);
+		if (!pfn_valid(pfn))
+			continue;
+
+		page = pfn_to_page(pfn);
+		if (page_count(page) >= 2) {
+			if (pte_dirty(ptent))
+				mss->shared_dirty += PAGE_SIZE;
+			else
+				mss->shared_clean += PAGE_SIZE;
+		} else {
+			if (pte_dirty(ptent))
+				mss->private_dirty += PAGE_SIZE;
+			else
+				mss->private_clean += PAGE_SIZE;
+		}
+	} while (pte++, addr += PAGE_SIZE, addr != end);
+	pte_unmap(pte - 1);
+	cond_resched();
+}
+
+static inline void smaps_pmd_range(struct vm_area_struct *vma, pgd_t *pgd,
+				unsigned long addr, unsigned long end,
+				struct mem_size_stats *mss)
+{
+	pmd_t *pmd;
+	unsigned long next;
+
+	pmd = pmd_offset(pgd, addr);
+	do {
+		next = pmd_addr_end(addr, end);
+		if (pmd_none_or_clear_bad(pmd))
+			continue;
+		smaps_pte_range(vma, pmd, addr, next, mss);
+	} while (pmd++, addr = next, addr != end);
+}
+
+static inline void smaps_pgd_range(struct vm_area_struct *vma,
+				unsigned long addr, unsigned long end,
+				struct mem_size_stats *mss)
+{
+	pgd_t *pgd;
+	unsigned long next;
+
+	pgd = pgd_offset(vma->vm_mm, addr);
+	do {
+		next = pgd_addr_end(addr, end);
+		if (pgd_none_or_clear_bad(pgd))
+			continue;
+		smaps_pmd_range(vma, pgd, addr, next, mss);
+	} while (pgd++, addr = next, addr != end);
+}
+
+static int show_smap(struct seq_file *m, void *v)
+{
+	struct vm_area_struct *vma = v;
+	unsigned long vma_len = (vma->vm_end - vma->vm_start);
+	struct mem_size_stats mss;
+
+	memset(&mss, 0, sizeof mss);
+
+	show_map(m, v);
+
+	if (vma->vm_mm && !is_vm_hugetlb_page(vma))
+		smaps_pgd_range(vma, vma->vm_start, vma->vm_end, &mss);
+
+	seq_printf(m,
+		   "Size:          %8lu kB\n"
+		   "Rss:           %8lu kB\n"
+		   "Shared_Clean:  %8lu kB\n"
+		   "Shared_Dirty:  %8lu kB\n"
+		   "Private_Clean: %8lu kB\n"
+		   "Private_Dirty: %8lu kB\n",
+		   vma_len >> 10,
+		   mss.resident >> 10,
+		   mss.shared_clean  >> 10,
+		   mss.shared_dirty  >> 10,
+		   mss.private_clean >> 10,
+		   mss.private_dirty >> 10);
+	return 0;
+}
+
 static void *m_start(struct seq_file *m, loff_t *pos)
 {
 	struct proc_maps_private *priv = m->private;
@@ -163,6 +272,142 @@ struct seq_operations proc_pid_maps_op = {
 	.stop	= m_stop,
 	.show	= show_map
 };
+
+struct seq_operations proc_pid_smaps_op = {
+	.start	= m_start,
+	.next	= m_next,
+	.stop	= m_stop,
+	.show	= show_smap
+};
+
+#ifdef CONFIG_NUMA
+struct numa_maps {
+	unsigned long pages;
+	unsigned long anon;
+	unsigned long mapped;
+	unsigned long mapcount_max;
+	unsigned long node[MAX_NUMNODES];
+};
+
+/*
+ * Calculate numa node maps for a vma
+ */
+static struct numa_maps *get_numa_maps(const struct vm_area_struct *vma)
+{
+	struct page *page;
+	unsigned long vaddr;
+	struct mm_struct *mm = vma->vm_mm;
+	int i;
+	struct numa_maps *md = kmalloc(sizeof(struct numa_maps), GFP_KERNEL);
+
+	if (!md)
+		return NULL;
+	md->pages = 0;
+	md->anon = 0;
+	md->mapped = 0;
+	md->mapcount_max = 0;
+	for (i = 0; i < MAX_NUMNODES; i++)
+		md->node[i] = 0;
+
+	spin_lock(&mm->page_table_lock);
+ 	for (vaddr = vma->vm_start; vaddr < vma->vm_end; vaddr += PAGE_SIZE) {
+		page = follow_page(mm, vaddr, 0);
+		if (page) {
+			int count = page_mapcount(page);
+
+			if (count)
+				md->mapped++;
+			if (count > md->mapcount_max)
+				md->mapcount_max = count;
+			md->pages++;
+			if (PageAnon(page))
+				md->anon++;
+			md->node[page_to_nid(page)]++;
+		}
+	}
+	spin_unlock(&mm->page_table_lock);
+	return md;
+}
+
+static int show_numa_map(struct seq_file *m, void *v)
+{
+	struct proc_maps_private *priv = m->private;
+	struct task_struct *task = priv->task;
+	struct vm_area_struct *vma = v;
+	struct mempolicy *pol;
+	struct numa_maps *md;
+	struct zone **z;
+	int n;
+	int first;
+
+	if (!vma->vm_mm)
+		return 0;
+
+	md = get_numa_maps(vma);
+	if (!md)
+		return 0;
+
+	seq_printf(m, "%08lx", vma->vm_start);
+	pol = get_vma_policy(task, vma, vma->vm_start);
+	/* Print policy */
+	switch (pol->policy) {
+	case MPOL_PREFERRED:
+		seq_printf(m, " prefer=%d", pol->v.preferred_node);
+		break;
+	case MPOL_BIND:
+		seq_printf(m, " bind={");
+		first = 1;
+		for (z = pol->v.zonelist->zones; *z; z++) {
+
+			if (!first)
+				seq_putc(m, ',');
+			else
+				first = 0;
+			seq_printf(m, "%d/%s", (*z)->zone_pgdat->node_id,
+					(*z)->name);
+		}
+		seq_putc(m, '}');
+		break;
+	case MPOL_INTERLEAVE:
+		seq_printf(m, " interleave={");
+		first = 1;
+		for (n = 0; n < MAX_NUMNODES; n++) {
+			if (test_bit(n, pol->v.nodes)) {
+				if (!first)
+					seq_putc(m,',');
+				else
+					first = 0;
+				seq_printf(m, "%d",n);
+			}
+		}
+		seq_putc(m, '}');
+		break;
+	default:
+		seq_printf(m," default");
+		break;
+	}
+	seq_printf(m, " MaxRef=%lu Pages=%lu Mapped=%lu",
+			md->mapcount_max, md->pages, md->mapped);
+	if (md->anon)
+		seq_printf(m," Anon=%lu",md->anon);
+
+	for (n = 0; n < MAX_NUMNODES; n++) {
+		if (md->node[n])
+			seq_printf(m, " N%d=%lu", n, md->node[n]);
+	}
+	seq_putc(m, '\n');
+	kfree(md);
+
+	return 0;
+}
+
+struct seq_operations proc_pid_numa_maps_op = {
+	.start	= m_start,
+	.next	= m_next,
+	.stop	= m_stop,
+	.show	= show_numa_map
+};
+#endif
 
 struct mm_struct *mm_for_maps(struct task_struct *task)
 {

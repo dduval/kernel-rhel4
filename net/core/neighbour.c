@@ -30,6 +30,7 @@
 #include <net/neighbour.h>
 #include <net/dst.h>
 #include <net/sock.h>
+#include <net/netevent.h>
 #include <linux/rtnetlink.h>
 #include <linux/random.h>
 
@@ -765,6 +766,7 @@ static void neigh_timer_handler(unsigned long arg)
 			NEIGH_PRINTK2("neigh %p is suspected.\n", neigh);
 			neigh->nud_state = NUD_STALE;
 			neigh_suspect(neigh);
+			notify = 1;
 		}
 	} else if (state & NUD_DELAY) {
 		if (time_before_eq(now, 
@@ -772,6 +774,7 @@ static void neigh_timer_handler(unsigned long arg)
 			NEIGH_PRINTK2("neigh %p is now reachable.\n", neigh);
 			neigh->nud_state = NUD_REACHABLE;
 			neigh_connect(neigh);
+			notify = 1;
 			next = neigh->confirmed + neigh->parms->reachable_time;
 		} else {
 			NEIGH_PRINTK2("neigh %p is probed.\n", neigh);
@@ -827,6 +830,8 @@ static void neigh_timer_handler(unsigned long arg)
 out:
 		write_unlock(&neigh->lock);
 	}
+	if (notify)
+		call_netevent_notifiers(NETEVENT_NEIGH_UPDATE, neigh);
 
 #ifdef CONFIG_ARPD
 	if (notify && neigh->parms->app_probes)
@@ -873,6 +878,12 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 
 	if (neigh->nud_state == NUD_INCOMPLETE) {
 		if (skb) {
+			if (skb_is_nonlinear(skb) &&
+			    skb_linearize(skb, GFP_ATOMIC) != 0) {
+				kfree_skb(skb);
+				rc = 1;
+				goto out_unlock_bh;
+			}
 			if (skb_queue_len(&neigh->arp_queue) >=
 			    neigh->parms->queue_len) {
 				struct sk_buff *buff;
@@ -932,9 +943,7 @@ int neigh_update(struct neighbour *neigh, const u8 *lladdr, u8 new,
 {
 	u8 old;
 	int err;
-#ifdef CONFIG_ARPD
 	int notify = 0;
-#endif
 	struct net_device *dev;
 	int update_isrouter = 0;
 
@@ -954,9 +963,7 @@ int neigh_update(struct neighbour *neigh, const u8 *lladdr, u8 new,
 			neigh_suspect(neigh);
 		neigh->nud_state = new;
 		err = 0;
-#ifdef CONFIG_ARPD
 		notify = old & NUD_VALID;
-#endif
 		goto out;
 	}
 
@@ -1028,9 +1035,7 @@ int neigh_update(struct neighbour *neigh, const u8 *lladdr, u8 new,
 		if (!(new & NUD_CONNECTED))
 			neigh->confirmed = jiffies -
 				      (neigh->parms->base_reachable_time << 1);
-#ifdef CONFIG_ARPD
 		notify = 1;
-#endif
 	}
 	if (new == old)
 		goto out;
@@ -1062,6 +1067,9 @@ out:
 			(neigh->flags & ~NTF_ROUTER);
 	}
 	write_unlock_bh(&neigh->lock);
+
+	if (notify)
+		call_netevent_notifiers(NETEVENT_NEIGH_UPDATE, neigh);
 #ifdef CONFIG_ARPD
 	if (notify && neigh->parms->app_probes)
 		neigh_app_notify(neigh);

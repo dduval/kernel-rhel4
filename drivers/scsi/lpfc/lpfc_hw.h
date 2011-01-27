@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hw.h 2853 2006-02-12 21:48:31Z sf_support $
+ * $Id: lpfc_hw.h 3039 2007-05-22 14:40:23Z sf_support $
  */
 
 #ifndef  _H_LPFC_HW
@@ -49,7 +49,7 @@
 #define FCELSSIZE             1024	/* maximum ELS transfer size */
 
 #define LPFC_FCP_RING            0	/* ring 2 for FCP initiator commands */
-#define LPFC_IP_RING             1	/* ring 1 for IP commands */
+#define LPFC_EXTRA_RING          1	/* ring 1 for other protocols */
 #define LPFC_ELS_RING            2	/* ring 0 for ELS commands */
 #define LPFC_FCP_NEXT_RING       3
 
@@ -131,6 +131,20 @@ struct lpfc_sli_ct_request {
 
 			uint32_t rsvd[7];
 		} rft;
+		struct rff {
+			uint32_t PortId;
+			uint8_t reserved[2];
+#ifdef __BIG_ENDIAN_BITFIELD
+			uint8_t feature_res:6;
+			uint8_t feature_init:1;
+			uint8_t feature_tgt:1;
+#else	/*  __LITTLE_ENDIAN_BITFIELD */
+			uint8_t feature_tgt:1;
+			uint8_t feature_init:1;
+			uint8_t feature_res:6;
+#endif
+			uint8_t type_code;     /* type=8 for FCP */
+		} rff;
 		struct rnn {
 			uint32_t PortId;	/* For RNN_ID requests */
 			uint8_t wwnn[8];
@@ -146,6 +160,7 @@ struct lpfc_sli_ct_request {
 #define  SLI_CT_REVISION        1
 #define  GID_REQUEST_SZ         (sizeof(struct lpfc_sli_ct_request) - 260)
 #define  RFT_REQUEST_SZ         (sizeof(struct lpfc_sli_ct_request) - 228)
+#define  RFF_REQUEST_SZ         (sizeof(struct lpfc_sli_ct_request) - 235)
 #define  RNN_REQUEST_SZ         (sizeof(struct lpfc_sli_ct_request) - 252)
 #define  RSNN_REQUEST_SZ        (sizeof(struct lpfc_sli_ct_request))
 
@@ -237,6 +252,7 @@ struct lpfc_sli_ct_request {
 #define  SLI_CTNS_RFT_ID      0x0217
 #define  SLI_CTNS_RSPN_ID     0x0218
 #define  SLI_CTNS_RPT_ID      0x021A
+#define  SLI_CTNS_RFF_ID      0x021F
 #define  SLI_CTNS_RIP_NN      0x0235
 #define  SLI_CTNS_RIPA_NN     0x0236
 #define  SLI_CTNS_RSNN_NN     0x0239
@@ -451,6 +467,7 @@ struct serv_parm {	/* Structure is in Big Endian format */
 #define ELS_CMD_RRQ       0x12000000
 #define ELS_CMD_PRLI      0x20100014
 #define ELS_CMD_PRLO      0x21100014
+#define ELS_CMD_PRLO_ACC  0x02100014
 #define ELS_CMD_PDISC     0x50000000
 #define ELS_CMD_FDISC     0x51000000
 #define ELS_CMD_ADISC     0x52000000
@@ -487,6 +504,7 @@ struct serv_parm {	/* Structure is in Big Endian format */
 #define ELS_CMD_RRQ       0x12
 #define ELS_CMD_PRLI      0x14001020
 #define ELS_CMD_PRLO      0x14001021
+#define ELS_CMD_PRLO_ACC  0x14001002
 #define ELS_CMD_PDISC     0x50
 #define ELS_CMD_FDISC     0x51
 #define ELS_CMD_ADISC     0x52
@@ -768,13 +786,42 @@ typedef struct _RNID {		/* Structure is in Big Endian format */
 	} un;
 } RNID;
 
-typedef struct _RRQ {		/* Structure is in Big Endian format */
-	uint32_t SID;
-	uint16_t Oxid;
-	uint16_t Rxid;
-	uint8_t resv[32];	/* optional association hdr */
-} RRQ;
+typedef struct  _RPS {  	/* Structure is in Big Endian format */
+	union {
+		uint32_t portNum;
+		struct lpfc_name portName;
+	} un;
+} RPS;
 
+typedef struct  _RPS_RSP {	/* Structure is in Big Endian format */
+	uint16_t rsvd1;
+	uint16_t portStatus;
+	uint32_t linkFailureCnt;
+	uint32_t lossSyncCnt;
+	uint32_t lossSignalCnt;
+	uint32_t primSeqErrCnt;
+	uint32_t invalidXmitWord;
+	uint32_t crcCnt;
+} RPS_RSP;
+
+typedef struct  _RPL {  	/* Structure is in Big Endian format */
+	uint32_t maxsize;
+	uint32_t index;
+} RPL;
+
+typedef struct  _PORT_NUM_BLK {
+	uint32_t portNum;
+	uint32_t portID;
+	struct lpfc_name portName;
+} PORT_NUM_BLK;
+
+typedef struct  _RPL_RSP { 	/* Structure is in Big Endian format */
+	uint32_t listLen;
+	uint32_t index;
+	PORT_NUM_BLK port_num_blk;
+} RPL_RSP;
+
+/* This is used for RSCN command */
 /* This is used for RSCN command */
 typedef struct _D_ID {		/* Structure is in Big Endian format */
 	union {
@@ -814,7 +861,6 @@ typedef struct _ELS_PKT {	/* Structure is in Big Endian format */
 		FARP farp;	/* Payload for FARP/ACC */
 		FAN fan;	/* Payload for FAN */
 		SCR scr;	/* Payload for SCR/ACC */
-		RRQ rrq;	/* Payload for RRQ */
 		RNID rnid;	/* Payload for RNID */
 		uint8_t pad[128 - 4];	/* Pad out to payload of 128 bytes */
 	} un;
@@ -1038,6 +1084,8 @@ typedef struct {
 /* Start FireFly Register definitions */
 #define PCI_VENDOR_ID_EMULEX        0x10df
 #define PCI_DEVICE_ID_FIREFLY 	    0x1ae5
+#define PCI_DEVICE_ID_SAT_SMB       0xf011
+#define PCI_DEVICE_ID_SAT_MID       0xf015
 #define PCI_DEVICE_ID_RFLY          0xf095
 #define PCI_DEVICE_ID_PFLY          0xf098
 #define PCI_DEVICE_ID_LP101	    0xf0a1
@@ -1049,6 +1097,9 @@ typedef struct {
 #define PCI_DEVICE_ID_NEPTUNE       0xf0f5
 #define PCI_DEVICE_ID_NEPTUNE_SCSP  0xf0f6
 #define PCI_DEVICE_ID_NEPTUNE_DCSP  0xf0f7
+#define PCI_DEVICE_ID_SAT           0xf100
+#define PCI_DEVICE_ID_SAT_SCSP      0xf111
+#define PCI_DEVICE_ID_SAT_DCSP      0xf112
 #define PCI_DEVICE_ID_SUPERFLY      0xf700
 #define PCI_DEVICE_ID_DRAGONFLY     0xf800
 #define PCI_DEVICE_ID_CENTAUR       0xf900
@@ -1058,18 +1109,13 @@ typedef struct {
 #define PCI_DEVICE_ID_LP10000S	    0xfc00
 #define PCI_DEVICE_ID_LP11000S      0xfc10
 #define PCI_DEVICE_ID_LPE11000S     0xfc20
+#define PCI_DEVICE_ID_SAT_S         0xfc40
 #define PCI_DEVICE_ID_HELIOS        0xfd00
 #define PCI_DEVICE_ID_HELIOS_SCSP   0xfd11
 #define PCI_DEVICE_ID_HELIOS_DCSP   0xfd12
 #define PCI_DEVICE_ID_ZEPHYR        0xfe00
 #define PCI_DEVICE_ID_ZEPHYR_SCSP   0xfe11
 #define PCI_DEVICE_ID_ZEPHYR_DCSP   0xfe12
-
-#define PCI_SUBSYSTEM_ID_LP11000S      0xfc11
-#define PCI_SUBSYSTEM_ID_LP11002S      0xfc12
-#define PCI_SUBSYSTEM_ID_LPE11000S     0xfc21
-#define PCI_SUBSYSTEM_ID_LPE11002S     0xfc22
-#define PCI_SUBSYSTEM_ID_LPE11010S     0xfc2A
 
 #define JEDEC_ID_ADDRESS            0x0080001c
 #define FIREFLY_JEDEC_ID            0x1ACC
@@ -1084,6 +1130,7 @@ typedef struct {
 #define HELIOS_JEDEC_ID             0x0364
 #define ZEPHYR_JEDEC_ID             0x0577
 #define VIPER_JEDEC_ID              0x4838
+#define SATURN_JEDEC_ID             0x1004
 
 #define JEDEC_ID_MASK               0x0FFFF000
 #define JEDEC_ID_SHIFT              12
@@ -1160,7 +1207,8 @@ typedef struct {		/* FireFly BIU registers */
 #define HS_FFER3       0x20000000	/* Bit 29 */
 #define HS_FFER2       0x40000000	/* Bit 30 */
 #define HS_FFER1       0x80000000	/* Bit 31 */
-#define HS_FFERM       0xFF000000	/* Mask for error bits 31:24 */
+#define HS_CRIT_TEMP   0x00000100	/* Bit 8  */
+#define HS_FFERM       0xFF000100	/* Mask for error bits 31:24 */
 
 /* Host Control Register */
 
@@ -1215,6 +1263,8 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_CONFIG_FARP     0x25
 #define MBX_BEACON          0x2A	/* This is not yet part of the SLI spec.
 					   See beaconing spec in CR 12596 */
+#define MBX_HEARTBEAT       0x31
+#define MBX_ASYNCEVT_ENABLE 0x33
 
 #define MBX_LOAD_AREA       0x81
 #define MBX_RUN_BIU_DIAG64  0x84
@@ -1267,6 +1317,7 @@ typedef struct {		/* FireFly BIU registers */
 
 /*  SLI_2 IOCB Command Set */
 
+#define CMD_ASYNC_STATUS        0x7C
 #define CMD_RCV_SEQUENCE64_CX   0x81
 #define CMD_XMIT_SEQUENCE64_CR  0x82
 #define CMD_XMIT_SEQUENCE64_CX  0x83
@@ -1317,10 +1368,13 @@ typedef struct {		/* FireFly BIU registers */
 #define MBXERR_BAD_RCV_LENGTH       14
 #define MBXERR_DMA_ERROR            15
 #define MBXERR_ERROR                16
+#define MBXERR_UNKNOWN_CMD          18
 #define MBX_NOT_FINISHED           255
 
 #define MBX_BUSY                   0xffffff /* Attempted cmd to busy Mailbox */
 #define MBX_TIMEOUT                0xfffffe /* time-out expired waiting for */
+
+#define TEMPERATURE_OFFSET 0xB0   /* Slim offset for critical temperature event */
 
 /*
  *    Begin Structure Definitions for Mailbox Commands
@@ -1518,6 +1572,7 @@ typedef struct {
 
 #define FLAGS_TOPOLOGY_FAILOVER      0x0400	/* Bit 10 */
 #define FLAGS_LINK_SPEED             0x0800	/* Bit 11 */
+#define FLAGS_IMED_ABORT             0x04000	/* Bit 14 */
 
 	uint32_t link_speed;
 #define LINK_SPEED_AUTO 0       /* Auto selection */
@@ -2096,6 +2151,19 @@ typedef struct {
 	uint32_t rsvd1;
 } CLEAR_LA_VAR;
 
+/* Structure for MB Command SET_SLIM (33) */
+typedef struct {
+	uint32_t varNumber;
+	uint32_t varValue;
+} SET_SLIM_VAR;
+
+/* Values needed to set MAX_DMA_LENGTH parameter */
+#define SLIM_VAR_MAX_DMA_LENGTH 0x100506
+#define SLIM_VAL_MAX_DMA_512    0x0
+#define SLIM_VAL_MAX_DMA_1024   0x1
+#define SLIM_VAL_MAX_DMA_2048   0x2
+#define SLIM_VAL_MAX_DMA_4096   0x3
+
 /* Structure for MB Command DUMP */
 
 typedef struct {
@@ -2137,6 +2205,13 @@ typedef struct {
 	uint32_t pcbLow;       /* bit 31:0  of memory based port config block */
 	uint32_t pcbHigh;      /* bit 63:32 of memory based port config block */
 	uint32_t hbainit[5];
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32_t hps       :  1; /* bit 31 Host Pointer in slim */
+	uint32_t rsvd      : 31;
+#else   /*  __LITTLE_ENDIAN */
+	uint32_t rsvd      : 31;
+	uint32_t hps       :  1; /* bit 31 Host Pointer in slim */
+#endif
 } CONFIG_PORT_VAR;
 
 /* SLI-2 Port Control Block */
@@ -2209,6 +2284,17 @@ typedef struct {
 	uint32_t IPAddress;
 } CONFIG_FARP_VAR;
 
+/* Structure for MB Command MBX_ASYNCEVT_ENABLE (0x33) */
+typedef struct {
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint32_t rsvd:30;
+	uint32_t ring:2;   /* Ring for ASYNC_EVENT iocb Bits 0-1*/
+#else /*  __LITTLE_ENDIAN */
+	uint32_t ring:2;   /* Ring for ASYNC_EVENT iocb Bits 0-1*/
+	uint32_t rsvd:30;
+#endif
+} ASYNCEVT_ENABLE_VAR;
+
 /* Union of all Mailbox Command types */
 #define MAILBOX_CMD_WSIZE 32
 
@@ -2236,10 +2322,12 @@ typedef union {
 	UNREG_LOGIN_VAR varUnregLogin;	/* cmd = 20 (UNREG_LOGIN)    */
 	READ_LA_VAR varReadLA;	/* cmd = 21 (READ_LA(64))    */
 	CLEAR_LA_VAR varClearLA;	/* cmd = 22 (CLEAR_LA)       */
+	SET_SLIM_VAR varSetSlim;	/* cmd = 33 (SET_SLIM)       */
 	DUMP_VAR varDmp;	/* Warm Start DUMP mbx cmd   */
 	UNREG_D_ID_VAR varUnregDID; /* cmd = 0x23 (UNREG_D_ID)   */
 	CONFIG_FARP_VAR varCfgFarp; /* cmd = 0x25 (CONFIG_FARP)  NEW_FEATURE */
 	CONFIG_PORT_VAR varCfgPort; /* cmd = 0x88 (CONFIG_PORT)  */
+	ASYNCEVT_ENABLE_VAR varCfgAsyncEvent; /* cmd = x33 (CONFIG_ASYNC) */
 } MAILVARIANTS;
 
 /*
@@ -2569,6 +2657,21 @@ typedef struct {
 	uint32_t fcpt_Length;	/* transfer ready for IWRITE */
 } FCPT_FIELDS64;
 
+/* IOCB Command template for Async Status iocb commands */
+typedef struct {
+	uint32_t rsvd[4];
+	uint32_t param;
+#ifdef __BIG_ENDIAN_BITFIELD
+	uint16_t evt_code;	/* High order bits word 5 */
+	uint16_t sub_ctxt_tag;	/* Low  order bits word 5 */
+#else   /*  __LITTLE_ENDIAN_BITFIELD */
+	uint16_t sub_ctxt_tag;	/* High order bits word 5 */
+	uint16_t evt_code;	/* Low  order bits word 5 */
+#endif
+} ASYNCSTAT_FIELDS;
+#define ASYNC_TEMP_WARN                0x100
+#define ASYNC_TEMP_SAFE                0x101
+
 typedef volatile struct _IOCB {	/* IOCB structure */
 	union {
 		GENERIC_RSP grsp;	/* Generic response */
@@ -2591,6 +2694,7 @@ typedef volatile struct _IOCB {	/* IOCB structure */
 		XMT_SEQ_FIELDS64 xseq64;	/* XMIT / BCAST cmd */
 		FCPI_FIELDS64 fcpi64;	/* FCP 64 bit Initiator template */
 		FCPT_FIELDS64 fcpt64;	/* FCP 64 bit target template */
+		ASYNCSTAT_FIELDS asyncstat; /* async_status iocb */
 
 		uint32_t ulpWord[IOCB_WORD_SZ - 2];	/* generic 6 'words' */
 	} un;

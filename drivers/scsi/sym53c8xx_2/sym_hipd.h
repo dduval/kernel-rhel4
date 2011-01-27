@@ -772,6 +772,7 @@ struct sym_ccb {
 	int	segments;	/* Number of SG segments	*/
 
 	u8	order;		/* Tag type (if tagged command)	*/
+	unsigned char odd_byte_adjustment;     /* odd-sized req on wide bus */
 
 	/*
 	 *  Miscellaneous status'.

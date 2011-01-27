@@ -257,7 +257,7 @@ qla2x00_issue_marker(scsi_qla_host_t *ha, int ha_locked)
 	return (QLA_SUCCESS);
 }
 
-static __inline__ void qla2x00_add_timer_to_cmd(srb_t *, int);
+static __inline__ void qla2x00_add_timer_to_cmd(scsi_qla_host_t *, srb_t *, int);
 static __inline__ void qla2x00_delete_timer_from_cmd(srb_t *);
 
 /**************************************************************************
@@ -274,13 +274,14 @@ static __inline__ void qla2x00_delete_timer_from_cmd(srb_t *);
 *     None.
 **************************************************************************/
 static inline void
-qla2x00_add_timer_to_cmd(srb_t *sp, int timeout)
+qla2x00_add_timer_to_cmd(scsi_qla_host_t *ha, srb_t *sp, int timeout)
 {
 	init_timer(&sp->timer);
 	sp->timer.expires = jiffies + timeout * HZ;
 	sp->timer.data = (unsigned long) sp;
 	sp->timer.function = (void (*) (unsigned long))qla2x00_cmd_timeout;
 	add_timer(&sp->timer);
+	sp_get(ha, sp); /* take command timeout reference */
 }
 
 /**************************************************************************
@@ -293,16 +294,16 @@ qla2x00_add_timer_to_cmd(srb_t *sp, int timeout)
 *     sp - pointer to validate
 *
 * Returns:
-*     None.
+*     1 if we were able to detach the time. 0 means we already blew it.
 **************************************************************************/
 static inline void 
 qla2x00_delete_timer_from_cmd(srb_t *sp)
 {
-	if (sp->timer.function != NULL) {
-		del_timer(&sp->timer);
-		sp->timer.function =  NULL;
-		sp->timer.data = (unsigned long) NULL;
-	}
+	if (sp->flags & SRB_NO_TIMER)
+		return;
+
+	if (del_timer(&sp->timer))
+		sp_put((scsi_qla_host_t *)sp->cmd->device->host->hostdata, sp);
 }
 
 static inline uint8_t *host_to_fcp_swap(uint8_t *, uint32_t);

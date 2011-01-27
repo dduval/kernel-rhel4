@@ -108,6 +108,18 @@ static inline void pgd_clear (pgd_t * pgd) { }
 #define pmd_offset(dir, address) ((pmd_t *) pgd_page(*(dir)) + \
 			pmd_index(address))
 
+/*
+ * For PTEs and PDEs, we must clear the P-bit first when clearing a page table
+ * entry, so clear the bottom half first and enforce ordering with a compiler
+ * barrier.
+ */
+static inline void pte_clear(pte_t *ptep)
+{
+	ptep->pte_low = 0;
+	smp_wmb();
+	ptep->pte_high = 0;
+}
+
 static inline pte_t ptep_get_and_clear(pte_t *ptep)
 {
 	pte_t res;

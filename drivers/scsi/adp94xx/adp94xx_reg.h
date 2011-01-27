@@ -2171,7 +2171,7 @@
  * CSEQ B0 Interrupt Vector addresses based on Sequencer Alpha_6f.
  */
 #ifdef SEQUENCER_UPDATE
-#define CSEQ_INT_VEC0B0			0x0868
+#define CSEQ_INT_VEC0B0			0x08D4
 #define CSEQ_INT_VEC1B0			0x00E8
 #define CSEQ_INT_VEC2B0			0x00EC
 #else
@@ -2282,8 +2282,9 @@
 #define LmSEQ_PM_TABLE_PTR(LinkNum)		(LmSCRATCH(LinkNum) + 0x0110)
 #define LmSEQ_SATA_INTERLOCK_TMR_SAVE(LinkNum)	(LmSCRATCH(LinkNum) + 0x0112)
 #ifdef SEQUENCER_UPDATE
-#define LmSEQ_IP_BITL				(LmSCRATCH(LinkNum) + 0x0114)
-#define LmSEQ_COPY_SMP_CONN_TAG			(LmSCRATCH(LinkNum) + 0x0116)
+#define LmSEQ_IP_BITL(LinkNum)			(LmSCRATCH(LinkNum) + 0x0114)
+#define LmSEQ_COPY_SMP_CONN_TAG(LinkNum)	(LmSCRATCH(LinkNum) + 0x0116)
+#define LmSEQ_P0M2_OFFS1AH(LinkNum)		(LmSCRATCH(LinkNum) + 0x011A)
 #endif
 
 /* Mode Dependent Scratch page 0 defines for modes 4 & 5 (non-common) */
@@ -2297,11 +2298,10 @@
 #ifdef SEQUENCER_UPDATE
 #define LmSEQ_LINK_RESET_RETRY_COUNT(LinkNum)	(LmSCRATCH(LinkNum) + 0x0075)
 #define LmSEQ_NUM_LINK_RESET_RETRIES(LinkNum)	(LmSCRATCH(LinkNum) + 0x0076)
-#define LmSEQ_OOB_INT_ENABLES(LinkNum)		(LmSCRATCH(LinkNum) + 0x007A)
-#define LmSEQ_NOTIFY_TIMER_TIMEOUT_CONST(LinkNum)	\
-						(LmSCRATCH(LinkNum) + 0x007C)
-#define LmSEQ_NOTIFY_TIMER_DOWN_COUNTER(LinkNum)	\
-						(LmSCRATCH(LinkNum) + 0x007E)
+#define LmSEQ_OOB_INT_ENABLES(LinkNum)		(LmSCRATCH(LinkNum) + 0x0078)
+#define LmSEQ_NOTIFY_TIMER_DOWN_COUNT(LinkNum)	(LmSCRATCH(LinkNum) + 0x007A)
+#define LmSEQ_NOTIFY_TIMER_TIMEOUT(LinkNum)	(LmSCRATCH(LinkNum) + 0x007C)
+#define LmSEQ_NOTIFY_TIMER_INITIAL_COUNT(LinkNum) (LmSCRATCH(LinkNum) + 0x007E)
 #else
 #define LmSEQ_SAVE_COMINIT_TIMER(LinkNum)	(LmSCRATCH(LinkNum) + 0x007C)
 #endif
@@ -2323,6 +2323,7 @@
 /* Mode Dependent Scratch page 1 defines for mode 5 */
 #define LmSEQ_FRAME_TYPE_MASK(LinkNum)		(LmSCRATCH(LinkNum) + 0x00E0)
 #define LmSEQ_HASH_DEST_ADDR_MASK(LinkNum)	(LmSCRATCH(LinkNum) + 0x00E1)
+#define LmSEQ_HASHED_SRC_ADDR_MASK_PRINT(LinkNum) (LmSCRATCH(LinkNum) + 0x00E4)
 #define LmSEQ_HASH_SRC_ADDR_MASK(LinkNum)	(LmSCRATCH(LinkNum) + 0x00E5)
 #define LmSEQ_RETRANS_MASK(LinkNum)		(LmSCRATCH(LinkNum) + 0x00EA)
 #define LmSEQ_NUM_FILL_BYTES_MASK(LinkNum)	(LmSCRATCH(LinkNum) + 0x00EB)
@@ -2336,9 +2337,9 @@
 #ifdef SEQUENCER_UPDATE
 #define LmSEQ_SMP_RCV_TIMER_TERM_TS(LinkNum)	(LmSCRATCH(LinkNum) + 0x0040)
 #define LmSEQ_DEVICE_BITS(LinkNum)		(LmSCRATCH(LinkNum) + 0x005B)
-#define LmSEQ_SDB_BITS(LinkNum)			(LmSCRATCH(LinkNum) + 0x005C)
+#define LmSEQ_SDB_DDB(LinkNum)			(LmSCRATCH(LinkNum) + 0x005C)
 #define LmSEQ_SDB_NUM_TAGS(LinkNum)		(LmSCRATCH(LinkNum) + 0x005E)
-#define LmSEQ_SDB_CURRTAG(LinkNum)		(LmSCRATCH(LinkNum) + 0x005F)
+#define LmSEQ_SDB_CURR_TAG(LinkNum)		(LmSCRATCH(LinkNum) + 0x005F)
 #else
 #define LmSEQ_ATTACHED_SAS_ADDR(LinkNum)	(LmSCRATCH(LinkNum) + 0x0040)
 #define LmSEQ_INITR_SAS_ADDR(LinkNum)		(LmSCRATCH(LinkNum) + 0x0048)
@@ -2532,7 +2533,7 @@
 #define SAS_DEFAULT_SMP_RCV_TIMEOUT		0x000F4240  /* 1 secs */
 
 /* Mode Independent Scratch page 3 defines. */
-#define LmSEQ_NOTIFY_TIMER_TIMEOUT(LinkNum)	(LmSCRATCH(LinkNum) + 0x01E0)
+#define LmSEQ_DEV_PRES_TMR_TOUT_CONST(LinkNum)	(LmSCRATCH(LinkNum) + 0x01E0)
 #define LmSEQ_NOTIFY_TIMER_DOWN_CNT(LinkNum)	(LmSCRATCH(LinkNum) + 0x01E2)
 #define LmSEQ_SATA_INTERLOCK_TIMEOUT(LinkNum)	(LmSCRATCH(LinkNum) + 0x01E4)
 #ifndef SEQUENCER_UPDATE
@@ -2572,17 +2573,17 @@
  */
 #ifdef SEQUENCER_UPDATE
 /* Link sequencer interrrupt vector defines for Razor */
-#define	LSEQ_INT_VEC0B0			0x0120
-#define	LSEQ_INT_VEC1B0			0x1694
-#define	LSEQ_INT_VEC2B0			0x0358
-#define	LSEQ_INT_VEC3B0			0x0388
-#define	LSEQ_INT_VEC4B0			0x167C
-#define	LSEQ_INT_VEC5B0			0x27C0
-#define	LSEQ_INT_VEC6B0			0x28D4
-#define	LSEQ_INT_VEC7B0			0x0118
-#define	LSEQ_INT_VEC8B0			0x15EC
-#define	LSEQ_INT_VEC9B0			0x18DC
-#define	LSEQ_INT_VEC10B0		0x0050
+#define	LSEQ_INT_VEC0B0			0x011C
+#define	LSEQ_INT_VEC1B0			0x16D8
+#define	LSEQ_INT_VEC2B0			0x0360
+#define	LSEQ_INT_VEC3B0			0x0390
+#define	LSEQ_INT_VEC4B0			0x16C0
+#define	LSEQ_INT_VEC5B0			0x27D4
+#define	LSEQ_INT_VEC6B0			0x28E4
+#define	LSEQ_INT_VEC7B0			0x0114
+#define	LSEQ_INT_VEC8B0			0x1630
+#define	LSEQ_INT_VEC9B0			0x1940
+#define	LSEQ_INT_VEC10B0		0x004C
 #else
 #define LSEQ_INT_VEC0B0			0x001C
 #define LSEQ_INT_VEC1B0			0x0024
@@ -2611,5 +2612,14 @@
 #define SAS_S_Q_EXETARG_TAIL		0x0120 
 #define SAS_S_Q_DONE_POINTER		0x0110
 
+/* If enabled, set this to the interval between transmission
+ * of NOTIFY (ENABLE SPINUP). In units of 200 us.
+ */
+#define ASD_NOTIFY_TIMEOUT        2500
+
+/* Initial delay after OOB, before we transmit NOTIFY (ENABLE SPINUP).
+ * If 0, transmit immediately. In milliseconds.
+ */
+#define ASD_NOTIFY_DOWN_COUNT     0
 
 #endif /* ADP94XX_REG_H */

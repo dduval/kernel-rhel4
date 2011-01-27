@@ -1282,9 +1282,14 @@ asd_hwi_init_cseq_mip(struct asd_softc *asd)
 	asd_hwi_swb_write_word(asd, CSEQ_Q_MONIRTT_TAIL, 0xffff);
 
 	/* Calculate the free scb mask. */
-	free_scb_mask = (uint8_t) ((~(((asd->hw_profile.max_scbs * 
+#ifdef EXTENDED_SCB
+	free_scb_mask = (uint8_t) ((~((( (asd->hw_profile.max_scbs - ASD_EXTENDED_SCB_NUMBER) *
 					ASD_SCB_SIZE) / 128) - 1)) >> 8);
 
+#else
+	free_scb_mask = (uint8_t) ((~(((asd->hw_profile.max_scbs *
+					ASD_SCB_SIZE) / 128) - 1)) >> 8);
+#endif
 	asd_hwi_swb_write_byte(asd, CSEQ_FREE_SCB_MASK, free_scb_mask);
 			       		       
 	/* 
@@ -1303,9 +1308,22 @@ asd_hwi_init_cseq_mip(struct asd_softc *asd)
 			      ((((ASD_MAX_SCB_SITES-1) & 0xFF) == 0xFF) ?
 			      (ASD_MAX_SCB_SITES-2) : (ASD_MAX_SCB_SITES-1))); 
 		
+#ifndef EXTENDED_SCB
 	/* Extended SCB sites are not being used now. */
 	asd_hwi_swb_write_word(asd, CSEQ_EXTNDED_FREE_SCB_HEAD, 0xFFFF);
 	asd_hwi_swb_write_word(asd, CSEQ_EXTNDED_FREE_SCB_TAIL, 0xFFFF);
+#else
+	/* Extended SCB sites are not being used now. */
+
+#ifdef SATA_SKIP_FIX
+	asd_hwi_swb_write_word(asd, CSEQ_EXTNDED_FREE_SCB_HEAD, (uint16_t)ASD_MAX_SCB_SITES + 0x20);
+#else
+	asd_hwi_swb_write_word(asd, CSEQ_EXTNDED_FREE_SCB_HEAD, (uint16_t)ASD_MAX_SCB_SITES );
+#endif
+
+	asd_hwi_swb_write_word(asd, CSEQ_EXTNDED_FREE_SCB_TAIL, (uint16_t)(asd->hw_profile.max_scbs - 1));
+#endif
+
 #endif 
 	
 	/*
@@ -1330,6 +1348,16 @@ asd_hwi_init_cseq_mip(struct asd_softc *asd)
 	asd_hwi_swb_write_byte(asd, CSEQ_EMPTY_SCB_OFFSET, 0x0);
 	asd_hwi_swb_write_word(asd, CSEQ_PRIMITIVE_DATA, 0x0);
 	asd_hwi_swb_write_dword(asd, CSEQ_TIMEOUT_CONSTANT, 0x0);
+#ifdef EXTENDED_SCB
+	/* Todo 128 byte alignment */
+	uint64_t dmabusaddr;
+	dmabusaddr = (asd->ext_scb_map.busaddr + ASD_SCB_SIZE - 1)&(uint64_t)(-1 * ASD_SCB_SIZE);
+#ifdef ASD_DEBUG
+	asd_print("Extended SCB busaddr:0x%Lx, dmabusaddr:0x%Lx\n", asd->ext_scb_map.busaddr, dmabusaddr);
+#endif
+	asd_hwi_swb_write_dword(asd, (CMAPPEDSCR + CMDCTXBASE), ASD_GET_PADR(dmabusaddr));
+	asd_hwi_swb_write_dword(asd, (CMAPPEDSCR + CMDCTXBASE + 4), ASD_GET_PUADR(dmabusaddr));
+#endif
 }
 
 /* 
@@ -1504,7 +1532,11 @@ asd_hwi_init_scb_sites(struct asd_softc *asd)
 	uint16_t	next_site_no;
 	u_int		i;
 
+#ifndef EXTENDED_SCB
 	for (site_no = 0; site_no < ASD_MAX_SCB_SITES; site_no++) {
+#else
+	for (site_no = 0; site_no < (ASD_MAX_SCB_SITES + ASD_EXTENDED_SCB_NUMBER); site_no++) {
+#endif
 		/* 
 		 * Adjust to the SCB site that we want to access in command
 		 * context memory.
@@ -1514,6 +1546,14 @@ asd_hwi_init_scb_sites(struct asd_softc *asd)
 		/* Initialize all fields in the SCB site to 0. */
 		for (i = 0; i < ASD_SCB_SIZE; i += 4)
 			asd_hwi_set_scbsite_dword(asd, i, 0x0);
+		/* Initialize SCB Site Opcode field to invalid. */
+		asd_hwi_set_scbsite_byte(asd,offsetof(struct hscb_header, opcode),
+				       0xFF);
+
+		/* Initialize SCB Site Flags field to mean a response
+		 * frame has been received.  This means inadvertent
+		 * frames received to be dropped. */
+		asd_hwi_set_scbsite_byte(asd,0x49, 0x01);
 
 		/*
 		 * Workaround needed by SEQ to fix a SATA issue is to skip
@@ -1545,7 +1585,12 @@ asd_hwi_init_scb_sites(struct asd_softc *asd)
 		/* 
 	 	 * Set the Q_NEXT of last usable SCB site to 0xFFFF.
 	 	 */
+#ifndef EXTENDED_SCB
 		if (next_site_no >= ASD_MAX_SCB_SITES)
+#else
+		if ( (next_site_no >= (ASD_MAX_SCB_SITES + ASD_EXTENDED_SCB_NUMBER)) ||
+			 (site_no == (ASD_MAX_SCB_SITES-1)) )
+#endif
 			next_site_no = 0xFFFF;
 
 		/* Initialize SCB Site Opcode field. */
@@ -1747,7 +1792,7 @@ asd_hwi_init_lseq_mip(struct asd_softc *asd, u_int link_num)
 	 * Set the desired interval between transmissions of the NOTIFY
 	 * (ENABLE SPINUP) primitive to 500 msecs.
 	 */ 
-	asd_hwi_swb_write_word(asd, LmSEQ_NOTIFY_TIMER_TIMEOUT(link_num),
+	asd_hwi_swb_write_word(asd, LmSEQ_DEV_PRES_TMR_TOUT_CONST(link_num),
 			      (SAS_NOTIFY_TIMER_TIMEOUT_CONST - 1));
 	/* No delay for the first NOTIFY to be sent to the attached target. */
 	asd_hwi_swb_write_word(asd, LmSEQ_NOTIFY_TIMER_DOWN_CNT(link_num),
@@ -1889,6 +1934,10 @@ asd_hwi_init_lseq_mdp(struct asd_softc *asd, u_int link_num)
 	asd_hwi_swb_write_word(asd, LmSEQ_PM_TABLE_PTR(link_num), 0x0);
 	asd_hwi_swb_write_word(asd, LmSEQ_SATA_INTERLOCK_TMR_SAVE(link_num),
 			       0x0);		
+#ifdef SEQUENCER_UPDATE
+	asd_hwi_swb_write_word(asd, LmSEQ_COPY_SMP_CONN_TAG(link_num),0x0);
+	asd_hwi_swb_write_word(asd, LmSEQ_P0M2_OFFS1AH(link_num),0x0);
+#endif
 	
 	/*
 	 * -------------------------------------
@@ -1903,6 +1952,22 @@ asd_hwi_init_lseq_mdp(struct asd_softc *asd, u_int link_num)
 	asd_hwi_swb_write_byte(asd, LmSEQ_SAS_RESET_MODE(link_num), 0x0);
 #ifndef SEQUENCER_UPDATE
 	asd_hwi_swb_write_dword(asd, LmSEQ_SAVE_COMINIT_TIMER(link_num), 0x0);
+#endif
+#ifdef SEQUENCER_UPDATE
+	asd_hwi_swb_write_byte(asd, LmSEQ_LINK_RESET_RETRY_COUNT(link_num), 0);
+	asd_hwi_swb_write_byte(asd, LmSEQ_NUM_LINK_RESET_RETRIES(link_num), 0);
+	asd_hwi_swb_write_word(asd, LmSEQ_OOB_INT_ENABLES(link_num), 0);
+	/*
+	 * Set the desired interval between transmissions of the NOTIFY
+	 * (ENABLE SPINUP) primitive.  Must be initilized to val - 1.
+	 */
+	asd_hwi_swb_write_word(asd, LmSEQ_NOTIFY_TIMER_TIMEOUT(link_num),
+			   ASD_NOTIFY_TIMEOUT - 1);
+	/* No delay for the first NOTIFY to be sent to the attached target. */
+	asd_hwi_swb_write_word(asd, LmSEQ_NOTIFY_TIMER_DOWN_COUNT(link_num),
+			   ASD_NOTIFY_DOWN_COUNT);
+	asd_hwi_swb_write_word(asd, LmSEQ_NOTIFY_TIMER_INITIAL_COUNT(link_num),
+			   ASD_NOTIFY_DOWN_COUNT);
 #endif
 	
 	/*
@@ -1954,6 +2019,12 @@ asd_hwi_init_lseq_mdp(struct asd_softc *asd, u_int link_num)
 	asd_hwi_swb_write_byte(asd, LmSEQ_SDB_MASK(link_num), 0x0);
 	asd_hwi_swb_write_byte(asd, LmSEQ_DEVICE_BITS(link_num), 0x0);
 	asd_hwi_swb_write_word(asd, LmSEQ_SDB_DDB(link_num), 0x0);
+#else
+	asd_hwi_swb_write_dword(asd, LmSEQ_SMP_RCV_TIMER_TERM_TS(link_num), 0);
+	asd_hwi_swb_write_byte(asd, LmSEQ_DEVICE_BITS(link_num), 0);
+	asd_hwi_swb_write_word(asd, LmSEQ_SDB_DDB(link_num), 0);
+	asd_hwi_swb_write_byte(asd, LmSEQ_SDB_NUM_TAGS(link_num), 0);
+	asd_hwi_swb_write_byte(asd, LmSEQ_SDB_CURR_TAG(link_num), 0);
 #endif
 	
 	/*
@@ -1962,6 +2033,7 @@ asd_hwi_init_lseq_mdp(struct asd_softc *asd, u_int link_num)
 	 * -------------------------------------
 	 */
 	asd_hwi_swb_write_dword(asd, LmSEQ_TX_ID_ADDR_FRAME(link_num), 0x0);
+	asd_hwi_swb_write_dword(asd, LmSEQ_TX_ID_ADDR_FRAME(link_num)+4, 0x0);
 	asd_hwi_swb_write_dword(asd, LmSEQ_OPEN_TIMER_TERM_TS(link_num), 0x0);
 	asd_hwi_swb_write_dword(asd, LmSEQ_SRST_AS_TIMER_TERM_TS(link_num),
 				0x0);
@@ -1999,6 +2071,9 @@ asd_hwi_init_lseq_mdp(struct asd_softc *asd, u_int link_num)
 				0x0);
 	asd_hwi_swb_write_dword(asd, LmSEQ_RCV_FIS_TIMER_TERM_TS(link_num),
 				0x0);
+#ifdef SEQUENCER_UPDATE
+		asd_hwi_swb_write_dword(asd, LmSEQ_DEV_PRES_TIMER_TERM_TS(link_num),	0);
+#endif
 
 #ifdef SEQUENCER_UPDATE
 	/*
@@ -2006,6 +2081,8 @@ asd_hwi_init_lseq_mdp(struct asd_softc *asd, u_int link_num)
 	 * LSEQ Mode Dependent 4 and 5, page 1 setup.
 	 * -------------------------------------
 	 */
+	for (i = 0; i < LSEQ_PAGE_SIZE; i+=4)
+		asd_hwi_swb_write_dword(asd, LmSEQ_FRAME_TYPE_MASK(link_num)+i, 0);
 	asd_hwi_swb_write_byte(asd, LmSEQ_FRAME_TYPE_MASK(link_num),
 				0xff);
 	asd_hwi_swb_write_word(asd, LmSEQ_HASH_DEST_ADDR_MASK(link_num),
@@ -3157,6 +3234,13 @@ asd_hwi_dump_cseq_state(struct asd_softc *asd)
 
 	asd_print("   %24s[0x%x]:0x%04x\n", "BUILTIN_FREE_SCB_TAIL", 0x2D8,
 		  asd_hwi_swb_read_word(asd, CSEQ_BUILTIN_FREE_SCB_TAIL));
+#ifdef EXTENDED_SCB
+	asd_print("   %24s[0x%x]:0x%04x\n", "EXTENDED_FREE_SCB_HEAD", 0x2DA,
+		  asd_hwi_swb_read_word(asd, CSEQ_EXTNDED_FREE_SCB_HEAD));
+
+	asd_print("   %24s[0x%x]:0x%04x\n", "EXTENDED_FREE_SCB_TAIL", 0x2DC,
+		  asd_hwi_swb_read_word(asd, CSEQ_EXTNDED_FREE_SCB_TAIL));
+#endif
 #endif
 
 	asd_print("\nMode Independent Page 7\n");
@@ -3808,6 +3892,117 @@ asd_hwi_dump_lseq_state(struct asd_softc *asd, u_int lseq_id)
 	}
 
 	asd_hwi_swb_write_word(asd, LmSMDBGCTL(lseq_id), saved_reg16);
+}
+
+/**
+ * asd_dump_ddb_site -- dump a CSEQ DDB site
+ * @asd_ha: pointer to host adapter structure
+ * @site_no: site number of interest
+ */
+void asd_hwi_dump_ddb_site_raw(struct asd_softc *asd, uint16_t site_no)
+{
+	uint16_t	index;
+
+	if (site_no >= asd->hw_profile.max_ddbs)
+		return;
+
+	for (index = 0; index < 0x80 ; index+=16) {
+		asd_log(ASD_DBG_INFO,"%02x : %02x %02x %02x %02x %02x %02x %02x %02x - %02x %02x %02x %02x %02x %02x %02x %02x\n",\
+                           index,\
+                           asd_hwi_get_ddbsite_byte(asd,index),\
+                           asd_hwi_get_ddbsite_byte(asd,index+1),\
+                           asd_hwi_get_ddbsite_byte(asd,index+2),\
+                           asd_hwi_get_ddbsite_byte(asd,index+3),\
+                           asd_hwi_get_ddbsite_byte(asd,index+4),\
+                           asd_hwi_get_ddbsite_byte(asd,index+5),\
+                           asd_hwi_get_ddbsite_byte(asd,index+6),\
+                           asd_hwi_get_ddbsite_byte(asd,index+7),\
+                           asd_hwi_get_ddbsite_byte(asd,index+8),\
+                           asd_hwi_get_ddbsite_byte(asd,index+9),\
+                           asd_hwi_get_ddbsite_byte(asd,index+10),\
+                           asd_hwi_get_ddbsite_byte(asd,index+11),\
+                           asd_hwi_get_ddbsite_byte(asd,index+12),\
+                           asd_hwi_get_ddbsite_byte(asd,index+13),\
+                           asd_hwi_get_ddbsite_byte(asd,index+14),\
+                           asd_hwi_get_ddbsite_byte(asd,index+15));
+	}
+}
+void asd_hwi_dump_ddb_sites_raw(struct asd_softc *asd)
+{
+	uint16_t site_no;
+	u8	opcode;
+	for (site_no = 1; site_no < asd->hw_profile.max_ddbs; site_no++) {
+		/* We are only interested in DDB sites currently used.
+                 * Re-use opcode to store the connection rate.
+		 */
+		/* Setup the hardware DDB site. */
+		asd_hwi_set_ddbptr(asd, site_no);
+
+		opcode=asd_hwi_get_ddbsite_byte(asd,0x0f);
+		asd_log(ASD_DBG_INFO,"DDB: %x\n",site_no);
+
+		asd_hwi_dump_ddb_site_raw(asd, site_no);
+	}
+}
+void asd_hwi_dump_scb_site_raw(struct asd_softc *asd, uint16_t site_no)
+{
+
+	uint16_t	index;
+
+	for (index = 0; index < ASD_SCB_SIZE; index+=16) {
+		asd_log(ASD_DBG_INFO,"%02x : %02x %02x %02x %02x %02x %02x %02x %02x - %02x %02x %02x %02x %02x %02x %02x %02x\n",\
+                           index,\
+                           asd_hwi_get_scbsite_byte(asd,index),\
+                           asd_hwi_get_scbsite_byte(asd, index+1),\
+                           asd_hwi_get_scbsite_byte(asd, index+2),\
+                           asd_hwi_get_scbsite_byte(asd, index+3),\
+                           asd_hwi_get_scbsite_byte(asd, index+4),\
+                           asd_hwi_get_scbsite_byte(asd, index+5),\
+                           asd_hwi_get_scbsite_byte(asd, index+6),\
+                           asd_hwi_get_scbsite_byte(asd, index+7),\
+                           asd_hwi_get_scbsite_byte(asd, index+8),\
+                           asd_hwi_get_scbsite_byte(asd, index+9),\
+                           asd_hwi_get_scbsite_byte(asd, index+10),\
+                           asd_hwi_get_scbsite_byte(asd, index+11),\
+                           asd_hwi_get_scbsite_byte(asd, index+12),\
+                           asd_hwi_get_scbsite_byte(asd, index+13),\
+                           asd_hwi_get_scbsite_byte(asd, index+14),\
+                           asd_hwi_get_scbsite_byte(asd, index+15));
+	}
+}
+/*
+ * Function:
+ *	asd_hwi_init_scb_sites()
+ *
+ * Description:
+ *	Initialize HW SCB sites.
+ */
+void asd_hwi_dump_scb_sites_raw(struct asd_softc *asd)
+{
+	uint16_t	site_no;
+	u8	opcode;
+
+#ifndef EXTENDED_SCB
+	for (site_no = 0; site_no < ASD_MAX_SCB_SITES; site_no++) {
+#else
+	for (site_no = 0; site_no < (ASD_MAX_SCB_SITES + ASD_EXTENDED_SCB_NUMBER); site_no++) {
+#endif
+		/*
+		 * Adjust to the SCB site that we want to access in command
+		 * context memory.
+		 */
+		asd_hwi_set_scbptr(asd, site_no);
+		/* We are only interested in SCB sites currently used.
+		 */
+		opcode = asd_hwi_get_scbsite_byte(asd,10);
+		if (opcode == 0xFF)
+			continue;
+
+		asd_log(ASD_DBG_INFO,"\nSCB: 0x%x\n", site_no);
+		asd_hwi_dump_scb_site_raw(asd, site_no);
+	}
+
+
 }
 
 void

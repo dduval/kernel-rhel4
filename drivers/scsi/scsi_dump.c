@@ -57,7 +57,7 @@
 #define Info(x, ...)	pr_info ("scsi_dump: " x "\n", ## __VA_ARGS__)
 
 /* blocks to 512byte sectors */
-#define BLOCK_SECTOR(s)	((s) << (DUMP_BLOCK_SHIFT - 9))
+#define BLOCK_SECTOR(s)	(((sector_t)s) << (DUMP_BLOCK_SHIFT - 9))
 
 static int set_wce = 1;
 module_param_named(set_wce, set_wce, bool, S_IRUGO|S_IWUSR);
@@ -130,6 +130,16 @@ static void init_scsi_command(struct scsi_device *sdev, struct scsi_cmnd *scmd,
 	scmd->eh_timeout.function	= eh_timeout;
 }
 
+/* TEST UNIT READY */
+static void init_test_unit_ready_command(struct scsi_device *sdev,
+					 struct scsi_cmnd * scmd)
+{
+	memset(scmd, 0, sizeof(*scmd));
+	scmd->cmnd[0] = TEST_UNIT_READY;
+
+	init_scsi_command(sdev, scmd, NULL, 0, DMA_NONE, 1);
+}
+
 /* MODE SENSE */
 static void init_mode_sense_command(struct scsi_device *sdev,
 				    struct scsi_cmnd *scmd, void *buf)
@@ -178,14 +188,14 @@ static void init_sense_command(struct scsi_device *sdev, struct scsi_cmnd *scmd,
 /* READ/WRITE */
 static int init_rw_command(struct disk_dump_partition *dump_part,
 			   struct scsi_device *sdev, struct scsi_cmnd * scmd,
-			   int rw, int block, void *buf, unsigned int len)
+			   int rw, sector_t block, void *buf, unsigned int len)
 {
 	int this_count = len >> 9;
 
 	memset(scmd, 0, sizeof(*scmd));
 
 	if (block + this_count > dump_part->nr_sects) {
-		Err("block number %d is larger than %lu",
+		Err("block number %Lu is larger than %Lu",
 				block + this_count, dump_part->nr_sects);
 		return -EFBIG;
 	}
@@ -503,10 +513,9 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 {
 	struct Scsi_Host *host = sdev->host;
 	struct scsi_host_template *hostt = host->hostt;
-	char *buf = cmnd_buf;
 	int ret, i;
 
-	init_sense_command(sdev, &scsi_dump_cmnd, buf);
+	init_test_unit_ready_command(sdev, &scsi_dump_cmnd);
 
 	if (hostt->eh_host_reset_handler) {
 		spin_lock(host->host_lock);
@@ -529,7 +538,7 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 		diskdump_mdelay(1);
 	}
 
-	Dbg("request sense");
+	Dbg("test unit ready");
 	if ((ret = send_command(&scsi_dump_cmnd)) < 0) {
 		Err("sense failed");
 		return -EIO;
@@ -566,7 +575,7 @@ static int scsi_dump_rw_block(struct disk_dump_partition *dump_part, int rw,
 {
 	struct disk_dump_device *dump_device = dump_part->device;
 	struct scsi_device *sdev = dump_device->device;
-	int block_nr = BLOCK_SECTOR(dump_block_nr);
+	sector_t block_nr = BLOCK_SECTOR(dump_block_nr);
 	int ret;
 
 	if (!quiesce_ok) {

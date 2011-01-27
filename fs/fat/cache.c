@@ -12,6 +12,8 @@
 #include <linux/msdos_fs.h>
 #include <linux/buffer_head.h>
 
+static DEFINE_SPINLOCK(fat12_entry_lock);
+
 int __fat_access(struct super_block *sb, int nr, int new_value)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
@@ -54,12 +56,14 @@ int __fat_access(struct super_block *sb, int nr, int new_value)
 		next = CF_LE_W(((__le16 *) bh->b_data)[(first &
 		    (sb->s_blocksize - 1)) >> 1]);
 	} else {
+		spin_lock(&fat12_entry_lock);
 		p_first = &((__u8 *)bh->b_data)[first & (sb->s_blocksize - 1)];
 		p_last = &((__u8 *)bh2->b_data)[(first + 1) & (sb->s_blocksize - 1)];
 		if (nr & 1)
 			next = ((*p_first >> 4) | (*p_last << 4)) & 0xfff;
 		else
 			next = (*p_first+(*p_last << 8)) & 0xfff;
+		spin_unlock(&fat12_entry_lock);
 	}
 	if (new_value != -1) {
 		if (sbi->fat_bits == 32) {
@@ -69,6 +73,7 @@ int __fat_access(struct super_block *sb, int nr, int new_value)
 			((__le16 *)bh->b_data)[(first & (sb->s_blocksize - 1)) >> 1]
 				= CT_LE_W(new_value);
 		} else {
+			spin_lock(&fat12_entry_lock);
 			if (nr & 1) {
 				*p_first = (*p_first & 0xf) | (new_value << 4);
 				*p_last = new_value >> 4;
@@ -77,6 +82,7 @@ int __fat_access(struct super_block *sb, int nr, int new_value)
 				*p_first = new_value & 0xff;
 				*p_last = (*p_last & 0xf0) | (new_value >> 8);
 			}
+			spin_unlock(&fat12_entry_lock);
 			mark_buffer_dirty(bh2);
 		}
 		mark_buffer_dirty(bh);

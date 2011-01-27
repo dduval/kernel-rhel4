@@ -85,9 +85,6 @@ static ssize_t show_num_units(struct device_driver *dev, char *buf)
 }
 
 static ssize_t show_status(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			   struct device_attribute *attr,
-#endif
 			   char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -120,9 +117,6 @@ static const char *ipath_status_str[] = {
 };
 
 static ssize_t show_status_str(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			       struct device_attribute *attr,
-#endif
 			       char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -160,9 +154,6 @@ bail:
 }
 
 static ssize_t show_boardversion(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			       struct device_attribute *attr,
-#endif
 			       char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -171,9 +162,6 @@ static ssize_t show_boardversion(struct device *dev,
 }
 
 static ssize_t show_lid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			struct device_attribute *attr,
-#endif
 			char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -182,9 +170,6 @@ static ssize_t show_lid(struct device *dev,
 }
 
 static ssize_t store_lid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
@@ -211,9 +196,6 @@ bail:
 }
 
 static ssize_t show_mlid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			 char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -222,22 +204,16 @@ static ssize_t show_mlid(struct device *dev,
 }
 
 static ssize_t store_mlid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
-	int unit;
 	u16 mlid;
 	int ret;
 
 	ret = ipath_parse_ushort(buf, &mlid);
 	if (ret < 0 || mlid < IPATH_MULTICAST_LID_BASE)
 		goto invalid;
-
-	unit = dd->ipath_unit;
 
 	dd->ipath_mlid = mlid;
 
@@ -249,9 +225,6 @@ bail:
 }
 
 static ssize_t show_guid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			 char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -266,16 +239,13 @@ static ssize_t show_guid(struct device *dev,
 }
 
 static ssize_t store_guid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
 	ssize_t ret;
 	unsigned short guid[8];
-	__be64 nguid;
+	__be64 new_guid;
 	u8 *ng;
 	int i;
 
@@ -284,7 +254,7 @@ static ssize_t store_guid(struct device *dev,
 		   &guid[4], &guid[5], &guid[6], &guid[7]) != 8)
 		goto invalid;
 
-	ng = (u8 *) &nguid;
+	ng = (u8 *) &new_guid;
 
 	for (i = 0; i < 8; i++) {
 		if (guid[i] > 0xff)
@@ -292,7 +262,10 @@ static ssize_t store_guid(struct device *dev,
 		ng[i] = guid[i];
 	}
 
-	dd->ipath_guid = nguid;
+	if (new_guid == 0)
+		goto invalid;
+
+	dd->ipath_guid = new_guid;
 	dd->ipath_nguid = 1;
 
 	ret = strlen(buf);
@@ -307,9 +280,6 @@ bail:
 }
 
 static ssize_t show_nguid(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			  struct device_attribute *attr,
-#endif
 			  char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -317,10 +287,16 @@ static ssize_t show_nguid(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%u\n", dd->ipath_nguid);
 }
 
+static ssize_t show_nports(struct device *dev,
+			   char *buf)
+{
+	struct ipath_devdata *dd = dev_get_drvdata(dev);
+
+	/* Return the number of user ports available. */
+	return scnprintf(buf, PAGE_SIZE, "%u\n", dd->ipath_cfgports - 1);
+}
+
 static ssize_t show_serial(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			   struct device_attribute *attr,
-#endif
 			   char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -332,9 +308,6 @@ static ssize_t show_serial(struct device *dev,
 }
 
 static ssize_t show_unit(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			 char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -342,21 +315,6 @@ static ssize_t show_unit(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%u\n", dd->ipath_unit);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-#define DEVICE_COUNTER(name, attr) \
-	static ssize_t show_counter_##name(struct device *dev, \
-					   struct device_attribute *attr, \
-					   char *buf) \
-	{ \
-		struct ipath_devdata *dd = dev_get_drvdata(dev); \
-		return scnprintf(\
-			buf, PAGE_SIZE, "%llu\n", (unsigned long long) \
-			ipath_snap_cntr( \
-				dd, offsetof(struct infinipath_counters, \
-					     attr) / sizeof(u64)));	\
-	} \
-	static DEVICE_ATTR(name, S_IRUGO, show_counter_##name, NULL);
-#else
 #define DEVICE_COUNTER(name, attr) \
 	static ssize_t show_counter_##name(struct device *dev, \
 					   char *buf) \
@@ -369,7 +327,6 @@ static ssize_t show_unit(struct device *dev,
 					     attr) / sizeof(u64)));	\
 	} \
 	static DEVICE_ATTR(name, S_IRUGO, show_counter_##name, NULL);
-#endif
 
 DEVICE_COUNTER(ib_link_downeds, IBLinkDownedCnt);
 DEVICE_COUNTER(ib_link_err_recoveries, IBLinkErrRecoveryCnt);
@@ -464,9 +421,6 @@ static struct attribute_group dev_counter_attr_group = {
 };
 
 static ssize_t store_reset(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
@@ -494,9 +448,6 @@ bail:
 }
 
 static ssize_t store_link_state(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
@@ -522,9 +473,6 @@ bail:
 }
 
 static ssize_t show_mtu(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			 char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -532,9 +480,6 @@ static ssize_t show_mtu(struct device *dev,
 }
 
 static ssize_t store_mtu(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
@@ -559,9 +504,6 @@ bail:
 }
 
 static ssize_t show_enabled(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			 char *buf)
 {
 	struct ipath_devdata *dd = dev_get_drvdata(dev);
@@ -570,9 +512,6 @@ static ssize_t show_enabled(struct device *dev,
 }
 
 static ssize_t store_enabled(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			 struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
@@ -613,9 +552,6 @@ bail:
 }
 
 static ssize_t store_rx_pol_inv(struct device *dev,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,13)
-			  struct device_attribute *attr,
-#endif
 			  const char *buf,
 			  size_t count)
 {
@@ -661,6 +597,7 @@ static DEVICE_ATTR(mlid, S_IWUSR | S_IRUGO, show_mlid, store_mlid);
 static DEVICE_ATTR(mtu, S_IWUSR | S_IRUGO, show_mtu, store_mtu);
 static DEVICE_ATTR(enabled, S_IWUSR | S_IRUGO, show_enabled, store_enabled);
 static DEVICE_ATTR(nguid, S_IRUGO, show_nguid, NULL);
+static DEVICE_ATTR(nports, S_IRUGO, show_nports, NULL);
 static DEVICE_ATTR(reset, S_IWUSR, NULL, store_reset);
 static DEVICE_ATTR(serial, S_IRUGO, show_serial, NULL);
 static DEVICE_ATTR(status, S_IRUGO, show_status, NULL);
@@ -676,6 +613,7 @@ static struct attribute *dev_attributes[] = {
 	&dev_attr_mlid.attr,
 	&dev_attr_mtu.attr,
 	&dev_attr_nguid.attr,
+	&dev_attr_nports.attr,
 	&dev_attr_serial.attr,
 	&dev_attr_status.attr,
 	&dev_attr_status_str.attr,

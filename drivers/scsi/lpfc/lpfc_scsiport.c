@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsiport.c 2905 2006-04-13 17:11:39Z sf_support $
+ * $Id: lpfc_scsiport.c 3020 2007-02-28 21:23:36Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/spinlock.h>
@@ -948,6 +948,10 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 	int err = 0;
 	uint16_t nlp_state;
 
+	if (!targetp) {
+		cmnd->result = ScsiResult(DID_NO_CONNECT, 0);
+		goto out_no_target;
+	}
 	targetp->qcmdcnt++;
 
 	/*
@@ -1033,6 +1037,8 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
  out_fail_command:
 	targetp->iodonecnt++;
 	targetp->errorcnt++;
+
+ out_no_target:
 	done(cmnd);
 	return 0;
 }

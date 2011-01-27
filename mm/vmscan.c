@@ -78,6 +78,11 @@ struct scan_control {
 	unsigned int gfp_mask;
 
 	int may_writepage;
+
+	/* Number of IOs started */
+	unsigned int nr_ios;
+
+	int order;			/* order passed in */
 };
 
 /*
@@ -125,6 +130,12 @@ struct shrinker {
  * From 0 .. 100.  Higher means more swappy.
  */
 int vm_swappiness = 60;
+
+/*
+ * From 0 .. 100.  Higher means more inactive memory.
+ */
+int vm_inactive_percent = 0;
+
 static long total_memory;
 
 static LIST_HEAD(shrinker_list);
@@ -180,7 +191,7 @@ EXPORT_SYMBOL(remove_shrinker);
  * are eligible for the caller's allocation attempt.  It is used for balancing
  * slab reclaim versus page reclaim.
  */
-static int shrink_slab(unsigned long scanned, unsigned int gfp_mask,
+int shrink_slab(unsigned long scanned, unsigned int gfp_mask,
 			unsigned long lru_pages)
 {
 	struct shrinker *shrinker;
@@ -437,16 +448,20 @@ static int shrink_list(struct list_head *page_list, struct scan_control *sc)
 			case PAGE_ACTIVATE:
 				goto activate_locked;
 			case PAGE_SUCCESS:
-				if (PageWriteback(page) || PageDirty(page))
+				if (PageWriteback(page) || PageDirty(page)) {
+					sc->nr_ios++;
 					goto keep;
+				}
 				/*
 				 * A synchronous write - probably a ramdisk.  Go
 				 * ahead and try to reclaim the page.
 				 */
 				if (TestSetPageLocked(page))
 					goto keep;
-				if (PageDirty(page) || PageWriteback(page))
+				if (PageDirty(page) || PageWriteback(page)) {
+					sc->nr_ios++;
 					goto keep_locked;
+				}
 				mapping = page_mapping(page);
 			case PAGE_CLEAN:
 				; /* try to free the page below */
@@ -723,12 +738,24 @@ refill_inactive_zone(struct zone *zone, struct scan_control *sc)
 		cond_resched();
 		page = lru_to_page(&l_hold);
 		list_del(&page->lru);
+
+		/* force rebalance if anon page with swap space and the
+		   inactive_list is less than vm_inactive_percent of active_list */
+		if ((zone->nr_active*vm_inactive_percent/100 > zone->nr_inactive) &&
+		    (total_swap_pages && PageAnon(page))) {
+			int referenced;
+
+			referenced = page_referenced(page, 0, sc->priority <= 0);
+			list_add(&page->lru, &l_inactive);
+			continue;
+		}
+
 		if (page_mapped(page)) {
 			if (!reclaim_mapped ||
-			    (total_swap_pages == 0 && PageAnon(page)) ||
-			    page_referenced(page, 0, sc->priority <= 0)) {
-				list_add(&page->lru, &l_active);
-				continue;
+				(total_swap_pages == 0 && PageAnon(page)) ||
+				page_referenced(page, 0, sc->priority <= 0)) {
+					list_add(&page->lru, &l_active);
+					continue;
 			}
 		}
 		list_add(&page->lru, &l_inactive);
@@ -820,6 +847,10 @@ shrink_zone(struct zone *zone, struct scan_control *sc)
 	sc->nr_to_reclaim = SWAP_CLUSTER_MAX;
 
 	while (nr_active || nr_inactive) {
+		/* stop after we are way above pages_high, someone might have exited */
+		if ((zone->free_pages > zone->pages_high*2) && !sc->order)
+			break;
+
 		if (nr_active) {
 			sc->nr_to_scan = min(nr_active,
 					(unsigned long)SWAP_CLUSTER_MAX);
@@ -834,6 +865,13 @@ shrink_zone(struct zone *zone, struct scan_control *sc)
 			shrink_cache(zone, sc);
 			if (sc->nr_to_reclaim <= 0)
 				break;
+		/* get whatever we can if inactive is less than vm_inactive_percent of active */ 
+		} else if (zone->nr_active*vm_inactive_percent/100 > zone->nr_inactive) {
+			sc->nr_to_scan = min(zone->nr_active,
+                                        (unsigned long)SWAP_CLUSTER_MAX);
+			shrink_cache(zone, sc);
+                        if (sc->nr_to_reclaim <= 0)
+                                break;
 		}
 	}
 
@@ -922,6 +960,7 @@ int try_to_free_pages(struct zone **zones,
 
 	sc.gfp_mask = gfp_mask;
 	sc.may_writepage = 0;
+	sc.order = order;
 
 	inc_page_state(allocstall);
 
@@ -938,6 +977,7 @@ int try_to_free_pages(struct zone **zones,
 		sc.nr_reclaimed = 0;
 		sc.nr_congested = 0;
 		sc.priority = priority;
+		sc.nr_ios = 0;
 		shrink_caches(zones, &sc);
 		shrink_slab(sc.nr_scanned, gfp_mask, lru_pages);
 		if (reclaim_state) {
@@ -964,7 +1004,7 @@ int try_to_free_pages(struct zone **zones,
 		}
 
 		/* Take a nap, wait for some writeback to complete */
-		if (sc.nr_scanned && priority < DEF_PRIORITY - 2)
+		if (sc.nr_scanned && sc.nr_ios && priority < DEF_PRIORITY - 2)
 			blk_congestion_wait(WRITE, HZ/10);
 	}
 	if ((gfp_mask & __GFP_FS) && !(gfp_mask & __GFP_NORETRY) &&
@@ -1018,6 +1058,7 @@ loop_again:
 	sc.gfp_mask = GFP_KERNEL;
 	sc.may_writepage = 0;
 	sc.nr_mapped = read_page_state(nr_mapped);
+	sc.order = nr_pages?1:0;
 
 	inc_page_state(pageoutrun);
 
@@ -1031,6 +1072,7 @@ loop_again:
 		int end_zone = 0;	/* Inclusive.  0 = ZONE_DMA */
 		unsigned long lru_pages = 0;
 
+		sc.nr_ios = 0;
 		all_zones_ok = 1;
 
 		if (nr_pages == 0) {
@@ -1121,7 +1163,7 @@ scan:
 		 * OK, kswapd is getting into trouble.  Take a nap, then take
 		 * another pass across the zones.
 		 */
-		if (total_scanned && priority < DEF_PRIORITY - 2)
+		if (total_scanned && sc.nr_ios && priority < DEF_PRIORITY - 2)
 			blk_congestion_wait(WRITE, HZ/10);
 
 		/*

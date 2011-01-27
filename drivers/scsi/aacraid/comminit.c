@@ -55,7 +55,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	const unsigned long fibsize = 4096;
 	const unsigned long printfbufsiz = 256;
 	struct aac_init *init;
-	dma_addr_t phys;
+	dma_addr_t phys = 0;
 
 	size = fibsize + sizeof(struct aac_init) + commsize + commalign + printfbufsiz;
 
@@ -103,7 +103,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	 * This assumes the memory is mapped zero->n, which isnt
 	 * always true on real computers. It also has some slight problems
 	 * with the GART on x86-64. I've btw never tried DMA from PCI space
-	 * on this platform but don't be suprised if its problematic.
+	 * on this platform but don't be surprised if its problematic.
 	 */
 #ifndef CONFIG_GART_IOMMU
 	if ((num_physpages << (PAGE_SHIFT - 12)) <= AAC_MAX_HOSTPHYSMEMPAGES) {
@@ -116,7 +116,7 @@ static int aac_alloc_comm(struct aac_dev *dev, void **commaddr, unsigned long co
 	}
 
 	init->InitFlags = 0;
-	if (dev->new_comm_interface) {
+	if (dev->comm_interface == AAC_COMM_MESSAGE) {
 		init->InitFlags = cpu_to_le32(INITFLAGS_NEW_COMM_SUPPORTED);
 		dprintk((KERN_WARNING"aacraid: New Comm Interface enabled\n"));
 	}
@@ -159,7 +159,6 @@ static void aac_queue_init(struct aac_dev * dev, struct aac_queue * q, u32 *mem,
 {
 	q->numpending = 0;
 	q->dev = dev;
-	INIT_LIST_HEAD(&q->pendingq);
 	init_waitqueue_head(&q->cmdready);
 	INIT_LIST_HEAD(&q->cmdq);
 	init_waitqueue_head(&q->qfull);
@@ -185,26 +184,26 @@ int aac_send_shutdown(struct aac_dev * dev)
 	struct aac_close *cmd;
 	int status;
 
-	fibctx = fib_alloc(dev);
+	fibctx = aac_fib_alloc(dev);
 	if (!fibctx)
 		return -ENOMEM;
-	fib_init(fibctx);
+	aac_fib_init(fibctx);
 
 	cmd = (struct aac_close *) fib_data(fibctx);
 
 	cmd->command = cpu_to_le32(VM_CloseAll);
 	cmd->cid = cpu_to_le32(0xffffffff);
 
-	status = fib_send(ContainerCommand,
+	status = aac_fib_send(ContainerCommand,
 			  fibctx,
 			  sizeof(struct aac_close),
 			  FsaNormal,
 			  -2 /* Timeout silently */, 1,
 			  NULL, NULL);
 
-	if (status == 0)
-		fib_complete(fibctx);
-	fib_free(fibctx);
+	if (status >= 0)
+		aac_fib_complete(fibctx);
+	aac_fib_free(fibctx);
 	return status;
 }
 
@@ -315,31 +314,28 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	 *	Check the preferred comm settings, defaults from template.
 	 */
 	dev->max_fib_size = sizeof(struct hw_fib);
-	dev->sg_tablesize = host->sg_tablesize = 16;
-	dev->new_comm_interface = 0;
+	dev->sg_tablesize = host->sg_tablesize = (dev->max_fib_size
+		- sizeof(struct aac_fibhdr)
+		- sizeof(struct aac_write) + sizeof(struct sgentry))
+			/ sizeof(struct sgentry);
+	dev->comm_interface = AAC_COMM_PRODUCER;
 	dev->raw_io_64 = 0;
 	if ((!aac_adapter_sync_cmd(dev, GET_ADAPTER_PROPERTIES,
 		0, 0, 0, 0, 0, 0, status+0, status+1, status+2, NULL, NULL)) &&
 	 		(status[0] == 0x00000001)) {
 		if (status[1] & AAC_OPT_NEW_COMM_64)
 			dev->raw_io_64 = 1;
-		if (status[1] & AAC_OPT_NEW_COMM)
-			dev->new_comm_interface = dev->a_ops.adapter_send != 0;
-		if (dev->new_comm_interface
-		 && (status[2] > dev->base_size)) {
-			iounmap((void * )dev->regs.sa);
+		if (dev->a_ops.adapter_comm &&
+		    (status[1] & AAC_OPT_NEW_COMM))
+			dev->comm_interface = AAC_COMM_MESSAGE;
+		if ((dev->comm_interface == AAC_COMM_MESSAGE) &&
+		    (status[2] > dev->base_size)) {
+			aac_adapter_ioremap(dev, 0);
 			dev->base_size = status[2];
-			dprintk((KERN_DEBUG "ioremap(%lx,%d)\n",
-			  dev->scsi_host_ptr->base, status[2]));
-			if ((dev->regs.sa = (struct sa_registers *)ioremap(
-			  (unsigned long)dev->scsi_host_ptr->base, status[2]))
-			  == NULL) {
+			if (aac_adapter_ioremap(dev, status[2])) {
 				/* remap failed, go back ... */
-				dev->new_comm_interface = 0;
-				if ((dev->regs.sa
-				  = (struct sa_registers *)ioremap(
-				    (unsigned long)dev->scsi_host_ptr->base,
-				    AAC_MIN_FOOTPRINT_SIZE)) == NULL) {	
+				dev->comm_interface = AAC_COMM_PRODUCER;
+				if (aac_adapter_ioremap(dev, AAC_MIN_FOOTPRINT_SIZE)) {
 					printk(KERN_WARNING
 					  "aacraid: unable to map adapter.\n");
 					return NULL;
@@ -370,9 +366,12 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 		 *	acbsize should be set with caution.
 		 */
 		if (acbsize == 512) {
-			host->max_sectors = 128;
+			host->max_sectors = AAC_MAX_32BIT_SGBCOUNT;
 			dev->max_fib_size = 512;
-			dev->sg_tablesize = host->sg_tablesize = 16;
+			dev->sg_tablesize = host->sg_tablesize
+			  = (512 - sizeof(struct aac_fibhdr)
+			    - sizeof(struct aac_write) + sizeof(struct sgentry))
+			     / sizeof(struct sgentry);
 			host->can_queue = AAC_NUM_IO_FIB;
 		} else if (acbsize == 2048) {
 			host->max_sectors = 512;
@@ -424,13 +423,12 @@ struct aac_dev *aac_init_adapter(struct aac_dev *dev)
 	/*
 	 *	Initialize the list of fibs
 	 */
-	if(fib_setup(dev)<0){
+	if (aac_fib_setup(dev) < 0) {
 		kfree(dev->queues);
 		return NULL;
 	}
 		
 	INIT_LIST_HEAD(&dev->fib_list);
-	init_completion(&dev->aif_completion);
 
 	return dev;
 }

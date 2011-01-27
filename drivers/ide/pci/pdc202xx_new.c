@@ -524,6 +524,19 @@ static int __devinit pdc202new_init_one(struct pci_dev *dev, const struct pci_de
 {
 	ide_pci_device_t *d = &pdcnew_chipsets[id->driver_data];
 
+#ifdef __powerpc64__
+	/* Skip using the IDE device driver on IBM p5 machines
+	 * to load the libata hotplug driver instead later
+	 */
+	if (dev->bus->self &&
+	    dev->bus->self->vendor == PCI_VENDOR_ID_IBM &&
+	    dev->bus->self->device == 0x0188) {
+		printk(KERN_INFO "ide: Skipping Promise PDC2027X "
+		       "on IBM p5 machines.\n");
+		return -ENODEV;
+	}
+#endif
+
 	d->init_setup(dev, d);
 	return 0;
 }

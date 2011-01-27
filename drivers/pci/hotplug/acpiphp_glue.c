@@ -781,6 +781,8 @@ static void program_hpp(struct pci_dev *dev, struct acpiphp_bridge *bridge)
 			(dev->hdr_type == PCI_HEADER_TYPE_BRIDGE &&
 			(dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)))
 		return;
+	if ((dev->class >> 8) == PCI_CLASS_BRIDGE_HOST)
+		return;
 	pci_write_config_byte(dev, PCI_CACHE_LINE_SIZE,
 			bridge->hpp.cache_line_size);
 	pci_write_config_byte(dev, PCI_LATENCY_TIMER,

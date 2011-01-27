@@ -36,6 +36,13 @@ extern int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 extern void dma_unmap_sg(struct device *dev, struct scatterlist *sg,
 		int nhwentries, enum dma_data_direction direction);
 
+#ifdef CONFIG_IBMEBUS
+dma64_addr_t dma64_map_single(struct device *dev, void *cpu_addr, size_t size,
+			      enum dma_data_direction direction);
+void dma64_unmap_single(struct device *dev, dma64_addr_t dma_addr, size_t size,
+			enum dma_data_direction direction);
+#endif
+
 static inline void
 dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle, size_t size,
 			enum dma_data_direction direction)

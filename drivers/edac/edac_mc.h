@@ -31,6 +31,7 @@
 #include <linux/nmi.h>
 #include <linux/rcupdate.h>
 #include <linux/completion.h>
+#include <linux/kobject.h>
 
 
 #define	EDAC_MC_VER	"MC $Revision: 1.3 $"
@@ -100,7 +101,10 @@ enum mem_type {
 	MEM_RDR,		/* Registered single data rate SDRAM */
 	MEM_DDR,		/* Double data rate SDRAM */
 	MEM_RDDR,		/* Registered Double data rate SDRAM */
-	MEM_RMBS		/* Rambus DRAM */
+	MEM_RMBS,		/* Rambus DRAM */
+	MEM_DDR2,		/* DDR2 RAM */
+	MEM_FB_DDR2,		/* fully buffered DDR2 */
+	MEM_RDDR2,		/* Registered DDR2 RAM */
 };
 
 #define MEM_FLAG_EMPTY		BIT(MEM_EMPTY)
@@ -114,6 +118,9 @@ enum mem_type {
 #define MEM_FLAG_DDR		BIT(MEM_DDR)
 #define MEM_FLAG_RDDR		BIT(MEM_RDDR)
 #define MEM_FLAG_RMBS		BIT(MEM_RMBS)
+#define MEM_FLAG_DDR2		BIT(MEM_DDR2)
+#define MEM_FLAG_FB_DDR2	BIT(MEM_FB_DDR2)
+#define MEM_FLAG_RDDR2		BIT(MEM_RDDR2)
 
 
 /* chipset Error Detection and Correction capabilities and mode */
@@ -272,6 +279,10 @@ struct csrow_info {
 	enum mem_type mtype;	/* memory csrow type */
 	enum edac_type edac_mode;	/* EDAC mode for this csrow */
 	struct mem_ctl_info *mci;	/* the parent */
+
+	struct kobject kobj;	/* sysfs kobject for this csrow */
+	struct completion kobj_complete;
+
 	/* FIXME the number of CHANNELs might need to become dynamic */
 	u32 nr_channels;
 	struct channel_info *channels;
@@ -325,6 +336,10 @@ struct mem_ctl_info {
 	 */
 	struct rcu_head rcu;
 	struct completion complete;
+
+	/* edac sysfs device control */
+	struct kobject edac_mci_kobj;
+	struct completion kobj_complete;
 };
 
 

@@ -73,6 +73,8 @@ static const char* host_info(struct Scsi_Host *host)
 static int slave_alloc (struct scsi_device *sdev)
 {
 	struct us_data *us = (struct us_data *) sdev->host->hostdata[0];
+	unsigned short vendor, product;
+
 	/*
 	 * Set default bflags. These can be overridden for individual
 	 * models and vendors via the scsi devinfo mechanism.  The only
@@ -82,14 +84,25 @@ static int slave_alloc (struct scsi_device *sdev)
 	 */
 	sdev->sdev_bflags = BLIST_INQUIRY_36;
 
+	/* Host byte order on RHEL-4 */
+	vendor = us->pusb_dev->descriptor.idVendor;
+	product = us->pusb_dev->descriptor.idProduct;
+
 	/*
+	 * RHEL4 kernel treats SCSI devices as single LUN by default.
+	 * Here, we force multi-LUN for cases where setting
+	 * scsi_mod.max_luns in grub.conf is difficult for users.
+	 * Usually, it's some kind of a bootable device.
+	 *
 	 * IBM BladeCenter H, the MM2, is a multi-LUN USB device. 
-	 * RHEL4 kernel treats SCSI devices as single LUN by default, 
-	 * therefore we will force USB devices on the BladeCenter as multi-LUN.
+	 *
+	 * HP has an odd multi-LUN USB key which posts generic inquiry
+	 * strings, so we can't match them in scsi_scan.c.
 	 */
-	if ((us->pusb_dev->descriptor.idVendor == USB_VENDOR_ID_IBM) &&
-		((us->pusb_dev->descriptor.idProduct >= 0x4003) &&
-		 (us->pusb_dev->descriptor.idProduct <= 0x400F)))
+	if ((vendor == USB_VENDOR_ID_IBM &&
+		(product >= 0x4003 && product <= 0x400F)) ||
+	    (vendor == USB_VENDOR_ID_HP &&
+		(product == 0x0523 || product == 0x0623)))
 	{
 		sdev->sdev_bflags |= BLIST_FORCELUN;
 	}

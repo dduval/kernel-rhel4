@@ -181,8 +181,10 @@ static int smb_setup_request(struct smb_request *req)
 	req->rq_err = 0;
 	req->rq_errno = 0;
 	req->rq_fragment = 0;
-	if (req->rq_trans2buffer)
+	if (req->rq_trans2buffer != NULL) {
 		smb_kfree(req->rq_trans2buffer);
+		req->rq_trans2buffer = NULL;
+	}
 
 	return 0;
 }
@@ -339,9 +341,11 @@ int smb_add_request(struct smb_request *req)
 		/*
 		 * On timeout or on interrupt we want to try and remove the
 		 * request from the recvq/xmitq.
+		 * First check if the request is still part of a queue. (May
+		 * have been removed by some error condition)
 		 */
 		smb_lock_server(server);
-		if (!(req->rq_flags & SMB_REQ_RECEIVED)) {
+		if (!list_empty(&req->rq_queue)) {
 			list_del_init(&req->rq_queue);
 			smb_rput(req);
 		}

@@ -3988,6 +3988,7 @@ int sym_compute_residual(hcb_p np, ccb_p cp)
 		resid += (tmp & 0xffffff);
 	}
 
+	resid -= cp->odd_byte_adjustment;
 	/*
 	 *  Hopefully, the result is not too wrong.
 	 */
@@ -4875,6 +4876,7 @@ ccb_p sym_get_ccb (hcb_p np, u_char tn, u_char ln, u_char tag_order)
 	 *  Remember all informations needed to free this CCB.
 	 */
 	cp->to_abort = 0;
+	cp->odd_byte_adjustment = 0;
 	cp->tag	   = tag;
 	cp->order  = tag_order;
 	cp->target = tn;

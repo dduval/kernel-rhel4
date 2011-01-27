@@ -37,6 +37,7 @@
 
 #include <linux/errno.h>
 #include <asm/checksum.h>
+
 static inline
 unsigned int csum_partial_copy_from_user_new (const char *src, char *dst,
 						 int len, unsigned int sum,
@@ -56,6 +57,7 @@ unsigned int csum_partial_copy_from_user_new (const char *src, char *dst,
 #include <linux/socket.h>
 #include <net/protocol.h>
 #include <net/inet_common.h>
+#include <linux/proc_fs.h>
 #include <rdma/rdma_cm.h>
 #include <rdma/ib_verbs.h>
 /* TODO: remove when sdp_socket.h becomes part of include/linux/socket.h */
@@ -110,7 +112,32 @@ static int recv_poll = 1000;
 module_param_named(recv_poll, recv_poll, int, 0644);
 MODULE_PARM_DESC(recv_poll, "How many times to poll recv.");
 
+static int send_poll_thresh = 8192;
+
+module_param_named(send_poll_thresh, send_poll_thresh, int, 0644);
+MODULE_PARM_DESC(send_poll_thresh, "Send message size thresh hold over which to start polling.");
+
 struct workqueue_struct *sdp_workqueue;
+
+static struct list_head sock_list;
+static spinlock_t sock_list_lock;
+
+DEFINE_RWLOCK(device_removal_lock);
+
+inline void sdp_add_sock(struct sdp_sock *ssk)
+{
+	spin_lock_irq(&sock_list_lock);
+	list_add_tail(&ssk->sock_list, &sock_list);
+	spin_unlock_irq(&sock_list_lock);
+}
+
+inline void sdp_remove_sock(struct sdp_sock *ssk)
+{
+	spin_lock_irq(&sock_list_lock);
+	BUG_ON(list_empty(&sock_list));
+	list_del_init(&(ssk->sock_list));
+	spin_unlock_irq(&sock_list_lock);
+}
 
 static int sdp_get_port(struct sock *sk, unsigned short snum)
 {
@@ -166,6 +193,7 @@ static void sdp_destroy_qp(struct sdp_sock *ssk)
 			skb = sdp_recv_completion(ssk, ssk->rx_tail);
 			if (!skb)
 				break;
+			atomic_sub(SDP_MAX_SEND_SKB_FRAGS, &sdp_current_mem_usage);
 			__kfree_skb(skb);
 		}
 		while (ssk->tx_head != ssk->tx_tail) {
@@ -186,6 +214,9 @@ static void sdp_destroy_qp(struct sdp_sock *ssk)
 	if (pd)
 		ib_dealloc_pd(pd);
 
+	if (ssk->recv_frags)
+		sdp_remove_large_sock();
+
 	kfree(ssk->rx_ring);
 	kfree(ssk->tx_ring);
 }
@@ -196,10 +227,12 @@ void sdp_reset_sk(struct sock *sk, int rc)
 
 	sdp_dbg(sk, "%s\n", __func__);
 
+	read_lock(&device_removal_lock);
+
 	if (ssk->cq)
 		sdp_poll_cq(ssk, ssk->cq);
 
-	if (!(sk->sk_shutdown & RCV_SHUTDOWN))
+	if (!(sk->sk_shutdown & RCV_SHUTDOWN) || !sk_stream_memory_free(sk))
 		sdp_set_error(sk, rc);
 
 	sdp_destroy_qp(ssk);
@@ -212,6 +245,8 @@ void sdp_reset_sk(struct sock *sk, int rc)
 	}
 
 	sk->sk_state_change(sk);
+
+	read_unlock(&device_removal_lock);
 }
 
 /* Like tcp_reset */
@@ -278,6 +313,8 @@ static void sdp_destruct(struct sock *sk)
 
 	sdp_dbg(sk, "%s\n", __func__);
 
+	sdp_remove_sock(ssk);
+	
 	sdp_close_sk(sk);
 
 	if (ssk->parent)
@@ -289,6 +326,7 @@ static void sdp_destruct(struct sock *sk)
 	list_for_each_entry_safe(s, t, &ssk->accept_queue, accept_queue) {
 		sk_common_release(&s->isk.sk);
 	}
+
 done:
 	sdp_dbg(sk, "%s done\n", __func__);
 }
@@ -484,10 +522,34 @@ static int sdp_disconnect(struct sock *sk, int flags)
 {
 	struct sdp_sock *ssk = sdp_sk(sk);
 	int rc = 0;
+	int old_state = sk->sk_state;
+	struct sdp_sock *s, *t;
+	struct rdma_cm_id *id;
+
 	sdp_dbg(sk, "%s\n", __func__);
 	if (ssk->id)
 		rc = rdma_disconnect(ssk->id);
-	return rc;
+
+	if (old_state != TCP_LISTEN)
+		return rc;
+
+	sdp_set_state(sk, TCP_CLOSE);
+	id = ssk->id;
+	ssk->id = NULL;
+	release_sock(sk); /* release socket since locking semantics is parent
+			     inside child */
+	rdma_destroy_id(id);
+
+	list_for_each_entry_safe(s, t, &ssk->backlog_queue, backlog_queue) {
+		sk_common_release(&s->isk.sk);
+	}
+	list_for_each_entry_safe(s, t, &ssk->accept_queue, accept_queue) {
+		sk_common_release(&s->isk.sk);
+	}
+
+	lock_sock(sk);
+
+	return 0;
 }
 
 /* Like inet_csk_wait_for_connect */
@@ -546,8 +608,8 @@ static int sdp_wait_for_connect(struct sock *sk, long timeo)
 /* Like inet_csk_accept */
 static struct sock *sdp_accept(struct sock *sk, int flags, int *err)
 {
-	struct sdp_sock *newssk, *ssk;
-	struct sock *newsk;
+	struct sdp_sock *newssk = NULL, *ssk;
+	struct sock *newsk = NULL;
 	int error;
 
 	sdp_dbg(sk, "%s state %d expected %d *err %d\n", __func__,
@@ -599,7 +661,6 @@ out:
 	return newsk;
 out_err:
 	sdp_dbg(sk, "%s: error %d\n", __func__, error);
-	newsk = NULL;
 	*err = error;
 	goto out;
 }
@@ -638,6 +699,15 @@ static int sdp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 	case SIOCATMARK:
 		answ = ssk->urg_data && ssk->urg_seq == ssk->copied_seq;
 		break;
+	case SIOCOUTQ:
+		if (sk->sk_state == TCP_LISTEN)
+			return -EINVAL;
+
+		if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))
+			answ = 0;
+		else
+			answ = ssk->write_seq - ssk->snd_una;
+		break;
 	default:
 		return -ENOIOCTLCMD;
 	}
@@ -647,9 +717,10 @@ static int sdp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 	return put_user(answ, (int __user *)arg); 
 }
 
-void sdp_destroy_work(void *data)
+void sdp_destroy_work(struct work_struct *work)
 {
-	struct sock *sk = data;
+	struct sdp_sock *ssk = container_of(work, struct sdp_sock, destroy_work);
+	struct sock *sk = &ssk->isk.sk;
 	sdp_dbg(sk, "%s: refcnt %d\n", __func__, atomic_read(&sk->sk_refcnt));
 
 	cancel_delayed_work(&sdp_sk(sk)->time_wait_work);
@@ -657,9 +728,10 @@ void sdp_destroy_work(void *data)
 	sock_put(sk);
 }
 
-void sdp_time_wait_work(void *data)
+void sdp_time_wait_work(struct work_struct *work)
 {
-	struct sock *sk = data;
+	struct sdp_sock *ssk = container_of(work, struct sdp_sock, time_wait_work.work);
+	struct sock *sk = &ssk->isk.sk;
 	lock_sock(sk);
 	sdp_dbg(sk, "%s\n", __func__);
 
@@ -674,7 +746,7 @@ void sdp_time_wait_work(void *data)
 	sdp_sk(sk)->time_wait = 0;
 	release_sock(sk);
 
-	sock_put(data);
+	sock_put(sk);
 }
 
 void sdp_time_wait_destroy_sk(struct sdp_sock *ssk)
@@ -692,8 +764,8 @@ static int sdp_init_sock(struct sock *sk)
 
 	INIT_LIST_HEAD(&ssk->accept_queue);
 	INIT_LIST_HEAD(&ssk->backlog_queue);
-	INIT_WORK(&ssk->time_wait_work, sdp_time_wait_work, sk);
-	INIT_WORK(&ssk->destroy_work, sdp_destroy_work, sk);
+	INIT_DELAYED_WORK(&ssk->time_wait_work, sdp_time_wait_work);
+	INIT_WORK(&ssk->destroy_work, sdp_destroy_work);
 
 	sk->sk_route_caps |= NETIF_F_SG | NETIF_F_NO_CSUM;
 	return 0;
@@ -724,6 +796,7 @@ static void sdp_mark_push(struct sdp_sock *ssk, struct sk_buff *skb)
 {
 	TCP_SKB_CB(skb)->flags |= TCPCB_FLAG_PSH;
 	ssk->pushed_seq = ssk->write_seq;
+	sdp_post_sends(ssk, 0);
 }
 
 static inline void sdp_push_pending_frames(struct sock *sk)
@@ -1050,7 +1123,7 @@ new_segment:
 				if (sk->sk_route_caps &
 				    (NETIF_F_IP_CSUM | NETIF_F_NO_CSUM |
 				     NETIF_F_HW_CSUM))
-					skb->ip_summed = CHECKSUM_HW;
+					skb->ip_summed = CHECKSUM_PARTIAL;
 
 				skb_entail(sk, ssk, skb);
 				copy = size_goal;
@@ -1085,7 +1158,7 @@ new_segment:
 					/* We can extend the last page
 					 * fragment. */
 					merge = 1;
-				} else if (i == SDP_MAX_SEND_SKB_FRAGS ||
+				} else if (i == ssk->send_frags ||
 					   (!i &&
 					   !(sk->sk_route_caps & NETIF_F_SG))) {
 					/* Need to add new fragment and cannot
@@ -1187,7 +1260,8 @@ wait_for_memory:
 out:
 	if (copied)
 		sdp_push(sk, ssk, flags, mss_now, ssk->nonagle);
-	poll_send_cq(sk);
+	if (size > send_poll_thresh)
+		poll_send_cq(sk);
 	release_sock(sk);
 	return copied;
 
@@ -1614,7 +1688,208 @@ static int sdp_create_socket(struct socket *sock, int protocol)
 
 	sock->ops = &sdp_proto_ops;
 	sock->state = SS_UNCONNECTED;
+
+	sdp_add_sock(sdp_sk(sk));
+
 	return 0;
+}
+
+#ifdef CONFIG_PROC_FS
+
+static void *sdp_get_idx(struct seq_file *seq, loff_t pos)
+{
+	int i = 0;
+	struct sdp_sock *ssk;
+
+	if (!list_empty(&sock_list))
+		list_for_each_entry(ssk, &sock_list, sock_list) {
+			if (i == pos)
+				return ssk;
+			i++;
+		}
+
+	return NULL;
+}
+
+static void *sdp_seq_start(struct seq_file *seq, loff_t *pos)
+{
+	void *start = NULL;
+	struct sdp_iter_state* st = seq->private;
+
+	st->num = 0;
+
+	if (!*pos)
+		return SEQ_START_TOKEN;
+
+	spin_lock_irq(&sock_list_lock);
+	start = sdp_get_idx(seq, *pos - 1);
+	if (start)
+		sock_hold((struct sock *)start);
+	spin_unlock_irq(&sock_list_lock);
+
+	return start;
+}
+
+static void *sdp_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	struct sdp_iter_state* st = seq->private;
+	void *next = NULL;
+
+	spin_lock_irq(&sock_list_lock);
+	if (v == SEQ_START_TOKEN)
+		next = sdp_get_idx(seq, 0);
+	else
+		next = sdp_get_idx(seq, *pos);
+	if (next)
+		sock_hold((struct sock *)next);
+	spin_unlock_irq(&sock_list_lock);
+
+	*pos += 1;
+	st->num++;
+
+	return next;
+}
+
+static void sdp_seq_stop(struct seq_file *seq, void *v)
+{
+}
+
+#define TMPSZ 150
+
+static int sdp_seq_show(struct seq_file *seq, void *v)
+{
+	struct sdp_iter_state* st;
+	struct sock *sk = v;
+	char tmpbuf[TMPSZ + 1];
+	unsigned int dest;
+	unsigned int src;
+	int uid;
+	unsigned long inode;
+	__u16 destp;
+	__u16 srcp;
+	__u32 rx_queue, tx_queue;
+
+	if (v == SEQ_START_TOKEN) {
+		seq_printf(seq, "%-*s\n", TMPSZ - 1,
+				"  sl  local_address rem_address        uid inode"
+				"   rx_queue tx_queue");
+		goto out;
+	}
+
+	st = seq->private;
+
+	dest = inet_sk(sk)->daddr;
+	src = inet_sk(sk)->rcv_saddr;
+	destp = ntohs(inet_sk(sk)->dport);
+	srcp = ntohs(inet_sk(sk)->sport);
+	uid = sock_i_uid(sk);
+	inode = sock_i_ino(sk);
+	rx_queue = sdp_sk(sk)->rcv_nxt - sdp_sk(sk)->copied_seq;
+	tx_queue = sdp_sk(sk)->write_seq - sdp_sk(sk)->snd_una;
+
+	sprintf(tmpbuf, "%4d: %08X:%04X %08X:%04X %5d %lu	%08X:%08X",
+		st->num, src, srcp, dest, destp, uid, inode,
+		rx_queue, tx_queue);
+
+	seq_printf(seq, "%-*s\n", TMPSZ - 1, tmpbuf);
+
+	sock_put(sk);
+out:
+	return 0;
+}
+
+static int sdp_seq_open(struct inode *inode, struct file *file)
+{
+	struct sdp_seq_afinfo *afinfo = PDE(inode)->data;
+	struct seq_file *seq;
+	struct sdp_iter_state *s;
+	int rc;
+
+	if (unlikely(afinfo == NULL))
+		return -EINVAL;
+
+	s = kzalloc(sizeof(*s), GFP_KERNEL);
+	if (!s)
+		return -ENOMEM;
+	s->family               = afinfo->family;
+	s->seq_ops.start        = sdp_seq_start;
+	s->seq_ops.next         = sdp_seq_next;
+	s->seq_ops.show         = afinfo->seq_show;
+	s->seq_ops.stop         = sdp_seq_stop;
+
+	rc = seq_open(file, &s->seq_ops);
+	if (rc)
+		goto out_kfree;
+	seq          = file->private_data;
+	seq->private = s;
+out:
+	return rc;
+out_kfree:
+	kfree(s);
+	goto out;
+}
+
+
+static struct file_operations sdp_seq_fops;
+static struct sdp_seq_afinfo sdp_seq_afinfo = {
+	.owner          = THIS_MODULE,
+	.name           = "sdp",
+	.family         = AF_INET_SDP,
+	.seq_show       = sdp_seq_show,
+	.seq_fops       = &sdp_seq_fops,
+};
+
+
+static int __init sdp_proc_init(void)
+{
+	int rc = 0;
+	struct proc_dir_entry *p;
+
+	sdp_seq_afinfo.seq_fops->owner         = sdp_seq_afinfo.owner;
+	sdp_seq_afinfo.seq_fops->open          = sdp_seq_open;
+	sdp_seq_afinfo.seq_fops->read          = seq_read;
+	sdp_seq_afinfo.seq_fops->llseek        = seq_lseek;
+	sdp_seq_afinfo.seq_fops->release       = seq_release_private;
+
+	p = proc_net_fops_create(sdp_seq_afinfo.name, S_IRUGO, sdp_seq_afinfo.seq_fops);
+	if (p)
+		p->data = &sdp_seq_afinfo;
+	p = proc_net_fops_create(sdp_seq_afinfo.name, S_IRUGO, sdp_seq_afinfo.seq_fops);
+	if (p)
+		p->data = &sdp_seq_afinfo;
+	else
+		rc = -ENOMEM;
+
+	return rc;
+}
+
+static void sdp_proc_unregister(void)
+{
+	proc_net_remove(sdp_seq_afinfo.name);
+	memset(sdp_seq_afinfo.seq_fops, 0, sizeof(*sdp_seq_afinfo.seq_fops));
+}
+
+#else /* CONFIG_PROC_FS */
+
+static int __init sdp_proc_init(void)
+{
+	return 0;
+}
+
+static void sdp_proc_unregister(void)
+{
+
+}
+#endif /* CONFIG_PROC_FS */
+
+static void sdp_add_device(struct ib_device *device)
+{
+}
+
+static void sdp_remove_device(struct ib_device *device)
+{
+	write_lock(&device_removal_lock);
+	write_unlock(&device_removal_lock);
 }
 
 static struct net_proto_family sdp_net_proto = {
@@ -1623,9 +1898,19 @@ static struct net_proto_family sdp_net_proto = {
 	.owner  = THIS_MODULE,
 };
 
+struct ib_client sdp_client = {
+	.name   = "sdp",
+	.add    = sdp_add_device,
+	.remove = sdp_remove_device
+};
+
 static int __init sdp_init(void)
 {
 	int rc;
+
+	INIT_LIST_HEAD(&sock_list);
+	spin_lock_init(&sock_list_lock);
+	spin_lock_init(&sdp_large_sockets_lock);
 
 	sdp_workqueue = create_singlethread_workqueue("sdp");
 	if (!sdp_workqueue) {
@@ -1647,6 +1932,12 @@ static int __init sdp_init(void)
 		return rc;
 	}
 
+	sdp_proc_init();
+
+	atomic_set(&sdp_current_mem_usage, 0);
+
+	ib_register_client(&sdp_client);
+
 	return 0;
 }
 
@@ -1657,6 +1948,16 @@ static void __exit sdp_exit(void)
 
 	destroy_workqueue(sdp_workqueue);
 	flush_scheduled_work();
+
+	BUG_ON(!list_empty(&sock_list));
+
+	if (atomic_read(&sdp_current_mem_usage))
+		printk(KERN_WARNING "%s: current mem usage %d\n", __func__,
+		       atomic_read(&sdp_current_mem_usage));
+
+	sdp_proc_unregister();
+
+	ib_unregister_client(&sdp_client);
 }
 
 module_init(sdp_init);

@@ -385,6 +385,7 @@ struct _snd_pcm_substream {
         /* -- timer section -- */
 	snd_timer_t *timer;		/* timer */
 	unsigned timer_running: 1;	/* time is running */
+	unsigned no_mmap_ctrl:1;
 	spinlock_t timer_lock;
 	/* -- next substream -- */
 	snd_pcm_substream_t *next;

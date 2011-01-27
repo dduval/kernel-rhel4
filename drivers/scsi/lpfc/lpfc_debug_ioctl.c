@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_debug_ioctl.c 2886 2006-03-07 21:56:50Z sf_support $
+ * $Id: lpfc_debug_ioctl.c 2894 2006-03-28 16:47:45Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -760,7 +760,9 @@ copy_stat_info(void *dataout, struct lpfc_hba * phba)
 	pdfcstat->elsRcvLOGO = phba->fc_stat.elsRcvLOGO;
 	pdfcstat->elsRcvPRLO = phba->fc_stat.elsRcvPRLO;
 	pdfcstat->elsRcvPRLI = phba->fc_stat.elsRcvPRLI;
-	pdfcstat->elsRcvRRQ = phba->fc_stat.elsRcvRRQ;
+	pdfcstat->elsRcvLIRR = phba->fc_stat.elsRcvLIRR;
+	pdfcstat->elsRcvRPS = phba->fc_stat.elsRcvRPS;
+	pdfcstat->elsRcvRPL = phba->fc_stat.elsRcvRPL;
 	pdfcstat->frameRcvBcast = phba->fc_stat.frameRcvBcast;
 	pdfcstat->frameRcvMulti = phba->fc_stat.frameRcvMulti;
 	pdfcstat->strayXmitCmpl = phba->fc_stat.strayXmitCmpl;

@@ -135,6 +135,12 @@ static DEFINE_PER_CPU(struct vcpu_runstate_info, runstate);
 /* Must be signed, as it's compared with s64 quantities which can be -ve. */
 #define NS_PER_TICK (1000000000LL/HZ)
 
+static void __clock_was_set(void *unused)
+{
+	clock_was_set();
+}
+static DECLARE_WORK(clock_was_set_work, __clock_was_set, NULL);
+
 static inline void __normalize_time(time_t *sec, s64 *nsec)
 {
 	while (*nsec >= NSEC_PER_SEC) {
@@ -443,7 +449,7 @@ int do_settimeofday(struct timespec *tv)
 	sec = tv->tv_sec;
 	__normalize_time(&sec, &nsec);
 
-	if ((xen_start_info->flags & SIF_INITDOMAIN) &&
+	if (is_initial_xendomain() &&
 	    !independent_wallclock) {
 		op.cmd = DOM0_SETTIME;
 		op.u.settime.secs        = sec;
@@ -476,7 +482,7 @@ static void sync_xen_wallclock(unsigned long dummy)
 	dom0_op_t op;
 
 	if ((time_status&STA_UNSYNC) || independent_wallclock ||
-	    !(xen_start_info->flags & SIF_INITDOMAIN))
+	    !is_initial_xendomain())
 		return;
 
 	write_seqlock_irq(&xtime_lock);
@@ -623,7 +629,8 @@ irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 	if (shadow_tv_version != HYPERVISOR_shared_info->wc_version) {
 		update_wallclock();
-		clock_was_set();
+		if (keventd_up())
+			schedule_work(&clock_was_set_work);
 	}
 
 	write_sequnlock(&xtime_lock);
@@ -873,6 +880,22 @@ void start_hz_timer(void)
 {
 	cpu_clear(smp_processor_id(), nohz_cpu_mask);
 }
+
+void safe_halt(void)
+{
+        stop_hz_timer();
+        /* Blocking includes an implicit local_irq_enable(). */
+        HYPERVISOR_block();
+        start_hz_timer();
+}
+EXPORT_SYMBOL(safe_halt);
+
+void halt(void)
+{
+        if (irqs_disabled())
+                HYPERVISOR_vcpu_op(VCPUOP_down, smp_processor_id(), NULL);
+}
+EXPORT_SYMBOL(halt);
 
 /* No locking required. We are only CPU running, and interrupts are off. */
 void time_resume(void)

@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_ct.c 2905 2006-04-13 17:11:39Z sf_support $
+ * $Id: lpfc_ct.c 3026 2007-03-21 20:03:17Z sf_support $
  *
  * Fibre Channel SCSI LAN Device Driver CT support
  */
@@ -271,7 +271,7 @@ lpfc_gen_req(struct lpfc_hba *phba, struct lpfc_dmabuf *bmp,
 	icmd->un.genreq64.w5.hcsw.Type = FC_COMMON_TRANSPORT_ULP;
 
 	if (!tmo)
-		tmo = (2 * phba->fc_ratov) + 1;
+		tmo = (3 * phba->fc_ratov);
 	icmd->ulpTimeout = tmo;
 	icmd->ulpBdeCount = 1;
 	icmd->ulpLe = 1;
@@ -345,9 +345,10 @@ lpfc_ns_rsp(struct lpfc_hba * phba, struct lpfc_dmabuf * mp, uint32_t Size)
 		mlast = mp;
 		Size -= Cnt;
 
-		if (!ctptr)
+		if (!ctptr) {
 			ctptr = (uint32_t *) mlast->virt;
-		else
+			Cnt = FCELSSIZE;
+		} else
 			Cnt -= 16;	/* subtract length of CT header */
 
 		/* Loop through entire NameServer list of DIDs */
@@ -482,6 +483,11 @@ lpfc_cmpl_ct_cmd_gid_ft(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		CTrsp = (struct lpfc_sli_ct_request *) outp->virt;
 		if (CTrsp->CommandResponse.bits.CmdRsp ==
 		    be16_to_cpu(SLI_CT_RESPONSE_FS_ACC)) {
+			lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
+					"%d:0239 NameServer Rsp "
+					"Data: x%x\n",
+					phba->brd_no,
+					phba->fc_flag);
 			lpfc_ns_rsp(phba, outp,
 				    (uint32_t) (irsp->un.genreq64.bdl.bdeSize));
 		} else if (CTrsp->CommandResponse.bits.CmdRsp ==
@@ -575,6 +581,14 @@ lpfc_cmpl_ct_cmd_rsnn_nn(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 }
 
 static void
+lpfc_cmpl_ct_cmd_rff_id(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
+			 struct lpfc_iocbq * rspiocb)
+{
+	lpfc_cmpl_ct_cmd_rft_id(phba, cmdiocb, rspiocb);
+	return;
+}
+
+static void
 lpfc_get_hba_sym_node_name(struct lpfc_hba * phba, uint8_t * symbp)
 {
 	char fwrev[16];
@@ -649,6 +663,8 @@ lpfc_ns_cmd(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, int cmdcode)
 		bpl->tus.f.bdeSize = RNN_REQUEST_SZ;
 	else if (cmdcode == SLI_CTNS_RSNN_NN)
 		bpl->tus.f.bdeSize = RSNN_REQUEST_SZ;
+	else if (cmdcode == SLI_CTNS_RFF_ID)
+		bpl->tus.f.bdeSize = RFF_REQUEST_SZ;
 	else
 		bpl->tus.f.bdeSize = 0;
 	bpl->tus.w = le32_to_cpu(bpl->tus.w);
@@ -678,6 +694,17 @@ lpfc_ns_cmd(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, int cmdcode)
 		CtReq->un.rft.PortId = be32_to_cpu(phba->fc_myDID);
 		CtReq->un.rft.fcpReg = 1;
 		cmpl = lpfc_cmpl_ct_cmd_rft_id;
+		break;
+
+	case SLI_CTNS_RFF_ID:
+		CtReq->CommandResponse.bits.CmdRsp =
+		    be16_to_cpu(SLI_CTNS_RFF_ID);
+		CtReq->un.rff.PortId = be32_to_cpu(phba->fc_myDID);
+		CtReq->un.rff.feature_res = 0;
+		CtReq->un.rff.feature_tgt = 0;
+		CtReq->un.rff.type_code = FC_FCP_DATA;
+		CtReq->un.rff.feature_init = 1;
+		cmpl = lpfc_cmpl_ct_cmd_rff_id;
 		break;
 
 	case SLI_CTNS_RNN_ID:
@@ -1034,6 +1061,9 @@ lpfc_fdmi_cmd(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp, int cmdcode)
 				break;
 				case LA_4GHZ_LINK:
 					ae->un.PortSpeed = HBA_PORTSPEED_4GBIT;
+				break;
+				case LA_8GHZ_LINK:
+					ae->un.PortSpeed = HBA_PORTSPEED_8GBIT;
 				break;
 				default:
 					ae->un.PortSpeed =

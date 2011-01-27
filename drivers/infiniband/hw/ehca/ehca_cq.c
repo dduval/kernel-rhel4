@@ -50,7 +50,7 @@
 #include "ehca_irq.h"
 #include "hcp_if.h"
 
-static struct kmem_cache *cq_cache;
+static kmem_cache_t *cq_cache;
 
 int ehca_cq_assign_qp(struct ehca_cq *cq, struct ehca_qp *qp)
 {
@@ -134,7 +134,7 @@ struct ib_cq *ehca_create_cq(struct ib_device *device, int cqe,
 	if (cqe >= 0xFFFFFFFF - 64 - additional_cqe)
 		return ERR_PTR(-EINVAL);
 
-	my_cq = kmem_cache_alloc(cq_cache, SLAB_KERNEL);
+	my_cq = kmem_cache_alloc(cq_cache, GFP_KERNEL);
 	if (!my_cq) {
 		ehca_err(device, "Out of memory for ehca_cq struct device=%p",
 			 device);
@@ -147,6 +147,7 @@ struct ib_cq *ehca_create_cq(struct ib_device *device, int cqe,
 	spin_lock_init(&my_cq->spinlock);
 	spin_lock_init(&my_cq->cb_lock);
 	spin_lock_init(&my_cq->task_lock);
+	init_waitqueue_head(&my_cq->wait_completion);
 	my_cq->ownpid = current->tgid;
 
 	cq = &my_cq->ib_cq;
@@ -330,6 +331,16 @@ create_cq_exit1:
 	return cq;
 }
 
+static int get_cq_nr_events(struct ehca_cq *my_cq)
+{
+	int ret;
+	unsigned long flags;
+	spin_lock_irqsave(&ehca_cq_idr_lock, flags);
+	ret = my_cq->nr_events;
+	spin_unlock_irqrestore(&ehca_cq_idr_lock, flags);
+	return ret;
+}
+
 int ehca_destroy_cq(struct ib_cq *cq)
 {
 	u64 h_ret;
@@ -344,8 +355,12 @@ int ehca_destroy_cq(struct ib_cq *cq)
 	unsigned long flags;
 
 	spin_lock_irqsave(&ehca_cq_idr_lock, flags);
-	while (my_cq->nr_callbacks)
-		yield();
+	while (my_cq->nr_events) {
+		spin_unlock_irqrestore(&ehca_cq_idr_lock, flags);
+		wait_event(my_cq->wait_completion, !get_cq_nr_events(my_cq));
+		spin_lock_irqsave(&ehca_cq_idr_lock, flags);
+		/* recheck nr_events to assure no cqe has just arrived */
+	}
 
 	idr_remove(&ehca_cq_idr, my_cq->token);
 	spin_unlock_irqrestore(&ehca_cq_idr_lock, flags);

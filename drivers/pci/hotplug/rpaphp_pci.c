@@ -196,7 +196,7 @@ static void rpaphp_eeh_add_bus_device(struct pci_bus *bus)
 		eeh_add_device_late(dev);
 		if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE) {
 			struct pci_bus *subbus = dev->subordinate;
-			if (bus)
+			if (subbus)
 				rpaphp_eeh_add_bus_device (subbus);
 		}
 	}
@@ -261,9 +261,8 @@ rpaphp_pci_config_slot(struct pci_bus *bus)
 	list_for_each_entry(dev, &bus->devices, bus_list) {
 		if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE)
 			rpaphp_pci_config_bridge(dev);
-
-		rpaphp_eeh_add_bus_device(bus);
 	}
+	rpaphp_eeh_add_bus_device(bus);
 
 	return dev;
 }
@@ -509,7 +508,15 @@ int handle_eeh_events (struct notifier_block *self,
 
 	/* Keep a copy of the config space registers */
 	bus_dn = pci_bus_to_OF_node(bus);
-	saved_bars = eeh_save_bars(bus_dn);
+	saved_bars = eeh_save_bars(bus_dn->child);
+	printk(KERN_INFO "EEH: dev=%s bus_dn=%s child=%p saved=%p\n",
+		pci_name(event->dev),
+		bus_dn->full_name, bus_dn->child, saved_bars);
+	if(bus_dn->child)
+		printk(KERN_INFO "EEH: child-name=%s\n", bus_dn->child->full_name);
+	if (saved_bars == NULL)
+		saved_bars = eeh_save_bars(bus_dn);
+
 	of_node_get(event->dn);
 	pci_dev_get(event->dev);
 
@@ -543,7 +550,8 @@ int handle_eeh_events (struct notifier_block *self,
 	 * Reconfigure bridges and devices */
 	rtas_set_slot_reset (event->dn);
 	rtas_configure_bridge(event->dn);
-	eeh_restore_bars(saved_bars);
+	if (saved_bars)
+		eeh_restore_bars(saved_bars);
 
 	/* Give the system 5 seconds to finish running the user-space
 	 * hotplug scripts, e.g. ifdown for ethernet.  Yes, this is a hack, 

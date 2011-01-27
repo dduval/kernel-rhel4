@@ -5,8 +5,8 @@
  *          LSIFC9xx/LSI409xx Fibre Channel
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2005 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsil.com)
+ *  Copyright (c) 1999-2007 LSI Logic Corporation
+ *  (mailto:mpt_linux_developer@lsi.com)
  *
  *  $Id: mptscsih.h,v 1.1.2.2 2003/05/07 14:08:35 Exp $
  */
@@ -54,7 +54,17 @@
  *	SCSI Public stuff...
  */
 
-#define MPT_SCSI_CMD_PER_DEV_HIGH	64
+#define MPT_SCANDV_GOOD			(0x00000000) /* must be 0 */
+#define MPT_SCANDV_DID_RESET		(0x00000001)
+#define MPT_SCANDV_SENSE		(0x00000002)
+#define MPT_SCANDV_SOME_ERROR		(0x00000004)
+#define MPT_SCANDV_SELECTION_TIMEOUT	(0x00000008)
+#define MPT_SCANDV_ISSUE_SENSE		(0x00000010)
+#define MPT_SCANDV_FALLBACK		(0x00000020)
+#define MPT_SCANDV_BUSY			(0x00000040)
+
+//#define MPT_SCSI_CMD_PER_DEV_HIGH	64
+#define MPT_SCSI_CMD_PER_DEV_HIGH      48
 #define MPT_SCSI_CMD_PER_DEV_LOW	32
 
 #define MPT_SCSI_CMD_PER_LUN		7
@@ -123,7 +133,7 @@ extern int mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_F
 extern int mptscsih_scandv_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *r);
 extern int mptscsih_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply);
 extern int mptscsih_ioc_reset(MPT_ADAPTER *ioc, int post_reset);
-extern void mptscsih_timer_expired(unsigned long data);
+extern void mptscsih_InternalCmdTimer_expired(unsigned long data);
 extern int mptscsih_readFCDevicePage0(MPT_ADAPTER *ioc, u8 bus, u8 targetId, pFCDevicePage0_t fcDevicePage);
 extern void mptscsih_hot_plug_worker_thread(void * arg);
 extern int mptscsih_TMHandler(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 target, u8 lun, int ctx2abort, ulong timeout);

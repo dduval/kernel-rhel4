@@ -45,11 +45,20 @@
 /* People can turn this off for buggy TCP's found in printers etc. */
 int sysctl_tcp_retrans_collapse = 1;
 
+/* People can turn this on to  work with those rare, broken TCPs that
+ * interpret the window field as a signed quantity.
+ */
+int sysctl_tcp_workaround_signed_windows = 1;
+
 /* This limits the percentage of the congestion window which we
  * will allow a single TSO frame to consume.  Building TSO frames
  * which are too large can cause TCP streams to be bursty.
  */
 int sysctl_tcp_tso_win_divisor = 8;
+
+/* By default, RFC2861 behavior.  */
+int sysctl_tcp_slow_start_after_idle = 1;
+EXPORT_SYMBOL(sysctl_tcp_slow_start_after_idle);
 
 static __inline__
 void update_send_head(struct sock *sk, struct tcp_opt *tp, struct sk_buff *skb)
@@ -128,7 +137,8 @@ static __inline__ void tcp_event_data_sent(struct tcp_opt *tp, struct sk_buff *s
 {
 	u32 now = tcp_time_stamp;
 
-	if (!tcp_get_pcount(&tp->packets_out) &&
+	if (sysctl_tcp_slow_start_after_idle &&
+	    !tcp_get_pcount(&tp->packets_out) &&
 	    (s32)(now - tp->lsndtime) > tp->rto)
 		tcp_cwnd_restart(tp, __sk_dst_get(sk));
 
@@ -172,12 +182,18 @@ void tcp_select_initial_window(int __space, __u32 mss,
 		space = (space / mss) * mss;
 
 	/* NOTE: offering an initial window larger than 32767
-	 * will break some buggy TCP stacks. We try to be nice.
-	 * If we are not window scaling, then this truncates
-	 * our initial window offering to 32k. There should also
-	 * be a sysctl option to stop being nice.
+	 * will break some buggy TCP stacks. If the admin tells us
+	 * it is likely we could be speaking with such a buggy stack
+	 * we will truncate our initial window offering to 32K-1
+	 * unless the remote has sent us a window scaling option,
+	 * which we interpret as a sign the remote TCP is not
+	 * misinterpreting the window field as a signed quantity.
 	 */
-	(*rcv_wnd) = min(space, MAX_TCP_WINDOW);
+	if (sysctl_tcp_workaround_signed_windows)
+		(*rcv_wnd) = min(space, MAX_TCP_WINDOW);
+	else
+		(*rcv_wnd) = space;
+
 	(*rcv_wscale) = 0;
 	if (wscale_ok) {
 		/* Set window scaling on max possible window
@@ -236,7 +252,7 @@ static __inline__ u16 tcp_select_window(struct sock *sk)
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
 	 */
-	if (!tp->rcv_wscale)
+	if (!tp->rcv_wscale && sysctl_tcp_workaround_signed_windows)
 		new_win = min(new_win, MAX_TCP_WINDOW);
 	else
 		new_win = min(new_win, (65535U << tp->rcv_wscale));

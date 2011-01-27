@@ -307,6 +307,8 @@ ext2_permission(struct inode *inode, int mask, struct nameidata *nd)
 		if (((mode >> 3) & mask & S_IRWXO) != mask)
 			goto check_groups;
 		acl = ext2_get_acl(inode, ACL_TYPE_ACCESS);
+		if (IS_ERR(acl))
+			return PTR_ERR(acl);
 		if (acl) {
 			int error = posix_acl_permission(inode, acl, mask);
 			posix_acl_release(acl);

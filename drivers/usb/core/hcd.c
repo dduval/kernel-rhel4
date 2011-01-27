@@ -1594,6 +1594,9 @@ static void hcd_panic (void *_hcd)
 	struct usb_device	*hub = hcd->self.root_hub;
 	unsigned		i;
 
+	if (!hub)
+		return;
+
 	/* hc's root hub is removed later removed in hcd->stop() */
 	down (&hub->serialize);
 	usb_set_device_state(hub, USB_STATE_NOTATTACHED);

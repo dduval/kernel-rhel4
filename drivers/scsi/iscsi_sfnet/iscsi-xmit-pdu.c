@@ -496,7 +496,7 @@ iscsi_send_data_out(struct iscsi_task *task, u32 ttt, u32 data_offset,
 						&i, &sg_offset, sc->use_sg,
 						dlen, session->data_digest);
 		else {
-			sg_init_one(&tmpsg, sc->request_buffer, dlen);
+			sg_init_one(&tmpsg, sc->request_buffer, sc->bufflen);
 			rc = iscsi_send_sg_data(session, &tmpsg, &i,
 						&sg_offset, 1, dlen,
 						session->data_digest);
@@ -724,7 +724,7 @@ iscsi_send_scsi_cmnd(struct iscsi_task *task)
 					&first_sg, &sg_offset, sc->use_sg,
 					imm_data_len, session->data_digest);
 	else {
-		sg_init_one(&tmpsg, sc->request_buffer, imm_data_len);
+		sg_init_one(&tmpsg, sc->request_buffer, sc->bufflen);
 		rc = iscsi_send_sg_data(session, &tmpsg, &first_sg,
 					&sg_offset, 1, imm_data_len,
 					session->data_digest);

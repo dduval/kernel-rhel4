@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -178,11 +178,6 @@ qla4xxx_check_and_copy_sense(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry, srb_t
 	srb->flags |= SRB_GOT_SENSE;
 
 	switch (sts_entry->senseData[2] & 0x0f) {
-	case RECOVERED_ERROR:
-		cmd->result = DID_OK << 16;
-		cmd->sense_buffer[0] = 0;
-		break;
-
 	case NOT_READY:
 	case HARDWARE_ERROR:
 		fcport = lun_entry->fclun->fcport;
@@ -300,22 +295,54 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 
 		switch (sts_entry->completionStatus) {
 		case SCS_COMPLETE:
-
+		case SCS_QUEUE_FULL:
 			if (scsi_status == 0) {
 				cmd->result = DID_OK << 16;
 				break;
 			}
 
-			if (sts_entry->iscsiFlags &
-			    (ISCSI_FLAG_RESIDUAL_OVER |
-			     ISCSI_FLAG_RESIDUAL_UNDER)) {
-				cmd->resid = residual;
-			}
-
-			if (scsi_status == SCSISTAT_BUSY) {
-				cmd->result = DID_BUS_BUSY << 16 | scsi_status;
+			if (sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_OVER) {
+				cmd->result = DID_ERROR << 16;
 				break;
 			}
+
+			if (sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_UNDER) {
+				cmd->resid = residual;
+				/* Retry the cmd if target reports underrun */
+				/* Handle mid-layer underflow */
+				if (!(scsi_status & STATUS_MASK) &&
+				    ((unsigned)(cmd->request_bufflen - residual) <
+				     cmd->underflow)) {
+					ql4_printk(KERN_INFO, ha,
+					    "scsi%d:%d:%d:%d: Mid-layer underflow "
+					    "detected (%x of %x bytes)...returning "
+					    "error status.\n", ha->host_no,
+					    cmd->device->channel, cmd->device->id,
+					    cmd->device->lun, residual,
+					    cmd->request_bufflen);
+
+					cmd->result = DID_ERROR << 16;
+					break;
+				}
+			}
+
+			if (sts_entry->completionStatus == SCS_QUEUE_FULL) {
+				/*
+				 * SCSI Mid-Layer handles device queue full
+				 */
+				DEBUG2(printk("scsi%d:%d:%d: %s: QUEUE FULL detected "
+                                              "compl=%02x, scsi=%02x, state=%02x, "
+					      "iFlags=%02x, iResp=%02x\n",
+					      ha->host_no, cmd->device->id,
+					      cmd->device->lun, __func__,
+					      sts_entry->completionStatus,
+					      sts_entry->scsiStatus,
+					      sts_entry->state_flags,
+					      sts_entry->iscsiFlags,
+					      sts_entry->iscsiResponse));
+			}
+
+			cmd->result = DID_OK << 16 | scsi_status;
 
 			if (scsi_status != SCSISTAT_CHECK_CONDITION)
 				break;
@@ -323,7 +350,7 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 			/* Check for sense errors */
 			if (qla4xxx_check_and_copy_sense(ha, sts_entry ,srb) == QLA_ERROR) {
 				LEAVE("qla4xxx_status_entry");
-				return;	 /* DO NOT complete request */
+				return;	 /* DO NOT complete request, lun suspended */
 			}
 
 			break;
@@ -387,7 +414,8 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 
 		case SCS_DATA_UNDERRUN:
 		case SCS_DATA_OVERRUN:
-			if ((sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_OVER) != 0) {
+			if ((sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_OVER) ||
+                            (sts_entry->completionStatus == SCS_DATA_OVERRUN)) {
 				QL4PRINT(QLP2,
 					 printk("scsi%d:%d:%d:%d: %s: "
 						"Data overrun, "
@@ -410,50 +438,13 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 				break;
 			}
 
-
-			if ((sts_entry->iscsiFlags & ISCSI_FLAG_RESIDUAL_UNDER) == 0) {
-				/*
-				 * Firmware detected a SCSI transport underrun condition
-				 */
 				cmd->resid = residual;
-				QL4PRINT(QLP2,
-					 printk("scsi%d:%d:%d:%d: %s: "
-						"UNDERRUN status detected, "
-						"xferlen = 0x%x, "
-						"residual = 0x%x\n",
-						ha->host_no,
-						cmd->device->channel,
-						cmd->device->id,
-						cmd->device->lun,
-						__func__, cmd->request_bufflen,
-						residual));
-
-				/* Handle mid-layer underflow */
-				if (!(scsi_status & STATUS_MASK) &&
-				    ((unsigned)(cmd->request_bufflen - residual) <
-				     cmd->underflow)) {
-					ql4_printk(KERN_INFO, ha,
-					    "scsi%d:%d:%d:%d: Mid-layer underflow "
-					    "detected (%x of %x bytes)...returning "
-					    "error status.\n", ha->host_no,
-					    cmd->device->channel, cmd->device->id,
-					    cmd->device->lun, residual,
-					    cmd->request_bufflen);
-
-					cmd->result = DID_ERROR << 16;
-					break;
-				}
-			}
 
 			/*
 			 * If there is scsi_status, it takes precedense over
 			 * underflow condition.
 			 */
 			if (scsi_status != 0) {
-				if (scsi_status == SCSISTAT_BUSY) {
-					cmd->result = DID_BUS_BUSY << 16 | scsi_status;
-					break;
-				}
 				cmd->result = DID_OK << 16 | scsi_status;
 
 				if (scsi_status != SCSISTAT_CHECK_CONDITION)
@@ -462,7 +453,7 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 				/* Check for sense errors */
 				if (qla4xxx_check_and_copy_sense(ha, sts_entry ,srb) == QLA_ERROR) {
 					LEAVE("qla4xxx_status_entry");
-					return;	 /* DO NOT complete request */
+					return;	 /* DO NOT complete request, lun suspended */
 				}
 			}
 			else {
@@ -553,23 +544,6 @@ qla4xxx_status_entry(scsi_qla_host_t *ha, STATUS_ENTRY *sts_entry)
 				return;	 /* DO NOT complete request */
 			}
 
-			break;
-
-		case SCS_QUEUE_FULL:
-			/*
-			 * SCSI Mid-Layer handles device queue full
-			 */
-			cmd->result = DID_OK << 16 | sts_entry->scsiStatus;
-			DEBUG2( printk("scsi%d:%d:%d: %s: QUEUE FULL detected "
-					"compl=%02x, scsi=%02x, state=%02x, "
-					"iFlags=%02x, iResp=%02x\n",
-					ha->host_no, cmd->device->id,
-					cmd->device->lun,
-					__func__, sts_entry->completionStatus,
-					sts_entry->scsiStatus,
-					sts_entry->state_flags,
-					sts_entry->iscsiFlags,
-					sts_entry->iscsiResponse));
 			break;
 
 		case SCS_DMA_ERROR:
@@ -825,10 +799,7 @@ qla4xxx_process_response_queue(scsi_qla_host_t *ha)
 static void
 qla4xxx_isr_decode_mailbox(scsi_qla_host_t *ha, uint32_t  mbox_status)
 {
-#if ENABLE_ISNS
-	/* used for MBOX_ASTS_ISNS_UNSOLICITED_PDU_RECEIVED */
-	static uint32_t   mbox_sts[MBOX_REG_COUNT];
-#endif
+	uint32_t   mbox_sts[MBOX_REG_COUNT];
 
 	if ((mbox_status == MBOX_STS_BUSY) ||
 	    (mbox_status == MBOX_STS_INTERMEDIATE_COMPLETION) ||
@@ -928,8 +899,8 @@ qla4xxx_isr_decode_mailbox(scsi_qla_host_t *ha, uint32_t  mbox_status)
 		case MBOX_ASTS_REQUEST_TRANSFER_ERROR:
 		case MBOX_ASTS_RESPONSE_TRANSFER_ERROR:
 		case MBOX_ASTS_NVRAM_INVALID:
-		case MBOX_ASTS_IP_ADDRESS_CHANGED:
-		case MBOX_ASTS_DHCP_LEASE_EXPIRED:
+		case MBOX_ASTS_IP_ADDRESS_CHANGED:   /* ACB Version 1 */
+		case MBOX_ASTS_DHCP_LEASE_EXPIRED:   /* ACB Version 1 */
 			QL4PRINT(QLP2,
 				 printk("scsi%d: AEN %04x, "
 					"ERROR Status, Reset HA\n",
@@ -962,33 +933,87 @@ qla4xxx_isr_decode_mailbox(scsi_qla_host_t *ha, uint32_t  mbox_status)
 			ha->seconds_since_last_heartbeat = 0;
 			break;
 
-		case MBOX_ASTS_DHCP_LEASE_ACQUIRED:
-			QL4PRINT(QLP2, printk("scsi%d: AEN %04x DHCP LEASE ACQUIRED\n",
+		case MBOX_ASTS_DHCP_LEASE_ACQUIRED:	/* ACB Version 1 */
+			QL4PRINT(QLP2, printk("scsi%d: AEN %04x "
+					      "DHCP LEASE ACQUIRED\n",
 					      ha->host_no, mbox_status));
 			set_bit(DPC_GET_DHCP_IP_ADDR, &ha->dpc_flags);
 			break;
 
+		case MBOX_ASTS_SUBNET_STATE_CHANGE:
+			QL4PRINT(QLP2,
+				 printk(KERN_INFO "scsi%d: AEN %04x "
+					"SUBNET STATE CHANGE\n",
+					ha->host_no, mbox_status));
+			set_bit(AF_DISABLE_ACB_COMPLETE, &ha->flags);
+			break;
+
+		case MBOX_ASTS_IP_ADDR_STATE_CHANGED:	/* ACB Version 2 */
+		{
+			uint32_t old_state = RD_REG_DWORD(&ha->reg->mailbox[2]);
+			uint32_t new_state = RD_REG_DWORD(&ha->reg->mailbox[3]);
+
+			QL4PRINT(QLP2,
+				 printk(KERN_INFO "scsi%d: AEN %04x "
+					"IP ADDR STATE CHANGED "
+					"mb1=%04x, mb2=%04x, mb3=%04x, "
+					"mb4=%04x, mb5=%04x\n",
+					ha->host_no, mbox_status,
+					RD_REG_DWORD(&ha->reg->mailbox[1]),
+					RD_REG_DWORD(&ha->reg->mailbox[2]),
+					RD_REG_DWORD(&ha->reg->mailbox[3]),
+					RD_REG_DWORD(&ha->reg->mailbox[4]),
+					RD_REG_DWORD(&ha->reg->mailbox[5])));
+
+			if (old_state != ACB_STATE_VALID &&
+			    new_state == ACB_STATE_VALID) {
+				if (ha->reg->mailbox[4] == IP_ADDR_CFG_DHCP) {
+					set_bit(DPC_GET_DHCP_IP_ADDR, &ha->dpc_flags);
+				}
+			} else if (old_state == ACB_STATE_VALID &&
+				    new_state != ACB_STATE_VALID) {
+				QL4PRINT(QLP2,
+					 printk("scsi%d: AEN %04x  Reset HA\n",
+						ha->host_no, mbox_status));
+				set_bit(DPC_RESET_HA, &ha->dpc_flags);
+			}
+			break;
+		}
+		
 		case MBOX_ASTS_PROTOCOL_STATISTIC_ALARM:
 		case MBOX_ASTS_SCSI_COMMAND_PDU_REJECTED:	  /* Target mode only */
 		case MBOX_ASTS_UNSOLICITED_PDU_RECEIVED:	  /* connection mode only */
 		case MBOX_ASTS_DUPLICATE_IP:
 		case MBOX_ASTS_ARP_COMPLETE:
 		case MBOX_ASTS_RESPONSE_QUEUE_FULL:
-		case MBOX_ASTS_IP_ADDR_STATE_CHANGED:
+		case MBOX_ASTS_IPV6_LINK_MTU_CHANGE:
+		case MBOX_ASTS_IPV6_ND_PREFIX_IGNORED:
+		case MBOX_ASTS_IPV6_LCL_PREFIX_IGNORED:
+		case MBOX_ASTS_ICMPV6_ERROR_MSG_RCVD:
 			/* No action */
 			QL4PRINT(QLP2, printk("scsi%d: AEN %04x\n",
 					      ha->host_no, mbox_status));
 			break;
 
-		case MBOX_ASTS_SUBNET_STATE_CHANGE:
-			set_bit(AF_DISABLE_ACB_COMPLETE, &ha->flags);
-			QL4PRINT(QLP2,
-				 printk(KERN_INFO "scsi%d: aen %04x, "
-					"mbox_sts[1]=%04x, "
-					"mbox_sts[2]=%04x\n",
-					ha->host_no, mbox_status,
-					RD_REG_DWORD(&ha->reg->mailbox[0]),
-					RD_REG_DWORD(&ha->reg->mailbox[1])));
+		case MBOX_ASTS_IPV6_DEFAULT_ROUTER_CHANGED:
+			if ((ql_dbg_level & QLP20) != 0) {
+				uint8_t ip_addr_str[IP_ADDR_STR_SIZE];
+
+				mbox_sts[2] = RD_REG_DWORD(&ha->reg->mailbox[2]);
+				mbox_sts[3] = RD_REG_DWORD(&ha->reg->mailbox[3]);
+				mbox_sts[4] = RD_REG_DWORD(&ha->reg->mailbox[4]);
+				mbox_sts[5] = RD_REG_DWORD(&ha->reg->mailbox[5]);
+
+				memcpy(&ha->ipv6_default_router_addr[0], &mbox_sts[2], 4);
+				memcpy(&ha->ipv6_default_router_addr[4], &mbox_sts[3], 4);
+				memcpy(&ha->ipv6_default_router_addr[8], &mbox_sts[4], 4);
+				memcpy(&ha->ipv6_default_router_addr[12],&mbox_sts[5], 4);
+
+				IPv6Addr2Str(ha->ipv6_default_router_addr, &ip_addr_str[0]);
+				QL4PRINT(QLP2, printk("scsi%d: AEN %04x IPv6 "
+						      "DEFAULT ROUTER CHANGED %s\n",
+						      ha->host_no, mbox_status, &ip_addr_str[0]));
+			}
 			break;
 
 		case MBOX_ASTS_MAC_ADDRESS_CHANGED:
@@ -1220,13 +1245,11 @@ qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 			 * NOTE: Disabling RISC interrupts does not work in
 			 * this case, as CSR_FATAL_ERROR overrides
 			 * CSR_SCSI_INTR_ENABLE */
-			if ((RD_REG_DWORD(&ha->reg->ctrl_status) & CSR_SCSI_RESET_INTR) == 0) {
-				QL4PRINT(QLP2,
-					 printk("scsi%d: Issue soft reset\n",
-						ha->host_no));
-				WRT_REG_DWORD(&ha->reg->ctrl_status, SET_RMASK((CSR_SOFT_RESET|CSR_SCSI_RESET_INTR)));
-				PCI_POSTING(&ha->reg->ctrl_status);
-			}
+			QL4PRINT(QLP2,
+				 printk("scsi%d: Issue soft reset\n",
+					ha->host_no));
+			WRT_REG_DWORD(&ha->reg->ctrl_status, SET_RMASK((CSR_SOFT_RESET|CSR_SCSI_RESET_INTR)));
+			PCI_POSTING(&ha->reg->ctrl_status);
 
 			QL4PRINT(QLP2,
 				 printk("scsi%d: Acknowledge fatal error\n",
@@ -1255,7 +1278,8 @@ qla4xxx_intr_handler(int irq, void *dev_id, struct pt_regs *regs)
 			WRT_REG_DWORD(&ha->reg->ctrl_status, SET_RMASK(CSR_SCSI_RESET_INTR));
 			PCI_POSTING(&ha->reg->ctrl_status);
 
-			set_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
+			if (!ql4_mod_unload)
+				set_bit(DPC_RESET_HA_INTR, &ha->dpc_flags);
 
 			break;
 		}

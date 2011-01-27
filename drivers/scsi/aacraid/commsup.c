@@ -36,15 +36,18 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
-#include <linux/delay.h>
 #include <linux/completion.h>
 #include <linux/blkdev.h>
+#include <linux/delay.h>
+#include <linux/kthread.h>
 #include <linux/interrupt.h>
 #include <scsi/scsi.h>
-#include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
+#include <scsi/scsi_cmnd.h>
+#ifdef MODULE
 #include <scsi/scsi_driver.h>
+#endif
 #include <asm/semaphore.h>
 
 #include "aacraid.h"
@@ -71,30 +74,30 @@ static int fib_map_alloc(struct aac_dev *dev)
 }
 
 /**
- *	fib_map_free		-	free the fib objects
+ *	aac_fib_map_free		-	free the fib objects
  *	@dev: Adapter to free
  *
  *	Free the PCI mappings and the memory allocated for FIB blocks
  *	on this adapter.
  */
 
-void fib_map_free(struct aac_dev *dev)
+void aac_fib_map_free(struct aac_dev *dev)
 {
 	pci_free_consistent(dev->pdev, dev->max_fib_size * (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB), dev->hw_fib_va, dev->hw_fib_pa);
 }
 
 /**
- *	fib_setup	-	setup the fibs
+ *	aac_fib_setup	-	setup the fibs
  *	@dev: Adapter to set up
  *
  *	Allocate the PCI space for the fibs, map it and then intialise the
  *	fib area, the unmapped fib data and also the free list
  */
 
-int fib_setup(struct aac_dev * dev)
+int aac_fib_setup(struct aac_dev * dev)
 {
 	struct fib *fibptr;
-	struct hw_fib *hw_fib_va;
+	struct hw_fib *hw_fib;
 	dma_addr_t hw_fib_pa;
 	int i;
 
@@ -106,24 +109,24 @@ int fib_setup(struct aac_dev * dev)
 	if (i<0)
 		return -ENOMEM;
 		
-	hw_fib_va = dev->hw_fib_va;
+	hw_fib = dev->hw_fib_va;
 	hw_fib_pa = dev->hw_fib_pa;
-	memset(hw_fib_va, 0, dev->max_fib_size * (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB));
+	memset(hw_fib, 0, dev->max_fib_size * (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB));
 	/*
 	 *	Initialise the fibs
 	 */
 	for (i = 0, fibptr = &dev->fibs[i]; i < (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB); i++, fibptr++) 
 	{
 		fibptr->dev = dev;
-		fibptr->hw_fib = hw_fib_va;
-		fibptr->data = (void *) fibptr->hw_fib->data;
+		fibptr->hw_fib_va = hw_fib;
+		fibptr->data = (void *) fibptr->hw_fib_va->data;
 		fibptr->next = fibptr+1;	/* Forward chain the fibs */
 		init_MUTEX_LOCKED(&fibptr->event_wait);
 		spin_lock_init(&fibptr->event_lock);
-		hw_fib_va->header.XferState = cpu_to_le32(0xffffffff);
-		hw_fib_va->header.SenderSize = cpu_to_le16(dev->max_fib_size);
+		hw_fib->header.XferState = cpu_to_le32(0xffffffff);
+		hw_fib->header.SenderSize = cpu_to_le16(dev->max_fib_size);
 		fibptr->hw_fib_pa = hw_fib_pa;
-		hw_fib_va = (struct hw_fib *)((unsigned char *)hw_fib_va + dev->max_fib_size);
+		hw_fib = (struct hw_fib *)((unsigned char *)hw_fib + dev->max_fib_size);
 		hw_fib_pa = hw_fib_pa + dev->max_fib_size;
 	}
 	/*
@@ -138,14 +141,14 @@ int fib_setup(struct aac_dev * dev)
 }
 
 /**
- *	fib_alloc	-	allocate a fib
+ *	aac_fib_alloc	-	allocate a fib
  *	@dev: Adapter to allocate the fib for
  *
  *	Allocate a fib from the adapter fib pool. If the pool is empty we
  *	return NULL.
  */
  
-struct fib * fib_alloc(struct aac_dev *dev)
+struct fib *aac_fib_alloc(struct aac_dev *dev)
 {
 	struct fib * fibptr;
 	unsigned long flags;
@@ -166,7 +169,7 @@ struct fib * fib_alloc(struct aac_dev *dev)
 	 *	Null out fields that depend on being zero at the start of
 	 *	each I/O
 	 */
-	fibptr->hw_fib->header.XferState = 0;
+	fibptr->hw_fib_va->header.XferState = 0;
 	fibptr->callback = NULL;
 	fibptr->callback_data = NULL;
 
@@ -174,14 +177,14 @@ struct fib * fib_alloc(struct aac_dev *dev)
 }
 
 /**
- *	fib_free	-	free a fib
+ *	aac_fib_free	-	free a fib
  *	@fibptr: fib to free up
  *
  *	Frees up a fib and places it on the appropriate queue
  *	(either free or timed out)
  */
  
-void fib_free(struct fib * fibptr)
+void aac_fib_free(struct fib *fibptr)
 {
 	unsigned long flags;
 
@@ -191,10 +194,10 @@ void fib_free(struct fib * fibptr)
 		fibptr->next = fibptr->dev->timeout_fib;
 		fibptr->dev->timeout_fib = fibptr;
 	} else {
-		if (fibptr->hw_fib->header.XferState != 0) {
-			printk(KERN_WARNING "fib_free, XferState != 0, fibptr = 0x%p, XferState = 0x%x\n", 
+		if (fibptr->hw_fib_va->header.XferState != 0) {
+			printk(KERN_WARNING "aac_fib_free, XferState != 0, fibptr = 0x%p, XferState = 0x%x\n",
 				 (void*)fibptr, 
-				 le32_to_cpu(fibptr->hw_fib->header.XferState));
+				 le32_to_cpu(fibptr->hw_fib_va->header.XferState));
 		}
 		fibptr->next = fibptr->dev->free_fib;
 		fibptr->dev->free_fib = fibptr;
@@ -203,15 +206,15 @@ void fib_free(struct fib * fibptr)
 }
 
 /**
- *	fib_init	-	initialise a fib
+ *	aac_fib_init	-	initialise a fib
  *	@fibptr: The fib to initialize
  *	
  *	Set up the generic fib fields ready for use
  */
  
-void fib_init(struct fib *fibptr)
+void aac_fib_init(struct fib *fibptr)
 {
-	struct hw_fib *hw_fib = fibptr->hw_fib;
+	struct hw_fib *hw_fib = fibptr->hw_fib_va;
 
 	hw_fib->header.StructType = FIB_MAGIC;
 	hw_fib->header.Size = cpu_to_le16(fibptr->dev->max_fib_size);
@@ -231,9 +234,8 @@ void fib_init(struct fib *fibptr)
  
 static void fib_dealloc(struct fib * fibptr)
 {
-	struct hw_fib *hw_fib = fibptr->hw_fib;
-	if(hw_fib->header.StructType != FIB_MAGIC) 
-		BUG();
+	struct hw_fib *hw_fib = fibptr->hw_fib_va;
+	BUG_ON(hw_fib->header.StructType != FIB_MAGIC);
 	hw_fib->header.XferState = 0;        
 }
 
@@ -318,7 +320,7 @@ static int aac_get_entry (struct aac_dev * dev, u32 qid, struct aac_entry **entr
  *	success.
  */
 
-static int aac_queue_get(struct aac_dev * dev, u32 * index, u32 qid, struct hw_fib * hw_fib, int wait, struct fib * fibptr, unsigned long *nonotify)
+int aac_queue_get(struct aac_dev * dev, u32 * index, u32 qid, struct hw_fib * hw_fib, int wait, struct fib * fibptr, unsigned long *nonotify)
 {
 	struct aac_entry * entry = NULL;
 	int map = 0;
@@ -366,7 +368,7 @@ static int aac_queue_get(struct aac_dev * dev, u32 * index, u32 qid, struct hw_f
  */
 
 /**
- *	fib_send	-	send a fib to the adapter
+ *	aac_fib_send	-	send a fib to the adapter
  *	@command: Command to send
  *	@fibptr: The fib
  *	@size: Size of fib data area
@@ -382,13 +384,12 @@ static int aac_queue_get(struct aac_dev * dev, u32 * index, u32 qid, struct hw_f
  *	response FIB is received from the adapter.
  */
 
-int aac_fib_send(u16 command, struct fib * fibptr, unsigned long size,
+int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 		int priority, int wait, int reply, fib_callback callback,
-		void * callback_data)
+		void *callback_data)
 {
 	struct aac_dev * dev = fibptr->dev;
-	struct hw_fib * hw_fib = fibptr->hw_fib;
-	struct aac_queue * q;
+	struct hw_fib * hw_fib = fibptr->hw_fib_va;
 	unsigned long flags = 0;
 	unsigned long qflags;
 
@@ -432,7 +433,7 @@ int aac_fib_send(u16 command, struct fib * fibptr, unsigned long size,
 	 */
 	hw_fib->header.Command = cpu_to_le16(command);
 	hw_fib->header.XferState |= cpu_to_le32(SentFromHost);
-	fibptr->hw_fib->header.Flags = 0;	/* 0 the flags field - internal only*/
+	fibptr->hw_fib_va->header.Flags = 0;	/* 0 the flags field - internal only*/
 	/*
 	 *	Set the size of the Fib we want to send to the adapter
 	 */
@@ -464,47 +465,16 @@ int aac_fib_send(u16 command, struct fib * fibptr, unsigned long size,
 	dprintk((KERN_DEBUG "  Command =               %d.\n", le32_to_cpu(hw_fib->header.Command)));
 	dprintk((KERN_DEBUG "  SubCommand =            %d.\n", le32_to_cpu(((struct aac_query_mount *)fib_data(fibptr))->command)));
 	dprintk((KERN_DEBUG "  XferState  =            %x.\n", le32_to_cpu(hw_fib->header.XferState)));
-	dprintk((KERN_DEBUG "  hw_fib va being sent=%p\n",fibptr->hw_fib));
+	dprintk((KERN_DEBUG "  hw_fib va being sent=%p\n",fibptr->hw_fib_va));
 	dprintk((KERN_DEBUG "  hw_fib pa being sent=%lx\n",(ulong)fibptr->hw_fib_pa));
 	dprintk((KERN_DEBUG "  fib being sent=%p\n",fibptr));
 
 	if (!dev->queues)
-		return -ENODEV;
-	q = &dev->queues->queue[AdapNormCmdQueue];
+		return -EBUSY;
 
 	if(wait)
 		spin_lock_irqsave(&fibptr->event_lock, flags);
-	spin_lock_irqsave(q->lock, qflags);
-	if (dev->new_comm_interface) {
-		unsigned long count = 10000000L; /* 50 seconds */
-		list_add_tail(&fibptr->queue, &q->pendingq);
-		q->numpending++;
-		spin_unlock_irqrestore(q->lock, qflags);
-		while (aac_adapter_send(fibptr) != 0) {
-			if (--count == 0) {
-				if (wait)
-					spin_unlock_irqrestore(&fibptr->event_lock, flags);
-				spin_lock_irqsave(q->lock, qflags);
-				q->numpending--;
-				list_del(&fibptr->queue);
-				spin_unlock_irqrestore(q->lock, qflags);
-				return -ETIMEDOUT;
-			}
-			udelay(5);
-		}
-	} else {
-		u32 index;
-		unsigned long nointr = 0;
-		aac_queue_get( dev, &index, AdapNormCmdQueue, hw_fib, 1, fibptr, &nointr);
-
-		list_add_tail(&fibptr->queue, &q->pendingq);
-		q->numpending++;
-		*(q->headers.producer) = cpu_to_le32(index + 1);
-		spin_unlock_irqrestore(q->lock, qflags);
-		dprintk((KERN_DEBUG "fib_send: inserting a queue entry at index %d.\n",index));
-		if (!(nointr & aac_config.irq_mod))
-			aac_adapter_notify(dev, AdapNormCmdQueue);
-	}
+	aac_adapter_deliver(fibptr);
 
 	/*
 	 *	If the caller wanted us to wait for response wait now. 
@@ -522,25 +492,40 @@ int aac_fib_send(u16 command, struct fib * fibptr, unsigned long size,
 			 */
 			unsigned long count = 36000000L; /* 3 minutes */
 			while (down_trylock(&fibptr->event_wait)) {
+				int blink;
 				if (--count == 0) {
+					struct aac_queue * q = &dev->queues->queue[AdapNormCmdQueue];
 					spin_lock_irqsave(q->lock, qflags);
 					q->numpending--;
-					list_del(&fibptr->queue);
 					spin_unlock_irqrestore(q->lock, qflags);
 					if (wait == -1) {
-	        				printk(KERN_ERR "aacraid: fib_send: first asynchronous command timed out.\n"
+						printk(KERN_ERR "aacraid: aac_fib_send: first asynchronous command timed out.\n"
 						  "Usually a result of a PCI interrupt routing problem;\n"
 						  "update mother board BIOS or consider utilizing one of\n"
 						  "the SAFE mode kernel options (acpi, apic etc)\n");
 					}
 					return -ETIMEDOUT;
 				}
+				if ((blink = aac_adapter_check_health(dev)) > 0) {
+					if (wait == -1) {
+						printk(KERN_ERR "aacraid: aac_fib_send: adapter blinkLED 0x%x.\n"
+						  "Usually a result of a serious unrecoverable hardware problem\n",
+						  blink);
+					}
+					return -EFAULT;
+				}
 				udelay(5);
 			}
 		} else
-			down(&fibptr->event_wait);
-		if(fibptr->done == 0)
-			BUG();
+			(void)down_interruptible(&fibptr->event_wait);
+		spin_lock_irqsave(&fibptr->event_lock, flags);
+		if (fibptr->done == 0) {
+			fibptr->done = 2; /* Tell interrupt we aborted */
+			spin_unlock_irqrestore(&fibptr->event_lock, flags);
+			return -EINTR;
+		}
+		spin_unlock_irqrestore(&fibptr->event_lock, flags);
+		BUG_ON(fibptr->done == 0);
 			
 		if((fibptr->flags & FIB_CONTEXT_FLAG_TIMED_OUT)){
 			return -ETIMEDOUT;
@@ -632,7 +617,7 @@ void aac_consumer_free(struct aac_dev * dev, struct aac_queue *q, u32 qid)
 }        
 
 /**
- *	fib_adapter_complete	-	complete adapter issued fib
+ *	aac_fib_adapter_complete	-	complete adapter issued fib
  *	@fibptr: fib to complete
  *	@size: size of fib
  *
@@ -640,16 +625,16 @@ void aac_consumer_free(struct aac_dev * dev, struct aac_queue *q, u32 qid)
  *	the adapter.
  */
 
-int fib_adapter_complete(struct fib * fibptr, unsigned short size)
+int aac_fib_adapter_complete(struct fib *fibptr, unsigned short size)
 {
-	struct hw_fib * hw_fib = fibptr->hw_fib;
+	struct hw_fib * hw_fib = fibptr->hw_fib_va;
 	struct aac_dev * dev = fibptr->dev;
 	struct aac_queue * q;
 	unsigned long nointr = 0;
 	unsigned long qflags;
 
 	if (hw_fib->header.XferState == 0) {
-		if (dev->new_comm_interface)
+		if (dev->comm_interface == AAC_COMM_MESSAGE)
 			kfree (hw_fib);
         	return 0;
 	}
@@ -657,7 +642,7 @@ int fib_adapter_complete(struct fib * fibptr, unsigned short size)
 	 *	If we plan to do anything check the structure type first.
 	 */ 
 	if ( hw_fib->header.StructType != FIB_MAGIC ) {
-		if (dev->new_comm_interface)
+		if (dev->comm_interface == AAC_COMM_MESSAGE)
 			kfree (hw_fib);
         	return -EINVAL;
 	}
@@ -669,7 +654,7 @@ int fib_adapter_complete(struct fib * fibptr, unsigned short size)
 	 *	send the completed cdb to the adapter.
 	 */
 	if (hw_fib->header.XferState & cpu_to_le32(SentFromAdapter)) {
-		if (dev->new_comm_interface) {
+		if (dev->comm_interface == AAC_COMM_MESSAGE) {
 			kfree (hw_fib);
 		} else {
 	       		u32 index;
@@ -691,22 +676,22 @@ int fib_adapter_complete(struct fib * fibptr, unsigned short size)
 	}
 	else 
 	{
-        	printk(KERN_WARNING "fib_adapter_complete: Unknown xferstate detected.\n");
+		printk(KERN_WARNING "aac_fib_adapter_complete: Unknown xferstate detected.\n");
         	BUG();
 	}   
 	return 0;
 }
 
 /**
- *	fib_complete	-	fib completion handler
+ *	aac_fib_complete	-	fib completion handler
  *	@fib: FIB to complete
  *
  *	Will do all necessary work to complete a FIB.
  */
  
-int fib_complete(struct fib * fibptr)
+int aac_fib_complete(struct fib *fibptr)
 {
-	struct hw_fib * hw_fib = fibptr->hw_fib;
+	struct hw_fib * hw_fib = fibptr->hw_fib_va;
 
 	/*
 	 *	Check for a fib which has already been completed
@@ -774,9 +759,9 @@ void aac_printf(struct aac_dev *dev, u32 val)
 		if (cp[length] != 0)
 			cp[length] = 0;
 		if (level == LOG_AAC_HIGH_ERROR)
-			printk(KERN_WARNING "aacraid:%s", cp);
+			printk(KERN_WARNING "%s:%s", dev->name, cp);
 		else
-			printk(KERN_INFO "aacraid:%s", cp);
+			printk(KERN_INFO "%s:%s", dev->name, cp);
 	}
 	memset(cp, 0,  256);
 }
@@ -791,11 +776,11 @@ void aac_printf(struct aac_dev *dev, u32 val)
  *	dispatches it to the appropriate routine for handling.
  */
 
+#define AIF_SNIFF_TIMEOUT	(30*HZ)
 static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 {
-	struct hw_fib * hw_fib = fibptr->hw_fib;
+	struct hw_fib * hw_fib = fibptr->hw_fib_va;
 	struct aac_aifcmd * aifcmd = (struct aac_aifcmd *)hw_fib->data;
-	int busy;
 	u32 container;
 	struct scsi_device *device;
 #ifdef MODULE
@@ -833,7 +818,7 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 				break;
 
 			/*
-			 *	Find the Scsi_Device associated with the SCSI
+			 *	Find the scsi_device associated with the SCSI
 			 * address. Make sure we have the right array, and if
 			 * so set the flag to initiate a new re-config once we
 			 * see an AifEnConfigChange AIF come through.
@@ -847,6 +832,7 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 				if (device) {
 					dev->fsa_dev[container].config_needed = CHANGE;
 					dev->fsa_dev[container].config_waiting_on = AifEnConfigChange;
+					dev->fsa_dev[container].config_waiting_stamp = jiffies;
 					scsi_device_put(device);
 				}
 			}
@@ -859,13 +845,15 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 		if (container != (u32)-1) {
 			if (container >= dev->maximum_num_containers)
 				break;
-			if (dev->fsa_dev[container].config_waiting_on ==
-			    le32_to_cpu(*(u32 *)aifcmd->data))
+			if ((dev->fsa_dev[container].config_waiting_on ==
+			    le32_to_cpu(*(u32 *)aifcmd->data)) &&
+			 time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT))
 				dev->fsa_dev[container].config_waiting_on = 0;
 		} else for (container = 0;
 		    container < dev->maximum_num_containers; ++container) {
-			if (dev->fsa_dev[container].config_waiting_on ==
-			    le32_to_cpu(*(u32 *)aifcmd->data))
+			if ((dev->fsa_dev[container].config_waiting_on ==
+			    le32_to_cpu(*(u32 *)aifcmd->data)) &&
+			 time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT))
 				dev->fsa_dev[container].config_waiting_on = 0;
 		}
 		break;
@@ -882,6 +870,7 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 			dev->fsa_dev[container].config_needed = ADD;
 			dev->fsa_dev[container].config_waiting_on =
 				AifEnConfigChange;
+			dev->fsa_dev[container].config_waiting_stamp = jiffies;
 			break;
 
 		/*
@@ -894,6 +883,7 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 			dev->fsa_dev[container].config_needed = DELETE;
 			dev->fsa_dev[container].config_waiting_on =
 				AifEnConfigChange;
+			dev->fsa_dev[container].config_waiting_stamp = jiffies;
 			break;
 
 		/*
@@ -904,11 +894,13 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 			container = le32_to_cpu(((u32 *)aifcmd->data)[1]);
 			if (container >= dev->maximum_num_containers)
 				break;
-			if (dev->fsa_dev[container].config_waiting_on)
+			if (dev->fsa_dev[container].config_waiting_on &&
+			 time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT))
 				break;
 			dev->fsa_dev[container].config_needed = CHANGE;
 			dev->fsa_dev[container].config_waiting_on =
 				AifEnConfigChange;
+			dev->fsa_dev[container].config_waiting_stamp = jiffies;
 			break;
 
 		case AifEnConfigChange:
@@ -923,13 +915,15 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 		if (container != (u32)-1) {
 			if (container >= dev->maximum_num_containers)
 				break;
-			if (dev->fsa_dev[container].config_waiting_on ==
-			    le32_to_cpu(*(u32 *)aifcmd->data))
+			if ((dev->fsa_dev[container].config_waiting_on ==
+			    le32_to_cpu(*(u32 *)aifcmd->data)) &&
+			 time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT))
 				dev->fsa_dev[container].config_waiting_on = 0;
 		} else for (container = 0;
 		    container < dev->maximum_num_containers; ++container) {
-			if (dev->fsa_dev[container].config_waiting_on ==
-			    le32_to_cpu(*(u32 *)aifcmd->data))
+			if ((dev->fsa_dev[container].config_waiting_on ==
+			    le32_to_cpu(*(u32 *)aifcmd->data)) &&
+			 time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT))
 				dev->fsa_dev[container].config_waiting_on = 0;
 		}
 		break;
@@ -956,6 +950,8 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 				dev->fsa_dev[container].config_waiting_on =
 					AifEnContainerChange;
 				dev->fsa_dev[container].config_needed = ADD;
+				dev->fsa_dev[container].config_waiting_stamp =
+					jiffies;
 			}
 		}
 		if ((((u32 *)aifcmd->data)[1] == cpu_to_le32(AifJobCtrZero))
@@ -971,6 +967,8 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 				dev->fsa_dev[container].config_waiting_on =
 					AifEnContainerChange;
 				dev->fsa_dev[container].config_needed = DELETE;
+				dev->fsa_dev[container].config_waiting_stamp =
+					jiffies;
 			}
 		}
 		break;
@@ -978,9 +976,10 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 
 	device_config_needed = NOTHING;
 	for (container = 0; container < dev->maximum_num_containers;
-	  ++container) {
-		if ((dev->fsa_dev[container].config_waiting_on == 0)
-		 && (dev->fsa_dev[container].config_needed != NOTHING)) {
+	    ++container) {
+		if ((dev->fsa_dev[container].config_waiting_on == 0) &&
+			(dev->fsa_dev[container].config_needed != NOTHING) &&
+			time_before(jiffies, dev->fsa_dev[container].config_waiting_stamp + AIF_SNIFF_TIMEOUT)) {
 			device_config_needed =
 				dev->fsa_dev[container].config_needed;
 			dev->fsa_dev[container].config_needed = NOTHING;
@@ -996,11 +995,8 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 	 * behind you.
 	 */
 
-	busy = 0;
-
-
 	/*
-	 *	Find the Scsi_Device associated with the SCSI address,
+	 *	Find the scsi_device associated with the SCSI address,
 	 * and mark it as changed, invalidating the cache. This deals
 	 * with changes to existing device IDs.
 	 */
@@ -1008,14 +1004,14 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 	if (!dev || !dev->scsi_host_ptr)
 		return;
 	/*
-	 * force reload of disk info via probe_container
+	 * force reload of disk info via aac_probe_container
 	 */
 	if ((device_config_needed == CHANGE)
 	 && (dev->fsa_dev[container].valid == 1))
 		dev->fsa_dev[container].valid = 2;
 	if ((device_config_needed == CHANGE) ||
 			(device_config_needed == ADD))
-		probe_container(dev, container);
+		aac_probe_container(dev, container);
 	device = scsi_device_lookup(dev->scsi_host_ptr, 
 		CONTAINER_TO_CHANNEL(container), 
 		CONTAINER_TO_ID(container), 
@@ -1023,14 +1019,7 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 	if (device) {
 		switch (device_config_needed) {
 		case DELETE:
-			scsi_remove_device(device);
-			break;
 		case CHANGE:
-			if (!dev->fsa_dev[container].valid) {
-				scsi_remove_device(device);
-				break;
-			}
-			scsi_device_put(device);
 #if (!defined(MODULE))
 			scsi_rescan_device(&device->sdev_gendev);
 #else
@@ -1060,15 +1049,15 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 
 }
 
-static int _aac_reset_adapter(struct aac_dev * aac)
+static int _aac_reset_adapter(struct aac_dev *aac)
 {
-	int index;
-	u32 ret;
+	int index, quirks;
 	int retval;
-	struct Scsi_Host * host;
-	struct scsi_device * dev;
-	struct scsi_cmnd * command;
-	struct scsi_cmnd * command_list;
+	struct Scsi_Host *host;
+	struct scsi_device *dev;
+	struct scsi_cmnd *command;
+	struct scsi_cmnd *command_list;
+	int jafo = 0;
 
 	/*
 	 * Assumptions:
@@ -1083,26 +1072,39 @@ static int _aac_reset_adapter(struct aac_dev * aac)
 	host = aac->scsi_host_ptr;
 	scsi_block_requests(host);
 	aac_adapter_disable_int(aac);
-	if (aac->thread_pid != current->pid) {
-		kill_proc(aac->thread_pid, SIGKILL, 0);
-		/* Chance of sleeping in this context, must unlock */
+	if (aac->thread->pid != current->pid) {
 		spin_unlock_irq(host->host_lock);
-		wait_for_completion(&aac->aif_completion);
+		kthread_stop(aac->thread);
+		jafo = 1;
 	}
 
 	/*
 	 *	If a positive health, means in a known DEAD PANIC
 	 * state and the adapter could be reset to `try again'.
 	 */
-	retval = aac_adapter_sync_cmd(aac, IOP_RESET,
-	  0, 0, 0, 0, 0, 0, &ret, NULL, NULL, NULL, NULL);
+	retval = aac_adapter_restart(aac, aac_adapter_check_health(aac));
 
-	if (retval || (ret != 0x00000001)) {
-		if (retval == 0)
-			retval = -ENODEV;
+	if (retval)
 		goto out;
-	}
 
+	/*
+	 *	Loop through the fibs, close the synchronous FIBS
+	 */
+	for (retval = 1, index = 0; index < (aac->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB); index++) {
+		struct fib *fib = &aac->fibs[index];
+		if (!(fib->hw_fib_va->header.XferState & cpu_to_le32(NoResponseExpected | Async)) &&
+		  (fib->hw_fib_va->header.XferState & cpu_to_le32(ResponseExpected))) {
+			unsigned long flagv;
+			spin_lock_irqsave(&fib->event_lock, flagv);
+			up(&fib->event_wait);
+			spin_unlock_irqrestore(&fib->event_lock, flagv);
+			schedule();
+			retval = 0;
+		}
+	}
+	/* Give some extra time for ioctls to complete. */
+	if (retval == 0)
+		ssleep(2);
 	index = aac->cardtype;
 
 	/*
@@ -1112,7 +1114,7 @@ static int _aac_reset_adapter(struct aac_dev * aac)
 	 * will ensure that i/o is queisced and the card is flushed in that
 	 * case.
 	 */
-	fib_map_free(aac);
+	aac_fib_map_free(aac);
 	aac->hw_fib_va = NULL;
 	aac->hw_fib_pa = 0;
 	pci_free_consistent(aac->pdev, aac->comm_size, aac->comm_addr, aac->comm_phys);
@@ -1137,19 +1139,24 @@ static int _aac_reset_adapter(struct aac_dev * aac)
 	if (aac_get_driver_ident(index)->quirks & AAC_QUIRK_31BIT)
 		if ((retval = pci_set_dma_mask(aac->pdev, DMA_32BIT_MASK)))
 			goto out;
-	if (aac->thread_pid != current->pid) {
-		aac->thread_pid = retval = kernel_thread(
-		  (int (*)(void *))aac_command_thread, aac, 0);
-		if (retval < 0)
+	if (jafo) {
+		aac->thread = kthread_run(aac_command_thread, aac, aac->name);
+		if (IS_ERR(aac->thread)) {
+			retval = PTR_ERR(aac->thread);
 			goto out;
+		}
 	}
 	(void)aac_get_adapter_info(aac);
- 	if ((aac_get_driver_ident(index)->quirks & AAC_QUIRK_34SG) && 
-	    (host->sg_tablesize > 34)) {
+	quirks = aac_get_driver_ident(index)->quirks;
+	if ((quirks & AAC_QUIRK_34SG) && (host->sg_tablesize > 34)) {
  		host->sg_tablesize = 34;
- 		host->max_sectors = 128;
+		host->max_sectors = (host->sg_tablesize * 8) + 112;
  	}
-	aac_get_config_status(aac);
+	if ((quirks & AAC_QUIRK_17SG) && (host->sg_tablesize > 17)) {
+		host->sg_tablesize = 17;
+		host->max_sectors = (host->sg_tablesize * 8) + 112;
+	}
+	aac_get_config_status(aac, 1);
 	aac_get_containers(aac);
 	/*
 	 * This is where the assumption that the Adapter is quiesced
@@ -1180,7 +1187,7 @@ static int _aac_reset_adapter(struct aac_dev * aac)
 out:
 	aac->in_reset = 0;
 	scsi_unblock_requests(host);
-	if (aac->thread_pid != current->pid) {
+	if (jafo) {
 		spin_lock_irq(host->host_lock);
 	}
 	return retval;
@@ -1190,6 +1197,7 @@ int aac_reset_adapter(struct aac_dev * aac)
 {
 	unsigned long flagv = 0;
 	int retval;
+	struct Scsi_Host * host;
 
 	if (spin_trylock_irqsave(&aac->fib_lock, flagv) == 0)
 		return -EBUSY;
@@ -1201,18 +1209,53 @@ int aac_reset_adapter(struct aac_dev * aac)
 	aac->in_reset = 1;
 	spin_unlock_irqrestore(&aac->fib_lock, flagv);
 
+	/*
+	 * Wait for all commands to complete to this specific
+	 * target (block maximum 60 seconds). Although not necessary,
+	 * it does make us a good storage citizen.
+	 */
+	host = aac->scsi_host_ptr;
+	scsi_block_requests(host);
+	for (retval = 60; retval; --retval) {
+		struct scsi_device * dev;
+		struct scsi_cmnd * command;
+		int active = 0;
+
+		__shost_for_each_device(dev, host) {
+			spin_lock_irqsave(&dev->list_lock, flagv);
+			list_for_each_entry(command, &dev->cmd_list, list) {
+				if (command->SCp.phase == AAC_OWNER_FIRMWARE) {
+					active++;
+					break;
+				}
+			}
+			spin_unlock_irqrestore(&dev->list_lock, flagv);
+			if (active)
+				break;
+
+		}
+		/*
+		 * We can exit If all the commands are complete
+		 */
+		if (active == 0)
+			break;
+		ssleep(1);
+	}
+
 	/* Quiesce build, flush cache, write through mode */
 	aac_send_shutdown(aac);
+	spin_lock_irqsave(host->host_lock, flagv);
 	retval = _aac_reset_adapter(aac);
+	spin_unlock_irqrestore(host->host_lock, flagv);
 
 	if (retval == -ENODEV) {
 		/* Unwind aac_send_shutdown() IOP_RESET unsupported/disabled */
-		struct fib * fibctx = fib_alloc(aac);
+		struct fib * fibctx = aac_fib_alloc(aac);
 		if (fibctx) {
 			struct aac_pause *cmd;
 			int status;
 
-			fib_init(fibctx);
+			aac_fib_init(fibctx);
 
 			cmd = (struct aac_pause *) fib_data(fibctx);
 
@@ -1221,17 +1264,18 @@ int aac_reset_adapter(struct aac_dev * aac)
 			cmd->timeout = cpu_to_le32(1);
 			cmd->min = cpu_to_le32(1);
 			cmd->noRescan = cpu_to_le32(1);
+			cmd->count = cpu_to_le32(0);
 
-			status = fib_send(ContainerCommand,
+			status = aac_fib_send(ContainerCommand,
 			  fibctx,
 			  sizeof(struct aac_pause),
 			  FsaNormal,
 			  -2 /* Timeout silently */, 1,
 			  NULL, NULL);
 
-			if (status == 0)
-				fib_complete(fibctx);
-			fib_free(fibctx);
+			if (status >= 0)
+				aac_fib_complete(fibctx);
+			aac_fib_free(fibctx);
 		}
 	}
 
@@ -1264,12 +1308,12 @@ int aac_check_health(struct aac_dev * aac)
 	 *	aac.aifcmd.data[2] = AifHighPriority = 3
 	 *	aac.aifcmd.data[3] = BlinkLED
 	 */
-		
+
 	time_now = jiffies/HZ;
 	entry = aac->fib_list.next;
 
 	/*
-	 * For each Context that is on the 
+	 * For each Context that is on the
 	 * fibctxList, make a copy of the
 	 * fib, and then set the event to wake up the
 	 * thread that is waiting for it.
@@ -1293,11 +1337,11 @@ int aac_check_health(struct aac_dev * aac)
 			 */
 			u32 time_last = fibctx->jiffies;
 			/*
-			 * Has it been > 2 minutes 
+			 * Has it been > 2 minutes
 			 * since the last read off
 			 * the queue?
 			 */
-			if ((time_now - time_last) > 120) {
+			if ((time_now - time_last) > aif_timeout) {
 				entry = entry->next;
 				aac_close_fib_context(aac, fibctx);
 				continue;
@@ -1314,19 +1358,19 @@ int aac_check_health(struct aac_dev * aac)
 
 			memset(hw_fib, 0, sizeof(struct hw_fib));
 			memset(fib, 0, sizeof(struct fib));
-			fib->hw_fib = hw_fib;
+			fib->hw_fib_va = hw_fib;
 			fib->dev = aac;
-			fib_init(fib);
+			aac_fib_init(fib);
 			fib->type = FSAFS_NTC_FIB_CONTEXT;
 			fib->size = sizeof (struct fib);
 			fib->data = hw_fib->data;
 			aif = (struct aac_aifcmd *)hw_fib->data;
-			aif->command = AifCmdEventNotify;
-		 	aif->seqnum = 0xFFFFFFFF;
-		 	aif->data[0] = AifEnExpEvent;
-			aif->data[1] = AifExeFirmwarePanic;
-		 	aif->data[2] = AifHighPriority;
-			aif->data[3] = BlinkLED;
+			aif->command = cpu_to_le32(AifCmdEventNotify);
+			aif->seqnum = cpu_to_le32(0xFFFFFFFF);
+			aif->data[0] = cpu_to_le32(AifEnExpEvent);
+			aif->data[1] = cpu_to_le32(AifExeFirmwarePanic);
+			aif->data[2] = cpu_to_le32(AifHighPriority);
+			aif->data[3] = cpu_to_le32(BlinkLED);
 
 			/*
 			 * Put the FIB onto the
@@ -1334,17 +1378,15 @@ int aac_check_health(struct aac_dev * aac)
 			 */
 			list_add_tail(&fib->fiblink, &fibctx->fib_list);
 			fibctx->count++;
-			/* 
+			/*
 			 * Set the event to wake up the
 			 * thread that will waiting.
 			 */
 			up(&fibctx->wait_sem);
 		} else {
 			printk(KERN_WARNING "aifd: didn't allocate NewFib.\n");
-			if(fib)
-				kfree(fib);
-			if(hw_fib)
-				kfree(hw_fib);
+			kfree(fib);
+			kfree(hw_fib);
 		}
 		entry = entry->next;
 	}
@@ -1378,8 +1420,9 @@ out:
  *	more FIBs.
  */
  
-int aac_command_thread(struct aac_dev * dev)
+int aac_command_thread(void *data)
 {
+	struct aac_dev *dev = data;
 	struct hw_fib *hw_fib, *hw_newfib;
 	struct fib *fib, *newfib;
 	struct aac_fib_context *fibctx;
@@ -1396,12 +1439,7 @@ int aac_command_thread(struct aac_dev * dev)
 	 */
 	if (dev->aif_thread)
 		return -EINVAL;
-	/*
-	 *	Set up the name that will appear in 'ps'
-	 *	stored in  task_struct.comm[16].
-	 */
-	daemonize(dev->name);
-	allow_signal(SIGKILL);
+
 	/*
 	 *	Let the DPC know it has a place to send the AIF's to.
 	 */
@@ -1429,11 +1467,11 @@ int aac_command_thread(struct aac_dev * dev)
 			 *	do anything at this point since we don't have
 			 *	anything defined for this thread to do.
 			 */
-			hw_fib = fib->hw_fib;
+			hw_fib = fib->hw_fib_va;
 			memset(fib, 0, sizeof(struct fib));
 			fib->type = FSAFS_NTC_FIB_CONTEXT;
 			fib->size = sizeof( struct fib );
-			fib->hw_fib = hw_fib;
+			fib->hw_fib_va = hw_fib;
 			fib->data = hw_fib->data;
 			fib->dev = dev;
 			/*
@@ -1444,7 +1482,7 @@ int aac_command_thread(struct aac_dev * dev)
 				/* Handle Driver Notify Events */
 				aac_handle_aif(dev, fib);
 				*(__le32 *)hw_fib->data = cpu_to_le32(ST_OK);
-				fib_adapter_complete(fib, (u16)sizeof(u32));
+				aac_fib_adapter_complete(fib, (u16)sizeof(u32));
 			} else {
 				struct list_head *entry;
 				/* The u32 here is important and intended. We are using
@@ -1504,7 +1542,7 @@ int aac_command_thread(struct aac_dev * dev)
 						kfree(hw_fib_pool);
 						hw_fib_pool = NULL;
 					}
-				} else if (hw_fib_pool) {
+				} else {
 					kfree(hw_fib_pool);
 					hw_fib_pool = NULL;
 				}
@@ -1540,7 +1578,7 @@ int aac_command_thread(struct aac_dev * dev)
 						 * since the last read off
 						 * the queue?
 						 */
-						if ((time_now - time_last) > 120) {
+						if ((time_now - time_last) > aif_timeout) {
 							entry = entry->next;
 							aac_close_fib_context(dev, fibctx);
 							continue;
@@ -1560,7 +1598,7 @@ int aac_command_thread(struct aac_dev * dev)
 						 */
 						memcpy(hw_newfib, hw_fib, sizeof(struct hw_fib));
 						memcpy(newfib, fib, sizeof(struct fib));
-						newfib->hw_fib = hw_newfib;
+						newfib->hw_fib_va = hw_newfib;
 						/*
 						 * Put the FIB onto the
 						 * fibctx's fibs
@@ -1581,23 +1619,19 @@ int aac_command_thread(struct aac_dev * dev)
 				 *	Set the status of this FIB
 				 */
 				*(__le32 *)hw_fib->data = cpu_to_le32(ST_OK);
-				fib_adapter_complete(fib, sizeof(u32));
+				aac_fib_adapter_complete(fib, sizeof(u32));
 				spin_unlock_irqrestore(&dev->fib_lock, flagv);
 				/* Free up the remaining resources */
 				hw_fib_p = hw_fib_pool;
 				fib_p = fib_pool;
 				while (hw_fib_p < &hw_fib_pool[num]) {
-					if (*hw_fib_p)
-						kfree(*hw_fib_p);
-					if (*fib_p)
-						kfree(*fib_p);
+					kfree(*hw_fib_p);
+					kfree(*fib_p);
 					++fib_p;
 					++hw_fib_p;
 				}
-				if (hw_fib_pool)
-					kfree(hw_fib_pool);
-				if (fib_pool)
-					kfree(fib_pool);
+				kfree(hw_fib_pool);
+				kfree(fib_pool);
 			}
 			kfree(fib);
 			spin_lock_irqsave(dev->queues->queue[HostNormCmdQueue].lock, flags);
@@ -1642,10 +1676,10 @@ int aac_command_thread(struct aac_dev * dev)
 			else if (ret == 0) {
 				struct fib *fibptr;
 
-				if ((fibptr = fib_alloc(dev))) {
+				if ((fibptr = aac_fib_alloc(dev))) {
 					u32 * info;
 
-					fib_init(fibptr);
+					aac_fib_init(fibptr);
 
 					info = (u32 *) fib_data(fibptr);
 					if (now.tv_usec > 500000)
@@ -1653,15 +1687,15 @@ int aac_command_thread(struct aac_dev * dev)
 
 					*info = cpu_to_le32(now.tv_sec);
 
-					(void)fib_send(SendHostTime,
+					(void)aac_fib_send(SendHostTime,
 						fibptr,
 						sizeof(*info),
 						FsaNormal,
 						1, 1,
 						NULL,
 						NULL);
-					fib_complete(fibptr);
-					fib_free(fibptr);
+					aac_fib_complete(fibptr);
+					aac_fib_free(fibptr);
 				}
 				difference = (long)(unsigned)update_interval*HZ;
 			} else {
@@ -1677,12 +1711,11 @@ int aac_command_thread(struct aac_dev * dev)
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(difference);
 
-		if(signal_pending(current))
+		if (kthread_should_stop())
 			break;
 	}
 	if (dev->queues)
 		remove_wait_queue(&dev->queues->queue[HostNormCmdQueue].cmdready, &wait);
 	dev->aif_thread = 0;
-	complete_and_exit(&dev->aif_completion, 0);
 	return 0;
 }

@@ -29,7 +29,6 @@
 #include <linux/nfs_fs.h>
 #include <linux/nfs_mount.h>
 #include <linux/nfs4_mount.h>
-#include <linux/nfs4.h>
 #include <linux/lockd/bind.h>
 #include <linux/smp_lock.h>
 #include <linux/seq_file.h>
@@ -135,7 +134,7 @@ nfs_write_inode(struct inode *inode, int sync)
 	int flags = sync ? FLUSH_WAIT : 0;
 	int ret;
 
-	ret = nfs_commit_inode(inode, 0, 0, flags);
+	ret = nfs_commit_inode(inode, flags);
 	if (ret < 0)
 		return ret;
 	return 0;
@@ -236,7 +235,6 @@ static struct inode *
 nfs_get_root(struct super_block *sb, struct nfs_fh *rootfh, struct nfs_fsinfo *fsinfo)
 {
 	struct nfs_server	*server = NFS_SB(sb);
-	struct inode *rooti;
 	int			error;
 
 	error = server->rpc_ops->getroot(server, rootfh, fsinfo);
@@ -245,10 +243,7 @@ nfs_get_root(struct super_block *sb, struct nfs_fh *rootfh, struct nfs_fsinfo *f
 		return ERR_PTR(error);
 	}
 
-	rooti = nfs_fhget(sb, rootfh, fsinfo->fattr);
-	if (!rooti)
-		return ERR_PTR(-ENOMEM);
-	return rooti;
+	return nfs_fhget(sb, rootfh, fsinfo->fattr);
 }
 
 /*
@@ -274,6 +269,8 @@ nfs_sb_init(struct super_block *sb, rpc_authflavor_t authflavor)
 	server = NFS_SB(sb);
 
 	sb->s_magic      = NFS_SUPER_MAGIC;
+
+	sb->s_flags |= MS_NO_LEASES;
 
 	root_inode = nfs_get_root(sb, &server->fh, &fsinfo);
 	/* Did getting the root inode fail? */
@@ -799,7 +796,7 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
 		.fh	= fh,
 		.fattr	= fattr
 	};
-	struct inode *inode = NULL;
+	struct inode *inode = ERR_PTR(-ENOENT);
 	unsigned long hash;
 
 	if ((fattr->valid & NFS_ATTR_FATTR) == 0)
@@ -812,8 +809,11 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
 
 	hash = nfs_fattr_to_ino_t(fattr);
 
-	if (!(inode = iget5_locked(sb, hash, nfs_find_actor, nfs_init_locked, &desc)))
+	inode = iget5_locked(sb, hash, nfs_find_actor, nfs_init_locked, &desc);
+	if (inode == NULL) {
+		inode = ERR_PTR(-ENOMEM);
 		goto out_no_inode;
+	}
 
 	if (inode->i_state & I_NEW) {
 		struct nfs_inode *nfsi = NFS_I(inode);
@@ -892,7 +892,7 @@ out:
 	return inode;
 
 out_no_inode:
-	printk("nfs_fhget: iget failed\n");
+	dprintk("nfs_fhget: iget failed with error %ld\n", PTR_ERR(inode));
 	goto out;
 }
 
@@ -1004,7 +1004,7 @@ int nfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 	return err;
 }
 
-struct nfs_open_context *alloc_nfs_open_context(struct dentry *dentry, struct rpc_cred *cred)
+struct nfs_open_context *alloc_nfs_open_context(struct vfsmount *mnt, struct dentry *dentry, struct rpc_cred *cred)
 {
 	struct nfs_open_context *ctx;
 
@@ -1012,6 +1012,7 @@ struct nfs_open_context *alloc_nfs_open_context(struct dentry *dentry, struct rp
 	if (ctx != NULL) {
 		atomic_set(&ctx->count, 1);
 		ctx->dentry = dget(dentry);
+		ctx->vfsmnt = mntget(mnt);
 		ctx->cred = get_rpccred(cred);
 		ctx->state = NULL;
 		ctx->lockowner = current->files;
@@ -1032,11 +1033,18 @@ struct nfs_open_context *get_nfs_open_context(struct nfs_open_context *ctx)
 void put_nfs_open_context(struct nfs_open_context *ctx)
 {
 	if (atomic_dec_and_test(&ctx->count)) {
+		if (!list_empty(&ctx->list)) {
+			struct inode *inode = ctx->dentry->d_inode;
+			spin_lock(&inode->i_lock);
+			list_del(&ctx->list);
+			spin_unlock(&inode->i_lock);
+		}
 		if (ctx->state != NULL)
 			nfs4_close_state(ctx->state, ctx->mode);
 		if (ctx->cred != NULL)
 			put_rpccred(ctx->cred);
 		dput(ctx->dentry);
+		mntput(ctx->vfsmnt);
 		kfree(ctx);
 	}
 }
@@ -1080,7 +1088,7 @@ void nfs_file_clear_open_context(struct file *filp)
 	if (ctx) {
 		filp->private_data = NULL;
 		spin_lock(&inode->i_lock);
-		list_del(&ctx->list);
+		list_move_tail(&ctx->list, &NFS_I(inode)->open_files);
 		spin_unlock(&inode->i_lock);
 		put_nfs_open_context(ctx);
 	}
@@ -1096,7 +1104,7 @@ int nfs_open(struct inode *inode, struct file *filp)
 
 	if ((cred = rpcauth_lookupcred(NFS_CLIENT(inode)->cl_auth, 0)) == NULL)
 		return -ENOMEM;
-	ctx = alloc_nfs_open_context(filp->f_dentry, cred);
+	ctx = alloc_nfs_open_context(filp->f_vfsmnt, filp->f_dentry, cred);
 	put_rpccred(cred);
 	if (ctx == NULL)
 		return -ENOMEM;
@@ -1441,6 +1449,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 	struct nfs_inode *nfsi = NFS_I(inode);
 	loff_t cur_isize, new_isize;
 	unsigned int	invalid = 0;
+	unsigned long now = jiffies;
 	int data_stable;
 
 	dfprintk(VFS, "NFS: %s(%s/%ld ct=%d info=0x%x)\n",
@@ -1469,7 +1478,11 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 	 * Update the read time so we don't revalidate too often.
 	 */
 	nfsi->read_cache_jiffies = fattr->time_start;
-	nfsi->last_updated = jiffies;
+	nfsi->last_updated = now;
+
+	/* Fix a wraparound issue with nfsi->cache_change_attribute */
+	if (time_before(now, nfsi->cache_change_attribute))
+		nfsi->cache_change_attribute = now - 600*HZ;
 
 	/* Are we racing with known updates of the metadata on the server? */
 	data_stable = nfs_verify_change_attribute(inode, fattr->time_start);
@@ -1495,7 +1508,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 			inode->i_size = new_isize;
 			invalid |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA;
 		}
-		nfsi->cache_change_attribute = jiffies;
+		nfsi->cache_change_attribute = now;
 		dprintk("NFS: isize change on server for file %s/%ld\n",
 				inode->i_sb->s_id, inode->i_ino);
 	}
@@ -1506,14 +1519,14 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 		dprintk("NFS: mtime change on server for file %s/%ld\n",
 				inode->i_sb->s_id, inode->i_ino);
 		invalid |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA;
-		nfsi->cache_change_attribute = jiffies;
+		nfsi->cache_change_attribute = now;
 	}
 
 	/* If ctime has changed we should definitely clear access+acl caches */
 	if (!timespec_equal(&inode->i_ctime, &fattr->ctime)) {
 		invalid |= NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL;
 		memcpy(&inode->i_ctime, &fattr->ctime, sizeof(inode->i_ctime));
-		nfsi->cache_change_attribute = jiffies;
+		nfsi->cache_change_attribute = now;
 	}
 	memcpy(&inode->i_atime, &fattr->atime, sizeof(inode->i_atime));
 
@@ -1544,7 +1557,7 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 					inode->i_sb->s_id, inode->i_ino);
 			nfsi->change_attr = fattr->change_attr;
 			invalid |= NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA|NFS_INO_INVALID_ACCESS|NFS_INO_INVALID_ACL;
-			nfsi->cache_change_attribute = jiffies;
+			nfsi->cache_change_attribute = now;
 		} else
 			invalid &= ~(NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA);
 	}
@@ -1553,11 +1566,11 @@ static int nfs_update_inode(struct inode *inode, struct nfs_fattr *fattr)
 	if (invalid & NFS_INO_INVALID_ATTR) {
 		nfs_inc_stats(inode, NFSIOS_ATTRINVALIDATE);
 		nfsi->attrtimeo = NFS_MINATTRTIMEO(inode);
-		nfsi->attrtimeo_timestamp = jiffies;
-	} else if (time_after(jiffies, nfsi->attrtimeo_timestamp+nfsi->attrtimeo)) {
+		nfsi->attrtimeo_timestamp = now;
+	} else if (time_after(now, nfsi->attrtimeo_timestamp+nfsi->attrtimeo)) {
 		if ((nfsi->attrtimeo <<= 1) > NFS_MAXATTRTIMEO(inode))
 			nfsi->attrtimeo = NFS_MAXATTRTIMEO(inode);
-		nfsi->attrtimeo_timestamp = jiffies;
+		nfsi->attrtimeo_timestamp = now;
 	}
 	/* Don't invalidate the data if we were to blame */
 	if (!(S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode)
@@ -1790,6 +1803,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 	if (data->wsize != 0)
 		server->wsize = nfs_block_size(data->wsize, NULL);
 	server->flags = data->flags & NFS_MOUNT_FLAGMASK;
+	server->caps = NFS_CAP_ATOMIC_OPEN;
 
 	server->acregmin = data->acregmin*HZ;
 	server->acregmax = data->acregmax*HZ;
@@ -1867,7 +1881,7 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 		nfs_idmap_new(clp);
 	}
 	if (list_empty(&clp->cl_superblocks)) {
-		err = nfs4_map_errors(nfs4_init_client(clp));
+		err = nfs4_init_client(clp);
 		if (err != 0) {
 			up_write(&clp->cl_sem);
 			goto out_fail;

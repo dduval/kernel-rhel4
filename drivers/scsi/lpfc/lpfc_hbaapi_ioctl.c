@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hbaapi_ioctl.c 2853 2006-02-12 21:48:31Z sf_support $
+ * $Id: lpfc_hbaapi_ioctl.c 2894 2006-03-28 16:47:45Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -842,7 +842,7 @@ lpfc_ioctl_hba_rnid(struct lpfc_hba * phba, LPFCCMDINPUT_t * cip, void *dataout)
 	}
 
 	cmdiocbq = lpfc_prep_els_iocb(phba, 1, (2 * sizeof(uint32_t)), 0, pndl,
-					ELS_CMD_RNID);
+						pndl->nlp_DID, ELS_CMD_RNID);
 	if (!cmdiocbq) {
 		rc = ENOMEM;
 		goto sndrndqwt;

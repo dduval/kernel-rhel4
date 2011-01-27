@@ -65,9 +65,9 @@ MODULE_DESCRIPTION(LANAME);
 
 /*****************************************************************************/
 #ifdef MPT_LAN_IO_DEBUG
-#define dioprintk(x)  printk x
+#define dlioprintk(x)  printk x
 #else
-#define dioprintk(x)
+#define dlioprintk(x)
 #endif
 
 #ifdef MPT_LAN_DEBUG

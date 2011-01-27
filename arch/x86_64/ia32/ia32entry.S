@@ -35,7 +35,7 @@
 	movq	%rax,R8(%rsp)
 	.endm
 
-	.macro LOAD_ARGS32 offset
+	.macro	LOAD_ARGS32 offset
 	movl \offset(%rsp),%r11d
 	movl \offset+8(%rsp),%r10d
 	movl \offset+16(%rsp),%r9d
@@ -46,7 +46,7 @@
 	movl \offset+64(%rsp),%edi
 	movl \offset+72(%rsp),%eax
 	.endm
-	
+
 /*
  * 32bit SYSENTER instruction entry.
  *

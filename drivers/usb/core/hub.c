@@ -637,8 +637,6 @@ static void hub_quiesce(struct usb_hub *hub)
 		flush_scheduled_work();
 }
 
-#ifdef	CONFIG_USB_SUSPEND
-
 static void hub_reactivate(struct usb_hub *hub)
 {
 	int	status;
@@ -650,8 +648,6 @@ static void hub_reactivate(struct usb_hub *hub)
 	if (hub->has_indicators && blinkenlights)
 		schedule_delayed_work(&hub->leds, LED_CYCLE_PERIOD);
 }
-
-#endif
 
 static void hub_disconnect(struct usb_interface *intf)
 {
@@ -794,92 +790,26 @@ hub_ioctl(struct usb_interface *intf, unsigned int code, void *user_data)
 	}
 }
 
-/* caller has locked the hub and must own the device lock */
-static int hub_reset(struct usb_hub *hub)
+/* caller has locked the hub device */
+static void hub_pre_reset(struct usb_device *hdev)
 {
-	struct usb_device *hdev = hub->hdev;
+	struct usb_hub *hub = usb_get_intfdata(hdev->actconfig->interface[0]);
 	int i;
 
-	/* Disconnect any attached devices */
-	for (i = 0; i < hub->descriptor->bNbrPorts; i++) {
+	for (i = 0; i < hdev->maxchild; ++i) {
 		if (hdev->children[i])
 			usb_disconnect(&hdev->children[i]);
 	}
 
-	/* Attempt to reset the hub */
-	if (hub->urb)
-		usb_kill_urb(hub->urb);
-	else
-		return -1;
+	hub_quiesce(hub);
+}
 
-	if (__usb_reset_device(hdev))
-		return -1;
-
-	hub->urb->dev = hdev;                                                    
-	if (usb_submit_urb(hub->urb, GFP_KERNEL))
-		return -1;
-
+/* caller has locked the hub device */
+static void hub_post_reset(struct usb_device *hdev)
+{
+	struct usb_hub *hub = usb_get_intfdata(hdev->actconfig->interface[0]);
+	hub_reactivate(hub);
 	hub_power_on(hub);
-
-	return 0;
-}
-
-static void usb_disconnect_nolock(struct usb_device **pdev)
-{
-	struct usb_device	*udev = *pdev;
-
-	/* mark the device as inactive, so any further urb submissions for
-	 * this device (and any of its children) will fail immediately.
-	 * this quiesces everyting except pending urbs.
-	 */
-	usb_set_device_state(udev, USB_STATE_NOTATTACHED);
-
-	dev_info (&udev->dev, "USB disconnect, address %d\n", udev->devnum);
-
-	/* deallocate hcd/hardware state ... nuking all pending urbs and
-	 * cleaning up all state associated with the current configuration
-	 * so that the hardware is now fully quiesced.
-	 */
-	usb_disable_device(udev, 0);
-
-	/* Free the device number, remove the /proc/bus/usb entry and
-	 * the sysfs attributes, and delete the parent's children[]
-	 * (or root_hub) pointer.
-	 */
-	dev_dbg (&udev->dev, "unregistering device\n");
-	if (udev->devnum > 0) {
-		clear_bit(udev->devnum, udev->bus->devmap.devicemap);
-		udev->devnum = -1;
-	}
-	usbfs_remove_device(udev);
-	usb_remove_sysfs_dev_files(udev);
-
-	/* Avoid races with recursively_mark_NOTATTACHED() and locktree() */
-	spin_lock_irq(&device_state_lock);
-	*pdev = NULL;
-	spin_unlock_irq(&device_state_lock);
-
-	device_unregister(&udev->dev);
-}
-
-/* caller has locked the hub */
-/* FIXME!  This routine should be subsumed into hub_reset */
-static void hub_start_disconnect(struct usb_device *hdev)
-{
-	struct usb_device *parent = hdev->parent;
-	int i;
-
-	/* Find the device pointer to disconnect */
-	if (parent) {
-		for (i = 0; i < parent->maxchild; i++) {
-			if (parent->children[i] == hdev) {
-				usb_disconnect_nolock(&parent->children[i]);
-				return;
-			}
-		}
-	}
-
-	dev_err(&hdev->dev, "cannot disconnect hub!\n");
 }
 
 
@@ -2494,10 +2424,10 @@ static void hub_events(void)
 			dev_dbg (hub_dev, "resetting for error %d\n",
 				hub->error);
 
-			if (hub_reset(hub)) {
+			ret = __usb_reset_device(hdev);
+			if (ret) {
 				dev_dbg (hub_dev,
-					"can't reset; disconnecting\n");
-				hub_start_disconnect(hdev);
+					"error resetting hub: %d\n", ret);
 				goto loop;
 			}
 
@@ -2772,6 +2702,7 @@ int __usb_reset_device(struct usb_device *udev)
 	struct usb_device_descriptor descriptor = udev->descriptor;
 	int i, ret, port = -1;
 	struct usb_hub *hub;
+	int udev_is_a_hub = 0;
 
 	if (udev->state == USB_STATE_NOTATTACHED ||
 			udev->state == USB_STATE_SUSPENDED) {
@@ -2780,13 +2711,9 @@ int __usb_reset_device(struct usb_device *udev)
 		return -EINVAL;
 	}
 
-	/* FIXME: This should be legal for regular hubs.  Root hubs may
-	 * have special requirements. */
-	if (udev->maxchild) {
-		/* this requires hub- or hcd-specific logic;
-		 * see hub_reset() and OHCI hc_restart()
-		 */
-		dev_dbg(&udev->dev, "%s for hub!\n", __FUNCTION__);
+	if (!parent) {
+		/* this requires hcd-specific logic; see OHCI hc_restart() */
+		dev_dbg(&udev->dev, "%s for root hub!\n", __FUNCTION__);
 		return -EISDIR;
 	}
 
@@ -2802,6 +2729,14 @@ int __usb_reset_device(struct usb_device *udev)
 		return -ENOENT;
 	}
 
+	/* If we're resetting an active hub, take some special actions */
+	if (udev->actconfig &&
+			udev->actconfig->interface[0]->dev.driver ==
+			&hub_driver.driver) {
+		udev_is_a_hub = 1;
+		hub_pre_reset(udev);
+	}
+
 	ret = hub_port_init(parent, udev, port);
 	if (ret < 0)
 		goto re_enumerate;
@@ -2815,7 +2750,7 @@ int __usb_reset_device(struct usb_device *udev)
   	}
   
 	if (!udev->actconfig)
-		return 0;
+		goto done;
 
 	ret = usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
 			USB_REQ_SET_CONFIGURATION, 0,
@@ -2849,6 +2784,9 @@ int __usb_reset_device(struct usb_device *udev)
 		}
 	}
 
+done:
+	if (udev_is_a_hub)
+		hub_post_reset(udev);
 	return 0;
  
 re_enumerate:

@@ -102,6 +102,7 @@ extern char ignore_fpu_irq;
 extern void identify_cpu(struct cpuinfo_x86 *);
 extern void print_cpu_info(struct cpuinfo_x86 *);
 extern unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c);
+extern unsigned short num_cache_leaves;
 extern void dodgy_tsc(void);
 
 /*
@@ -669,7 +670,7 @@ static inline void rep_nop(void)
    However we don't do prefetches for pre XP Athlons currently
    That should be fixed. */
 #define ARCH_HAS_PREFETCH
-extern inline void prefetch(const void *x)
+static inline void prefetch(const void *x)
 {
 	alternative_input(ASM_NOP4,
 			  "prefetchnta (%1)",
@@ -683,7 +684,7 @@ extern inline void prefetch(const void *x)
 
 /* 3dnow! prefetch to get an exclusive cache line. Useful for 
    spinlocks to avoid one state transition in the cache coherency protocol. */
-extern inline void prefetchw(const void *x)
+static inline void prefetchw(const void *x)
 {
 	alternative_input(ASM_NOP4,
 			  "prefetchw (%1)",

@@ -8,6 +8,7 @@
 
 struct request_queue;
 struct scsi_cmnd;
+struct scsi_lun;
 struct scsi_mode_data;
 struct scsi_sense_hdr;
 
@@ -174,6 +175,8 @@ extern struct scsi_device *__scsi_device_lookup(struct Scsi_Host *,
 /* only exposed to implement shost_for_each_device */
 extern struct scsi_device *__scsi_iterate_devices(struct Scsi_Host *,
 						  struct scsi_device *);
+
+extern int scsilun_to_int(struct scsi_lun *);
 
 /**
  * shost_for_each_device  -  iterate over all devices of a host

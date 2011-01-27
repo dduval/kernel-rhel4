@@ -1341,7 +1341,12 @@ repeat:
 
 		dprintk("%s ", bdevname(rdev->bdev,b));
 		if (!rdev->faulty) {
-			err += write_disk_sb(rdev);
+			int ret;
+			ret = write_disk_sb(rdev);
+			if (ret) {
+				md_error(mddev, rdev);
+				err++;
+			} 
 		} else
 			dprintk(")\n");
 		if (!err && mddev->level == LEVEL_MULTIPATH)

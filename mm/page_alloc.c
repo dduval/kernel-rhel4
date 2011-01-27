@@ -101,10 +101,6 @@ static void bad_page(const char *function, struct page *page)
 	tainted |= TAINT_BAD_PAGE;
 }
 
-#ifndef CONFIG_HUGETLB_PAGE
-#define prep_compound_page(page, order) do { } while (0)
-#define destroy_compound_page(page, order) do { } while (0)
-#else
 /*
  * Higher-order pages are called "compound pages".  They are structured thusly:
  *
@@ -158,7 +154,6 @@ static void destroy_compound_page(struct page *page, unsigned long order)
 		ClearPageCompound(p);
 	}
 }
-#endif		/* CONFIG_HUGETLB_PAGE */
 
 /*
  * Freeing function for a buddy system allocator.
@@ -1609,11 +1604,19 @@ static void __init free_area_init_core(struct pglist_data *pgdat,
 	}
 }
 
+__attribute__((weak))
+void *alloc_bootmem_high_node(pg_data_t *pgdat, unsigned long size)
+{
+	return NULL;
+}
+
 void __init node_alloc_mem_map(struct pglist_data *pgdat)
 {
 	unsigned long size;
 
 	size = (pgdat->node_spanned_pages + 1) * sizeof(struct page);
+	if (!pgdat->node_mem_map)
+		pgdat->node_mem_map = alloc_bootmem_high_node(pgdat, size);
 	if (!pgdat->node_mem_map)
 		pgdat->node_mem_map = alloc_bootmem_node(pgdat, size);
 #ifndef CONFIG_DISCONTIGMEM

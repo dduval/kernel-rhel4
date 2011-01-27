@@ -70,7 +70,9 @@ struct cpufreq_real_policy {
 
 struct cpufreq_policy {
 	cpumask_t		cpus;	/* affected CPUs */
-	unsigned int		cpu;    /* cpu nr */
+	unsigned int		shared_type; /* ANY or ALL affected CPUs
+						should set cpufreq */
+ 	unsigned int		cpu;    /* cpu nr */
 	struct cpufreq_cpuinfo	cpuinfo;/* see above */
 
 	unsigned int		min;    /* in kHz */
@@ -96,6 +98,9 @@ struct cpufreq_policy {
 #define CPUFREQ_INCOMPATIBLE	(1)
 #define CPUFREQ_NOTIFY		(2)
 
+#define CPUFREQ_SHARED_TYPE_ALL	(0) /* All dependent CPUs should set freq */
+#define CPUFREQ_SHARED_TYPE_ANY	(1) /* Freq can be set from any dependent CPU */
+ 
 
 /******************** cpufreq transition notifiers *******************/
 
@@ -251,6 +256,14 @@ int cpufreq_update_policy(unsigned int cpu);
 
 /* query the current CPU frequency (in kHz). If zero, cpufreq couldn't detect it */
 unsigned int cpufreq_get(unsigned int cpu);
+#ifdef CONFIG_CPU_FREQ
+unsigned int cpufreq_quick_get(unsigned int cpu);
+#else
+static inline unsigned int cpufreq_quick_get(unsigned int cpu)
+{
+	return 0;
+}
+#endif
 
 /* the proc_intf.c needs this */
 int cpufreq_parse_governor (char *str_governor, unsigned int *policy, struct cpufreq_governor **governor);
@@ -359,5 +372,24 @@ void cpufreq_frequency_table_get_attr(struct cpufreq_frequency_table *table,
 
 void cpufreq_frequency_table_put_attr(unsigned int cpu);
 
+
+/*********************************************************************
+ *                     UNIFIED DEBUG HELPERS                         *
+ *********************************************************************/
+
+#define CPUFREQ_DEBUG_CORE	1
+#define CPUFREQ_DEBUG_DRIVER	2
+#define CPUFREQ_DEBUG_GOVERNOR	4
+
+#ifdef CONFIG_CPU_FREQ_DEBUG
+
+extern void cpufreq_debug_printk(unsigned int type, const char *prefix, 
+				 const char *fmt, ...);
+
+#else
+
+#define cpufreq_debug_printk(msg...) do { } while(0)
+
+#endif /* CONFIG_CPU_FREQ_DEBUG */
 
 #endif /* _LINUX_CPUFREQ_H */

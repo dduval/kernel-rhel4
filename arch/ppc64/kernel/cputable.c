@@ -159,7 +159,7 @@ struct cpu_spec	cpu_specs[] = {
 	    COMMON_PPC64_FW
     },
     {	/* Power5 */
-	    0xffff0000, 0x003b0000, "POWER5 (gs)",
+	    0xffff0000, 0x003b0000, "POWER5+ (gs)",
 	    CPU_FTR_SPLIT_ID_CACHE | CPU_FTR_USE_TB | CPU_FTR_HPTE_TABLE |
 		    CPU_FTR_PPCAS_ARCH_V2 | CPU_FTR_MMCRA | CPU_FTR_SMT |
 		    CPU_FTR_COHERENT_ICACHE | CPU_FTR_LOCKLESS_TLBIE |

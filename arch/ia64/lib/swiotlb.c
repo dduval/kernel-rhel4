@@ -591,7 +591,8 @@ swiotlb_sync_sg(struct device *hwdev, struct scatterlist *sg, int nelems,
 
 	for (i = 0; i < nelems; i++, sg++)
 		if (sg->dma_address != SG_ENT_PHYS_ADDRESS(sg))
-			sync_single(hwdev, (void *) sg->dma_address, sg->dma_length, dir, target);
+			sync_single(hwdev, phys_to_virt(sg->dma_address),
+				    sg->dma_length, dir, target);
 }
 
 void

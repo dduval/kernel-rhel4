@@ -142,9 +142,6 @@ config XEN_NETDEV_FRONTEND
 config XEN_FRAMEBUFFER
 	tristate "Framebuffer-device frontend driver"
 	depends on XEN && FB
-	select FB_CFB_FILLRECT
-	select FB_CFB_COPYAREA
-	select FB_CFB_IMAGEBLIT
 	default y
 	help
 	  The framebuffer-device frontend drivers allows the kernel to create a

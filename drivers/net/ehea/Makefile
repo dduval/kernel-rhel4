@@ -7,6 +7,4 @@ else
 ehea-objs = ehea_main.o ehea_phyp.o ehea_qmr.o ehea_ethtool.o ehea_phyp.o
 endif
 obj-$(CONFIG_EHEA) += ehea.o
-ifdef CONFIG_EHEA_BACKLEVEL
-CFLAGS += -DTARGET_BACKLVEL
-endif
+

@@ -39,5 +39,10 @@ config ZLIB_INFLATE
 config ZLIB_DEFLATE
 	tristate
 
+config HAS_IOMEM
+	boolean
+	depends on !NO_IOMEM
+	default y
+
 endmenu
 

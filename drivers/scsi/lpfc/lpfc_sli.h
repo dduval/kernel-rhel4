@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.h 2757 2005-12-09 18:21:44Z sf_support $
+ * $Id: lpfc_sli.h 3037 2007-05-22 14:02:22Z sf_support $
  */
 
 #ifndef _H_LPFC_SLI
@@ -147,6 +147,8 @@ typedef struct {
 	/* cmd ring available */
 	void (*lpfc_sli_cmd_available) (struct lpfc_hba *,
 					struct lpfc_sli_ring *);
+	void (*lpfc_sli_rcv_async_status) (struct lpfc_hba *,
+		struct lpfc_sli_ring *, struct lpfc_iocbq *);
 } LPFC_RING_INIT_t;
 
 typedef struct {
@@ -185,7 +187,7 @@ struct lpfc_sli {
 	int fcp_ring;		/* ring used for FCP initiator commands */
 	int next_ring;
 
-	int ip_ring;		/* ring used for IP network drv cmds */
+	int extra_ring;		/* ring used for other protocols */
 
 	LPFC_SLI_STAT_t slistat;	/* SLI statistical info */
 	struct list_head mboxq;
@@ -207,8 +209,13 @@ struct lpfc_sli {
 
 #define LPFC_SLI_ABORT_IMED	0	/* Immediate abort of IOCB, deque and
 					   call compl routine immediately. */
-#define LPFC_MBOX_TMO           30	/* Sec tmo for outstanding mbox
-					   command */
+#define LPFC_MBOX_TMO           30	/* Sec tmo for outstanding mbox cmd */
+#define LPFC_MBOX_TMO_FLASH_CMD 300	/* Sec tmo for outstanding FLASH write
+					 * or erase cmds. This is especially
+					 * long because of the potential of
+					 * multiple flash erases that can be
+					 * spawned.
+					 */
 
 /* Flags for aborting I/Os on tx and txcmpl queues */
 #define LPFC_ABORT_TXQ		1	/* Abort I/Os on txq */

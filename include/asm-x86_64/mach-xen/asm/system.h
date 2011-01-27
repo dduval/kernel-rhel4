@@ -398,8 +398,8 @@ do {									\
 	preempt_enable_no_resched();					\
 	___x; })
 
-#define safe_halt()		((void)0)
-#define halt()			((void)0)
+void safe_halt(void);
+void halt(void);
 
 /*
  * disable hlt during certain critical i/o operations

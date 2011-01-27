@@ -62,6 +62,27 @@ struct scsi_host_sg_pool scsi_sg_pools[] = {
 }; 	
 #undef SP
 
+/*
+ * Function:	scsi_unprep_request()
+ *
+ * Purpose:	Remove all preparation done for a request, including its
+ *		associated scsi_cmnd, so that it can be requeued.
+ *
+ * Arguments:   req     - request to unprepare
+ *
+ * Lock status:	Assumed that no locks are held upon entry.
+ *
+ * Returns:	Nothing.
+ */
+static void scsi_unprep_request(struct request *req)
+{
+	struct scsi_cmnd *cmd = req->special;
+
+	req->flags &= ~REQ_DONTPREP;
+	req->special = NULL;
+
+	scsi_put_command(cmd);
+}
 
 /*
  * Function:    scsi_insert_special_req()
@@ -977,7 +998,7 @@ static int scsi_init_io(struct scsi_cmnd *cmd)
 	 */
 	sgpnt = scsi_alloc_sgtable(cmd, GFP_ATOMIC);
 	if (unlikely(!sgpnt)) {
-		req->flags |= REQ_SPECIAL;
+		scsi_unprep_request(req);
 		return BLKPREP_DEFER;
 	}
 
@@ -1042,7 +1063,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 	if (unlikely(!scsi_device_online(sdev))) {
 		printk(KERN_ERR "scsi%d (%d:%d): rejecting I/O to offline device\n",
 		       sdev->host->host_no, sdev->id, sdev->lun);
-		return BLKPREP_KILL;
+		goto kill;
 	}
 	if (unlikely(sdev->sdev_state != SDEV_RUNNING)) {
 		/* OK, we're not in a running state don't prep
@@ -1052,7 +1073,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 			 * at all allowed down */
 			printk(KERN_ERR "scsi%d (%d:%d): rejecting I/O to dead device\n",
 			       sdev->host->host_no, sdev->id, sdev->lun);
-			return BLKPREP_KILL;
+			goto kill;
 		}
 		/* OK, we only allow special commands (i.e. not
 		 * user initiated ones */
@@ -1084,11 +1105,11 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 		if(unlikely(specials_only)) {
 			if(specials_only == SDEV_QUIESCE ||
 					specials_only == SDEV_BLOCK)
-				return BLKPREP_DEFER;
+				goto defer;
 			
 			printk(KERN_ERR "scsi%d (%d:%d): rejecting I/O to device being removed\n",
 			       sdev->host->host_no, sdev->id, sdev->lun);
-			return BLKPREP_KILL;
+			goto kill;
 		}
 			
 			
@@ -1106,7 +1127,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 		cmd->tag = req->tag;
 	} else {
 		blk_dump_rq_flags(req, "SCSI bad req");
-		return BLKPREP_KILL;
+		goto kill;
 	}
 	
 	/* note the overloading of req->special.  When the tag
@@ -1144,8 +1165,13 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 		 * required).
 		 */
 		ret = scsi_init_io(cmd);
-		if (ret)	/* BLKPREP_KILL return also releases the command */
-			return ret;
+		/* if not successful scsi_init_io will release the scsi_cmnd */
+		switch(ret) {
+		case BLKPREP_KILL:
+			goto kill;
+		case BLKPREP_DEFER:
+			goto defer;
+		}
 		
 		/*
 		 * Initialize the actual SCSI command for this request.
@@ -1154,7 +1180,7 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 		if (unlikely(!drv->init_command(cmd))) {
 			scsi_release_buffers(cmd);
 			scsi_put_command(cmd);
-			return BLKPREP_KILL;
+			goto kill;
 		}
 	}
 
@@ -1171,6 +1197,9 @@ static int scsi_prep_fn(struct request_queue *q, struct request *req)
 	if (sdev->device_busy == 0)
 		blk_plug_device(q);
 	return BLKPREP_DEFER;
+ kill:
+	req->errors = DID_NO_CONNECT << 16;
+	return BLKPREP_KILL;
 }
 
 /*

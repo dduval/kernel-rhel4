@@ -100,6 +100,7 @@ extern int force_iommu, no_iommu;
 extern int using_apic_timer;
 extern int disable_apic;
 extern unsigned cpu_khz;
+extern unsigned tsc_khz;
 extern int ioapic_force;
 extern int skip_ioapic_setup;
 extern int acpi_ht;

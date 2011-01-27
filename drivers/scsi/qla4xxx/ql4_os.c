@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -650,12 +650,12 @@ qla4xxx_free_adapter(scsi_qla_host_t *ha)
 		ha->timer_active = 0;
 	}
 
-	/* free extra memory */
-	qla4xxx_mem_free(ha);
-
 	/* Detach interrupts */
 	if (test_and_clear_bit(AF_IRQ_ATTACHED, &ha->flags))
 		free_irq(ha->pdev->irq, ha);
+
+	/* free extra memory */
+	qla4xxx_mem_free(ha);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,10))
         #if ENABLE_MSI
@@ -1924,12 +1924,12 @@ qla4xxx_complete_request(scsi_qla_host_t *ha, srb_t *srb)
 
 	if (host_byte(cmd->result) != DID_OK ) {
 			    DEBUG2(printk("scsi%d:%d:%d:%d: %s: "
-				"did_error=%d, cmd=%p cbd[0]=%02X, pid=%ld\n",
+				"did_error=%d, cmd=%p pid=%ld\n",
 				ha->host_no, cmd->device->channel, cmd->device->id,
 				cmd->device->lun,
 				__func__,
 				host_byte(cmd->result),
-				cmd, cmd->data_cmnd[0],
+				cmd,
     				cmd->serial_number));
 	}
 #endif
@@ -2139,9 +2139,9 @@ qla4xxx_queuecommand(struct scsi_cmnd *cmd, void (*done_fn)(struct scsi_cmnd *))
 		else
 			srb->err_id = SRB_ERR_PORT;
 		DEBUG2(printk(
-		    "scsi%d: PORT DEAD cmd=%p cdb[0]=%02X, cmd_err_flag=0x%x "
+		    "scsi%d: PORT DEAD cmd=%p cmd_err_flag=0x%x "
 		    "errid=%d, fcport=%p, did_error=%x\n",
-    		ha->host_no, srb->cmd, srb->cmd->data_cmnd[0], srb->cmd->eh_eflags,
+    		ha->host_no, srb->cmd, srb->cmd->eh_eflags,
 		srb->err_id, fcport, host_byte(cmd->result)));
 		add_to_done_srb_q(ha, srb);
 		qla4xxx_done(ha);
@@ -2618,7 +2618,6 @@ qla4xxx_timer(unsigned long p)
 			}
 		}
 
-
 		/* Count down time between sending relogins */
 		if (ADAPTER_UP(ha) && (!test_bit(DF_RELOGIN, &ddb_entry->flags) &&
 		    (atomic_read(&ddb_entry->state) != DEV_STATE_ONLINE))) {
@@ -2626,10 +2625,10 @@ qla4xxx_timer(unsigned long p)
 			    INVALID_ENTRY) {
 				if (atomic_read(&ddb_entry->retry_relogin_timer) == 0) {
 					atomic_set(&ddb_entry->retry_relogin_timer, INVALID_ENTRY);
-					set_bit(DPC_RELOGIN_DEVICE,
-					    &ha->dpc_flags);
 					set_bit(DF_RELOGIN,
 					    &ddb_entry->flags);
+					set_bit(DPC_RELOGIN_DEVICE,
+					    &ha->dpc_flags);
 					DEBUG2(printk("scsi%d:%d:%d: "
 				    "%s: index [%d] login device\n", ha->host_no,
 				    ddb_entry->bus, ddb_entry->target, __func__,
@@ -2700,6 +2699,7 @@ qla4xxx_timer(unsigned long p)
 		}
 	}
 
+#if ENABLE_ISNS
 	/*
 	 * Check for iSNS actions
 	 */
@@ -2708,14 +2708,16 @@ qla4xxx_timer(unsigned long p)
 			if (!atomic_dec_and_test(&ha->isns_restart_timer) &&
 			    test_bit(ISNS_FLAG_ISNS_SRV_ENABLED,
 				    &ha->isns_flags) &&
-			    !IPAddrIsZero(ha->isns_ip_address) &&
+			    !IPAddrIsZero(ha, ha->isns_server_ip_addr) &&
 			    ha->isns_server_port_number) {
+
 				set_bit(DPC_ISNS_RESTART_COMPLETION,
 				    &ha->dpc_flags);
 			}
 		} else
 			clear_bit(ISNS_FLAG_RESTART_SERVICE, &ha->isns_flags);
 	}
+#endif
 
 	/* Wakeup the dpc routine for this adapter, if needed */
 	if ((start_dpc ||
@@ -2725,6 +2727,7 @@ qla4xxx_timer(unsigned long p)
 	     test_bit(DPC_RELOGIN_DEVICE, &ha->dpc_flags) ||
 	     test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags) ||
 	     test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags) ||
+	     test_bit(DPC_RESET_HA_INTR_COMPLETION, &ha->dpc_flags) ||
 	     test_bit(DPC_IOCTL_ERROR_RECOVERY, &ha->dpc_flags) ||
 	     test_bit(DPC_ISNS_RESTART, &ha->dpc_flags) ||
 	     test_bit(DPC_ISNS_RESTART_COMPLETION, &ha->dpc_flags) ||
@@ -2742,6 +2745,29 @@ qla4xxx_timer(unsigned long p)
 	mod_timer(&ha->timer, jiffies + HZ);
 
 	DEBUG2(ha->seconds_since_last_intr++;)
+}
+
+int
+IS_OTHER_PORT_RESETTING(scsi_qla_host_t *ha){
+	scsi_qla_host_t *ha_listp;
+
+	read_lock(&qla4xxx_hostlist_lock);
+	list_for_each_entry(ha_listp, &qla4xxx_hostlist, list) {
+		if (ha == ha_listp)
+			continue;
+		if (memcmp(ha->serial_number,
+			   ha_listp->serial_number,
+			   sizeof(ha->serial_number)) == 0) {
+			if (test_bit(DPC_RESET_HA, &ha_listp->dpc_flags) ||
+			    test_bit(DPC_RESET_HA_INTR, &ha_listp->dpc_flags) ||
+			    test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha_listp->dpc_flags)) {
+				read_unlock(&qla4xxx_hostlist_lock);
+				return (1);
+			}
+		}
+	}
+	read_unlock(&qla4xxx_hostlist_lock);
+	return (0);
 }
 
 
@@ -2895,12 +2921,12 @@ qla4xxx_do_dpc(void *data)
 		 */
 
 		/* ---- recover adapter? --- */
-		if (ADAPTER_UP(ha) ||
-		    test_bit(DPC_RESET_HA, &ha->dpc_flags) ||
+		if (test_bit(DPC_RESET_HA, &ha->dpc_flags) ||
 		    test_bit(DPC_RESET_HA_INTR, &ha->dpc_flags) ||
+		    test_bit(DPC_RESET_HA_INTR_COMPLETION, &ha->dpc_flags) ||
 		    test_bit(DPC_RESET_HA_DESTROY_DDB_LIST, &ha->dpc_flags)) {
 
-#if	DISABLE_HBA_RESETS
+#if DISABLE_HBA_RESETS
 				QL4PRINT(QLP2, printk("scsi: %s: ignoring RESET_HA, "
 				    "rebootdisable=1 \n", __func__));
 				clear_bit(DPC_RESET_HA, &ha->dpc_flags);
@@ -2932,7 +2958,19 @@ qla4xxx_do_dpc(void *data)
 					set_bit(DPC_RESET_HA, &ha->dpc_flags);
 				}
 				else if (!qla4xxx_hba_going_away) {
+					set_bit(DPC_RESET_HA_INTR_COMPLETION, &ha->dpc_flags);
+				}
+			}
+
+			if (!qla4xxx_hba_going_away &&
+			    test_bit(DPC_RESET_HA_INTR_COMPLETION, &ha->dpc_flags)) {
+				if (IS_OTHER_PORT_RESETTING(ha)) {
+					DEBUG2(printk(
+					    "scsi%d: %s - Other port is resetting..  Retry later..\n",
+							ha->host_no,__func__));
+				} else {
 					if (qla4xxx_lock_drvr_wait(ha) == QLA_SUCCESS) {
+						clear_bit(DPC_RESET_HA_INTR_COMPLETION, &ha->dpc_flags);
 						qla4xxx_process_aen(ha, FLUSH_DDB_CHANGED_AENS);
 						if (qla4xxx_initialize_adapter(ha,
 							PRESERVE_DDB_LIST) == QLA_SUCCESS)
@@ -3121,7 +3159,7 @@ qla4xxx_wait_for_hba_online(scsi_qla_host_t *ha)
 {
 	unsigned long wait_online;
 
-	wait_online = jiffies + (30 * HZ);
+	wait_online = jiffies + (ADAPTER_ONLINE_TOV * HZ);
 	while (time_before(jiffies, wait_online)) {
 		if (ADAPTER_UP(ha))
 			return QLA_SUCCESS;
@@ -3408,7 +3446,7 @@ qla4xxx_soft_reset(scsi_qla_host_t *ha){
 				break;
 			}
 
-		msleep(1000);
+			msleep(1000);
 		} while ((--max_wait_time));
 	}
 
@@ -3417,6 +3455,7 @@ qla4xxx_soft_reset(scsi_qla_host_t *ha){
 	LEAVE(__func__);
 	return(status);
 }
+
 /**************************************************************************
  * qla4xxx_cmd_wait
  *      This routine stalls the driver until all outstanding commands are
@@ -3531,7 +3570,7 @@ qla4xxx_recover_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list){
 		    "scsi%d: %s - Performing soft reset..\n",
 				ha->host_no,__func__));
 		if (qla4xxx_lock_drvr_wait(ha) == QLA_SUCCESS)
-		status = qla4xxx_soft_reset(ha);
+			status = qla4xxx_soft_reset(ha);
 		else
 			status = QLA_ERROR;
 	}
@@ -3599,10 +3638,11 @@ qla4xxx_recover_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list){
 
 	ha->adapter_error_count++;
 
- 	if (status == QLA_SUCCESS)
+ 	if (status == QLA_SUCCESS) {
  		qla4xxx_enable_intrs(ha);
+                DEBUG2(printk("scsi%d: recover adapter .. DONE\n", ha->host_no));
+	}
 
-	DEBUG2(printk("scsi%d: recover adapter .. DONE\n", ha->host_no));
 	LEAVE("qla4xxx_recover_adapter");
 	return(status);
 }

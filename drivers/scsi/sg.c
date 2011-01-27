@@ -2558,9 +2558,9 @@ sg_page_malloc(int rqSz, int lowDma, int *retSzp)
 		return resp;
 
 	if (lowDma)
-		page_mask = GFP_ATOMIC | GFP_DMA | __GFP_NOWARN;
+		page_mask = __GFP_COMP | GFP_ATOMIC | GFP_DMA | __GFP_NOWARN;
 	else
-		page_mask = GFP_ATOMIC | __GFP_NOWARN;
+		page_mask = __GFP_COMP | GFP_ATOMIC | __GFP_NOWARN;
 
 	for (order = 0, a_size = PAGE_SIZE; a_size < rqSz;
 	     order++, a_size <<= 1) ;

@@ -590,7 +590,7 @@ static void stop_this_cpu (void * dummy)
 	disable_local_APIC();
 #endif
 	if (cpu_data[smp_processor_id()].hlt_works_ok)
-		for(;;) __asm__("hlt");
+		for(;;) halt();
 	for (;;);
 }
 

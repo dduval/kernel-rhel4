@@ -414,11 +414,6 @@ int setup_arg_pages(struct linux_binprm *bprm, int executable_stack)
 	if (!mpnt)
 		return -ENOMEM;
 
-	if (security_vm_enough_memory(arg_size >> PAGE_SHIFT)) {
-		kmem_cache_free(vm_area_cachep, mpnt);
-		return -ENOMEM;
-	}
-
 	memset(mpnt, 0, sizeof(*mpnt));
 
 	down_write(&mm->mmap_sem);
@@ -624,19 +619,34 @@ static inline int de_thread(struct task_struct *tsk)
 			return -ENOMEM;
 		}
 		atomic_set(&newsig->count, 1);
+		newsig->curr_target = NULL;
+		init_sigpending(&newsig->shared_pending);
 		newsig->group_exit = 0;
 		newsig->group_exit_code = 0;
 		newsig->group_exit_task = NULL;
+		newsig->notify_count = 0;
 		newsig->group_stop_count = 0;
-		newsig->curr_target = NULL;
-		init_sigpending(&newsig->shared_pending);
+		newsig->stop_state = 0;
 		INIT_LIST_HEAD(&newsig->posix_timers);
 
-		newsig->tty = oldsig->tty;
 		newsig->pgrp = oldsig->pgrp;
+		newsig->tty_old_pgrp = oldsig->tty_old_pgrp;
 		newsig->session = oldsig->session;
 		newsig->leader = oldsig->leader;
-		newsig->tty_old_pgrp = oldsig->tty_old_pgrp;
+		newsig->tty = oldsig->tty;
+
+		newsig->utime = oldsig->utime;
+		newsig->stime = oldsig->stime;
+		newsig->cutime = oldsig->cutime;
+		newsig->cstime = oldsig->cstime;
+		newsig->nvcsw = oldsig->nvcsw;
+		newsig->nivcsw = oldsig->nivcsw;
+		newsig->cnvcsw = oldsig->cnvcsw;
+		newsig->cnivcsw = oldsig->cnivcsw;
+		newsig->min_flt = oldsig->min_flt;
+		newsig->maj_flt = oldsig->maj_flt;
+		newsig->cmin_flt = oldsig->cmin_flt;
+		newsig->cmaj_flt = oldsig->cmaj_flt;
 #ifdef CONFIG_KEYS
 		rcu_read_lock();
 		newsig->session_keyring =
@@ -645,6 +655,7 @@ static inline int de_thread(struct task_struct *tsk)
 
 		newsig->process_keyring = key_get(oldsig->process_keyring);
 #endif
+		atomic_set(&newsig->live, 1);
 	}
 
 	if (thread_group_empty(current))

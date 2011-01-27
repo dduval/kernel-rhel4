@@ -54,6 +54,7 @@
 #include <linux/rtnetlink.h>
 #include <net/dst.h>
 #include <net/xfrm.h>
+#include <net/netevent.h>
 
 #include <asm/uaccess.h>
 
@@ -619,6 +620,7 @@ static void ip6_rt_update_pmtu(struct dst_entry *dst, u32 mtu)
 		if (mtu < IPV6_MIN_MTU)
 			mtu = IPV6_MIN_MTU;
 		dst->metrics[RTAX_MTU-1] = mtu;
+		call_netevent_notifiers(NETEVENT_PMTU_UPDATE, dst);
 	}
 }
 
@@ -1038,6 +1040,7 @@ void rt6_redirect(struct in6_addr *dest, struct in6_addr *saddr,
 		  struct neighbour *neigh, u8 *lladdr, int on_link)
 {
 	struct rt6_info *rt, *nrt;
+	struct netevent_redirect netevent;
 
 	/* Locate old route to this destination. */
 	rt = rt6_lookup(dest, NULL, neigh->dev->ifindex, 1);
@@ -1132,6 +1135,10 @@ source_ok:
 
 	if (ip6_ins_rt(nrt, NULL, NULL))
 		goto out;
+
+	netevent.old = &rt->u.dst;
+	netevent.new = &nrt->u.dst;
+	call_netevent_notifiers(NETEVENT_REDIRECT, &netevent);
 
 	if (rt->rt6i_flags&RTF_CACHE) {
 		ip6_del_rt(rt, NULL, NULL);

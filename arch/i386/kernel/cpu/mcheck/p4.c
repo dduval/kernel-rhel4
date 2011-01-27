@@ -55,7 +55,7 @@ static void intel_thermal_interrupt(struct pt_regs *regs)
 	if (time_after(next[cpu], jiffies))
 		return;
 
-	next[cpu] = jiffies + HZ*5;
+	next[cpu] = jiffies + HZ*30;
 	rdmsr(MSR_IA32_THERM_STATUS, l, h);
 	if (l & 0x1) {
 		printk(KERN_EMERG "CPU%d: Temperature above threshold\n", cpu);

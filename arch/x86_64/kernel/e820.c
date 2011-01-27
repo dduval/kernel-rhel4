@@ -96,6 +96,7 @@ int __init e820_mapped(unsigned long start, unsigned long end, unsigned type)
 	} 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(e820_mapped);
 
 /* 
  * Find a free area in a specific range. 

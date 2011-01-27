@@ -4,7 +4,7 @@
  *      For use with LSI Logic Fibre Channel PCI chip/adapters
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 2000-2005 LSI Logic Corporation
+ *  Copyright (c) 2000-2007 LSI Logic Corporation
  *
  *  $Id: mptlan.c,v 1.55 2003/05/07 14:08:32 Exp $
  */
@@ -57,9 +57,11 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 
+#define my_VERSION	MPT_LINUX_VERSION_COMMON
 #define MYNAM		"mptlan"
 
 MODULE_LICENSE("GPL");
+MODULE_VERSION(my_VERSION);
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -183,16 +185,16 @@ lan_reply (MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *reply)
 	struct net_device *dev = ioc->netdev;
 	int FreeReqFrame = 0;
 
-	dioprintk((KERN_INFO MYNAM ": %s/%s: Got reply.\n",
+	dlioprintk((KERN_INFO MYNAM ": %s/%s: Got reply.\n",
 		  IOC_AND_NETDEV_NAMES_s_s(dev)));
 
-//	dioprintk((KERN_INFO MYNAM "@lan_reply: mf = %p, reply = %p\n",
+//	dlioprintk((KERN_INFO MYNAM "@lan_reply: mf = %p, reply = %p\n",
 //			mf, reply));
 
 	if (mf == NULL) {
 		u32 tmsg = CAST_PTR_TO_U32(reply);
 
-		dioprintk((KERN_INFO MYNAM ": %s/%s: @lan_reply, tmsg %08x\n",
+		dlioprintk((KERN_INFO MYNAM ": %s/%s: @lan_reply, tmsg %08x\n",
 				IOC_AND_NETDEV_NAMES_s_s(dev),
 				tmsg));
 
@@ -202,14 +204,14 @@ lan_reply (MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *reply)
 		//  mptbase.c::mpt_interrupt() routine and callcack here
 #if 0
 		case LAN_REPLY_FORM_MESSAGE_CONTEXT:
-//			dioprintk((KERN_INFO MYNAM "/lan_reply: "
+//			dlioprintk((KERN_INFO MYNAM "/lan_reply: "
 //				  "MessageContext turbo reply received\n"));
 			FreeReqFrame = 1;
 			break;
 #endif
 
 		case LAN_REPLY_FORM_SEND_SINGLE:
-//			dioprintk((MYNAM "/lan_reply: "
+//			dlioprintk((MYNAM "/lan_reply: "
 //				  "calling mpt_lan_send_reply (turbo)\n"));
 
 			//	FreeReqFrame = mpt_lan_send_turbo(dev, tmsg);
@@ -228,7 +230,7 @@ lan_reply (MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *reply)
 			break;
 
 		case LAN_REPLY_FORM_RECEIVE_SINGLE:
-//			dioprintk((KERN_INFO MYNAM "@lan_reply: "
+//			dlioprintk((KERN_INFO MYNAM "@lan_reply: "
 //				  "rcv-Turbo = %08x\n", tmsg));
 			mpt_lan_receive_post_turbo(dev, tmsg);
 			break;
@@ -246,10 +248,10 @@ lan_reply (MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *reply)
 	}
 
 //	msg = (u32 *) reply;
-//	dioprintk((KERN_INFO MYNAM "@lan_reply: msg = %08x %08x %08x %08x\n",
+//	dlioprintk((KERN_INFO MYNAM "@lan_reply: msg = %08x %08x %08x %08x\n",
 //		  le32_to_cpu(msg[0]), le32_to_cpu(msg[1]),
 //		  le32_to_cpu(msg[2]), le32_to_cpu(msg[3])));
-//	dioprintk((KERN_INFO MYNAM "@lan_reply: Function = %02xh\n",
+//	dlioprintk((KERN_INFO MYNAM "@lan_reply: Function = %02xh\n",
 //		  reply->u.hdr.Function));
 
 	switch (reply->u.hdr.Function) {
@@ -273,7 +275,7 @@ lan_reply (MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *reply)
 			if (!(pRecvRep->MsgFlags & MPI_MSGFLAGS_CONTINUATION_REPLY))
 				FreeReqFrame = 1;
 		} else
-			dioprintk((KERN_INFO MYNAM "@lan_reply: zero context "
+			dlioprintk((KERN_INFO MYNAM "@lan_reply: zero context "
 				  "ReceivePostReply received.\n"));
 		break;
 	}
@@ -615,7 +617,7 @@ mpt_lan_send_turbo(struct net_device *dev, u32 tmsg)
 	priv->stats.tx_packets++;
 	priv->stats.tx_bytes += sent->len;
 
-	dioprintk((KERN_INFO MYNAM ": %s/%s: @%s, skb %p sent.\n",
+	dlioprintk((KERN_INFO MYNAM ": %s/%s: @%s, skb %p sent.\n",
 			IOC_AND_NETDEV_NAMES_s_s(dev),
 			__FUNCTION__, sent));
 
@@ -647,7 +649,7 @@ mpt_lan_send_reply(struct net_device *dev, LANSendReply_t *pSendRep)
 
 	count = pSendRep->NumberOfContexts;
 
-	dioprintk((KERN_INFO MYNAM ": send_reply: IOCStatus: %04x\n",
+	dlioprintk((KERN_INFO MYNAM ": send_reply: IOCStatus: %04x\n",
 		 le16_to_cpu(pSendRep->IOCStatus)));
 
 	/* Add check for Loginfo Flag in IOCStatus */
@@ -681,7 +683,7 @@ mpt_lan_send_reply(struct net_device *dev, LANSendReply_t *pSendRep)
 		sent = priv->SendCtl[ctx].skb;
 		priv->stats.tx_bytes += sent->len;
 
-		dioprintk((KERN_INFO MYNAM ": %s/%s: @%s, skb %p sent.\n",
+		dlioprintk((KERN_INFO MYNAM ": %s/%s: @%s, skb %p sent.\n",
 				IOC_AND_NETDEV_NAMES_s_s(dev),
 				__FUNCTION__, sent));
 
@@ -720,7 +722,7 @@ mpt_lan_sdu_send (struct sk_buff *skb, struct net_device *dev)
 	int ctx;
 	u16 cur_naa = 0x1000;
 
-	dioprintk((KERN_INFO MYNAM ": %s called, skb_addr = %p\n",
+	dlioprintk((KERN_INFO MYNAM ": %s called, skb_addr = %p\n",
 			__FUNCTION__, skb));
 
 	spin_lock_irqsave(&priv->txfidx_lock, flags);
@@ -746,7 +748,7 @@ mpt_lan_sdu_send (struct sk_buff *skb, struct net_device *dev)
 	ctx = priv->mpt_txfidx[priv->mpt_txfidx_tail--];
 	spin_unlock_irqrestore(&priv->txfidx_lock, flags);
 
-//	dioprintk((KERN_INFO MYNAM ": %s/%s: Creating new msg frame (send).\n",
+//	dlioprintk((KERN_INFO MYNAM ": %s/%s: Creating new msg frame (send).\n",
 //			IOC_AND_NETDEV_NAMES_s_s(dev)));
 
 	pSendReq = (LANSendRequest_t *) mf;
@@ -781,7 +783,7 @@ mpt_lan_sdu_send (struct sk_buff *skb, struct net_device *dev)
 	pTrans->Flags         = 0;
 	pTrans->TransactionContext[0] = cpu_to_le32(ctx);
 
-//	dioprintk((KERN_INFO MYNAM ": %s/%s: BC = %08x, skb = %p, buff = %p\n",
+//	dlioprintk((KERN_INFO MYNAM ": %s/%s: BC = %08x, skb = %p, buff = %p\n",
 //			IOC_AND_NETDEV_NAMES_s_s(dev),
 //			ctx, skb, skb->data));
 
@@ -841,7 +843,7 @@ mpt_lan_sdu_send (struct sk_buff *skb, struct net_device *dev)
 	mpt_put_msg_frame (LanCtx, mpt_dev, mf);
 	dev->trans_start = jiffies;
 
-	dioprintk((KERN_INFO MYNAM ": %s/%s: Sending packet. FlagsLength = %08x.\n",
+	dlioprintk((KERN_INFO MYNAM ": %s/%s: Sending packet. FlagsLength = %08x.\n",
 			IOC_AND_NETDEV_NAMES_s_s(dev),
 			le32_to_cpu(pSimple->FlagsLength)));
 
@@ -862,10 +864,10 @@ mpt_lan_wake_post_buckets_task(struct net_device *dev, int priority)
 			schedule_work(&priv->post_buckets_task);
 		} else {
 			schedule_delayed_work(&priv->post_buckets_task, 1);
-			dioprintk((KERN_INFO MYNAM ": post_buckets queued on "
+			dlioprintk((KERN_INFO MYNAM ": post_buckets queued on "
 				   "timer.\n"));
 		}
-	        dioprintk((KERN_INFO MYNAM ": %s/%s: Queued post_buckets task.\n",
+	        dlioprintk((KERN_INFO MYNAM ": %s/%s: Queued post_buckets task.\n",
 			   IOC_AND_NETDEV_NAMES_s_s(dev) ));
 	}
 }
@@ -878,7 +880,7 @@ mpt_lan_receive_skb(struct net_device *dev, struct sk_buff *skb)
 
 	skb->protocol = mpt_lan_type_trans(skb, dev);
 
-	dioprintk((KERN_INFO MYNAM ": %s/%s: Incoming packet (%d bytes) "
+	dlioprintk((KERN_INFO MYNAM ": %s/%s: Incoming packet (%d bytes) "
 		 "delivered to upper level.\n",
 			IOC_AND_NETDEV_NAMES_s_s(dev), skb->len));
 
@@ -888,13 +890,13 @@ mpt_lan_receive_skb(struct net_device *dev, struct sk_buff *skb)
 	skb->dev = dev;
 	netif_rx(skb);
 
-	dioprintk((MYNAM "/receive_skb: %d buckets remaining\n",
+	dlioprintk((MYNAM "/receive_skb: %d buckets remaining\n",
 		 atomic_read(&priv->buckets_out)));
 
 	if (atomic_read(&priv->buckets_out) < priv->bucketthresh)
 		mpt_lan_wake_post_buckets_task(dev, 1);
 
-	dioprintk((KERN_INFO MYNAM "/receive_post_reply: %d buckets "
+	dlioprintk((KERN_INFO MYNAM "/receive_post_reply: %d buckets "
 		  "remaining, %d received back since sod\n",
 		  atomic_read(&priv->buckets_out), priv->total_received));
 
@@ -1025,8 +1027,8 @@ mpt_lan_receive_post_reply(struct net_device *dev,
 	int count;
 	int i, l;
 
-	dioprintk((KERN_INFO MYNAM ": mpt_lan_receive_post_reply called\n"));
-	dioprintk((KERN_INFO MYNAM ": receive_post_reply: IOCStatus: %04x\n",
+	dlioprintk((KERN_INFO MYNAM ": mpt_lan_receive_post_reply called\n"));
+	dlioprintk((KERN_INFO MYNAM ": receive_post_reply: IOCStatus: %04x\n",
 		 le16_to_cpu(pRecvRep->IOCStatus)));
 
 	if ((le16_to_cpu(pRecvRep->IOCStatus) & MPI_IOCSTATUS_MASK) ==
@@ -1055,14 +1057,14 @@ mpt_lan_receive_post_reply(struct net_device *dev,
 //				offset);
 //	}
 
-	dioprintk((KERN_INFO MYNAM ": %s/%s: @rpr, offset = %d, len = %d\n",
+	dlioprintk((KERN_INFO MYNAM ": %s/%s: @rpr, offset = %d, len = %d\n",
 			IOC_AND_NETDEV_NAMES_s_s(dev),
 			offset, len));
 
 	if (count > 1) {
 		int szrem = len;
 
-//		dioprintk((KERN_INFO MYNAM ": %s/%s: Multiple buckets returned "
+//		dlioprintk((KERN_INFO MYNAM ": %s/%s: Multiple buckets returned "
 //			"for single packet, concatenating...\n",
 //				IOC_AND_NETDEV_NAMES_s_s(dev)));
 
@@ -1084,7 +1086,7 @@ mpt_lan_receive_post_reply(struct net_device *dev,
 			if (szrem < l)
 				l = szrem;
 
-//			dioprintk((KERN_INFO MYNAM ": %s/%s: Buckets = %d, len = %u\n",
+//			dlioprintk((KERN_INFO MYNAM ": %s/%s: Buckets = %d, len = %u\n",
 //					IOC_AND_NETDEV_NAMES_s_s(dev),
 //					i, l));
 
@@ -1212,7 +1214,7 @@ mpt_lan_post_receive_buckets(void *dev_id)
 	curr = atomic_read(&priv->buckets_out);
 	buckets = (priv->max_buckets_out - curr);
 
-	dioprintk((KERN_INFO MYNAM ": %s/%s: @%s, Start_buckets = %u, buckets_out = %u\n",
+	dlioprintk((KERN_INFO MYNAM ": %s/%s: @%s, Start_buckets = %u, buckets_out = %u\n",
 			IOC_AND_NETDEV_NAMES_s_s(dev),
 			__FUNCTION__, buckets, curr));
 
@@ -1224,7 +1226,7 @@ mpt_lan_post_receive_buckets(void *dev_id)
 		if (mf == NULL) {
 			printk (KERN_ERR "%s: Unable to alloc request frame\n",
 				__FUNCTION__);
-			dioprintk((KERN_ERR "%s: %u buckets remaining\n",
+			dlioprintk((KERN_ERR "%s: %u buckets remaining\n",
 				 __FUNCTION__, buckets));
 			goto out;
 		}
@@ -1335,9 +1337,9 @@ mpt_lan_post_receive_buckets(void *dev_id)
 	}
 
 out:
-	dioprintk((KERN_INFO MYNAM "/%s: End_buckets = %u, priv->buckets_out = %u\n",
+	dlioprintk((KERN_INFO MYNAM "/%s: End_buckets = %u, priv->buckets_out = %u\n",
 		  __FUNCTION__, buckets, atomic_read(&priv->buckets_out)));
-	dioprintk((KERN_INFO MYNAM "/%s: Posted %u buckets and received %u back\n",
+	dlioprintk((KERN_INFO MYNAM "/%s: Posted %u buckets and received %u back\n",
 	__FUNCTION__, priv->total_posted, priv->total_received));
 
 	clear_bit(0, &priv->post_buckets_active);

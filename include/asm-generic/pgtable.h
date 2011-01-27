@@ -137,4 +137,56 @@ static inline void ptep_mkdirty(pte_t *ptep)
 #ifndef __HAVE_ARCH_LAZY_MMU_UPDATE
 #define lazy_mmu_prot_update(pte)		do { } while (0)
 #endif
+
+/*
+ * When walking page tables, get the address of the next boundary,
+ * or the end address of the range if that comes earlier.  Although no
+ * vma end wraps to 0, rounded up __boundary may wrap to 0 throughout.
+ */
+
+#define pgd_addr_end(addr, end)                                         \
+({      unsigned long __boundary = ((addr) + PGDIR_SIZE) & PGDIR_MASK;  \
+        (__boundary - 1 < (end) - 1)? __boundary: (end);                \
+})
+
+#ifndef pmd_addr_end
+#define pmd_addr_end(addr, end)                                         \
+({      unsigned long __boundary = ((addr) + PMD_SIZE) & PMD_MASK;      \
+        (__boundary - 1 < (end) - 1)? __boundary: (end);                \
+})
+#endif
+
+
+#ifndef __ASSEMBLY__
+/*
+ * When walking page tables, we usually want to skip any p?d_none entries;
+ * and any p?d_bad entries - reporting the error before resetting to none.
+ * Do the tests inline, but report and clear the bad entry in mm/memory.c.
+ */
+void pgd_clear_bad(pgd_t *);
+void pmd_clear_bad(pmd_t *);
+
+static inline int pgd_none_or_clear_bad(pgd_t *pgd)
+{
+        if (pgd_none(*pgd))
+                return 1;
+        if (unlikely(pgd_bad(*pgd))) {
+                pgd_clear_bad(pgd);
+                return 1;
+        }
+        return 0;
+}
+
+static inline int pmd_none_or_clear_bad(pmd_t *pmd)
+{
+        if (pmd_none(*pmd))
+                return 1;
+        if (unlikely(pmd_bad(*pmd))) {
+                pmd_clear_bad(pmd);
+                return 1;
+        }
+        return 0;
+}
+#endif /* !__ASSEMBLY__ */
+
 #endif /* _ASM_GENERIC_PGTABLE_H */

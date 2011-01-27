@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2007 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_cdev.c 2904 2006-04-13 16:19:49Z sf_support $
+ * $Id: lpfc_cdev.c 3028 2007-04-03 01:47:15Z sf_support $
  */
 
 #ifndef EXPORT_SYMTAB
@@ -422,3 +422,4 @@ module_exit(lpfc_cdev_exit);
 MODULE_DESCRIPTION("Emulex LightPulse Fibre Channel driver IOCTL support");
 MODULE_AUTHOR("Emulex Corporation - tech.support@emulex.com");
 MODULE_LICENSE("GPL");
+MODULE_VERSION("0:" LPFCDFC_DRIVER_VERSION);

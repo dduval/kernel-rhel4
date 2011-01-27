@@ -590,6 +590,14 @@ struct transaction_s
 	 * Called when the transaction is committed. [t_jcb_lock]
 	 */
 	struct list_head	t_jcb;
+
+	/*
+	 * Doubly-linked circular list of all buffers submitted for IO while
+	 * checkpointing. [j_list_lock]
+	 */
+#ifndef __GENKSYMS__
+	struct journal_head     *t_checkpoint_io_list;
+#endif
 };
 
 /**
@@ -869,7 +877,7 @@ extern void journal_commit_transaction(journal_t *);
 
 /* Checkpoint list management */
 int __journal_clean_checkpoint_list(journal_t *journal);
-void __journal_remove_checkpoint(struct journal_head *);
+int __journal_remove_checkpoint(struct journal_head *);
 void __journal_insert_checkpoint(struct journal_head *, transaction_t *);
 
 /* Buffer IO */

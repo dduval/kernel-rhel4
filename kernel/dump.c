@@ -207,7 +207,7 @@ ssize_t diskdump_sysfs_show_disk(struct gendisk *disk, char *buf)
 
 	/* print device */
 	down(&dump_ops_mutex);
-	for (part = 0; part < disk->minors - 1; part++) {
+	for (part = 0; part < disk->minors; part++) {
 		bdev = bdget_disk(disk, part);
 		if (dump_ops->find_dump(bdev)) {
 			tmp = sprintf(p, "%s\n", bdevname(bdev, name));

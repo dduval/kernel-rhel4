@@ -205,7 +205,7 @@ nfs4_put_client(struct nfs4_client *clp)
 	nfs4_free_client(clp);
 }
 
-int nfs4_init_client(struct nfs4_client *clp)
+static int __nfs4_init_client(struct nfs4_client *clp)
 {
 	int status = nfs4_proc_setclientid(clp, NFS4_CALLBACK, nfs_callback_tcpport);
 	if (status == 0)
@@ -213,6 +213,11 @@ int nfs4_init_client(struct nfs4_client *clp)
 	if (status == 0)
 		nfs4_schedule_state_renewal(clp);
 	return status;
+}
+
+int nfs4_init_client(struct nfs4_client *clp)
+{
+	return nfs4_map_errors(__nfs4_init_client(clp));
 }
 
 u32
@@ -358,6 +363,7 @@ nfs4_alloc_open_state(void)
 	memset(state->stateid.data, 0, sizeof(state->stateid.data));
 	atomic_set(&state->count, 1);
 	INIT_LIST_HEAD(&state->lock_states);
+	INIT_LIST_HEAD(&state->inc_open);
 	init_MUTEX(&state->lock_sema);
 	rwlock_init(&state->state_lock);
 	return state;
@@ -445,7 +451,7 @@ nfs4_get_open_state(struct inode *inode, struct nfs4_state_owner *owner)
 		state->owner = owner;
 		atomic_inc(&owner->so_count);
 		list_add(&state->inode_states, &nfsi->open_states);
-		state->inode = inode;
+		state->inode = igrab(inode);
 		spin_unlock(&inode->i_lock);
 	} else {
 		spin_unlock(&inode->i_lock);
@@ -471,25 +477,28 @@ void nfs4_put_open_state(struct nfs4_state *state)
 		list_del(&state->inode_states);
 	spin_unlock(&inode->i_lock);
 	list_del(&state->open_states);
+	iput(inode);
 	BUG_ON (state->state != 0);
 	nfs4_free_open_state(state);
 	nfs4_put_state_owner(owner);
 }
 
-/*
- * Beware! Caller must be holding no references to clp->cl_sem!
- * of owner->so_sema!
- */
-void nfs4_close_state(struct nfs4_state *state, mode_t mode)
+struct nfs4_close_state_work_args {
+	struct nfs4_state *state;
+	mode_t mode;
+	struct work_struct *work;
+};
+
+static void nfs4_close_state_work(void *vwarg)
 {
-	struct inode *inode = state->inode;
+	struct nfs4_close_state_work_args *warg = (struct nfs4_close_state_work_args *) vwarg;
+	struct nfs4_state *state = warg->state;
 	struct nfs4_state_owner *owner = state->owner;
 	struct nfs4_client *clp = owner->so_client;
+	struct inode *inode = state->inode;
+	mode_t mode = warg->mode;
 	int newstate;
-	int status = 0;
 
-	atomic_inc(&owner->so_count);
-	down_read(&clp->cl_sem);
 	down(&owner->so_sema);
 	/* Protect against nfs4_find_state() */
 	spin_lock(&inode->i_lock);
@@ -509,15 +518,69 @@ void nfs4_close_state(struct nfs4_state *state, mode_t mode)
 		if (state->state == newstate)
 			goto out;
 		if (newstate != 0)
-			status = nfs4_do_downgrade(inode, state, newstate);
+			nfs4_do_downgrade(inode, state, newstate);
 		else
-			status = nfs4_do_close(inode, state);
+			nfs4_do_close(inode, state);
 	}
 out:
 	nfs4_put_open_state(state);
 	up(&owner->so_sema);
 	nfs4_put_state_owner(owner);
 	up_read(&clp->cl_sem);
+	if (warg->work != NULL) {
+		kfree(warg->work);
+		kfree(warg);
+	}
+}
+
+/*
+ * Beware! Caller must be holding no references to clp->cl_sem!
+ * of owner->so_sema!
+ */
+void nfs4_close_state(struct nfs4_state *state, mode_t mode)
+{
+	struct nfs4_close_state_work_args *warg;
+	struct nfs4_close_state_work_args work_arg;
+	struct work_struct *work;
+
+	/*
+	 * Proper error handling here is difficult. This can be at the top of
+	 * a stack of void functions. These allocations are small though, and
+	 * should retry for a long time before failing. If they do fail, then
+	 * we'll fall back to doing this synchronously with a stack allocation.
+	 */
+	if ((warg = kmalloc(sizeof(*warg), GFP_NOFS)) == NULL)
+		goto synchronous;
+
+	if ((work = kmalloc(sizeof(*work), GFP_NOFS)) == NULL) {
+		kfree(warg);
+		goto synchronous;
+	}
+
+	warg->state = state;
+	warg->mode = mode;
+	warg->work = work;
+	INIT_WORK(work, nfs4_close_state_work, warg);
+
+	atomic_inc(&state->owner->so_count);
+	down_read(&state->owner->so_client->cl_sem);
+	schedule_work(work);
+	return;
+
+synchronous:
+	/*
+	 * kmalloc failed. Fall back to doing this synchronously with stack
+	 * allocation. There's a chance that this could deadlock if the task
+	 * is rpciod, and some other task has downed the the so_sema and is
+	 * waiting for rpciod to come back.
+	 */
+	work_arg.state = state;
+	work_arg.mode = mode;
+	work_arg.work = NULL;
+
+	atomic_inc(&state->owner->so_count);
+	down_read(&state->owner->so_client->cl_sem);
+	nfs4_close_state_work(&work_arg);
 }
 
 /*
@@ -860,7 +923,7 @@ restart_loop:
 	status = nfs4_proc_renew(clp);
 	if (status == 0 || status == -NFS4ERR_CB_PATH_DOWN)
 		goto out;
-	status = nfs4_init_client(clp);
+	status = __nfs4_init_client(clp);
 	if (status)
 		goto out_error;
 	/* Mark all delagations for reclaim */

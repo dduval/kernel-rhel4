@@ -489,12 +489,6 @@ struct ib_mad_agent *ib_register_mad_snoop(struct ib_device *device,
 int ib_unregister_mad_agent(struct ib_mad_agent *mad_agent);
 
 /**
- * ib_flush_mad_agent - flush any callbacks in flight for this client.
- * @mad_agent: Corresponding MAD registration request to flush.
- */
-void ib_flush_mad_agent(struct ib_mad_agent *mad_agent);
-
-/**
  * ib_post_send_mad - Posts MAD(s) to the send queue of the QP associated
  *   with the registered client.
  * @send_buf: Specifies the information needed to send the MAD(s).

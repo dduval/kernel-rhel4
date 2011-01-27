@@ -62,6 +62,17 @@ extern struct rpc_procinfo nfs4_procedures[];
 
 extern nfs4_stateid zero_stateid;
 
+/* Prevent leaks of NFSv4 errors into userland */
+int nfs4_map_errors(int err)
+{
+	if (err < -1000) {
+		dprintk("%s could not handle NFSv4 error %d\n",
+				__FUNCTION__, -err);
+		return -EIO;
+	}
+	return err;
+}
+
 /*
  * This is our standard bitmap for GETATTR requests.
  */
@@ -536,10 +547,11 @@ static int _nfs4_do_open(struct inode *dir, struct qstr *name, int flags, struct
 			goto out_err;
 	}
 
-	status = -ENOMEM;
 	inode = nfs_fhget(dir->i_sb, &o_res.fh, &f_attr);
-	if (!inode)
+	if (IS_ERR(inode)) {
+		status = PTR_ERR(inode);
 		goto out_err;
+	}
 	state = nfs4_get_open_state(inode, sp);
 	if (!state)
 		goto out_err;
@@ -567,7 +579,7 @@ out_err:
 	}
 	/* Note: clp->cl_sem must be released before nfs4_put_open_state()! */
 	up_read(&clp->cl_sem);
-	if (inode != NULL)
+	if (inode != NULL && !IS_ERR(inode))
 		iput(inode);
 	*res = NULL;
 	return status;
@@ -606,6 +618,38 @@ struct nfs4_state *nfs4_do_open(struct inode *dir, struct qstr *name, int flags,
 	return res;
 }
 
+/*
+ * NFSv4 has a complex open scheme where the actual OPEN call is done in the
+ * in the lookup, and the file pointer is initialized in the open. If the
+ * lookup completes successfully, but open_namei returns an error, then the
+ * nfs4_state is left "dangling". The obvious way for this to occur is if
+ * a setattr that's eventually called from open_namei returns an error. We
+ * start tracking this info in nfs4_atomic_open, and then remove the tracking
+ * here. If this returns true then a dangling open was found and removed. In
+ * error condition we'll want to do an extra nfs4_close_state based on this
+ * return value to clean up the dangling open.
+ */
+static int nfs4_remove_incomplete_open(struct nfs4_state *state,
+					unsigned long *flags) {
+	struct list_head	*entry;
+	struct nfs4_inc_open	*inc_open;
+
+	spin_lock(&state->inode->i_lock);
+	list_for_each(entry, &state->inc_open) {
+		inc_open = list_entry(entry, struct nfs4_inc_open, state);
+		if (inc_open->task == current) {
+			list_del(&inc_open->state);
+			spin_unlock(&state->inode->i_lock);
+			if (flags)
+				*flags = inc_open->flags;
+			kfree(inc_open);
+			return 1;
+		}
+	}
+	spin_unlock(&state->inode->i_lock);
+	return 0;
+}
+
 static int _nfs4_do_setattr(struct nfs_server *server, struct nfs_fattr *fattr,
                 struct nfs_fh *fhandle, struct iattr *sattr,
                 struct nfs4_state *state)
@@ -629,6 +673,8 @@ static int _nfs4_do_setattr(struct nfs_server *server, struct nfs_fattr *fattr,
 
 	nfs_fattr_init(fattr);
 
+	if (state != NULL)
+		msg.rpc_cred = state->owner->so_cred;
 	if (sattr->ia_valid & ATTR_SIZE)
 		nfs4_copy_stateid(&arg.stateid, state, NULL);
 	else
@@ -676,6 +722,7 @@ static int _nfs4_do_close(struct inode *inode, struct nfs4_state *state)
 		.rpc_proc	= &nfs4_procedures[NFSPROC4_CLNT_CLOSE],
 		.rpc_argp	= &arg,
 		.rpc_resp	= &res,
+		.rpc_cred	= sp->so_cred,
 	};
 
 	if (test_bit(NFS_DELEGATED_STATE, &state->flags))
@@ -729,6 +776,7 @@ static int _nfs4_do_downgrade(struct inode *inode, struct nfs4_state *state, mod
 		.rpc_proc	= &nfs4_procedures[NFSPROC4_CLNT_OPEN_DOWNGRADE],
 		.rpc_argp	= &arg,
 		.rpc_resp	= &res,
+		.rpc_cred	= sp->so_cred,
 	};
 
 	if (test_bit(NFS_DELEGATED_STATE, &state->flags))
@@ -768,6 +816,7 @@ nfs4_atomic_open(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 	struct iattr attr;
 	struct rpc_cred *cred;
 	struct nfs4_state *state;
+	struct nfs4_inc_open *inc_open;
 
 	if (nd->flags & LOOKUP_CREATE) {
 		attr.ia_mode = nd->intent.open.create_mode;
@@ -779,11 +828,22 @@ nfs4_atomic_open(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 		BUG_ON(nd->intent.open.flags & O_CREAT);
 	}
 
+	/* track info in case the open never completes */
+	if (!(inc_open = kmalloc(sizeof(*inc_open), GFP_KERNEL)))
+		return ERR_PTR(-ENOMEM);
 	cred = rpcauth_lookupcred(NFS_SERVER(dir)->client->cl_auth, 0);
 	state = nfs4_do_open(dir, &dentry->d_name, nd->intent.open.flags, &attr, cred);
 	put_rpccred(cred);
-	if (IS_ERR(state))
+	if (IS_ERR(state)) {
+		kfree(inc_open);
 		return (struct inode *)state;
+	}
+	inc_open->task = current;
+	inc_open->flags = nd->intent.open.flags;
+	INIT_LIST_HEAD(&inc_open->state);
+	spin_lock(&state->inode->i_lock);
+	list_add(&inc_open->state, &state->inc_open);
+	spin_unlock(&state->inode->i_lock);
 	return state->inode;
 }
 
@@ -1009,11 +1069,14 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 	struct nfs4_state	*state = NULL;
 	int need_iput = 0;
 	int status;
+	unsigned long 		flags;
+	struct rpc_cred 	*cred;
+	mode_t			mode = 0;
 
 	nfs_fattr_init(fattr);
 	
 	if (size_change) {
-		struct rpc_cred *cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
+		cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
 		state = nfs4_find_state(inode, cred, FMODE_WRITE);
 		if (state == NULL) {
 			state = nfs4_open_delegated(dentry->d_inode,
@@ -1024,6 +1087,7 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 						NULL, cred);
 			need_iput = 1;
 		}
+		mode = FMODE_WRITE;
 		put_rpccred(cred);
 		if (IS_ERR(state))
 			return PTR_ERR(state);
@@ -1039,9 +1103,20 @@ nfs4_proc_setattr(struct dentry *dentry, struct nfs_fattr *fattr,
 	if (status == 0)
 		nfs_setattr_update_inode(inode, sattr);
 out:
+	/* if we're erroring out, clean up incomplete open (if any) */
+	if (status != 0) {
+		if (state == NULL) {
+			cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
+			state = nfs4_find_state(inode, cred, 0);
+			put_rpccred(cred);
+		}
+		if (state && nfs4_remove_incomplete_open(state, &flags))
+			nfs4_close_state(state, flags);
+	}
+
 	if (state) {
 		inode = state->inode;
-		nfs4_close_state(state, FMODE_WRITE);
+		nfs4_close_state(state, mode);
 		if (need_iput)
 			iput(inode);
 	}
@@ -1469,22 +1544,34 @@ static int nfs4_proc_rename(struct inode *old_dir, struct qstr *old_name,
 
 static int _nfs4_proc_link(struct inode *inode, struct inode *dir, struct qstr *name)
 {
+	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs4_link_arg arg = {
 		.fh     = NFS_FH(inode),
 		.dir_fh = NFS_FH(dir),
 		.name   = name,
+		.bitmask = server->attr_bitmask,
 	};
-	struct nfs4_change_info	cinfo = { };
+	struct nfs_fattr fattr, dir_attr;
+	struct nfs4_link_res res = {
+		.server = server,
+		.fattr = &fattr,
+		.dir_attr = &dir_attr,
+	};
 	struct rpc_message msg = {
 		.rpc_proc = &nfs4_procedures[NFSPROC4_CLNT_LINK],
 		.rpc_argp = &arg,
-		.rpc_resp = &cinfo,
+		.rpc_resp = &res,
 	};
 	int			status;
 
-	status = rpc_call_sync(NFS_CLIENT(inode), &msg, 0);
-	if (!status)
-		update_changeattr(dir, &cinfo);
+	nfs_fattr_init(res.fattr);
+	nfs_fattr_init(res.dir_attr);
+	status = rpc_call_sync(server->client, &msg, 0);
+	if (!status) {
+		update_changeattr(dir, &res.cinfo);
+		nfs_post_op_update_inode(dir, res.dir_attr);
+		nfs_post_op_update_inode(inode, res.fattr);
+	}
 
 	return status;
 }
@@ -2018,7 +2105,7 @@ nfs4_proc_file_open(struct inode *inode, struct file *filp)
 	cred = rpcauth_lookupcred(NFS_SERVER(inode)->client->cl_auth, 0);
 	if (unlikely(cred == NULL))
 		return -ENOMEM;
-	ctx = alloc_nfs_open_context(dentry, cred);
+	ctx = alloc_nfs_open_context(filp->f_vfsmnt, dentry, cred);
 	put_rpccred(cred);
 	if (unlikely(ctx == NULL))
 		return -ENOMEM;
@@ -2026,6 +2113,7 @@ nfs4_proc_file_open(struct inode *inode, struct file *filp)
 	state = nfs4_find_state(inode, cred, filp->f_mode);
 	if (unlikely(state == NULL))
 		goto no_state;
+	nfs4_remove_incomplete_open(state, NULL);
 	ctx->state = state;
 	nfs4_close_state(state, filp->f_mode);
 	ctx->mode = filp->f_mode;
@@ -2153,12 +2241,10 @@ int nfs4_handle_exception(struct nfs_server *server, int errorcode, struct nfs4_
 		case -NFS4ERR_GRACE:
 		case -NFS4ERR_DELAY:
 			ret = nfs4_delay(server->client, &exception->timeout);
-			if (ret == 0)
-				exception->retry = 1;
-			break;
+			if (ret != 0)
+				break;
 		case -NFS4ERR_OLD_STATEID:
-			if (ret == 0)
-				exception->retry = 1;
+			exception->retry = 1;
 	}
 	/* We failed to handle the error */
 	return nfs4_map_errors(ret);

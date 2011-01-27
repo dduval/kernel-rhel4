@@ -1,6 +1,6 @@
 /*
  * QLogic iSCSI HBA Driver
- * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2007 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -18,6 +18,7 @@
  *      qla4xxx_init_rings
  *      qla4xxx_validate_mac_address
  *	qla4xxx_init_local_data
+ *	qla4xxx_initialize_fw_cb
  *      qla4xxx_init_firmware
  *      qla4xxx_send_internal_scsi_passthru
  *      qla4xxx_send_inquiry_cmd
@@ -48,6 +49,7 @@
 /*
  *  External Function Prototypes.
  */
+extern int ql4xkeepalive;
 extern int ql4xdiscoverywait;
 extern char *ql4xdevconf;
 
@@ -923,11 +925,364 @@ qla4xxx_init_local_data(scsi_qla_host_t *ha)
 	return(qla4xxx_get_firmware_status(ha));
 }
 
+/**************************************************************************
+ * qla4xxx_initialize_fw_cb
+ *	This routine initializes the firmware control block for the
+ *	specified adapter.
+ *
+ * Input:
+ * 	ha - Pointer to host adapter structure.
+ *
+ * Returns:
+ *	QLA_SUCCESS - Successfully initialized firmware ctrl block
+ *	QLA_ERROR   - Failed to initialize firmware ctrl block
+ *
+ * Remarks:
+ *	Initially, we use the size of the ifcb to determine if IPv6 is
+ *	supported.  Subsequently, after we retrieve the ifcb,
+ *	we use the saved ipv6_options to dermine if ipv6 is supported.
+ *	We make the assumption that if ipv6 is enabled, then the ifcb
+ *	structure is large enough to access ipv6 fields.
+ *
+ *	For legacy support, the IFCB is essentially the first 200h bytes
+ *	of the primary ACB.  For IPv6 support, the overall size of the
+ *	IFCB is two ACB structures concatenated.  However, the initiator
+ *	driver only needs to access the primary ACB.
+ *
+ * Context:
+ *	Kernel context.
+ **************************************************************************/
+static uint8_t
+qla4xxx_initialize_fw_cb(scsi_qla_host_t *ha)
+{
+	ADDRESS_CTRL_BLK  *init_fw_cb;
+	dma_addr_t	  init_fw_cb_dma;
+	uint32_t    	  mbox_cmd[MBOX_REG_COUNT];
+	uint32_t    	  mbox_sts[MBOX_REG_COUNT];
+	uint8_t     	  status = QLA_ERROR;
+	uint8_t 	  ip_addr_str[IP_ADDR_STR_SIZE];
+
+	ENTER(__func__);
+
+	/* Default to Legacy IFCB Size */
+	ha->ifcb_size = LEGACY_IFCB_SIZE;
+
+	/*
+	 * Determine if larger IFCB is supported
+	 */
+	(void) qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], 0);
+	if (mbox_sts[0] == MBOX_STS_COMMAND_PARAMETER_ERROR &&
+	    mbox_sts[4] > LEGACY_IFCB_SIZE) {
+		/* Supports larger ifcb size */
+	       ha->ifcb_size = mbox_sts[4];
+	}
+
+	init_fw_cb = pci_alloc_consistent(ha->pdev, ha->ifcb_size,
+	  &init_fw_cb_dma);
+	if (init_fw_cb == NULL) {
+		printk("scsi%d: %s: Unable to alloc init_cb, size=0x%x\n",
+		       ha->host_no, __func__, ha->ifcb_size);
+		return 10;
+	}
+	memset(init_fw_cb, 0, ha->ifcb_size);
+
+	/*
+	 * Get Initialize Firmware Control Block
+	 */
+	if (qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma)
+	    != QLA_SUCCESS) {
+		QL4PRINT(QLP2,
+			 printk("scsi%d: %s: Failed to get init_fw_ctrl_blk\n",
+				ha->host_no, __func__));
+		goto exit_init_fw_cb;
+	}
+
+	QL4PRINT(QLP10, printk("scsi%d: Get Init Fw Ctrl Blk\n", ha->host_no));
+	qla4xxx_dump_bytes(QLP10, init_fw_cb, ha->ifcb_size);
+
+	/*
+	 * Initialize request and response queues
+	 */
+	qla4xxx_init_rings(ha);
+
+	/*
+	 * Fill in the request and response queue information
+	 */
+	if (IS_QLA4010(ha)) {
+		init_fw_cb->ReqQConsumerIndex = cpu_to_le16(ha->request_out);
+		init_fw_cb->ComplQProducerIndex = cpu_to_le16(ha->response_in);
+	}
+	init_fw_cb->ReqQLen = __constant_cpu_to_le16(REQUEST_QUEUE_DEPTH);
+	init_fw_cb->ComplQLen = __constant_cpu_to_le16(RESPONSE_QUEUE_DEPTH);
+	init_fw_cb->ReqQAddrLo = cpu_to_le32(LSDW(ha->request_dma));
+	init_fw_cb->ReqQAddrHi = cpu_to_le32(MSDW(ha->request_dma));
+	init_fw_cb->ComplQAddrLo = cpu_to_le32(LSDW(ha->response_dma));
+	init_fw_cb->ComplQAddrHi = cpu_to_le32(MSDW(ha->response_dma));
+	init_fw_cb->ShadowRegBufAddrLo = cpu_to_le32(LSDW(ha->shadow_regs_dma));
+	init_fw_cb->ShadowRegBufAddrHi = cpu_to_le32(MSDW(ha->shadow_regs_dma));
+
+	/*
+	 * Set up required options
+	 */
+	init_fw_cb->FwOptions |=
+	    __constant_cpu_to_le16(FWOPT_SESSION_MODE | FWOPT_INITIATOR_MODE);
+	init_fw_cb->FwOptions &= __constant_cpu_to_le16(~FWOPT_TARGET_MODE);
+	
+	/*
+	 * Send Initialize Firmware Control Block
+	 */
+	QL4PRINT(QLP10, printk("scsi%d: Pre Set Init Fw Ctrl Blk\n", ha->host_no));
+	qla4xxx_dump_bytes(QLP10, init_fw_cb, ha->ifcb_size);
+
+	if (qla4xxx_set_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma)
+	    != QLA_SUCCESS) {
+		QL4PRINT(QLP2,
+                         printk("scsi%d: %s: Failed to set init_fw_ctrl_blk\n",
+					     ha->host_no, __func__));
+		goto exit_init_fw_cb;
+	}
+
+	if (qla4xxx_get_ifcb(ha, &mbox_cmd[0], &mbox_sts[0], init_fw_cb_dma)
+	    != QLA_SUCCESS) {
+		QL4PRINT(QLP2,
+			 printk("scsi%d: %s: Failed to get init_fw_ctrl_blk\n",
+				ha->host_no, __func__));
+		goto exit_init_fw_cb;
+	}
+
+	QL4PRINT(QLP7, printk("scsi%d: Post Set Init Fw Ctrl Blk\n", ha->host_no));
+	qla4xxx_dump_bytes(QLP7, init_fw_cb, ha->ifcb_size);
+
+	/*
+	 * Save some info in adapter structure
+	 */
+	ha->firmware_options = le16_to_cpu(init_fw_cb->FwOptions);
+	ha->ip_options = le16_to_cpu(init_fw_cb->IPOptions);
+	ha->tcp_options = le16_to_cpu(init_fw_cb->TCPOptions);
+	ha->heartbeat_interval = init_fw_cb->HeartbeatInterval;
+	ha->isns_server_port_number =
+	    le16_to_cpu(init_fw_cb->iSNSServerPortNumber);
+	ha->acb_version = init_fw_cb->ACBVersion;
+
+	memcpy(ha->ip_address, init_fw_cb->IPAddr,
+	    MIN(sizeof(ha->ip_address), sizeof(init_fw_cb->IPAddr)));
+	memcpy(ha->subnet_mask, init_fw_cb->SubnetMask,
+	    MIN(sizeof(ha->subnet_mask), sizeof(init_fw_cb->SubnetMask)));
+	memcpy(ha->gateway, init_fw_cb->GatewayIPAddr,
+	    MIN(sizeof(ha->gateway), sizeof(init_fw_cb->GatewayIPAddr)));
+	memcpy(ha->isns_server_ip_addr, init_fw_cb->iSNSIPAddr,
+	    MIN(sizeof(ha->isns_server_ip_addr), sizeof(init_fw_cb->iSNSIPAddr)));
+	memcpy(ha->name_string, init_fw_cb->iSCSINameString,
+	    MIN(sizeof(ha->name_string), sizeof(init_fw_cb->iSCSINameString)));
+	memcpy(ha->alias, init_fw_cb->iSCSIAlias,
+	    MIN(sizeof(ha->alias), sizeof(init_fw_cb->iSCSIAlias)));
+
+	if (ha->acb_version == ACB_SUPPORTED) {
+                ha->ipv6_options = init_fw_cb->IPv6Options;
+	}
+
+	/* Save Command Line Paramater info */
+	ha->port_down_retry_count = (ql4xkeepalive != 0xDEAD)
+		? ql4xkeepalive : le16_to_cpu(init_fw_cb->KeepAliveTimeout);
+	ha->discovery_wait = ql4xdiscoverywait;
+
+	if ((ha->acb_version == ACB_NOT_SUPPORTED) || IS_IPv4_ENABLED(ha)) {
+		/* --- IP v4 --- */
+		IPv4Addr2Str(init_fw_cb->IPAddr, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IP Address            %s\n",
+		    ha->host_no, __func__, &ip_addr_str[0]));
+
+		IPv4Addr2Str(init_fw_cb->SubnetMask, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Subnet Mask           %s\n",
+		    ha->host_no, __func__, &ip_addr_str[0]));
+
+		IPv4Addr2Str(init_fw_cb->GatewayIPAddr, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Default Gateway       %s\n",
+		    ha->host_no, __func__, &ip_addr_str[0]));
+
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Auto-Negotiate        %s\n", ha->host_no, __func__,
+		    ((le16_to_cpu(init_fw_cb->AddFwOptions) & 0x10) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "SLP Use DA Enable     %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_SLP_USE_DA_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "SLP UA Enable         %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_SLP_UA_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "DHCP Enable           %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_DHCP_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "DNS via DHCP Enable   %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_GET_DNS_VIA_DHCP_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "SLP via DHCP Enable   %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_GET_SLP_VIA_DHCP_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Auto Discovery Enable %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_AUTO_DISCOVERY_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
+		    "iSNS Enable           %s\n", ha->host_no, __func__,
+		    ((ha->tcp_options & TOPT_ISNSv4_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+#if ENABLE_ISNS
+		if (ha->tcp_options & TOPT_ISNSv4_ENABLE) {
+			set_bit(ISNS_FLAG_ISNS_ENABLED_IN_ISP, &ha->isns_flags);
+
+			IPv4Addr2Str(ha->isns_server_ip_addr, &ip_addr_str[0]);
+			QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
+			    "iSNSv4 IP Address     %s\n",
+			    ha->host_no, __func__, &ip_addr_str[0]));
+			QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
+			    "iSNS Server Port Number %d\n", ha->host_no,
+			    __func__, ha->isns_server_port_number));
+		}
+#endif
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Heartbeat Enable      %s\n", ha->host_no, __func__,
+		    ((ha->firmware_options & FWOPT_HEARTBEAT_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+		if (ha->firmware_options & FWOPT_HEARTBEAT_ENABLE)
+			QL4PRINT(QLP7, printk("scsi%d: %s: "
+			    "Heartbeat Interval    %d\n", ha->host_no, __func__,
+			    ha->heartbeat_interval));
+
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "Execution Throttle    %d\n", ha->host_no, __func__,
+		    le16_to_cpu(init_fw_cb->ExecThrottle)));
+
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "ACB Supported  (%d)    %s\n", ha->host_no, __func__,
+		    ha->acb_version,
+		    (ha->acb_version == ACB_SUPPORTED) ? "ON" : "OFF"));
+	}
+
+	if (IS_IPv6_ENABLED(ha)){
+		/* --- IP v6 --- */
+	
+		ha->ipv6_addl_options = init_fw_cb->IPv6AddOptions;
+		ha->ipv6_tcp_options = init_fw_cb->IPv6TCPOptions;
+		ha->ipv6_link_local_addr[0] = 0xFE;
+		ha->ipv6_link_local_addr[1] = 0x80;
+		memcpy(&ha->ipv6_link_local_addr[8], init_fw_cb->IPv6InterfaceID,
+		    MIN(sizeof(ha->ipv6_link_local_addr)/2, sizeof(init_fw_cb->IPv6InterfaceID)));
+		memcpy(ha->ipv6_addr0, init_fw_cb->IPv6Addr0,
+		    MIN(sizeof(ha->ipv6_addr0), sizeof(init_fw_cb->IPv6Addr0)));
+		memcpy(ha->ipv6_addr1, init_fw_cb->IPv6Addr1,
+		    MIN(sizeof(ha->ipv6_addr1), sizeof(init_fw_cb->IPv6Addr1)));
+		memcpy(ha->ipv6_default_router_addr, init_fw_cb->IPv6DefaultRouterAddr,
+		    MIN(sizeof(ha->ipv6_default_router_addr), sizeof(init_fw_cb->IPv6DefaultRouterAddr)));
+	
+		IPv6Addr2Str(ha->ipv6_link_local_addr, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 Link Local       %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+	
+		IPv6Addr2Str(ha->ipv6_addr0, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 IP Address0      %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+	
+		IPv6Addr2Str(ha->ipv6_addr1, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 IP Address1      %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+	
+		IPv6Addr2Str(ha->ipv6_default_router_addr, &ip_addr_str[0]);
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+			"IPv6 Default Router   %s\n",
+			ha->host_no, __func__, &ip_addr_str[0]));
+	
+#if ENABLE_ISNS
+		/* In IPv6 mode, iSNS may either be IPv4 or IPv6, not both */
+		if (ha->tcp_options & TOPT_ISNSv4_ENABLE) {
+			set_bit(ISNS_FLAG_ISNS_ENABLED_IN_ISP, &ha->isns_flags);
+	
+			memcpy(ha->isns_server_ip_addr, init_fw_cb->iSNSIPAddr,
+			    MIN(sizeof(ha->isns_server_ip_addr), sizeof(init_fw_cb->iSNSIPAddr)));
+
+			IPv4Addr2Str(ha->isns_server_ip_addr, &ip_addr_str[0]);
+			QL4PRINT(QLP7, printk("scsi%d: %s: "
+				"IPv4 iSNS IP Address      %s\n",
+				ha->host_no, __func__, &ip_addr_str[0]));
+			QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
+				"iSNS Server Port Number   %d\n", ha->host_no,
+				__func__, ha->isns_server_port_number));
+		}
+		else if (ha->ipv6_tcp_options & IPV6_TCPOPT_ISNSv6_ENABLE) {
+			set_bit(ISNS_FLAG_ISNS_ENABLED_IN_ISP, &ha->isns_flags);
+	
+			memcpy(ha->isns_server_ip_addr, init_fw_cb->IPv6iSNSIPAddr,
+			    MIN(sizeof(ha->isns_server_ip_addr), sizeof(init_fw_cb->IPv6iSNSIPAddr)));
+
+			IPv6Addr2Str(ha->isns_server_ip_addr, &ip_addr_str[0]);
+			QL4PRINT(QLP7, printk("scsi%d: %s: "
+				"IPv6 iSNS IP Address  %s\n",
+				ha->host_no, __func__, &ip_addr_str[0]));
+			QL4PRINT(QLP7|QLP20, printk("scsi%d: %s: "
+			    "iSNS Server Port Number   %d\n", ha->host_no,
+			    __func__, ha->isns_server_port_number));
+		}
+#endif	
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IPv6 Protocol Enable      %s\n", ha->host_no, __func__,
+		    (IS_IPv6_ENABLED(ha)) ? "ON" : "OFF"));
+	
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IPv6 Autoconfig LinkLocal %s\n", ha->host_no, __func__,
+		    ((ha->ipv6_addl_options & IPV6_ADDOPT_AUTOCONFIG_LINK_LOCAL_ADDR) != 0) ?
+		    "ON" : "OFF"));
+
+#if ENABLE_ISNS
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IPv6 iSNS Enabled         %s\n", ha->host_no, __func__,
+		    ((ha->ipv6_tcp_options & IPV6_TCPOPT_ISNSv6_ENABLE) != 0) ?
+		    "ON" : "OFF"));
+#endif
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IPv6 Options              0x%04x\n", ha->host_no, __func__,
+		    ha->ipv6_options));
+	
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IPv6 Additional Options   0x%04x\n", ha->host_no, __func__,
+		    ha->ipv6_addl_options));
+	
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "IPv6 TCP Options          0x%04x\n", ha->host_no, __func__,
+		    ha->ipv6_tcp_options));
+
+		QL4PRINT(QLP7, printk("scsi%d: %s: "
+		    "ACB Supported             %s\n", ha->host_no, __func__,
+		    (ha->acb_version == ACB_SUPPORTED) ?
+		    "ON" : "OFF"));
+	}
+
+	status = QLA_SUCCESS;
+
+exit_init_fw_cb:
+	pci_free_consistent(ha->pdev, ha->ifcb_size, init_fw_cb, init_fw_cb_dma);
+	LEAVE(__func__);
+	return status;
+}
+
 static int
 qla4xxx_fw_ready ( scsi_qla_host_t *ha )
 {
 	uint32_t timeout_count;
 	int     ready = 0;
+#if ENABLE_ISNS
+	uint8_t isns_ip_addr_is_valid;
+#endif
 
 	ql4_printk(KERN_INFO, ha,
 		   "Waiting for Firmware Ready..\n");
@@ -972,8 +1327,8 @@ qla4xxx_fw_ready ( scsi_qla_host_t *ha )
 					      "AUTOCONNECT in progress\n", ha->host_no, __func__));
 		}
 
-		if (ha->firmware_state & FW_STATE_DHCPv4_IN_PROGRESS) {
-			QL4PRINT(QLP7, printk("scsi%d: %s: fwstate: DHCP in progress\n",
+		if (ha->firmware_state & FW_STATE_CONFIGURING_IP) {
+			QL4PRINT(QLP7, printk("scsi%d: %s: fwstate: CONFIGURING IP\n",
 					      ha->host_no, __func__));
 		}
 
@@ -986,45 +1341,48 @@ qla4xxx_fw_ready ( scsi_qla_host_t *ha )
 					      ha->host_no, __func__,
 					      ((ha->addl_fw_state & FW_ADDSTATE_OPTICAL_MEDIA) !=
 					       0) ? "OPTICAL" : "COPPER"));
-			QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv4 STATE Enabled "
-					      "%s\n", ha->host_no, __func__,
-					      ((ha->addl_fw_state & FW_ADDSTATE_DHCPv4_ENABLED) !=
-					       0) ? "YES" : "NO"));
-			QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv4 STATE Lease "
-					      "Acquired  %s\n", ha->host_no, __func__,
-					      ((ha->addl_fw_state &
-						FW_ADDSTATE_DHCPv4_LEASE_ACQUIRED) != 0) ?
-					      "YES" : "NO"));
-			QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv4 STATE Lease "
-					      "Expired  %s\n", ha->host_no, __func__,
-					      ((ha->addl_fw_state &
-						FW_ADDSTATE_DHCPv4_LEASE_ACQUIRED) != 0) ?
-					      "YES" : "NO"));
 			QL4PRINT(QLP7, printk("scsi%d: %s: LINK  %s\n",
 					      ha->host_no, __func__,
 					      ((ha->addl_fw_state & FW_ADDSTATE_LINK_UP) != 0) ?
 					      "UP" : "DOWN"));
-			QL4PRINT(QLP7, printk("scsi%d: %s: iSNS Service "
-					      "Started  %s\n", ha->host_no, __func__,
-					      ((ha->addl_fw_state &
-						FW_ADDSTATE_ISNSv4_SVC_ENABLED) != 0) ?
-					      "YES" : "NO"));
+			if (IS_IPv4_ENABLED(ha)){
+				QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv4 STATE Enabled "
+						      "%s\n", ha->host_no, __func__,
+						      ((ha->addl_fw_state & FW_ADDSTATE_DHCPv4_ENABLED) !=
+						       0) ? "YES" : "NO"));
+				QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv4 STATE Lease "
+						      "Acquired  %s\n", ha->host_no, __func__,
+						      ((ha->addl_fw_state &
+							FW_ADDSTATE_DHCPv4_LEASE_ACQUIRED) != 0) ?
+						      "YES" : "NO"));
+				QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv4 STATE Lease "
+						      "Expired  %s\n", ha->host_no, __func__,
+						      ((ha->addl_fw_state &
+							FW_ADDSTATE_DHCPv4_LEASE_ACQUIRED) != 0) ?
+						      "YES" : "NO"));
+			}
+			if (IS_IPv6_ENABLED(ha)){
+				QL4PRINT(QLP7, printk("scsi%d: %s: DHCPv6 STATE Enabled "
+						      "%s\n", ha->host_no, __func__,
+						      ((ha->addl_fw_state & FW_ADDSTATE_DHCPV6_ENABLED) !=
+						       0) ? "YES" : "NO"));
+			}
 			ready = 1;
 
+			/* If DHCP IP Addr is available, retrieve it now. */
+			if (test_and_clear_bit(DPC_GET_DHCP_IP_ADDR, &ha->dpc_flags))
+				qla4xxx_get_dhcp_ip_address(ha);
 #if ENABLE_ISNS
+			
 			/* If iSNS is enabled, start the iSNS service now. */
-			if ((ha->tcp_options & TOPT_ISNS_ENABLE) &&
-			    !IPAddrIsZero(ha->isns_ip_address)) {
-				uint32_t ip_addr = 0;
+			isns_ip_addr_is_valid = !IPAddrIsZero(ha, ha->isns_server_ip_addr);
 
-				IPAddr2Uint32(ha->isns_ip_address, &ip_addr);
+			if (test_bit(ISNS_FLAG_ISNS_ENABLED_IN_ISP, &ha->isns_flags) &&
+                            isns_ip_addr_is_valid) {
 				ql4_printk(KERN_INFO, ha, "Initializing ISNS..\n");
-				qla4xxx_isns_reenable(ha, ip_addr, ha->isns_server_port_number);
+				qla4xxx_isns_reenable(ha, ha->isns_server_ip_addr, ha->isns_server_port_number);
 			}
-#else
-			ql4_printk(KERN_INFO, ha, "ISNS disabled...\n");
 #endif
-
 			break;
 		}
 
@@ -1040,10 +1398,10 @@ qla4xxx_fw_ready ( scsi_qla_host_t *ha )
 		DEBUG2(printk("scsi%d: %s: FW Initialization timed out!\n",
 			      ha->host_no, __func__));
 
-		if (ha->firmware_state & FW_STATE_DHCPv4_IN_PROGRESS) {
-			QL4PRINT(QLP2, printk("scsi%d: %s: FW is reporting its waiting to"
-						" grab an IP address from DHCP server\n",
-						      ha->host_no, __func__));
+		if (ha->firmware_state & FW_STATE_CONFIGURING_IP) {
+			QL4PRINT(QLP2, printk("scsi%d: %s: FW is reporting it's waiting to"
+					      " configure an IP address\n",
+					      ha->host_no, __func__));
 			ready = 1;
 		}
 	}
@@ -1264,6 +1622,7 @@ qla4xxx_update_ddb_entry(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry,
 
 	status = QLA_SUCCESS;
 
+	ddb_entry->options = le16_to_cpu(fw_ddb_entry->options);
 	ddb_entry->target_session_id = le16_to_cpu(fw_ddb_entry->TSID);
 	ddb_entry->task_mgmt_timeout =
 	le16_to_cpu(fw_ddb_entry->taskMngmntTimeout);
@@ -1281,9 +1640,12 @@ qla4xxx_update_ddb_entry(scsi_qla_host_t *ha, ddb_entry_t *ddb_entry,
 	memcpy(&ddb_entry->iscsi_name[0], &fw_ddb_entry->iscsiName[0],
 	       MIN(sizeof(ddb_entry->iscsi_name),
 		   sizeof(fw_ddb_entry->iscsiName)));
-	memcpy(&ddb_entry->ip_addr[0], &fw_ddb_entry->RemoteIPAddr[0],
-	       MIN(sizeof(ddb_entry->ip_addr),
+	memcpy(&ddb_entry->remote_ip_addr[0], &fw_ddb_entry->RemoteIPAddr[0],
+	       MIN(sizeof(ddb_entry->remote_ip_addr),
 		   sizeof(fw_ddb_entry->RemoteIPAddr)));
+	memcpy(&ddb_entry->ipv6_local_ip_addr[0], &fw_ddb_entry->IPv6LocalIPAddress[0],
+	       MIN(sizeof(ddb_entry->ipv6_local_ip_addr),
+		   sizeof(fw_ddb_entry->IPv6LocalIPAddress)));
 
 #if ENABLE_ISNS
 	if (qla4xxx_is_discovered_target(ha, fw_ddb_entry->RemoteIPAddr,
@@ -2036,7 +2398,13 @@ qla4xxx_start_firmware(scsi_qla_host_t *ha)
 		spin_lock_irqsave(&ha->hardware_lock, flags);
 		WRT_REG_DWORD(&ha->reg->mailbox[7], jiffies);
 		if (!IS_QLA4010(ha)) {
-			WRT_REG_DWORD(&ha->reg->mailbox[6], ACB_NOT_SUPPORTED);	
+			/*
+			 * Firmware must be informed that the driver supports
+			 * ACB firmware features while starting firmware.
+			 * If the firmware also supports these features it will
+			 * be indicated in the IFCB offset 0x3A (acb_version).
+			 */
+			WRT_REG_DWORD(&ha->reg->mailbox[6], ACB_SUPPORTED);	
 			WRT_REG_DWORD(&ha->reg->u1.isp4022.nvram,
 				      SET_RMASK(NVR_WRITE_ENABLE));
 		}
@@ -2152,7 +2520,8 @@ qla4x00_pci_config(scsi_qla_host_t *ha)
 uint8_t
 qla4xxx_initialize_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list)
 {
-	uint8_t      status = QLA_ERROR;
+	uint8_t status = QLA_ERROR;
+	uint8_t	found = 0;
 
 	ENTER("qla4xxx_initialize_adapter");
 
@@ -2187,9 +2556,9 @@ qla4xxx_initialize_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list)
 		goto exit_init_hba;
 	}
 
-	if (ha->firmware_state & FW_STATE_DHCPv4_IN_PROGRESS) {
-		QL4PRINT(QLP2, printk("%s(%d) FW is waiting to get an IP address"
-				      " from DHCP server: Skip building"
+	if (ha->firmware_state & FW_STATE_CONFIGURING_IP) {
+		QL4PRINT(QLP2, printk("%s(%d) FW is waiting to configure"
+				      " an IP address : Skip building"
 				      " the ddb_list and wait for DHCP lease"
 				      " acquired aen to come in followed by 0x8014 aen"
 				      " to trigger the tgt discovery process\n",
@@ -2198,14 +2567,37 @@ qla4xxx_initialize_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list)
 		goto exit_init_hba;
 	}
 
-	if (IPAddrIsZero(ha->ip_address) || IPAddrIsZero(ha->subnet_mask)) {
-		QL4PRINT(QLP2, printk("scsi%d: %s: Null IP address and/or"
-				      " Subnet Mask.  Skip device discovery.\n",
-				      ha->host_no, __func__));
-		/* NOTE: status = QLA_SUCCESS */
-		goto exit_init_hba;
+	if (IS_IPv4_ENABLED(ha)) {
+		if(IPv4AddrIsZero(ha->ip_address) ||
+		   IPv4AddrIsZero(ha->subnet_mask)) {
+		    if (IS_IPv6_ENABLED(ha)) {
+			    /* Also check for IPv6 below ... */
+		    } else {
+			    QL4PRINT(QLP2, printk("scsi%d: %s: Null IP address "
+						  "and/or Subnet Mask.  "
+						  "Skip device discovery.\n",
+						  ha->host_no, __func__));
+			    /* NOTE: status = QLA_SUCCESS */
+			    goto exit_init_hba;
+		    }
+		} else {
+			found = 1;
+		}
+
+	}
+	if (!found && IS_IPv6_ENABLED(ha)) {
+		if (IPv6AddrIsZero(ha->ipv6_link_local_addr) &&
+		    IPv6AddrIsZero(ha->ipv6_addr0) &&
+		    IPv6AddrIsZero(ha->ipv6_addr1)) {
+			QL4PRINT(QLP2, printk("scsi%d: %s: Null IPv6 address(es).  "
+					      "Skip device discovery.\n",
+					      ha->host_no, __func__));
+			/* NOTE: status = QLA_SUCCESS */
+			goto exit_init_hba;
+		}
 	}
 
+#if ENABLE_ISNS
 	/* If iSNS Enabled, wait for iSNS targets */
 	if (test_bit(ISNS_FLAG_ISNS_ENABLED_IN_ISP, &ha->isns_flags)) {
 		unsigned long wait_cnt = jiffies + ql4xdiscoverywait * HZ;
@@ -2242,6 +2634,7 @@ qla4xxx_initialize_adapter(scsi_qla_host_t *ha, uint8_t renew_ddb_list)
 			}
 		}
 	}
+#endif
 
 	if (renew_ddb_list == PRESERVE_DDB_LIST) {
 		/*

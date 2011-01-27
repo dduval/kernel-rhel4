@@ -11,7 +11,7 @@ Abstract:
    that support the Common Storage Management Interface specification for
    SAS or SATA in either the Windows or Linux.
 
-   This should be considered as a reference implementation only.  Changes may 
+   This should be considered as a reference implementation only.  Changes may
    be necessary to accommodate a specific build environment or target OS.
 
 Revision History:
@@ -54,24 +54,33 @@ Revision History:
    017  SEF   9/17/04  added CSMI_SAS_SATA_PORT_SELECTOR,
                        CSMI_SAS_LINK_VIRTUAL, CSMI_SAS_CON_NOT_PRESENT, and
                        CSMI_SAS_CON_NOT_CONNECTED
-   018  SEF   9/20/04  added CSMI_SAS_PHY_USER_PATTERN, 
+   018  SEF   9/20/04  added CSMI_SAS_PHY_USER_PATTERN,
                        changed definition of CSMI_SAS_PHY_FIXED_PATTERN to not
                        conflict with activate definition
    019  SEF  12/06/04  added CSMI_SAS_GET_LOCATION
-                       added bSSPStatus to CSMI_SAS_SSP_PASSTHRU_STATUS 
+                       added bSSPStatus to CSMI_SAS_SSP_PASSTHRU_STATUS
                        structure
-   020  SEF   5/25/05  added CSMI_SAS_PHY_VIRTUAL_SMP, and changes to 
+   020  SEF   5/25/05  added CSMI_SAS_PHY_VIRTUAL_SMP, and changes to
                        CSMI_SAS_GET_LOCATION
-   021  SEF  11/03/05  added new RAID creation functionality 
+   021  SEF  11/03/05  added new RAID creation functionality
    022  SEF   2/01/06  corrected typo bNegotitiatedLInkRate
                        Added two more RAID_TYPES, 7 and 8
    023  SEF   4/04/06  added CSMI_RAID_TYPE_1E
                        changed structures that contained surface scan
                        to priority approach rather than time, causes
-                       0.89 to incompatible with 0.87, so a version 
-                       check is necessary when interpreting the 
+                       0.89 to incompatible with 0.87, so a version
+                       check is necessary when interpreting the
                        raid structures
                        Added netware section
+   024 DRG    5/22/06  Added uFailureCode to CSMI_SAS_RAID_CONFIG and
+                       CSMI_SAS_RAID_FEATURES
+                       Changed __u64 fields to high and low __u32 fields in
+                       order to avoid backward compatibility issues with
+                       packing and alignment.
+                       Fixed alignment problem in CSMI_SAS_RAID_DRIVES.
+                       Added CSMI_SAS_CNTLR_SMART_ARRAY to uControllerFlags
+                       Reassigned the value of CSMI_SAS_CNTLR_RAID_CFG_SUPPORT
+                       to avoid a conflict.
 
 **************************************************************************/
 
@@ -83,7 +92,7 @@ Revision History:
 // Major revision number, corresponds to xxxx. of CSMI specification
 // Minor revision number, corresponds to .xxxx of CSMI specification
 #define CSMI_MAJOR_REVISION   0
-#define CSMI_MINOR_REVISION   89
+#define CSMI_MINOR_REVISION   90
 
 /*************************************************************************/
 /* PATCHES FOR TYPOS                                                     */
@@ -182,12 +191,12 @@ Revision History:
 
 // IOCTL_HEADER
 typedef struct _IOCTL_HEADER {
-   __u32 IOControllerNumber;
+    __u32 IOControllerNumber;
     __u32 Length;
     __u32 ReturnCode;
     __u32 Timeout;
     __u16 Direction;
-} IOCTL_HEADER, 
+} IOCTL_HEADER,
   *PIOCTL_HEADER;
 
 // EDM #pragma CSMI_SAS_END_PACK
@@ -303,16 +312,18 @@ typedef unsigned char BYTE;
 #define __i8    char
 
 
-#pragma CSMI_SAS_BEGIN_PACK(8)
+// EDM #pragma CSMI_SAS_BEGIN_PACK(8)
+#pragma pack(8)
 
 // IOCTL_HEADER
 typedef struct _IOCTL_HEADER {
     __u32 Length;
     __u32 ReturnCode;
-} IOCTL_HEADER, 
+} IOCTL_HEADER,
   *PIOCTL_HEADER;
 
-#pragma CSMI_SAS_END_PACK
+// EDM #pragma CSMI_SAS_END_PACK
+#pragma pack()
 
 // IOCTL Control Codes
 // (IoctlHeader.ControlCode)
@@ -358,8 +369,8 @@ typedef struct _IOCTL_HEADER {
 /* TARGET OS NOT DEFINED ERROR                                           */
 /*************************************************************************/
 
-// EDM #if (!_WIN32 && !_linux && !_NETWARE)
-//#if (!_WIN32 && !__KERNEL__ && !_NETWARE)
+// EDM
+//#if (!_WIN32 && !_linux && !_NETWARE)
 //   #error "Unknown target OS."
 //#endif
 
@@ -424,20 +435,21 @@ typedef struct _IOCTL_HEADER {
 // Controller Flag bits
 // (uControllerFlags)
 
-#define CSMI_SAS_CNTLR_SAS_HBA   0x00000001
-#define CSMI_SAS_CNTLR_SAS_RAID  0x00000002
-#define CSMI_SAS_CNTLR_SATA_HBA  0x00000004
-#define CSMI_SAS_CNTLR_SATA_RAID 0x00000008
+#define CSMI_SAS_CNTLR_SAS_HBA          0x00000001
+#define CSMI_SAS_CNTLR_SAS_RAID         0x00000002
+#define CSMI_SAS_CNTLR_SATA_HBA         0x00000004
+#define CSMI_SAS_CNTLR_SATA_RAID        0x00000008
+#define CSMI_SAS_CNTLR_SMART_ARRAY      0x00000010
 
 // for firmware download
-#define CSMI_SAS_CNTLR_FWD_SUPPORT  0x00010000
-#define CSMI_SAS_CNTLR_FWD_ONLINE   0x00020000
-#define CSMI_SAS_CNTLR_FWD_SRESET   0x00040000
-#define CSMI_SAS_CNTLR_FWD_HRESET   0x00080000
-#define CSMI_SAS_CNTLR_FWD_RROM     0x00100000
+#define CSMI_SAS_CNTLR_FWD_SUPPORT      0x00010000
+#define CSMI_SAS_CNTLR_FWD_ONLINE       0x00020000
+#define CSMI_SAS_CNTLR_FWD_SRESET       0x00040000
+#define CSMI_SAS_CNTLR_FWD_HRESET       0x00080000
+#define CSMI_SAS_CNTLR_FWD_RROM         0x00100000
 
 // for RAID configuration supported
-#define CSMI_SAS_CNTLR_RAID_CFG_SUPPORT  0x010000
+#define CSMI_SAS_CNTLR_RAID_CFG_SUPPORT 0x01000000
 
 // Download Flag bits
 // (uDownloadFlags)
@@ -601,7 +613,7 @@ typedef struct _IOCTL_HEADER {
 #define CSMI_SAS_RAID_CLEAR_CONFIGURATION_SIGNATURE "RAIDCLR"
 
 // RAID Failure Codes
-// (uFailCode)
+// (uFailureCode)
 #define CSMI_SAS_FAIL_CODE_OK                           0
 #define CSMI_SAS_FAIL_CODE_PARAMETER_INVALID            1000
 #define CSMI_SAS_FAIL_CODE_TRANSFORM_PRIORITY_INVALID   1001
@@ -926,7 +938,7 @@ typedef struct _IOCTL_HEADER {
 // Phy Control Functions
 // (bFunction)
 
-// values 0x00 to 0xFF are consistent in definition with the SMP PHY CONTROL 
+// values 0x00 to 0xFF are consistent in definition with the SMP PHY CONTROL
 // function defined in the SAS spec
 #define CSMI_SAS_PC_NOP                   0x00000000
 #define CSMI_SAS_PC_LINK_RESET            0x00000001
@@ -1103,8 +1115,16 @@ typedef struct _CSMI_SAS_RAID_INFO {
    __u32 uMaxRaidSets;
    __u8  bMaxRaidTypes;
    __u8  bReservedByteFields[7];
-   __u64 ulMinRaidSetBlocks;
-   __u64 ulMaxRaidSetBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulMinRaidSetBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulMaxRaidSetBlocks;
    __u32 uMaxPhysicalDrives;
    __u32 uMaxExtents;
    __u32 uMaxModules;
@@ -1130,11 +1150,15 @@ typedef struct _CSMI_SAS_RAID_DRIVES {
    __u8  bSASLun[8];
    __u8  bDriveStatus;
    __u8  bDriveUsage;
-   __u8  bDriveType;
    __u16 usBlockSize;
+   __u8  bDriveType;
    __u8  bReserved[15];
    __u32 uDriveIndex;
-   __u64 ulTotalUserBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulTotalUserBlocks;
 } CSMI_SAS_RAID_DRIVES,
   *PCSMI_SAS_RAID_DRIVES;
 
@@ -1151,8 +1175,16 @@ typedef struct _CSMI_SAS_RAID_SET_ADDITIONAL_DATA {
    __u8  bCacheRatio;
    __u16 usBlockSize;
    __u8  bReservedBytes[11];
-   __u64 ulRaidSetExtentOffset;
-   __u64 ulRaidSetBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulRaidSetExtentOffset;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulRaidSetBlocks;
    __u32 uStripeSizeInBlocks;
    __u32 uSectorsPerTrack;
    __u8  bApplicationScratchPad[16];
@@ -1171,7 +1203,8 @@ typedef struct _CSMI_SAS_RAID_CONFIG {
    __u8  bInformation;
    __u8  bDriveCount;
    __u8  bDataType;
-   __u8  bReserved[15];
+   __u8  bReserved[11];
+   __u32 uFailureCode;
    __u32 uChangeCount;
    union {
       CSMI_SAS_RAID_DRIVES Drives[1];
@@ -1194,7 +1227,7 @@ typedef struct _CSMI_SAS_RAID_TYPE_DESCRIPTION {
   __u8  bReservedBytes[7];
   __u32 uSupportedStripeSizeMap;
   __u8  bReserved[24];
-} CSMI_SAS_RAID_TYPE_DESCRIPTION, 
+} CSMI_SAS_RAID_TYPE_DESCRIPTION,
   *PCSMI_SAS_RAID_TYPE_DESCRIPTION;
 
 typedef struct _CSMI_SAS_RAID_FEATURES {
@@ -1212,7 +1245,8 @@ typedef struct _CSMI_SAS_RAID_FEATURES {
    CSMI_SAS_RAID_TYPE_DESCRIPTION RaidType[24];
    __u8  bCacheRatiosSupported[104];
    __u32 uChangeCount;
-   __u8  bReserved[124];
+   __u32 uFailureCode;
+   __u8  bReserved[120];
 } CSMI_SAS_RAID_FEATURES,
   *PCSMI_SAS_RAID_FEATURES;
 
@@ -1251,16 +1285,24 @@ typedef struct _CSMI_SAS_DRIVE_EXTENT_INFO {
    __u32 uDriveIndex;
    __u8  bExtentType;
    __u8  bReservedBytes[7];
-   __u64 ulExtentOffset;
-   __u64 ulExtentBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulExtentOffset;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulExtentBlocks;
    __u32 uRaidSetIndex;
    __u8  bReserved[96];
-} CSMI_SAS_DRIVE_EXTENT_INFO, 
+} CSMI_SAS_DRIVE_EXTENT_INFO,
   *PCSMI_SAS_DRIVE_EXTENT_INFO;
 
 typedef struct _CSMI_SAS_RAID_MODULE_INFO {
    __u8  bReserved[128];
-} CSMI_SAS_RAID_MODULE_INFO, 
+} CSMI_SAS_RAID_MODULE_INFO,
   *PCSMI_SAS_RAID_MODULE_INFO;
 
 typedef struct _CSMI_SAS_DRIVE_LOCATION {
@@ -1271,24 +1313,24 @@ typedef struct _CSMI_SAS_DRIVE_LOCATION {
    __u8  bAttachedSASAddress[8];
    __u8  bAttachedPhyIdentifier;
    __u8  bReserved[79];
-} CSMI_SAS_DRIVE_LOCATION, 
+} CSMI_SAS_DRIVE_LOCATION,
   *PCSMI_SAS_DRIVE_LOCATION;
 
 typedef struct _CSMI_SAS_RAID_DRIVES_ADDITIONAL_DATA {
    __u8  bNegotiatedLinkRate[2];
    __u8  bReserved[126];
-} CSMI_SAS_RAID_DRIVES_ADDITIONAL_DATA, 
+} CSMI_SAS_RAID_DRIVES_ADDITIONAL_DATA,
   *PCSMI_SAS_RAID_DRIVES_ADDITIONAL_DATA;
 
 typedef struct _CSMI_SAS_DRIVE_INFO {
    CSMI_SAS_RAID_DRIVES Device;
    CSMI_SAS_RAID_DRIVES_ADDITIONAL_DATA Data;
-   CSMI_SAS_DRIVE_LOCATION Location; 
+   CSMI_SAS_DRIVE_LOCATION Location;
    __u8  bReserved[16];
-} CSMI_SAS_DRIVE_INFO, 
+} CSMI_SAS_DRIVE_INFO,
   *PCSMI_SAS_DRIVE_INFO;
 
-typedef struct _CSMI_SAS_RAID_ELEMENT { 
+typedef struct _CSMI_SAS_RAID_ELEMENT {
    __u32 uEnumerationType;
    __u32 uElementIndex;
    __u32 uNumElements;
@@ -1315,32 +1357,32 @@ typedef struct _CSMI_SAS_RAID_ELEMENT_BUFFER {
 
 typedef struct _CSMI_SAS_RAID_SET_LIST {
    __u32 uRaidSetIndex;
-   __u8  bExistingLun[8]; 
-   __u8  bNewLun[8]; 
+   __u8  bExistingLun[8];
+   __u8  bNewLun[8];
    __u8  bReserved[12];
-} CSMI_SAS_RAID_SET_LIST, 
+} CSMI_SAS_RAID_SET_LIST,
   *PCSMI_SAS_RAID_SET_LIST;
 
 typedef struct _CSMI_SAS_RAID_SET_DRIVE_LIST {
    __u32 uDriveIndex;
    __u8  bDriveUsage;
    __u8  bReserved[27];
-} CSMI_SAS_RAID_SET_DRIVE_LIST, 
+} CSMI_SAS_RAID_SET_DRIVE_LIST,
   *PCSMI_SAS_RAID_SET_DRIVE_LIST;
 
 typedef struct _CSMI_SAS_RAID_SET_SPARE_INFO {
    __u32 uRaidSetIndex;
    __u32 uDriveCount;
    __u8  bApplicationScratchPad[16];
-   __u8  bReserved[104];  
-} CSMI_SAS_RAID_SET_SPARE_INFO, 
+   __u8  bReserved[104];
+} CSMI_SAS_RAID_SET_SPARE_INFO,
   *PCSMI_SAS_RAID_SET_SPARE_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_ONLINE_STATE_INFO {
    __u32 uRaidSetIndex;
    __u8  bOnlineState;
-   __u8  bReserved[123];  
-} CSMI_SAS_RAID_SET_ONLINE_STATE_INFO, 
+   __u8  bReserved[123];
+} CSMI_SAS_RAID_SET_ONLINE_STATE_INFO,
   *PCSMI_SAS_RAID_SET_ONLINE_STATE_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_CACHE_INFO {
@@ -1348,32 +1390,40 @@ typedef struct _CSMI_SAS_RAID_SET_CACHE_INFO {
    __u8  bCacheSetting;
    __u8  bCacheRatioFlag;
    __u8  bCacheRatio;
-   __u8  bReserved[121];  
-} CSMI_SAS_RAID_SET_CACHE_INFO, 
+   __u8  bReserved[121];
+} CSMI_SAS_RAID_SET_CACHE_INFO,
   *PCSMI_SAS_RAID_SET_CACHE_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_WRITE_PROTECT_INFO {
    __u32 uRaidSetIndex;
    __u8  bWriteProtectSetting;
-   __u8  bReserved[123];  
-} CSMI_SAS_RAID_SET_WRITE_PROTECT_INFO, 
+   __u8  bReserved[123];
+} CSMI_SAS_RAID_SET_WRITE_PROTECT_INFO,
   *PCSMI_SAS_RAID_SET_WRITE_PROTECT_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_DELETE_INFO {
    __u32 uRaidSetIndex;
-   __u8  bReserved[124];  
-} CSMI_SAS_RAID_SET_DELETE_INFO, 
+   __u8  bReserved[124];
+} CSMI_SAS_RAID_SET_DELETE_INFO,
   *PCSMI_SAS_RAID_SET_DELETE_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_MODIFY_INFO {
    __u8  bRaidType;
    __u8  bReservedBytes[7];
    __u32 uStripeSize;
-   __u64 ulRaidSetBlocks;
-   __u64 ulRaidSetExtentOffset;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulRaidSetBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulRaidSetExtentOffset;
    __u32 uDriveCount;
    __u8  bReserved[96];
-} CSMI_SAS_RAID_SET_MODIFY_INFO, 
+} CSMI_SAS_RAID_SET_MODIFY_INFO,
   *PCSMI_SAS_RAID_SET_MODIFY_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_TRANSFORM_INFO {
@@ -1387,14 +1437,14 @@ typedef struct _CSMI_SAS_RAID_SET_TRANSFORM_INFO {
    __u8  bApplicationScratchPad[16];
    CSMI_SAS_RAID_SET_MODIFY_INFO Modify;
    __u8  bReserved[80];
-} CSMI_SAS_RAID_SET_TRANSFORM_INFO, 
+} CSMI_SAS_RAID_SET_TRANSFORM_INFO,
   *PCSMI_SAS_RAID_SET_TRANSFORM_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_LABEL_INFO {
    __u32 uRaidSetIndex;
    __u8  bLabel[16];
-   __u8  bReserved[108];  
-} CSMI_SAS_RAID_SET_LABEL_INFO, 
+   __u8  bReserved[108];
+} CSMI_SAS_RAID_SET_LABEL_INFO,
   *PCSMI_SAS_RAID_SET_LABEL_INFO;
 
 typedef struct _CSMI_SAS_RAID_SET_CREATE_INFO {
@@ -1402,19 +1452,27 @@ typedef struct _CSMI_SAS_RAID_SET_CREATE_INFO {
    __u8  bReservedBytes[7];
    __u32 uStripeSize;
    __u32 uTrackSectorCount;
-   __u64 ulRaidSetBlocks; 
-   __u64 ulRaidSetExtentOffset;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulRaidSetBlocks;
+   struct
+   {
+      __u32 uLowPart;
+      __u32 uHighPart;
+   } ulRaidSetExtentOffset;
    __u32 uDriveCount;
    __u8  bLabel[16];
    __u32 uRaidSetIndex;
    __u8  bApplicationScratchPad[16];
    __u32 uNumberOfHeads;
    __u32 uNumberOfTracks;
-   __u8  bReserved[48];  
-} CSMI_SAS_RAID_SET_CREATE_INFO, 
+   __u8  bReserved[48];
+} CSMI_SAS_RAID_SET_CREATE_INFO,
   *PCSMI_SAS_RAID_SET_CREATE_INFO;
 
-typedef struct _CSMI_SAS_RAID_SET_OPERATION { 
+typedef struct _CSMI_SAS_RAID_SET_OPERATION {
    __u32 uOperationType;
    __u32 uChangeCount;
    __u32 uFailureCode;
@@ -1790,7 +1848,7 @@ typedef struct _CSMI_SAS_PHY_CONTROL_BUFFER {
 } CSMI_SAS_PHY_CONTROL_BUFFER,
   *PCSMI_SAS_PHY_CONTROL_BUFFER;
 
-// EDN #pragma CSMI_SAS_END_PACK
+//EDM #pragma CSMI_SAS_END_PACK
 #pragma pack()
 
 #endif // _CSMI_SAS_H_

@@ -91,6 +91,9 @@ struct dirty_log_type {
 	 * block, though for performance reasons blocking should
 	 * be extremely rare (eg, allocating another chunk of
 	 * memory for some reason).
+	 *
+	 * clear_region will only clear the region if it
+	 * is also in-sync.
 	 */
 	void (*mark_region)(struct dirty_log *log, region_t region);
 	void (*clear_region)(struct dirty_log *log, region_t region);

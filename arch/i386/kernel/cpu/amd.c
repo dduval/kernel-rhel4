@@ -6,6 +6,8 @@
 
 #include "cpu.h"
 
+extern unsigned short __devinitdata	num_cache_leaves;
+
 /*
  *	B step AMD K6 before B 9730xxxx have hardware bugs that can cause
  *	misexecution of code under Linux. Owners of such processors should
@@ -226,6 +228,13 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 		x86_power = cpuid_edx(0x80000007);
 		if (x86_power & (1<<8))
 			set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
+	}
+
+	if (cpuid_eax(0x80000000) >= 0x80000006) {
+		if ((c->x86 == 0x10) && (cpuid_edx(0x80000006) & 0xf000))
+			num_cache_leaves = 4;
+		else
+			num_cache_leaves = 3;
 	}
 
 #ifdef CONFIG_X86_HT

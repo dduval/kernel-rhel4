@@ -38,6 +38,11 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <asm/bitops.h>
+#include <linux/sysctl.h>
+#include <linux/gfp.h>
+
+/* A global variable is a bit ugly, but it keeps the code simple */
+int sysctl_drop_caches;
 
 static int fsync_buffers_list(spinlock_t *lock, struct list_head *list);
 static void invalidate_bh_lrus(void);
@@ -2849,6 +2854,23 @@ int submit_bh(int rw, struct buffer_head * bh)
 	return ret;
 }
 
+/*
+ * Variant of end_buffer_write_sync which also clears PageWriteback.
+ */
+static void end_page_write_sync(struct buffer_head *bh, int uptodate)
+{
+	struct page *page = bh->b_page;
+
+	if (!uptodate) {
+		set_bit(AS_EIO, &page->mapping->flags);
+		SetPageError(page);
+	}
+	page_cache_get(page);
+	end_buffer_write_sync(bh, uptodate);
+	end_page_writeback(page);
+	page_cache_release(page);
+}
+
 /**
  * ll_rw_block: low-level access to block devices (DEPRECATED)
  * @rw: whether to %READ or %WRITE or maybe %READA (readahead)
@@ -2886,11 +2908,29 @@ void ll_rw_block(int rw, int nr, struct buffer_head *bhs[])
 
 		get_bh(bh);
 		if (rw == WRITE) {
+			struct page *page = bh->b_page;
+			int page_locked = !TestSetPageLocked(page);
+
 			bh->b_end_io = end_buffer_write_sync;
 			if (test_clear_buffer_dirty(bh)) {
+				/*
+				 * Try marking the page in writeback.
+				 */
+				if (page_locked) {
+					if (!PageWriteback(page) &&
+					    page->mapping &&
+					    bh->b_this_page == page_buffers(page) &&
+					    clear_page_dirty_for_io(page)) {
+						BUG_ON(test_set_page_writeback(page));
+						bh->b_end_io = end_page_write_sync;
+					}
+					unlock_page(page);
+				}
 				submit_bh(WRITE, bh);
 				continue;
 			}
+			if (page_locked)
+				unlock_page(page);
 		} else {
 			bh->b_end_io = end_buffer_read_sync;
 			if (!buffer_uptodate(bh)) {
@@ -3174,6 +3214,53 @@ void __init buffer_init(void)
 	nrpages = (nr_free_buffer_pages() * 10) / 100;
 	max_buffer_heads = nrpages * (PAGE_SIZE / sizeof(struct buffer_head));
 	hotcpu_notifier(buffer_cpu_notify, 0);
+}
+
+static void drop_pagecache_sb(struct super_block *sb)
+{
+	invalidate_inodes_and_pages(sb);
+}
+                                                                                                    
+void drop_pagecache(void)
+{
+	struct super_block *sb;
+                                                                                                    
+	spin_lock(&sb_lock);
+restart:
+	list_for_each_entry(sb, &super_blocks, s_list) {
+		sb->s_count++;
+		spin_unlock(&sb_lock);
+		down_read(&sb->s_umount);
+		if (sb->s_root)
+			drop_pagecache_sb(sb);
+		up_read(&sb->s_umount);
+		spin_lock(&sb_lock);
+		if (__put_super_and_need_restart(sb))
+			goto restart;
+	}
+	spin_unlock(&sb_lock);
+}
+
+void drop_slab(void)
+{
+	int nr_objects;
+                                                                                                    
+	do {
+		nr_objects = shrink_slab(1000, GFP_KERNEL, 1000);
+	} while (nr_objects > 10);
+}
+                                                                                                    
+int drop_caches_sysctl_handler(ctl_table *table, int write,
+	struct file *file, void __user *buffer, size_t *length, loff_t *ppos)
+	{
+	proc_dointvec_minmax(table, write, file, buffer, length, ppos);
+	if (write) {
+		if (sysctl_drop_caches & 1)
+			drop_pagecache();
+		if (sysctl_drop_caches & 2)
+			drop_slab();
+	}
+	return 0;
 }
 
 EXPORT_SYMBOL(__bforget);

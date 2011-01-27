@@ -2,6 +2,7 @@
 #include "qim_sup.h"
 #include <linux/delay.h>
 #include <linux/version.h>
+#include <linux/vmalloc.h>
 
 #if defined(CONFIG_COMPAT) && !defined(CONFIG_IA64)
 #include "qim_32ioctl.h"
@@ -13,7 +14,7 @@
 #error "This module does not support kernel versions earlier than 2.6.0"
 #endif
 
-#define	QAPIMOD_VERSION_STR	"v1.0.01"
+#define	QAPIMOD_VERSION_STR	"v1.0.03"
 #define	QAPIMOD_VER_MAJOR	0
 #define	QAPIMOD_VER_MINOR	0
 #define	QAPIMOD_VER_PATCH	1
@@ -169,6 +170,8 @@ qim_rescan_hostlist(void)
 				} else {
 					/* something changed? remove this one */
 					list_del(&tmp_haioctl->list);
+					/* LSC: 3/24, also free up the IOCTL memory */
+					qim_free_ioctl_mem(tmp_haioctl);                
 					vfree(tmp_haioctl);
 				}
 
@@ -188,6 +191,16 @@ qim_rescan_hostlist(void)
 				    &qim_haioctl_list);
 				qim_init_drvr_data(drvr_ha, tmp_haioctl,
 				    ptmp_mem);
+				/* LSC: 3/24 Here means new HBA found, allocate memory
+				 * for the new HBA 
+				 */
+				if (qim_alloc_ioctl_mem(tmp_haioctl) != QIM_SUCCESS) {
+                                        
+					DEBUG9(printk("qim_rescan_hostlist: Out of memory, "
+					    "while allocating memory for newly found HBA.\n");)
+					ret = -ENOMEM;
+					break;
+				}
 			} else {
 				/* memory error */
 				ret = -ENOMEM;
@@ -535,6 +548,6 @@ module_init(qim_init);
 module_exit(qim_exit);
 
 MODULE_AUTHOR("QLogic Corporation");
-MODULE_DESCRIPTION("QLogic FC Driver ioctl Module");
+MODULE_DESCRIPTION("QLogic FC Driver IOCTL Module");
 MODULE_VERSION(QAPIMOD_VERSION_STR);
 MODULE_LICENSE("GPL");

@@ -1,6 +1,10 @@
 #ifndef _LINUX_INETDEVICE_BACKPORT_TO_2_6_17
 #define _LINUX_INETDEVICE_BACKPORT_TO_2_6_17
 
+#include <linux/timer.h>
+#include <linux/if.h>
+#include <linux/netdevice.h>
+
 #include_next <linux/inetdevice.h>
 
 static inline struct net_device *xxx_ip_dev_find(u32 addr)

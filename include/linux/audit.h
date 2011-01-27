@@ -369,13 +369,7 @@ extern void		    audit_log_end_fast(struct audit_buffer *ab);
 extern void		    audit_log_end_irq(struct audit_buffer *ab);
 extern void		    audit_log_hex(struct audit_buffer *ab, const unsigned char *buf,
 					  size_t len);
-extern void		    audit_log_n_string(struct audit_buffer *ab, size_t slen,
-						const char *string);
-extern int		    audit_string_contains_control(const char *string, size_t len);
-extern void		    audit_log_n_untrustedstring(struct audit_buffer *ab, size_t len,
-							const char *string);
-
-extern void		    audit_log_untrustedstring(struct audit_buffer *ab,
+extern const char *	    audit_log_untrustedstring(struct audit_buffer *ab,
 						      const char *string);
 extern void		    audit_log_d_path(struct audit_buffer *ab,
 					     const char *prefix,

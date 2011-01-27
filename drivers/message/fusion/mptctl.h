@@ -5,8 +5,8 @@
  *          LSIFC9xx/LSI409xx Fibre Channel
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Copyright (c) 1999-2005 LSI Logic Corporation
- *  (mailto:mpt_linux_developer@lsil.com)
+ *  Copyright (c) 1999-2007 LSI Logic Corporation
+ *  (mailto:mpt_linux_developer@lsi.com)
  *
  *  $Id: mptctl.h,v 1.14 2003/03/18 22:49:51 Exp $
  */
@@ -59,7 +59,6 @@
  */
 #define MPT_MISCDEV_BASENAME            "mptctl"
 #define MPT_MISCDEV_PATHNAME            "/dev/" MPT_MISCDEV_BASENAME
-#define MPT_CSMI_DESCRIPTION	        "LSI Logic Corporation: Fusion MPT Driver "MPT_LINUX_VERSION_COMMON
 
 #define MPT_PRODUCT_LENGTH              12
 
@@ -94,6 +93,16 @@
 #define MPTDIAGUNREGISTER	_IOWR(MPT_MAGIC_NUMBER,28,mpt_diag_unregister_t)
 #define MPTDIAGQUERY		_IOWR(MPT_MAGIC_NUMBER,29,mpt_diag_query_t)
 #define MPTDIAGREADBUFFER	_IOWR(MPT_MAGIC_NUMBER,30,mpt_diag_read_buffer_t)
+
+#ifdef MPT_SUPPORT_FWDLB_IOCTL
+#define MPTHBAPCIINFO		_IOWR(MPT_MAGIC_NUMBER,31,struct mpt_ioctl_hbapciinfo)
+#endif
+
+
+#define INITIALIZE_IOCTL_STATUS(status) \
+	status &= ~( MPT_IOCTL_STATUS_COMMAND_GOOD \
+	| MPT_IOCTL_STATUS_SENSE_VALID \
+	| MPT_IOCTL_STATUS_RF_VALID);
 
 /*
  * SPARC PLATFORM REMARKS:
@@ -304,6 +313,28 @@ typedef struct mpt_ioctl_replace_fw {
 	int		 newImageSize;
 	u8		 newImage[1];
 } mpt_ioctl_replace_fw_t;
+
+#ifdef MPT_SUPPORT_FWDLB_IOCTL
+struct mpt_ioctl_mptpciinfo {
+    U8  iocNumber;
+    U8  iocState;
+    U8  revisionID;
+    U8  reserved1;
+    U16 vendorID;
+    U16 deviceID;
+    U16 subSystemVendorID;
+    U16 subSystemID;
+};
+
+
+struct mpt_ioctl_hbapciinfo {
+	mpt_ioctl_header     hdr;
+    U8                   totalIOC;
+    U8                   reserved[3];
+    struct mpt_ioctl_mptpciinfo hbapciinfo[18];
+};
+#endif
+
 
 /* General MPT Pass through data strucutre
  *

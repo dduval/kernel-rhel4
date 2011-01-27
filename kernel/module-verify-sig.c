@@ -108,15 +108,20 @@ int module_verify_signature(struct module_verify_data *mvdata)
 
 	/* produce a canonicalisation map for the sections */
 	ret = module_verify_canonicalise(mvdata);
-	if (ret < 0)
-		return ret;
-
+	if (ret < 0) {
+		if (signedonly)
+			return ret;
+		return 0;
+	}
+		
 	/* grab an SHA1 transformation context
 	 * - !!! if this tries to load the sha1.ko module, we will deadlock!!!
 	 */
 	mvdata->digest = crypto_alloc_tfm2("sha1", 0, 1);
 	if (!mvdata->digest) {
 		printk("Couldn't load module - SHA1 transform unavailable\n");
+		if (!signedonly)
+			return 0;
 		return -EPERM;
 	}
 
@@ -207,10 +212,14 @@ int module_verify_signature(struct module_verify_data *mvdata)
 
 	if (i == 0)
 		i = 1;
+	else if (!signedonly)
+		i = 0;
 	return i;
 
  format_error:
 	crypto_free_tfm(mvdata->digest);
+	if (!signedonly)
+		return 0;
 	return -ELIBBAD;
 
 	/* deal with the case of an unsigned module */

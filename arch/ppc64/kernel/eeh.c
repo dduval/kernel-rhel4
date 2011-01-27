@@ -86,13 +86,18 @@ static struct notifier_block *eeh_notifier_chain;
  * is broken and panic.  This sets the threshold for how many read
  * attempts we allow before panicking.
  */
-#define EEH_MAX_FAILS	100000
+#define EEH_MAX_FAILS	2100000
+
+/* Time to wait for a PCI slot to retport status, in milliseconds */
+#define PCI_BUS_RESET_WAIT_MSEC (60*1000)
 
 /* RTAS tokens */
 static int ibm_set_eeh_option;
 static int ibm_set_slot_reset;
 static int ibm_read_slot_reset_state;
 static int ibm_read_slot_reset_state2;
+static int ibm_get_config_addr_info;
+static int ibm_get_config_addr_info2;
 static int ibm_slot_error_detail;
 
 static int eeh_subsystem_enabled;
@@ -403,6 +408,7 @@ void __init pci_addr_cache_build(void)
 void eeh_slot_error_detail (struct device_node *dn, int severity)
 {
 	unsigned long flags;
+	int config_addr;
 	int rc;
 
 	if (!dn) return;
@@ -411,8 +417,13 @@ void eeh_slot_error_detail (struct device_node *dn, int severity)
 	spin_lock_irqsave(&slot_errbuf_lock, flags);
 	memset(slot_errbuf, 0, eeh_error_buf_size);
 
+	/* Use PE configuration address, if present */
+	config_addr = dn->eeh_config_addr;
+	if (dn->eeh_pe_config_addr)
+		config_addr = dn->eeh_pe_config_addr;
+
 	rc = rtas_call(ibm_slot_error_detail,
-	               8, 1, NULL, dn->eeh_config_addr,
+	               8, 1, NULL, config_addr,
 	               BUID_HI(dn->phb->buid),
 	               BUID_LO(dn->phb->buid), NULL, 0,
 	               virt_to_phys(slot_errbuf),
@@ -436,6 +447,7 @@ EXPORT_SYMBOL(eeh_slot_error_detail);
 static int read_slot_reset_state(struct device_node *dn, unsigned int rets[])
 {
 	int token, outputs;
+	int config_addr;
 	
 	if (ibm_read_slot_reset_state2 != RTAS_UNKNOWN_SERVICE) {
 		token = ibm_read_slot_reset_state2;
@@ -445,7 +457,12 @@ static int read_slot_reset_state(struct device_node *dn, unsigned int rets[])
 		outputs = 3;
 	}
 
-	return rtas_call(token, 3, outputs, rets, dn->eeh_config_addr,
+	/* Use PE configuration address, if present */
+	config_addr = dn->eeh_config_addr;
+	if (dn->eeh_pe_config_addr)
+		config_addr = dn->eeh_pe_config_addr;
+
+	return rtas_call(token, 3, outputs, rets, config_addr,
 			 BUID_HI(dn->phb->buid), BUID_LO(dn->phb->buid));
 }
 
@@ -529,6 +546,56 @@ static void eeh_event_handler(void *dummy)
 		pci_dev_put(event->dev);
 		kfree(event);
 	}
+}
+
+/**
+ * eeh_wait_for_slot_status - returns error status of slot
+ * @pdn pci device node
+ * @max_wait_msecs maximum number to millisecs to wait
+ *
+ * Return negative value if a permanent error, else return
+ * Partition Endpoint (PE) status value.
+ *
+ * If @max_wait_msecs is positive, then this routine will
+ * sleep until a valid status can be obtained, or until
+ * the max allowed wait time is exceeded, in which case
+ * a -2 is returned.
+ */
+int
+eeh_wait_for_slot_status(struct device_node *dn, int max_wait_msecs)
+{
+	int rc;
+	int rets[3];
+	int mwait=0;
+
+	while (1) {
+		rc = read_slot_reset_state(dn, rets);
+		if (rc) return rc;
+		if (rets[1] == 0) return -1;  /* EEH is not supported */
+
+		if (rets[0] != 5) return rets[0]; /* return actual status */
+
+		if (rets[2] == 0) return -1; /* permanently unavailable */
+
+		if (max_wait_msecs <= 0) break;
+
+		mwait = rets[2];
+		if (mwait <= 0) {
+			printk (KERN_WARNING
+			        "EEH: Firmware returned bad wait value=%d\n", mwait);
+			mwait = 1000;
+		} else if (mwait > 300*1000) {
+			printk (KERN_WARNING
+			        "EEH: Firmware is taking too long, time=%d\n", mwait);
+			mwait = 300*1000;
+		}
+		max_wait_msecs -= mwait;
+		msleep (mwait);
+	}
+
+	if (!mwait) return -1;
+	printk(KERN_WARNING "EEH: Timed out waiting for slot status\n");
+	return -2;
 }
 
 /**
@@ -625,7 +692,15 @@ int eeh_dn_check_failure(struct device_node *dn, struct pci_dev *dev)
 	 */
 	ret = read_slot_reset_state(dn, rets);
 
-	if (!(ret == 0 && rets[1] == 1 && (rets[0] == 2 || rets[0] == 4))) {
+	/* Note that config-io to empty slots may fail;
+	 * they are empty when they don't have children. */
+	if ((rets[0] == 5) && (dn->child == NULL)) {
+		__get_cpu_var(false_positives)++;
+		return 0;
+	}
+
+	if (!(ret == 0 && rets[1] == 1 &&
+	     (rets[0] == 1 || rets[0] == 2 || rets[0] == 4))) {
 		__get_cpu_var(false_positives)++;
 		return 0;
 	}
@@ -705,11 +780,7 @@ unsigned long eeh_check_failure(const volatile void __iomem *token, unsigned lon
 
 EXPORT_SYMBOL(eeh_check_failure);
 
-/* ------------------------------------------------------------- */
-/* The code below deals with error recovery */
-
-void
-rtas_set_slot_reset(struct device_node *dn)
+static void rtas_pci_slot_reset(struct device_node *dn, int state)
 {
 	int token = rtas_token ("ibm,set-slot-reset");
 	int rc;
@@ -718,6 +789,63 @@ rtas_set_slot_reset(struct device_node *dn)
 		return;
 	rc = rtas_call(token,4,1, NULL,
 	               dn->eeh_config_addr,
+	               BUID_HI(dn->phb->buid),
+	               BUID_LO(dn->phb->buid),
+	               state);
+	if (rc) {
+		printk (KERN_WARNING "EEH: Unable to reset slot\n");
+		return;
+	}
+}
+
+/**
+ * pcibios_set_pcie_slot_reset - Set PCI-E reset state
+ * @dev:	pci device struct
+ * @state:	reset state to enter
+ *
+ * Return value:
+ * 	0 if success
+ **/
+int pcibios_set_pcie_reset_state(struct pci_dev *dev, enum pcie_reset_state state)
+{
+	struct device_node *dn = pci_device_to_OF_node(dev);
+
+	switch (state) {
+	case pci_reset_normal:
+		rtas_pci_slot_reset(dn, 0);
+		break;
+	case pci_reset_pcie_hot_reset:
+		rtas_pci_slot_reset(dn, 1);
+		break;
+	case pci_reset_pcie_warm_reset:
+		rtas_pci_slot_reset(dn, 3);
+		break;
+	default:
+		return -EINVAL;
+	};
+
+	return 0;
+}
+
+/* ------------------------------------------------------------- */
+/* The code below deals with error recovery */
+
+void
+__rtas_set_slot_reset(struct device_node *dn)
+{
+	int token = rtas_token ("ibm,set-slot-reset");
+	int rc;
+	int config_addr;
+
+	if (token == RTAS_UNKNOWN_SERVICE)
+		return;
+
+	/* Use PE configuration address, if present */
+	config_addr = dn->eeh_config_addr;
+	if (dn->eeh_pe_config_addr)
+		config_addr = dn->eeh_pe_config_addr;
+
+	rc = rtas_call(token,4,1, NULL, config_addr,
 	               BUID_HI(dn->phb->buid),
 	               BUID_LO(dn->phb->buid),
 	               1);
@@ -731,11 +859,41 @@ rtas_set_slot_reset(struct device_node *dn)
 	 */
    msleep (200);
 	
-	rc = rtas_call(token,4,1, NULL,
-	               dn->eeh_config_addr,
+	rc = rtas_call(token,4,1, NULL, config_addr,
 	               BUID_HI(dn->phb->buid),
 	               BUID_LO(dn->phb->buid),
 	               0);
+
+	/* After a PCI slot has been reset, the PCI Express spec requires
+	 * a 1.5 second idle time for the bus to stabilize, before starting
+	 * up traffic. */
+#define PCI_BUS_SETTLE_TIME_MSEC 1800
+	msleep (PCI_BUS_SETTLE_TIME_MSEC);
+}
+
+
+int rtas_set_slot_reset(struct device_node *dn)
+{
+	int i, rc;
+
+	/* Take three shots at resetting the bus */
+	for (i=0; i<3; i++) {
+		__rtas_set_slot_reset(dn);
+
+		rc = eeh_wait_for_slot_status(dn, PCI_BUS_RESET_WAIT_MSEC);
+		if (rc == 0)
+			return 0;
+
+		if (rc < 0) {
+			printk (KERN_ERR "EEH: unrecoverable slot failure %s\n",
+			        dn->full_name);
+			return -1;
+		}
+		printk (KERN_ERR "EEH: bus reset %d failed on slot %s\n",
+		        i+1, dn->full_name);
+	}
+
+	return -1;
 }
 
 EXPORT_SYMBOL(rtas_set_slot_reset);
@@ -745,11 +903,18 @@ rtas_configure_bridge(struct device_node *dn)
 {
 	int token = rtas_token ("ibm,configure-bridge");
 	int rc;
+	int config_addr;
 
 	if (token == RTAS_UNKNOWN_SERVICE)
 		return;
+
+	/* Use PE configuration address, if present */
+	config_addr = dn->eeh_config_addr;
+	if (dn->eeh_pe_config_addr)
+		config_addr = dn->eeh_pe_config_addr;
+
 	rc = rtas_call(token,3,1, NULL,
-	               dn->eeh_config_addr,
+	               config_addr,
 	               BUID_HI(dn->phb->buid),
 	               BUID_LO(dn->phb->buid));
 	if (rc) {
@@ -787,13 +952,23 @@ struct eeh_cfg_tree * eeh_save_bars(struct device_node *dn)
 	struct pci_dev *dev;
 	struct eeh_cfg_tree *cnode;
 
-	dev = eeh_get_pci_dev(dn);
-	if (!dev)
+	if (!dn) {
+		printk (KERN_WARNING "EEH: no device node\n");
 		return NULL;
+	}
+
+	dev = eeh_get_pci_dev(dn);
+	if (!dev) {
+		printk (KERN_WARNING "EEH: no device for dn=%s\n", dn->full_name);
+		return NULL;
+	}
 	
 	cnode = kmalloc(sizeof(struct eeh_cfg_tree), GFP_KERNEL);
-	if (!cnode) 
+	if (!cnode) {
+		printk (KERN_ERR "EEH: kmalloc failed for dn=%s\n", dn->full_name);
+		pci_dev_put(dev);
 		return NULL;
+	}
 	
 	cnode->is_bridge = 0;
 	
@@ -875,6 +1050,38 @@ struct eeh_early_enable_info {
 	unsigned int buid_lo;
 };
 
+static int get_pe_addr (int config_addr,
+                        struct eeh_early_enable_info *info)
+{
+	unsigned int rets[3];
+	int ret;
+
+	/* Use latest config-addr token on power6 */
+	if (ibm_get_config_addr_info2 != RTAS_UNKNOWN_SERVICE) {
+		/* Make sure we have a PE in hand */
+		ret = rtas_call (ibm_get_config_addr_info2, 4, 2, rets,
+			config_addr, info->buid_hi, info->buid_lo, 1);
+		if (ret || (rets[0]==0))
+			return 0;
+
+		ret = rtas_call (ibm_get_config_addr_info2, 4, 2, rets,
+			config_addr, info->buid_hi, info->buid_lo, 0);
+		if (ret)
+			return 0;
+		return rets[0];
+	}
+
+	/* Use older config-addr token on power5 */
+	if (ibm_get_config_addr_info != RTAS_UNKNOWN_SERVICE) {
+		ret = rtas_call (ibm_get_config_addr_info, 4, 2, rets,
+			config_addr, info->buid_hi, info->buid_lo, 0);
+		if (ret)
+			return 0;
+		return rets[0];
+	}
+	return 0;
+}
+
 /* Enable eeh for the given device node. */
 static void *early_enable_eeh(struct device_node *dn, void *data)
 {
@@ -885,11 +1092,10 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 	u32 *vendor_id = (u32 *)get_property(dn, "vendor-id", NULL);
 	u32 *device_id = (u32 *)get_property(dn, "device-id", NULL);
 	u32 *regs;
-	int enable;
 
 	dn->eeh_mode = 0;
 
-	if (status && strcmp(status, "ok") != 0)
+	if (status && strncmp(status, "ok", 2) != 0)
 		return NULL;	/* ignore devices with bad status */
 
 	/* Ignore bad nodes. */
@@ -901,21 +1107,6 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 		dn->eeh_mode |= EEH_MODE_NOCHECK;
 		return NULL;
 	}
-
-	/*
-	 * Now decide if we are going to "Disable" EEH checking
-	 * for this device.  We still run with the EEH hardware active,
-	 * but we won't be checking for ff's.  This means a driver
-	 * could return bad data (very bad!), an interrupt handler could
-	 * hang waiting on status bits that won't change, etc.
-	 * But there are a few cases like display devices that make sense.
-	 */
-	enable = 1;	/* i.e. we will do checking */
-	if ((*class_code >> 16) == PCI_BASE_CLASS_DISPLAY)
-		enable = 0;
-
-	if (!enable)
-		dn->eeh_mode |= EEH_MODE_NOCHECK;
 
 	/* Ok... see if this device supports EEH.  Some do, some don't,
 	 * and the only way to find out is to check each and every one. */
@@ -930,6 +1121,7 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 			eeh_subsystem_enabled = 1;
 			dn->eeh_mode |= EEH_MODE_SUPPORTED;
 			dn->eeh_config_addr = regs[0];
+			dn->eeh_pe_config_addr = get_pe_addr(dn->eeh_config_addr, info);
 #ifdef DEBUG
 			printk(KERN_DEBUG "EEH: %s: eeh enabled\n", dn->full_name);
 #endif
@@ -941,6 +1133,7 @@ static void *early_enable_eeh(struct device_node *dn, void *data)
 				/* Parent supports EEH. */
 				dn->eeh_mode |= EEH_MODE_SUPPORTED;
 				dn->eeh_config_addr = dn->parent->eeh_config_addr;
+				dn->eeh_pe_config_addr = dn->parent->eeh_pe_config_addr;
 				return NULL;
 			}
 		}
@@ -981,6 +1174,8 @@ void __init eeh_init(void)
 	ibm_read_slot_reset_state = rtas_token("ibm,read-slot-reset-state");
 	ibm_read_slot_reset_state2 = rtas_token("ibm,read-slot-reset-state2");
 	ibm_slot_error_detail = rtas_token("ibm,slot-error-detail");
+	ibm_get_config_addr_info = rtas_token("ibm,get-config-addr-info");
+	ibm_get_config_addr_info2 = rtas_token("ibm,get-config-addr-info2");
 
 	if (ibm_set_eeh_option == RTAS_UNKNOWN_SERVICE)
 		return;

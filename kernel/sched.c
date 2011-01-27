@@ -242,7 +242,7 @@ struct runqueue {
 	 */
 	unsigned long nr_uninterruptible;
 
-	unsigned long expired_timestamp;
+	unsigned long switch_timestamp;
 	unsigned long long timestamp_last_tick;
 	task_t *curr, *idle;
 	struct mm_struct *prev_mm;
@@ -2391,10 +2391,9 @@ EXPORT_PER_CPU_SYMBOL(kstat);
  * if a better static_prio task has expired:
  */
 #define EXPIRED_STARVING(rq) \
-	((STARVATION_LIMIT && ((rq)->expired_timestamp && \
-		(jiffies - (rq)->expired_timestamp >= \
-			STARVATION_LIMIT * ((rq)->nr_running) + 1))) || \
-			((rq)->curr->static_prio > (rq)->best_expired_prio))
+	((STARVATION_LIMIT && \
+	  (jiffies - (rq)->switch_timestamp > STARVATION_LIMIT)) || \
+	 ((rq)->curr->static_prio > (rq)->best_expired_prio))
 
 /*
  * This function gets called by the timer code, with HZ frequency.
@@ -2476,8 +2475,6 @@ void scheduler_tick(int user_ticks, int sys_ticks)
 		p->time_slice = task_timeslice(p);
 		p->first_time_slice = 0;
 
-		if (!rq->expired_timestamp)
-			rq->expired_timestamp = jiffies;
 		if (!TASK_INTERACTIVE(p) || EXPIRED_STARVING(rq)) {
 			enqueue_task(p, rq->expired);
 			if (p->static_prio < rq->best_expired_prio)
@@ -2727,7 +2724,7 @@ go_idle:
 		idle_balance(cpu, rq);
 		if (!rq->nr_running) {
 			next = rq->idle;
-			rq->expired_timestamp = 0;
+			rq->switch_timestamp = jiffies;
 			wake_sleeping_dependent(cpu, rq);
 			/*
 			 * wake_sleeping_dependent() might have released
@@ -2761,7 +2758,7 @@ go_idle:
 		rq->active = rq->expired;
 		rq->expired = array;
 		array = rq->active;
-		rq->expired_timestamp = 0;
+		rq->switch_timestamp = jiffies;
 		rq->best_expired_prio = MAX_PRIO;
 	} else
 		schedstat_inc(rq, sched_noswitch);
