@@ -780,6 +780,31 @@ struct sctp_chunk *sctp_make_abort(const struct sctp_association *asoc,
 	return retval;
 }
 
+/* Make an ABORT chunk with a PROTOCOL VIOLATION cause code. */
+struct sctp_chunk *sctp_make_abort_violation(
+        const struct sctp_association *asoc,
+        const struct sctp_chunk *chunk,
+        const __u8   *payload,
+        const size_t paylen)
+{
+	struct sctp_chunk  *retval;
+	struct sctp_paramhdr phdr;
+
+	retval = sctp_make_abort(asoc, chunk, sizeof(sctp_errhdr_t) + paylen
+					+ sizeof(sctp_chunkhdr_t));
+	if (!retval)
+		goto end;
+
+	sctp_init_cause(retval, SCTP_ERROR_PROTO_VIOLATION, payload, paylen);
+
+	phdr.type = htons(chunk->chunk_hdr->type);
+	phdr.length = chunk->chunk_hdr->length;
+	sctp_addto_chunk(retval, sizeof(sctp_paramhdr_t), &phdr);
+
+end:
+	return retval;
+}
+
 /* Helper to create ABORT with a NO_USER_DATA error.  */
 struct sctp_chunk *sctp_make_abort_no_data(
 	const struct sctp_association *asoc,

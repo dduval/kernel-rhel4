@@ -2714,6 +2714,9 @@ lpfc_find_target(struct lpfc_hba * phba, uint32_t tgt,
 	}
 
 	if(!nlp) {
+		unsigned long iflag;
+		spin_lock_irqsave(phba->host->host_lock, iflag);
+
 		/* Search over all lists other than fc_nlpunmap_list */
 		node_list[0] = &phba->fc_npr_list;
 		node_list[1] = &phba->fc_nlpmap_list; /* Skip fc_nlpunmap */
@@ -2733,6 +2736,8 @@ lpfc_find_target(struct lpfc_hba * phba, uint32_t tgt,
 				}
 			}
 		}
+
+		spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
 		if (!found)
 			return NULL;

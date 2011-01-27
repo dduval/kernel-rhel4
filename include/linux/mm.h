@@ -158,6 +158,7 @@ struct vm_area_struct {
 #else
 #define VM_STACK_FLAGS	(VM_GROWSDOWN | VM_STACK_DEFAULT_FLAGS | VM_ACCOUNT)
 #endif
+#define VM_ALWAYSDUMP	0x08000000	/* Always include in core dumps */
 
 #define VM_READHINTMASK			(VM_SEQ_READ | VM_RAND_READ)
 #define VM_ClearReadHint(v)		(v)->vm_flags &= ~VM_READHINTMASK

@@ -641,27 +641,6 @@ static int load_elf_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 			    strcmp(elf_interpreter,"/usr/lib/ld.so.1") == 0)
 				ibcs2_interpreter = 1;
 
-			/*
-			 * The early SET_PERSONALITY here is so that the lookup
-			 * for the interpreter happens in the namespace of the 
-			 * to-be-execed image.  SET_PERSONALITY can select an
-			 * alternate root.
-			 *
-			 * However, SET_PERSONALITY is NOT allowed to switch
-			 * this task into the new images's memory mapping
-			 * policy - that is, TASK_SIZE must still evaluate to
-			 * that which is appropriate to the execing application.
-			 * This is because exit_mmap() needs to have TASK_SIZE
-			 * evaluate to the size of the old image.
-			 *
-			 * So if (say) a 64-bit application is execing a 32-bit
-			 * application it is the architecture's responsibility
-			 * to defer changing the value of TASK_SIZE until the
-			 * switch really is going to happen - do this in
-			 * flush_thread().	- akpm
-			 */
-			SET_PERSONALITY(loc->elf_ex, ibcs2_interpreter);
-
 			interpreter = open_exec(elf_interpreter);
 			retval = PTR_ERR(interpreter);
 			if (IS_ERR(interpreter))
@@ -751,9 +730,6 @@ static int load_elf_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		if ((interpreter_type == INTERPRETER_ELF) &&
 		    !elf_check_arch(&loc->interp_elf_ex))
 			goto out_free_dentry;
-	} else {
-		/* Executables without an interpreter also need a personality  */
-		SET_PERSONALITY(loc->elf_ex, ibcs2_interpreter);
 	}
 
 	/* OK, we are done with that, now set up the arg stuff,
@@ -808,7 +784,7 @@ static int load_elf_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 			elf_read_implies_exec(loc->elf_ex, have_pt_gnu_stack))
 		current->personality |= READ_IMPLIES_EXEC;
 
-	arch_pick_mmap_layout(current->mm);
+	setup_new_exec(bprm);
 
 	/* Do this so that we can load the interpreter, if need be.  We will
 	   change some of these later */
@@ -1178,6 +1154,10 @@ static int dump_seek(struct file *file, loff_t off)
 static unsigned long vma_dump_size(struct vm_area_struct *vma,
 				   unsigned long mm_flags)
 {
+	/* The vma can be set up to tell us the answer directly.  */
+	if (vma->vm_flags & VM_ALWAYSDUMP)
+		goto whole;
+
 	/* Do not dump I/O mapped devices or special mappings */
 	if (vma->vm_flags & (VM_IO | VM_RESERVED))
 		return 0;

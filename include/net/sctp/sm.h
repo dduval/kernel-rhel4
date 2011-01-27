@@ -114,7 +114,6 @@ sctp_state_fn_t sctp_sf_do_4_C;
 sctp_state_fn_t sctp_sf_eat_data_6_2;
 sctp_state_fn_t sctp_sf_eat_data_fast_4_4;
 sctp_state_fn_t sctp_sf_eat_sack_6_2;
-sctp_state_fn_t sctp_sf_tabort_8_4_8;
 sctp_state_fn_t sctp_sf_operr_notify;
 sctp_state_fn_t sctp_sf_t1_timer_expire;
 sctp_state_fn_t sctp_sf_t2_timer_expire;
@@ -231,6 +230,10 @@ struct sctp_chunk *sctp_make_abort_no_data(const struct sctp_association *,
 				      __u32 tsn);
 struct sctp_chunk *sctp_make_abort_user(const struct sctp_association *,
 					const struct msghdr *, size_t paylen);
+struct sctp_chunk *sctp_make_abort_violation(const struct sctp_association *,
+                                   const struct sctp_chunk *,
+                                   const __u8 *,
+                                   const size_t );
 struct sctp_chunk *sctp_make_heartbeat(const struct sctp_association *,
 				  const struct sctp_transport *,
 				  const void *payload,

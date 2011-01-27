@@ -105,7 +105,6 @@ static inline struct thread_info *stack_thread_info(void)
 #define TIF_POLLING_NRFLAG	16	/* true if poll_idle() is polling TIF_NEED_RESCHED */
 #define TIF_IA32		17	/* 32bit process */ 
 #define TIF_FORK		18	/* ret_from_fork */
-#define TIF_ABI_PENDING		19
 
 #define _TIF_SYSCALL_TRACE	(1<<TIF_SYSCALL_TRACE)
 #define _TIF_NOTIFY_RESUME	(1<<TIF_NOTIFY_RESUME)
@@ -117,7 +116,6 @@ static inline struct thread_info *stack_thread_info(void)
 #define _TIF_POLLING_NRFLAG	(1<<TIF_POLLING_NRFLAG)
 #define _TIF_IA32		(1<<TIF_IA32)
 #define _TIF_FORK		(1<<TIF_FORK)
-#define _TIF_ABI_PENDING	(1<<TIF_ABI_PENDING)
 
 /* work to do on interrupt/exception return */
 #define _TIF_WORK_MASK \

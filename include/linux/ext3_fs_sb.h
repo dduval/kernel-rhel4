@@ -21,6 +21,7 @@
 #include <linux/wait.h>
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
+#include <linux/mutex.h>
 #endif
 #include <linux/rbtree.h>
 
@@ -68,6 +69,7 @@ struct ext3_sb_info {
 	struct inode * s_journal_inode;
 	struct journal_s * s_journal;
 	struct list_head s_orphan;
+	struct mutex s_resize_lock;
 	unsigned long s_commit_interval;
 	struct block_device *journal_bdev;
 #ifdef CONFIG_JBD_DEBUG

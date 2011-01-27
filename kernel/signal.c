@@ -1236,7 +1236,8 @@ static void print_fatal_signal(struct pt_regs *regs, int signr)
 #ifdef __i386__
 	printk("code at %08lx: ", regs->eip);
 	for (i = 0; i < 16; i++) {
-		__get_user(insn, (unsigned char *)(regs->eip + i));
+		if (get_user(insn, (unsigned char *)(regs->eip + i)))
+			break;
 		printk("%02x ", insn);
 	}
 #endif	

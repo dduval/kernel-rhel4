@@ -1401,7 +1401,9 @@ static int sd_revalidate_disk(struct gendisk *disk)
 					sreq, buffer);
 		sd_read_cache_type(sdkp, disk->disk_name, sreq, buffer);
 	}
-		
+
+	blk_queue_ordered(sdkp->disk->queue, 1);
+
 	set_capacity(disk, sdkp->capacity);
 	kfree(buffer);
 
@@ -1502,14 +1504,13 @@ static int sd_probe(struct device *dev)
 	strcpy(gd->devfs_name, sdp->devfs_name);
 
 	gd->private_data = &sdkp->driver;
-
-	sd_revalidate_disk(gd);
-
 	gd->driverfs_dev = &sdp->sdev_gendev;
 	gd->flags = GENHD_FL_DRIVERFS;
 	if (sdp->removable)
 		gd->flags |= GENHD_FL_REMOVABLE;
 	gd->queue = sdkp->device->request_queue;
+
+	sd_revalidate_disk(gd);
 
 	dev_set_drvdata(dev, sdkp);
 	add_disk(gd);

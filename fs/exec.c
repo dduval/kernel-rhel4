@@ -868,10 +868,8 @@ void set_task_comm(struct task_struct *tsk, char *buf)
 
 int flush_old_exec(struct linux_binprm * bprm)
 {
-	char * name;
-	int i, ch, retval;
 	struct files_struct *files;
-	char tcomm[sizeof(current->comm)];
+	int retval;
 
 	/*
 	 * Make sure we have a private signal table and that
@@ -903,6 +901,26 @@ int flush_old_exec(struct linux_binprm * bprm)
 	steal_locks(files);
 	put_files_struct(files);
 
+        current->flags &= ~PF_RELOCEXEC;
+        flush_thread();
+
+	return 0;
+
+mmap_failed:
+	reset_files_struct(current, files);
+out:
+	return retval;
+}
+EXPORT_SYMBOL(flush_old_exec);
+
+void setup_new_exec(struct linux_binprm * bprm)
+{
+	int i, ch;
+	char * name;
+	char tcomm[sizeof(current->comm)];
+
+	arch_pick_mmap_layout(current->mm);
+
 	current->sas_ss_sp = current->sas_ss_size = 0;
 
 	if (current->euid == current->uid && current->egid == current->gid)
@@ -920,9 +938,6 @@ int flush_old_exec(struct linux_binprm * bprm)
 	}
 	tcomm[i] = '\0';
 	set_task_comm(current, tcomm);
-
-	current->flags &= ~PF_RELOCEXEC;
-	flush_thread();
 
 	if (bprm->e_uid != current->euid || bprm->e_gid != current->egid) {
 		suid_keys(current);
@@ -943,14 +958,8 @@ int flush_old_exec(struct linux_binprm * bprm)
 	flush_old_files(current->files);
 
 	return 0;
-
-mmap_failed:
-        reset_files_struct(current, files);
-out:
-	return retval;
 }
-
-EXPORT_SYMBOL(flush_old_exec);
+EXPORT_SYMBOL(setup_new_exec);
 
 /* 
  * Fill the binprm structure from the inode. 

@@ -766,6 +766,15 @@ static void sctp_cmd_process_fwdtsn(struct sctp_ulpq *ulpq,
 	return;
 }
 
+/* Helper function to set sk_err on a 1-1 style socket. */
+static void sctp_cmd_set_sk_err(struct sctp_association *asoc, int error)
+{
+	struct sock *sk = asoc->base.sk;
+
+	if (!sctp_style(sk, UDP))
+		sk->sk_err = error;
+}
+
 /* Helper function to remove the association non-primary peer 
  * transports.
  */ 
@@ -1352,6 +1361,12 @@ int sctp_cmd_interpreter(sctp_event_t event_type, sctp_subtype_t subtype,
 			error = sctp_outq_uncork(&asoc->outqueue);
 			local_cork = 0;
 			asoc->peer.retran_path = t;
+			break;
+		case SCTP_CMD_UPDATE_INITTAG:
+			asoc->peer.i.init_tag = cmd->obj.u32;
+			break;
+		case SCTP_CMD_SET_SK_ERR:
+			sctp_cmd_set_sk_err(asoc, cmd->obj.error);
 			break;
 		default:
 			printk(KERN_WARNING "Impossible command: %u, %p\n",

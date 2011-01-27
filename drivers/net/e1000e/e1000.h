@@ -299,6 +299,7 @@ struct e1000_adapter {
 	unsigned long led_status;
 
 	unsigned int flags;
+	unsigned int flags2;
 	u32 pm_state[16];
 
 	struct work_struct downshift_task;
@@ -308,6 +309,7 @@ struct e1000_adapter {
 struct e1000_info {
 	enum e1000_mac_type	mac;
 	unsigned int		flags;
+	unsigned int		flags2;
 	u32			pba;
 	s32			(*get_variants)(struct e1000_adapter *);
 	struct e1000_mac_operations *mac_ops;
@@ -349,6 +351,8 @@ struct e1000_info {
 #define FLAG_RX_RESTART_NOW               (1 << 30)
 #define FLAG_MSI_TEST_FAILED              (1 << 31)
 
+#define FLAG2_IS_DISCARDING               (1 << 0)
+
 #define E1000_RX_DESC_PS(R, i)	    \
 	(&(((union e1000_rx_desc_packet_split *)((R).desc))[i]))
 #define E1000_GET_DESC(R, i, type)	(&(((struct type *)((R).desc))[i]))
@@ -359,8 +363,7 @@ struct e1000_info {
 enum e1000_state_t {
 	__E1000_TESTING,
 	__E1000_RESETTING,
-	__E1000_DOWN,
-	__E1000_DISCARDING
+	__E1000_DOWN
 };
 
 enum latency_range {
