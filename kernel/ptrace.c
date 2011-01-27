@@ -126,12 +126,34 @@ int ptrace_check_attach(struct task_struct *child, int kill)
 int ptrace_attach(struct task_struct *task)
 {
 	int retval;
-	task_lock(task);
+
 	retval = -EPERM;
 	if (task->pid <= 1)
-		goto bad;
+		goto out;
 	if (task == current)
-		goto bad;
+		goto out;
+
+repeat:
+	/*
+	 * Nasty, nasty.
+	 *
+	 * We want to hold both the task-lock and the
+	 * tasklist_lock for writing at the same time.
+	 * But that's against the rules (tasklist_lock
+	 * is taken for reading by interrupts on other
+	 * cpu's that may have task_lock).
+	 */
+	task_lock(task);
+	local_irq_disable();
+	if (!write_trylock(&tasklist_lock)) {
+		local_irq_enable();
+		task_unlock(task);
+		do {
+			cpu_relax();
+		} while (rwlock_is_locked(&tasklist_lock));
+		goto repeat;
+	}
+
 	if (!task->mm)
 		goto bad;
 	if(((current->uid != task->euid) ||
@@ -156,18 +178,26 @@ int ptrace_attach(struct task_struct *task)
 				      ? PT_ATTACHED : 0);
 	if (capable(CAP_SYS_PTRACE))
 		task->ptrace |= PT_PTRACE_CAP;
-	task_unlock(task);
 
-	write_lock_irq(&tasklist_lock);
 	__ptrace_link(task, current);
-	write_unlock_irq(&tasklist_lock);
 
 	force_sig_specific(SIGSTOP, task);
-	return 0;
 
 bad:
+	write_unlock_irq(&tasklist_lock);
 	task_unlock(task);
+out:
 	return retval;
+}
+
+void __ptrace_detach(struct task_struct *child, unsigned int data)
+{
+	/* .. re-parent .. */
+	child->exit_code = data;
+	__ptrace_unlink(child);
+	/* .. and wake it up. */
+	if (child->exit_state != EXIT_ZOMBIE)
+		wake_up_process(child);
 }
 
 int ptrace_detach(struct task_struct *child, unsigned int data)
@@ -179,14 +209,10 @@ int ptrace_detach(struct task_struct *child, unsigned int data)
 	ptrace_disable(child);
 	clear_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
 
-	/* .. re-parent .. */
-	child->exit_code = data;
-
 	write_lock_irq(&tasklist_lock);
-	__ptrace_unlink(child);
-	/* .. and wake it up. */
-	if (child->exit_state != EXIT_ZOMBIE)
-		wake_up_process(child);
+	/* protect against de_thread()->release_task() */
+	if (child->ptrace)
+		__ptrace_detach(child, data);
 	write_unlock_irq(&tasklist_lock);
 
 	return 0;

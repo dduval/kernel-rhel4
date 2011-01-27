@@ -2019,40 +2019,31 @@ static struct fb_info *__devinit neo_alloc_fb_info(struct pci_dev *dev, const st
 
 	switch (info->fix.accel) {
 	case FB_ACCEL_NEOMAGIC_NM2070:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 128");
+		sprintf(info->fix.id, "MagicGraph 128");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2090:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 128V");
+		sprintf(info->fix.id, "MagicGraph 128V");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2093:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 128ZV");
+		sprintf(info->fix.id, "MagicGraph 128ZV");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2097:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 128ZV+");
+		sprintf(info->fix.id, "MagicGraph 128ZV+");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2160:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 128XD");
+		sprintf(info->fix.id, "MagicGraph 128XD");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2200:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 256AV");
+		sprintf(info->fix.id, "MagicGraph 256AV");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2230:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 256AV+");
+		sprintf(info->fix.id, "MagicGraph 256AV+");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2360:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 256ZX");
+		sprintf(info->fix.id, "MagicGraph 256ZX");
 		break;
 	case FB_ACCEL_NEOMAGIC_NM2380:
-		snprintf(info->fix.id, sizeof(info->fix.id), 
-			 "MagicGraph 256XL+");
+		sprintf(info->fix.id, "MagicGraph 256XL+");
 		break;
 	}
 

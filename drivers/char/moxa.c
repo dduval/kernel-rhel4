@@ -1677,37 +1677,32 @@ int MoxaDriverIoctl(unsigned int cmd, unsigned long arg, int port)
 	case MOXA_FIND_BOARD:
 	case MOXA_LOAD_C320B:
 	case MOXA_LOAD_CODE:
-		if (!capable(CAP_SYS_RAWIO))
-                        return -EPERM;
 		break;
 	}
 
 	if(copy_from_user(&dltmp, argp, sizeof(struct dl_str)))
 		return -EFAULT;
-	if(dltmp.cardno < 0 || dltmp.cardno >= MAX_BOARDS || dltmp.len < 0 || dltmp.len > sizeof(moxaBuf))
+	if(dltmp.cardno < 0 || dltmp.cardno >= MAX_BOARDS)
 		return -EINVAL;
 
 	switch(cmd)
 	{
 	case MOXA_LOAD_BIOS:
 		i = moxaloadbios(dltmp.cardno, dltmp.buf, dltmp.len);
-		break;
+		return (i);
 	case MOXA_FIND_BOARD:
-		i = moxafindcard(dltmp.cardno);
-		break;
+		return moxafindcard(dltmp.cardno);
 	case MOXA_LOAD_C320B:
-		i = moxaload320b(dltmp.cardno, dltmp.buf, dltmp.len);
-		break;
+		moxaload320b(dltmp.cardno, dltmp.buf, dltmp.len);
+	default: /* to keep gcc happy */
+		return (0);
 	case MOXA_LOAD_CODE:
 		i = moxaloadcode(dltmp.cardno, dltmp.buf, dltmp.len);
 		if (i == -1)
-			i = -EFAULT;
-		break;
-	default:
-		i = 0;
-		break;
+			return (-EFAULT);
+		return (i);
+
 	}
-	return i;
 }
 
 int MoxaDriverPoll(void)
@@ -2843,6 +2838,8 @@ static int moxaload320b(int cardno, unsigned char __user *tmp, int len)
 	unsigned long baseAddr;
 	int i;
 
+	if(len > sizeof(moxaBuff))
+		return -EINVAL;
 	if(copy_from_user(moxaBuff, tmp, len))
 		return -EFAULT;
 	baseAddr = moxaBaseAddr[cardno];

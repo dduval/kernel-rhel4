@@ -408,6 +408,7 @@ handle_signal(unsigned long sig, siginfo_t *info, struct k_sigaction *ka,
 		recalc_sigpending();
 		spin_unlock_irq(&current->sighand->siglock);
 	}
+	regs->eflags &= ~X86_EFLAGS_DF;
 }
 
 /*
