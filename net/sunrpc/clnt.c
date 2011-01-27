@@ -458,12 +458,11 @@ rpc_call_async(struct rpc_clnt *clnt, struct rpc_message *msg, int flags,
 	rpc_call_setup(task, msg, 0);
 
 	/* Set up the call info struct and execute the task */
-	if (task->tk_status == 0)
-		status = rpc_execute(task);
-	else {
-		status = task->tk_status;
+	status = task->tk_status;
+	if (status == 0)
+		rpc_execute(task);
+	else
 		rpc_release_task(task);
-	}
 
 	rpc_restore_sigmask(&oldset);		
 out:
