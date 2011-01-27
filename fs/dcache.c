@@ -1291,6 +1291,7 @@ void d_move(struct dentry * dentry, struct dentry * target)
 	}
 
 	audit_update_watch(dentry, 1);
+	audit_update_watch(target, 1);
 
 	/* Move the dentry to the target hash queue, if on different bucket */
 	if (dentry->d_flags & DCACHE_UNHASHED)

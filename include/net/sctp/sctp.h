@@ -174,11 +174,9 @@ struct sctp_association *__sctp_lookup_association(
 	const union sctp_addr *,
 	struct sctp_transport **);
 struct sock *sctp_err_lookup(int family, struct sk_buff *,
-			     struct sctphdr *, struct sctp_endpoint **,
-			     struct sctp_association **,
+			     struct sctphdr *, struct sctp_association **,
 			     struct sctp_transport **);
-void sctp_err_finish(struct sock *, struct sctp_endpoint *,
-			    struct sctp_association *);
+void sctp_err_finish(struct sock *, struct sctp_association *);
 void sctp_icmp_frag_needed(struct sock *, struct sctp_association *,
 			   struct sctp_transport *t, __u32 pmtu);
 

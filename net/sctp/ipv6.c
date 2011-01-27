@@ -88,7 +88,6 @@ void sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	struct ipv6hdr *iph = (struct ipv6hdr *)skb->data;
 	struct sctphdr *sh = (struct sctphdr *)(skb->data + offset);
 	struct sock *sk;
-	struct sctp_endpoint *ep;
 	struct sctp_association *asoc;
 	struct sctp_transport *transport;
 	struct ipv6_pinfo *np;
@@ -102,7 +101,7 @@ void sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	savesctp  = skb->h.raw;
 	skb->nh.ipv6h = iph;
 	skb->h.raw = (char *)sh;
-	sk = sctp_err_lookup(AF_INET6, skb, sh, &ep, &asoc, &transport);
+	sk = sctp_err_lookup(AF_INET6, skb, sh, &asoc, &transport);
 	/* Put back, the original pointers. */
 	skb->nh.raw = saveip;
 	skb->h.raw = savesctp;
@@ -133,7 +132,7 @@ void sctp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 	}
 
 out_unlock:
-	sctp_err_finish(sk, ep, asoc);
+	sctp_err_finish(sk, asoc);
 out:
 	if (likely(idev != NULL))
 		in6_dev_put(idev);
