@@ -191,7 +191,7 @@ static inline void __user *compat_ptr(compat_uptr_t uptr)
 	return (void __user *)(unsigned long)uptr;
 }
 
-static __inline__ void __user *compat_alloc_user_space(long len)
+static __inline__ void __user *arch_compat_alloc_user_space(long len)
 {
 	struct pt_regs *regs = (void *)current->thread.rsp0 - sizeof(struct pt_regs); 
 	return (void __user *)regs->rsp - len; 

@@ -122,7 +122,7 @@ static inline void __user *compat_ptr(compat_uptr_t uptr)
 	return (void __user *)(unsigned long)uptr;
 }
 
-static inline void __user *compat_alloc_user_space(long len)
+static inline void __user *arch_compat_alloc_user_space(long len)
 {
 	struct pt_regs *regs = current->thread.regs;
 	unsigned long usp = regs->gpr[1];

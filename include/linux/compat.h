@@ -147,5 +147,8 @@ long compat_put_bitmap(compat_ulong_t __user *umask, unsigned long *mask,
 struct compat_siginfo;
 int copy_siginfo_from_user32(siginfo_t *to, struct compat_siginfo __user *from);
 int copy_siginfo_to_user32(struct compat_siginfo __user *to, siginfo_t *from);
+
+extern void __user *compat_alloc_user_space(unsigned long len);
+
 #endif /* CONFIG_COMPAT */
 #endif /* _LINUX_COMPAT_H */
