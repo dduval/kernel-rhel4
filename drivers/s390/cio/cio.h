@@ -1,6 +1,8 @@
 #ifndef S390_CIO_H
 #define S390_CIO_H
 
+#include <linux/mutex.h>
+
 /*
  * where we put the ssd info
  */
@@ -85,7 +87,8 @@ struct orb {
 struct subchannel {
 	unsigned int irq;	/* aka. subchannel number */
 	spinlock_t lock;	/* subchannel lock */
-
+	struct mutex reg_mutex;
+	int device_registered;
 	enum {
 		SUBCHANNEL_TYPE_IO = 0,
 		SUBCHANNEL_TYPE_CHSC = 1,

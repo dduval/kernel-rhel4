@@ -9754,7 +9754,8 @@ static int __devinit bnx2x_init_board(struct pci_dev *pdev,
 	}
 
 	bp->doorbells = ioremap_nocache(pci_resource_start(pdev , 2),
-					pci_resource_len(pdev, 2));
+					min_t(u64, BNX2X_DB_SIZE,
+					      pci_resource_len(pdev, 2)));
 	if (!bp->doorbells) {
 		printk(KERN_ERR PFX "Cannot map doorbell space, aborting\n");
 		rc = -ENOMEM;

@@ -96,6 +96,32 @@ css_subchannel_release(struct device *dev)
 		kfree(sch);
 }
 
+static int css_sch_device_register(struct subchannel *sch)
+{
+	int ret;
+
+	mutex_lock(&sch->reg_mutex);
+	ret = device_register(&sch->dev);
+	sch->device_registered = 1;
+	mutex_unlock(&sch->reg_mutex);
+	return ret;
+}
+
+/**
+ * css_sch_device_unregister - unregister a subchannel
+ * @sch: subchannel to be unregistered
+ */
+void css_sch_device_unregister(struct subchannel *sch)
+{
+	mutex_lock(&sch->reg_mutex);
+	if (sch->device_registered) {
+		device_unregister(&sch->dev);
+		sch->device_registered = 0;
+	}
+	mutex_unlock(&sch->reg_mutex);
+}
+EXPORT_SYMBOL_GPL(css_sch_device_unregister);
+
 extern int css_get_ssd_info(struct subchannel *sch);
 
 static int
@@ -109,7 +135,7 @@ css_register_subchannel(struct subchannel *sch)
 	sch->dev.release = &css_subchannel_release;
 	
 	/* make it known to the system */
-	ret = device_register(&sch->dev);
+	ret = css_sch_device_register(sch);
 	if (ret)
 		printk (KERN_WARNING "%s: could not register %s\n",
 			__func__, sch->dev.bus_id);
@@ -260,7 +286,7 @@ css_evaluate_subchannel(int irq, int slow)
 		 * ccw_device->lock which is the same as subchannel lock.
 		 * Therefore unlock before call. */
 		spin_unlock_irqrestore(&sch->lock, flags);
-		device_unregister(&sch->dev);
+		css_sch_device_unregister(sch);
 		spin_lock_irqsave(&sch->lock, flags);
 		/* Reset intparm to zeroes. */
 		sch->schib.pmcw.intparm = 0;
@@ -275,7 +301,7 @@ css_evaluate_subchannel(int irq, int slow)
 		 */
 		if (!disc) {
 			spin_unlock_irqrestore(&sch->lock, flags);
-			device_unregister(&sch->dev);
+			css_sch_device_unregister(sch);
 			spin_lock_irqsave(&sch->lock, flags);
 			/* Reset intparm to zeroes. */
 			sch->schib.pmcw.intparm = 0;

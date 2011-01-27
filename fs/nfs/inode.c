@@ -1954,6 +1954,9 @@ static int nfs4_fill_super(struct super_block *sb, struct nfs4_mount_data *data,
 		}
 	}
 
+	if (server->namelen == 0 || server->namelen > NFS4_MAXNAMLEN)
+		server->namelen = NFS4_MAXNAMLEN;
+
 	sb->s_op = &nfs4_sops;
 	sb->s_flags |= MS_HAS_INO64;
 	err = nfs_sb_init(sb, authflavour);

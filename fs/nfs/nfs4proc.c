@@ -1007,7 +1007,9 @@ static int nfs4_proc_get_root(struct nfs_server *server, struct nfs_fh *fhandle,
 		while (*p && (*p != '/'))
 			p++;
 		q.len = p - q.name;
-
+		if (q.len > NFS4_MAXNAMLEN)
+			return -ENAMETOOLONG;
+		
 		do {
 			nfs_fattr_init(fattr);
 			status = nfs4_handle_exception(server,

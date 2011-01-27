@@ -513,6 +513,7 @@ cio_validate_subchannel (struct subchannel *sch, unsigned int irq)
 	memset(sch, 0, sizeof(struct subchannel));
 
 	spin_lock_init(&sch->lock);
+	mutex_init(&sch->reg_mutex);
 
 	/* Set a name for the subchannel */
 	snprintf (sch->dev.bus_id, BUS_ID_SIZE, "0.0.%04x", irq);

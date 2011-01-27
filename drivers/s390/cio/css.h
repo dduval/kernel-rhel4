@@ -126,6 +126,8 @@ struct css_driver {
 extern struct bus_type css_bus_type;
 extern struct css_driver io_subchannel_driver;
 
+struct subchannel;
+extern void css_sch_device_unregister(struct subchannel *);
 int css_probe_device(int irq);
 extern struct subchannel * get_subchannel_by_schid(int irq);
 extern unsigned int highest_subchannel;
