@@ -13,6 +13,7 @@
 #include <linux/oprofile.h>
 #include <linux/sysdev.h>
 #include <linux/slab.h>
+#include <linux/moduleparam.h>
 #include <asm/nmi.h>
 #include <asm/msr.h>
 #include <asm/apic.h>
@@ -97,15 +98,19 @@ static void nmi_cpu_save_registers(struct op_msrs * msrs)
 	unsigned int i;
 
 	for (i = 0; i < nr_ctrs; ++i) {
-		rdmsr(counters[i].addr,
-			counters[i].saved.low,
-			counters[i].saved.high);
+		if (counters[i].addr){
+			rdmsr(counters[i].addr,
+				counters[i].saved.low,
+				counters[i].saved.high);
+		}
 	}
- 
+
 	for (i = 0; i < nr_ctrls; ++i) {
-		rdmsr(controls[i].addr,
-			controls[i].saved.low,
-			controls[i].saved.high);
+		if (controls[i].addr){
+			rdmsr(controls[i].addr,
+				controls[i].saved.low,
+				controls[i].saved.high);
+		}
 	}
 }
 
@@ -114,7 +119,6 @@ static void nmi_save_registers(void * dummy)
 {
 	int cpu = smp_processor_id();
 	struct op_msrs * msrs = &cpu_msrs[cpu];
-	model->fill_in_addresses(msrs);
 	nmi_cpu_save_registers(msrs);
 }
 
@@ -122,7 +126,7 @@ static void nmi_save_registers(void * dummy)
 static void free_msrs(void)
 {
 	int i;
-	for (i = 0; i < NR_CPUS; ++i) {
+	for_each_cpu(i) {
 		kfree(cpu_msrs[i].counters);
 		cpu_msrs[i].counters = NULL;
 		kfree(cpu_msrs[i].controls);
@@ -138,10 +142,7 @@ static int allocate_msrs(void)
 	size_t counters_size = sizeof(struct op_msr) * model->num_counters;
 
 	int i;
-	for (i = 0; i < NR_CPUS; ++i) {
-		if (!cpu_online(i))
-			continue;
-
+	for_each_possible_cpu(i) {
 		cpu_msrs[i].counters = kmalloc(counters_size, GFP_KERNEL);
 		if (!cpu_msrs[i].counters) {
 			success = 0;
@@ -175,6 +176,8 @@ static void nmi_cpu_setup(void * dummy)
 
 static int nmi_setup(void)
 {
+	int cpu;
+
 	if (!allocate_msrs())
 		return -ENOMEM;
 
@@ -190,6 +193,19 @@ static int nmi_setup(void)
 	/* We need to serialize save and setup for HT because the subset
 	 * of msrs are distinct for save and setup operations
 	 */
+
+	/* Assume saved/restored counters are the same on all CPUs */
+	model->fill_in_addresses(&cpu_msrs[0]);
+	for_each_possible_cpu(cpu) {
+		if (cpu != 0) {
+			memcpy(cpu_msrs[cpu].counters, cpu_msrs[0].counters,
+				sizeof(struct op_msr) * model->num_counters);
+
+			memcpy(cpu_msrs[cpu].controls, cpu_msrs[0].controls,
+				sizeof(struct op_msr) * model->num_controls);
+		}
+
+	}
 	on_each_cpu(nmi_save_registers, NULL, 0, 1);
 	on_each_cpu(nmi_cpu_setup, NULL, 0, 1);
 	set_nmi_callback(nmi_callback);
@@ -207,15 +223,19 @@ static void nmi_restore_registers(struct op_msrs * msrs)
 	unsigned int i;
 
 	for (i = 0; i < nr_ctrls; ++i) {
-		wrmsr(controls[i].addr,
-			controls[i].saved.low,
-			controls[i].saved.high);
+		if (controls[i].addr){
+			wrmsr(controls[i].addr,
+				controls[i].saved.low,
+				controls[i].saved.high);
+		}
 	}
  
 	for (i = 0; i < nr_ctrs; ++i) {
-		wrmsr(counters[i].addr,
-			counters[i].saved.low,
-			counters[i].saved.high);
+		if (counters[i].addr){
+			wrmsr(counters[i].addr,
+				counters[i].saved.low,
+				counters[i].saved.high);
+		}
 	}
 }
  
@@ -244,6 +264,7 @@ static void nmi_shutdown(void)
 	nmi_enabled = 0;
 	on_each_cpu(nmi_cpu_shutdown, NULL, 0, 1);
 	unset_nmi_callback();
+	model->shutdown(cpu_msrs);
 	release_lapic_nmi();
 	free_msrs();
 }
@@ -284,9 +305,17 @@ static int nmi_create_files(struct super_block * sb, struct dentry * root)
 
 	for (i = 0; i < model->num_counters; ++i) {
 		struct dentry * dir;
-		char buf[2];
- 
-		snprintf(buf, 2, "%d", i);
+		char buf[4];
+
+		/* quick little hack to _not_ expose a counter if it is not
+		 * available for use.  This should protect userspace app.
+		 * NOTE:  assumes 1:1 mapping here (that counters are organized
+		 *        sequentially in their struct assignment).
+		 */
+		if (unlikely(!avail_to_resrv_perfctr_nmi_bit(i)))
+			continue;
+
+		snprintf(buf, sizeof(buf), "%d", i);
 		dir = oprofilefs_mkdir(sb, root, buf);
 		oprofilefs_create_ulong(sb, dir, "enabled", &counter_config[i].enabled); 
 		oprofilefs_create_ulong(sb, dir, "event", &counter_config[i].event); 
@@ -309,26 +338,26 @@ struct oprofile_operations nmi_ops = {
 };
  
 
-static int __init p4_init(void)
+static int __init p4_init(char ** cpu_type)
 {
-	__u8 cpu_model = current_cpu_data.x86_model;
+	__u8 cpu_model = boot_cpu_data.x86_model;
 
 	if (cpu_model > 4)
 		return 0;
 
 #ifndef CONFIG_SMP
-	nmi_ops.cpu_type = "i386/p4";
+	*cpu_type = "i386/p4";
 	model = &op_p4_spec;
 	return 1;
 #else
 	switch (smp_num_siblings) {
 		case 1:
-			nmi_ops.cpu_type = "i386/p4";
+			*cpu_type = "i386/p4";
 			model = &op_p4_spec;
 			return 1;
 
 		case 2:
-			nmi_ops.cpu_type = "i386/p4-ht";
+			*cpu_type = "i386/p4-ht";
 			model = &op_p4_ht2_spec;
 			return 1;
 	}
@@ -340,39 +369,80 @@ static int __init p4_init(void)
 }
 
 
-static int __init ppro_init(void)
+static int force_arch_perfmon;
+static int force_cpu_type(const char *str, struct kernel_param *kp)
 {
-	__u8 cpu_model = current_cpu_data.x86_model;
+	if (!strcmp(str, "arch_perfmon")) {
+		force_arch_perfmon = 1;
+		printk(KERN_INFO "oprofile: forcing architectural perfmon\n");
+	}
 
-	if (cpu_model == 15 || cpu_model == 23) {
-		nmi_ops.cpu_type = "i386/core_2";
-	}
-	else if (cpu_model > 15) {
+	return 0;
+}
+module_param_call(cpu_type, force_cpu_type, NULL, NULL, 0);
+
+static int __init ppro_init(char **cpu_type)
+{
+	__u8 cpu_model = boot_cpu_data.x86_model;
+
+	if (force_arch_perfmon && cpu_has_arch_perfmon)
 		return 0;
-	}
-	else if (cpu_model == 14) {
-		nmi_ops.cpu_type = "i386/core";
-	} else if (cpu_model == 9) {
-		nmi_ops.cpu_type = "i386/p6_mobile";
-	} else if (cpu_model > 5) {
-		nmi_ops.cpu_type = "i386/piii";
-	} else if (cpu_model > 2) {
-		nmi_ops.cpu_type = "i386/pii";
-	} else {
-		nmi_ops.cpu_type = "i386/ppro";
+
+	switch (cpu_model) {
+	case 0 ... 2:
+		*cpu_type = "i386/ppro";
+		break;
+	case 3 ... 5:
+		*cpu_type = "i386/pii";
+		break;
+	case 6 ... 8:
+	case 10 ... 11:
+		*cpu_type = "i386/piii";
+		break;
+	case 9:
+	case 13:
+		*cpu_type = "i386/p6_mobile";
+		break;
+	case 14:
+		*cpu_type = "i386/core";
+		break;
+	case 15: case 23:
+		*cpu_type = "i386/core_2";
+		break;
+	case 26:
+		arch_perfmon_setup_counters();
+		*cpu_type = "i386/core_i7";
+		break;
+	case 28:
+		*cpu_type = "i386/atom";
+		break;
+	default:
+		/* Unknown */
+		return 0;
 	}
 
 	model = &op_ppro_spec;
 	return 1;
 }
 
+static int __init arch_perfmon_init(char **cpu_type)
+{
+	if (!cpu_has_arch_perfmon)
+		return 0;
+	*cpu_type = "i386/arch_perfmon";
+	model = &op_arch_perfmon_spec;
+	arch_perfmon_setup_counters();
+	return 1;
+}
+
 /* in order to get driverfs right */
 static int using_nmi;
 
-int __init nmi_init(struct oprofile_operations ** ops)
+int __init op_nmi_init(struct oprofile_operations **ops)
 {
-	__u8 vendor = current_cpu_data.x86_vendor;
-	__u8 family = current_cpu_data.x86;
+	__u8 vendor = boot_cpu_data.x86_vendor;
+	__u8 family = boot_cpu_data.x86;
+	char *cpu_type = NULL;
  
 	if (!cpu_has_apic)
 		return -ENODEV;
@@ -386,17 +456,17 @@ int __init nmi_init(struct oprofile_operations ** ops)
 				return -ENODEV;
 			case 6:
 				model = &op_athlon_spec;
-				nmi_ops.cpu_type = "i386/athlon";
+				cpu_type = "i386/athlon";
 				break;
 			case 0xf:
 				model = &op_athlon_spec;
 				/* Actually it could be i386/hammer too, but give
 				   user space an consistent name. */
-				nmi_ops.cpu_type = "x86-64/hammer";
+				cpu_type = "x86-64/hammer";
 				break;
 			case 0x10:
 				model = &op_athlon_spec;
-				nmi_ops.cpu_type = "x86-64/family10";
+				cpu_type = "x86-64/family10";
 				break;
 			}
 			break;
@@ -405,19 +475,20 @@ int __init nmi_init(struct oprofile_operations ** ops)
 			switch (family) {
 				/* Pentium IV */
 				case 0xf:
-					if (!p4_init())
-						return -ENODEV;
+					p4_init(&cpu_type);
 					break;
 
 				/* A P6-class processor */
 				case 6:
-					if (!ppro_init())
-						return -ENODEV;
+					ppro_init(&cpu_type);
 					break;
 
 				default:
-					return -ENODEV;
+					break;
 			}
+
+			if (!cpu_type && !arch_perfmon_init(&cpu_type))
+				return -ENODEV;
 			break;
 
 		default:
@@ -427,12 +498,13 @@ int __init nmi_init(struct oprofile_operations ** ops)
 	init_driverfs();
 	using_nmi = 1;
 	*ops = &nmi_ops;
+	nmi_ops.cpu_type = cpu_type;
 	printk(KERN_INFO "oprofile: using NMI interrupt.\n");
 	return 0;
 }
 
 
-void __exit nmi_exit(void)
+void __exit op_nmi_exit(void)
 {
 	if (using_nmi)
 		exit_driverfs();

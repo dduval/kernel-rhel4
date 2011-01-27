@@ -39,7 +39,10 @@ uint32_t *qim24xx_read_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr,
 inline void
 qla2xxx_schedule_udelay(unsigned long usecs)
 {
-	schedule();
+	if (crashdump_mode())
+		diskdump_update();
+	else
+		schedule();
 	udelay(usecs);
 }
 

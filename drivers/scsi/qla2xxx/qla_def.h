@@ -34,6 +34,7 @@
 #include <linux/mempool.h>
 #include <linux/spinlock.h>
 #include <linux/completion.h>
+#include <linux/diskdump.h>
 #include <asm/semaphore.h>
 
 #include <scsi/scsi.h>

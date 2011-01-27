@@ -261,6 +261,8 @@ void ip_conntrack_expect_put(struct ip_conntrack_expect *exp);
 /* call to create an explicit dependency on ip_conntrack. */
 extern void need_ip_conntrack(void);
 
+extern struct ip_conntrack_protocol *ip_ct_find_proto_get(u_int8_t protocol);
+
 extern int invert_tuplepr(struct ip_conntrack_tuple *inverse,
 			  const struct ip_conntrack_tuple *orig);
 
@@ -290,6 +292,10 @@ ip_ct_gather_frags(struct sk_buff *skb, u_int32_t user);
 extern void
 ip_ct_selective_cleanup(int (*kill)(const struct ip_conntrack *i, void *data),
 			void *data);
+
+extern struct ip_conntrack_tuple_hash *
+__ip_conntrack_find(const struct ip_conntrack_tuple *tuple,
+		    const struct ip_conntrack *ignored_conntrack);
 
 /* It's confirmed if it is, or has been in the hash table. */
 static inline int is_confirmed(struct ip_conntrack *ct)

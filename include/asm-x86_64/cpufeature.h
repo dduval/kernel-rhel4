@@ -103,5 +103,6 @@
 #define cpu_has_cyrix_arr      0
 #define cpu_has_centaur_mcr    0
 #define cpu_has_clflush	       boot_cpu_has(X86_FEATURE_CLFLSH)
+#define cpu_has_arch_perfmon   boot_cpu_has(X86_FEATURE_ARCH_PERFMON)
 
 #endif /* __ASM_X8664_CPUFEATURE_H */

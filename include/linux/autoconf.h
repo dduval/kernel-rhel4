@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.9-prep
- * Sun Jan 23 13:22:15 2011
+ * Sun Jan 23 13:23:33 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_X86_64 1
@@ -695,6 +695,7 @@
 #define CONFIG_IP_NF_MATCH_TCPMSS_MODULE 1
 #define CONFIG_IP_NF_MATCH_HELPER_MODULE 1
 #define CONFIG_IP_NF_MATCH_STATE_MODULE 1
+#define CONFIG_IP_NF_MATCH_CONNLIMIT_MODULE 1
 #define CONFIG_IP_NF_MATCH_CONNTRACK_MODULE 1
 #define CONFIG_IP_NF_MATCH_OWNER_MODULE 1
 #define CONFIG_IP_NF_MATCH_PHYSDEV_MODULE 1

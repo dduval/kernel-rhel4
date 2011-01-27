@@ -3113,6 +3113,18 @@ static int bond_arp_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	struct bonding *bond;
 	unsigned char *arp_ptr;
 	u32 sip, tip;
+	struct net_device *orig_dev = skb->real_dev;
+
+	if (dev->priv_flags & IFF_802_1Q_VLAN) {
+		/*
+		 * When using VLANS and bonding, dev and oriv_dev may be
+		 * incorrect if the physical interface supports VLAN
+		 * acceleration.  With this change ARP validation now
+		 * works for hosts only reachable on the VLAN interface.
+		 */
+		dev = VLAN_DEV_INFO(dev)->real_dev;
+		orig_dev = skb->input_dev;
+	}
 
 	if (!(dev->priv_flags & IFF_BONDING) || !(dev->flags & IFF_MASTER))
 		goto out;
@@ -3120,11 +3132,11 @@ static int bond_arp_rcv(struct sk_buff *skb, struct net_device *dev, struct pack
 	bond = dev->priv;
 	read_lock(&bond->lock);
 
-	dprintk("bond_arp_rcv: bond %s skb->dev %s real_dev %s\n",
+	dprintk("bond_arp_rcv: bond %s skb->dev %s orig_dev %s\n",
 		bond->dev->name, skb->dev ? skb->dev->name : "NULL",
-		skb->real_dev ? skb->real_dev->name : "NULL");
+		orig_dev ? orig_dev->name : "NULL");
 
-	slave = bond_get_slave_by_dev(bond, skb->real_dev);
+	slave = bond_get_slave_by_dev(bond, orig_dev);
 	if (!slave || !slave_do_arp_validate(bond, slave))
 		goto out_unlock;
 

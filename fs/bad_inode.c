@@ -259,6 +259,12 @@ static int bad_inode_getattr(struct vfsmount *mnt, struct dentry *dentry,
 	return -EIO;
 }
 
+static int bad_inode_getattr64(struct vfsmount *mnt, struct dentry *dentry,
+			struct kstat64 *stat)
+{
+	return -EIO;
+}
+
 static int bad_inode_setattr(struct dentry *direntry, struct iattr *attrs)
 {
 	return -EIO;
@@ -287,28 +293,30 @@ static int bad_inode_removexattr(struct dentry *dentry, const char *name)
 	return -EIO;
 }
 
-static struct inode_operations bad_inode_ops =
+static struct inode_operations_ext bad_inode_ops =
 {
-	.create		= bad_inode_create,
-	.lookup		= bad_inode_lookup,
-	.link		= bad_inode_link,
-	.unlink		= bad_inode_unlink,
-	.symlink	= bad_inode_symlink,
-	.mkdir		= bad_inode_mkdir,
-	.rmdir		= bad_inode_rmdir,
-	.mknod		= bad_inode_mknod,
-	.rename		= bad_inode_rename,
-	.readlink	= bad_inode_readlink,
-	.follow_link	= bad_inode_follow_link,
+	.i_op_orig.create	= bad_inode_create,
+	.i_op_orig.lookup	= bad_inode_lookup,
+	.i_op_orig.link		= bad_inode_link,
+	.i_op_orig.unlink	= bad_inode_unlink,
+	.i_op_orig.symlink	= bad_inode_symlink,
+	.i_op_orig.mkdir	= bad_inode_mkdir,
+	.i_op_orig.rmdir	= bad_inode_rmdir,
+	.i_op_orig.mknod	= bad_inode_mknod,
+	.i_op_orig.rename	= bad_inode_rename,
+	.i_op_orig.readlink	= bad_inode_readlink,
+	.i_op_orig.follow_link	= bad_inode_follow_link,
 	/* put_link returns void */
 	/* truncate returns void */
-	.permission	= bad_inode_permission,
-	.getattr	= bad_inode_getattr,
-	.setattr	= bad_inode_setattr,
-	.setxattr	= bad_inode_setxattr,
-	.getxattr	= bad_inode_getxattr,
-	.listxattr	= bad_inode_listxattr,
-	.removexattr	= bad_inode_removexattr,
+	.i_op_orig.permission	= bad_inode_permission,
+	.i_op_orig.getattr	= bad_inode_getattr,
+	.i_op_orig.setattr	= bad_inode_setattr,
+	.i_op_orig.setxattr	= bad_inode_setxattr,
+	.i_op_orig.getxattr	= bad_inode_getxattr,
+	.i_op_orig.listxattr	= bad_inode_listxattr,
+	.i_op_orig.removexattr	= bad_inode_removexattr,
+	.getattr64		= bad_inode_getattr64,
+	/* lookup_undo returns void */
 };
 
 
@@ -337,7 +345,7 @@ void make_bad_inode(struct inode *inode)
 	inode->i_mode = S_IFREG;
 	inode->i_atime = inode->i_mtime = inode->i_ctime =
 		current_fs_time(inode->i_sb);
-	inode->i_op = &bad_inode_ops;
+	inode->i_op = (struct inode_operations *)&bad_inode_ops;
 	inode->i_fop = &bad_file_ops;
 }
 EXPORT_SYMBOL(make_bad_inode);
@@ -357,7 +365,7 @@ EXPORT_SYMBOL(make_bad_inode);
  
 int is_bad_inode(struct inode *inode)
 {
-	return (inode->i_op == &bad_inode_ops);	
+	return (inode->i_op == (struct inode_operations *)&bad_inode_ops);	
 }
 
 EXPORT_SYMBOL(is_bad_inode);

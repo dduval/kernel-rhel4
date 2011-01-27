@@ -444,8 +444,10 @@ static void xmit_tasklet(unsigned long data)
 		vi->svq->vq_ops->kick(vi->svq);
 		vi->last_xmit_skb = NULL;
 	}
-	if (vi->free_in_tasklet)
+	if (vi->free_in_tasklet) {
 		free_old_xmit_skbs(vi);
+		netif_wake_queue(vi->dev);
+	}
 	netif_tx_unlock_bh(vi->dev);
 }
 

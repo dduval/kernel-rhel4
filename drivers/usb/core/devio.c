@@ -999,8 +999,9 @@ static int processcompl(struct async *as)
 	struct usbdevfs_urb __user *userurb = as->userurb;
 	unsigned int i;
 
-	if (as->userbuffer)
-		if (copy_to_user(as->userbuffer, urb->transfer_buffer, urb->transfer_buffer_length))
+	if (as->userbuffer && urb->actual_length)
+		if (copy_to_user(as->userbuffer, urb->transfer_buffer,
+				 urb->actual_length))
 			return -EFAULT;
 	if (put_user(urb->status, &userurb->status))
 		return -EFAULT;

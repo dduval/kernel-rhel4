@@ -1303,6 +1303,9 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 		goto out;
 	}
 
+	if (pid == 1)		/* no messing around with init! */
+		goto out;
+
 	peek_or_poke = (request == PTRACE_PEEKTEXT || request == PTRACE_PEEKDATA
 			|| request == PTRACE_POKETEXT || request == PTRACE_POKEDATA);
 	rbs_child = NULL;
@@ -1313,7 +1316,10 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 		if (child) {
 			if (peek_or_poke) {
 				rbs_child = find_thread_for_addr(child, addr);
-				get_task_struct(rbs_child);
+				if (rbs_child != child)
+					get_task_struct(rbs_child);
+				else
+					rbs_child = NULL;
 			}
 			get_task_struct(child);
 		}
@@ -1321,16 +1327,13 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 	read_unlock(&tasklist_lock);
 	if (!child)
 		goto out;
-	ret = -EPERM;
-	if (pid == 1)		/* no messing around with init! */
-		goto out_tsk;
 
 	if (request == PTRACE_ATTACH) {
 		ret = ptrace_attach(child);
 		goto out_tsk;
 	}
 
-	ret = -ESRCH;
+	ret = ptrace_check_attach(child, request == PTRACE_KILL);
 	if (rbs_child) {
 		/*
 		 * If the thread is not in an attachable state, we'll ignore it.
@@ -1341,18 +1344,15 @@ sys_ptrace (long request, pid_t pid, unsigned long addr, unsigned long data,
 		 * stopped, that's a problem anyhow, so we're doing as well as we
 		 * can...
 		 */
-		if (rbs_child != child &&
-		    !(ret =  ptrace_check_attach(rbs_child, 0))) {
+		if (ret || ptrace_check_attach(rbs_child, 0)) {
+			put_task_struct(rbs_child);
+		} else {
 			put_task_struct(child);
 			child = rbs_child;
-		} else
-			put_task_struct(rbs_child);
+		}
 	}
-	if (!ret) {
-		ret = ptrace_check_attach(child, request == PTRACE_KILL);
-		if (ret < 0)
-			goto out_tsk;
-	}
+	if (ret)
+		goto out_tsk;
 
 	pt = ia64_task_regs(child);
 	sw = (struct switch_stack *) (child->thread.ksp + 16);

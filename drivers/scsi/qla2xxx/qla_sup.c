@@ -35,7 +35,10 @@ int qla24xx_get_flash_version(scsi_qla_host_t *, uint8_t *);
 inline void
 qla2xxx_schedule_udelay(unsigned long usecs)
 {
-	schedule();
+	if (crashdump_mode())
+		diskdump_update();
+	else
+		schedule();
 	udelay(usecs);
 }
 

@@ -48,7 +48,7 @@ static struct oprofile_operations nmi_timer_ops = {
 	.cpu_type = "timer"
 };
 
-int __init nmi_timer_init(struct oprofile_operations ** ops)
+int __init op_nmi_timer_init(struct oprofile_operations **ops)
 {
 	extern int nmi_active;
 

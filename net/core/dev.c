@@ -1640,6 +1640,7 @@ int netif_receive_skb(struct sk_buff *skb)
 {
 	struct packet_type *ptype, *pt_prev;
 	struct net_device *orig_dev;
+	struct net_device *null_or_bond;
 	int ret = NET_RX_DROP;
 	unsigned short type;
 
@@ -1720,10 +1721,32 @@ ncls:
 	if (handle_bridge(&skb, &pt_prev, &ret))
 		goto out;
 
+	/* Due to kABI constraints, we have to diverge from upstream.
+	 * The code upstream checks to see if this is a vlan device
+	 * and then looks to see if the real_dev has the bonding flags
+	 * set.  If it does, null_or_bond becomes the bonding device.
+	 * Since we cannot check for real_dev, we will look at input_dev
+	 * and determine if input-dev->master is set.  This would also
+	 * indicate bonding was used.
+	 *
+	 * For hw-accelerated vlan devices this will be fine, as
+	 * input_dev is now set to the true input dev.
+	 *
+	 * For legacy devices this will be fine as well since input_dev
+	 * is set above when the tagged frame first runs through
+	 * netif_receive_skb.
+	 */
+	null_or_bond = NULL;
+	if ((skb->dev->priv_flags & IFF_802_1Q_VLAN) &&
+		(skb->input_dev->master)) {
+			null_or_bond = skb->input_dev->master;
+	}
+
 	type = skb->protocol;
 	list_for_each_entry_rcu(ptype, &ptype_base[ntohs(type)&15], list) {
-		if (ptype->type == type &&
-		    (!ptype->dev || ptype->dev == skb->dev)) {
+		if (ptype->type == type && (!ptype->dev ||
+		    ptype->dev == skb->dev ||
+		    ptype->dev == null_or_bond)) {
 			if (pt_prev) 
 				ret = deliver_skb(skb, pt_prev);
 			pt_prev = ptype;

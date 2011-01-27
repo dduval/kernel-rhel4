@@ -267,6 +267,13 @@ config IP_NF_MATCH_STATE
 
 	  To compile it as a module, choose M here.  If unsure, say N.
 
+config IP_NF_MATCH_CONNLIMIT
+	tristate '"connlimit" match support'
+	depends on IP_NF_IPTABLES
+	help
+	  This match allows you to match against the number of parallel
+	  connections to a server per client IP address (or address block).
+
 config IP_NF_MATCH_CONNTRACK
 	tristate "Connection tracking match support"
 	depends on IP_NF_CONNTRACK && IP_NF_IPTABLES

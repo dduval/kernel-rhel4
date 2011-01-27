@@ -1421,7 +1421,8 @@ do_lookup_undo(struct nameidata *nd)
 
 	if (inode && IS_LOOKUP_UNDO(inode)) {
 		ixop = (struct inode_operations_ext *) inode->i_op;
-		ixop->lookup_undo(nd);
+		if (ixop->lookup_undo != NULL)
+			ixop->lookup_undo(nd);
 	}
 }
 

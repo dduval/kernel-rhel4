@@ -122,6 +122,28 @@ ip_ct_get_tuple(const struct iphdr *iph,
 }
 
 int
+ip_ct_get_tuplepr(const struct sk_buff *skb,
+		  unsigned int nhoff,
+		  struct ip_conntrack_tuple *tuple)
+{
+	struct ip_conntrack_protocol *proto;
+	u_int8_t protonum;
+	unsigned int dataoff;
+	const struct iphdr *iph;
+	struct iphdr _iph;
+
+	iph = skb_header_pointer(skb, nhoff, sizeof(_iph), &_iph);
+	if (iph == NULL)
+		return 0;
+	if (iph->frag_off & htons(IP_OFFSET))
+		return 0;
+	dataoff = nhoff + (iph->ihl << 2);
+	protonum = iph->protocol;
+	proto = ip_ct_find_proto_get(protonum);
+	return ip_ct_get_tuple(iph, skb, dataoff, tuple, proto);
+}
+
+int
 ip_ct_invert_tuple(struct ip_conntrack_tuple *inverse,
 		   const struct ip_conntrack_tuple *orig,
 		   const struct ip_conntrack_protocol *protocol)
@@ -346,7 +368,7 @@ conntrack_tuple_cmp(const struct ip_conntrack_tuple_hash *i,
 		&& ip_ct_tuple_equal(tuple, &i->tuple);
 }
 
-static struct ip_conntrack_tuple_hash *
+struct ip_conntrack_tuple_hash *
 __ip_conntrack_find(const struct ip_conntrack_tuple *tuple,
 		    const struct ip_conntrack *ignored_conntrack)
 {
@@ -503,6 +525,23 @@ struct ip_conntrack_helper *ip_ct_find_helper(const struct ip_conntrack_tuple *t
 	return LIST_FIND(&helpers, helper_cmp,
 			 struct ip_conntrack_helper *,
 			 tuple);
+}
+
+/* this is guaranteed to always return a valid protocol helper, since
+ * it falls back to generic_protocol */
+struct ip_conntrack_protocol *ip_ct_find_proto_get(u_int8_t protocol)
+{
+	struct ip_conntrack_protocol *p;
+
+	preempt_disable();
+	p = ip_ct_find_proto(protocol);
+	if (p) {
+		if (!try_module_get(p->me))
+			p = &ip_conntrack_generic_protocol;
+	}
+	preempt_enable();
+
+	return p;
 }
 
 /* Allocate a new conntrack: we return -ENOMEM if classification

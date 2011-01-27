@@ -866,6 +866,14 @@ running once the system is up.
 	oprofile.timer=	[HW]
 			Use timer interrupt instead of performance counters
 
+	oprofile.cpu_type=	Force an oprofile cpu type
+			This might be useful if you have an older oprofile
+			userland or if you want common events.
+			Format: { arch_perfmon }
+			arch_perfmon: [X86] Force use of architectural
+				perfmon on Intel CPUs instead of the
+				CPU specific event set.
+
 	optcd=		[HW,CD]
 			Format: <io>
 
