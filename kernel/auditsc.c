@@ -1419,14 +1419,13 @@ void auditfs_attach_wdata(struct inode *inode, struct hlist_head *watches,
 	hlist_for_each_entry(watch, pos, watches, w_watched) {
 	restart:
 		audit_watch_get(watch);
+ 		if (mask && (watch->w_perms && !(watch->w_perms&mask))) {
+			continue;
+		}
 		spin_unlock(&auditfs_lock);
 		winfo = kmalloc(sizeof(struct audit_watch_info), GFP_KERNEL);
 		if (!winfo)
 			goto auditfs_attach_wdata_fail;
- 		if (mask && (watch->w_perms && !(watch->w_perms&mask))) {
-			spin_lock(&auditfs_lock);
-			continue;
-		}
 		winfo->watch = audit_watch_get(watch);
 		hlist_add_head(&winfo->node, &ax->watches);
 		spin_lock(&auditfs_lock);

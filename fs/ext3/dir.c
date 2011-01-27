@@ -134,6 +134,9 @@ static int ext3_readdir(struct file * filp,
 			ext3_error (sb, "ext3_readdir",
 				"directory #%lu contains a hole at offset %lu",
 				inode->i_ino, (unsigned long)filp->f_pos);
+			/* corrupt size?  Maybe no more blocks to read */
+			if (filp->f_pos > inode->i_blocks << 9)
+				break;
 			filp->f_pos += sb->s_blocksize - offset;
 			continue;
 		}
@@ -152,7 +155,7 @@ static int ext3_readdir(struct file * filp,
 					brelse (tmp);
 			}
 			if (num) {
-				ll_rw_block (READA, num, bha);
+				ll_rw_block (READ, num, bha);
 				for (i = 0; i < num; i++)
 					brelse (bha[i]);
 			}

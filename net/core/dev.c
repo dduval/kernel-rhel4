@@ -1297,7 +1297,6 @@ int dev_queue_xmit(struct sk_buff *skb)
 			if (net_ratelimit())
 				printk(KERN_CRIT "Virtual device %s asks to "
 				       "queue packet!\n", dev->name);
-			goto out_enetdown;
 		} else {
 			/* Recursion is detected! It is possible,
 			 * unfortunately */
@@ -1306,10 +1305,12 @@ int dev_queue_xmit(struct sk_buff *skb)
 				       "%s, fix it urgently!\n", dev->name);
 		}
 	}
-out_enetdown:
+
 	rc = -ENETDOWN;
+	local_bh_enable();
 out_kfree_skb:
 	kfree_skb(skb);
+	return rc;
 out:
 	local_bh_enable();
 	return rc;

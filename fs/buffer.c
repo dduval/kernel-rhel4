@@ -1277,8 +1277,21 @@ grow_buffers(struct block_device *bdev, sector_t block, int size)
 	} while ((size << sizebits) < PAGE_SIZE);
 
 	index = block >> sizebits;
-	block = index << sizebits;
 
+	/*
+	 * Check for a block which wants to lie outside our maximum possible
+	 * pagecache index.  (this comparison is done using sector_t types).
+	 */
+	if (unlikely(index != block >> sizebits)) {
+		char b[BDEVNAME_SIZE];
+
+		printk(KERN_ERR "%s: requested out-of-range block %llu for "
+			"device %s\n",
+			__FUNCTION__, (unsigned long long)block,
+			bdevname(bdev, b));
+		return -EIO;
+	}
+	block = index << sizebits;
 	/* Create a page with the proper size buffers.. */
 	page = grow_dev_page(bdev, block, index, size);
 	if (!page)
@@ -1305,12 +1318,16 @@ __getblk_slow(struct block_device *bdev, sector_t block, int size)
 
 	for (;;) {
 		struct buffer_head * bh;
+		int ret;
 
 		bh = __find_get_block(bdev, block, size);
 		if (bh)
 			return bh;
 
-		if (!grow_buffers(bdev, block, size))
+		ret = grow_buffers(bdev, block, size);
+		if (ret < 0)
+			return NULL;
+		if (ret == 0)
 			free_more_memory();
 	}
 }
@@ -1571,8 +1588,10 @@ EXPORT_SYMBOL(__getblk);
 void __breadahead(struct block_device *bdev, sector_t block, int size)
 {
 	struct buffer_head *bh = __getblk(bdev, block, size);
-	ll_rw_block(READA, 1, &bh);
-	brelse(bh);
+	if (likely(bh)) {
+		ll_rw_block(READA, 1, &bh);
+		brelse(bh);
+	}
 }
 EXPORT_SYMBOL(__breadahead);
 
@@ -1589,7 +1608,7 @@ __bread(struct block_device *bdev, sector_t block, int size)
 {
 	struct buffer_head *bh = __getblk(bdev, block, size);
 
-	if (!buffer_uptodate(bh))
+	if (likely(bh) && !buffer_uptodate(bh))
 		bh = __bread_slow(bh);
 	return bh;
 }
@@ -2031,7 +2050,6 @@ static int __block_prepare_write(struct inode *inode, struct page *page,
 			if (err)
 				goto out;
 			if (buffer_new(bh)) {
-				clear_buffer_new(bh);
 				unmap_underlying_metadata(bh->b_bdev,
 							bh->b_blocknr);
 				if (PageUptodate(page)) {
@@ -2073,6 +2091,13 @@ static int __block_prepare_write(struct inode *inode, struct page *page,
 		if (!buffer_uptodate(*wait_bh))
 			return -EIO;
 	}
+
+	bh = head;
+	do {
+		if (buffer_new(bh))
+			clear_buffer_new(bh);
+	} while ((bh = bh->b_this_page) != head);
+
 	return 0;
 out:
 	/*
