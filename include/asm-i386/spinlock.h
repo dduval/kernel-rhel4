@@ -221,4 +221,8 @@ static inline int _raw_write_trylock(rwlock_t *lock)
 	return 0;
 }
 
+/* The {read|write|spin}_lock() on x86 are full memory barriers. */
+static inline void smp_mb__after_lock(void) { }
+#define ARCH_HAS_SMP_MB_AFTER_LOCK
+
 #endif /* __ASM_SPINLOCK_H */

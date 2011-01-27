@@ -23,6 +23,7 @@
 #include <linux/workqueue.h>
 #include <linux/tty_driver.h>
 #include <linux/tty_ldisc.h>
+#include <linux/mutex.h>
 
 #include <asm/system.h>
 
@@ -376,6 +377,10 @@ extern void tty_ldisc_flush(struct tty_struct *tty);
 
 struct semaphore;
 extern struct semaphore tty_sem;
+
+extern void tty_write_unlock(struct tty_struct *tty);
+extern int tty_write_lock(struct tty_struct *tty, int ndelay);
+#define tty_is_writelocked(tty)  (mutex_is_locked(&tty->atomic_write))
 
 /* n_tty.c */
 extern struct tty_ldisc tty_ldisc_N_TTY;

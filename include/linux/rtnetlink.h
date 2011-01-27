@@ -352,6 +352,8 @@ enum
 struct rta_session
 {
 	__u8	proto;
+	__u8    pad1;
+	__u16   pad2;
 
 	union {
 		struct {
@@ -523,10 +525,13 @@ struct ifinfomsg
 struct prefixmsg
 {
 	unsigned char	prefix_family;
+	unsigned char   prefix_pad1;
+	unsigned short  prefix_pad2;
 	int		prefix_ifindex;
 	unsigned char	prefix_type;
 	unsigned char	prefix_len;
 	unsigned char	prefix_flags;
+	unsigned char   prefix_pad3;
 };
 
 enum 
@@ -785,6 +790,7 @@ __rta_reserve(struct sk_buff *skb, int attrtype, int attrlen)
 	rta = (struct rtattr*)skb_put(skb, RTA_ALIGN(size));
 	rta->rta_type = attrtype;
 	rta->rta_len = size;
+	memset(RTA_DATA(rta) + attrlen, 0, RTA_ALIGN(size) - size);
 	return rta;
 }
 

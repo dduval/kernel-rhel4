@@ -811,7 +811,8 @@ static unsigned int n_hdlc_tty_poll(struct tty_struct *tty, struct file *filp,
 			mask |= POLLHUP;
 		if(tty_hung_up_p(filp))
 			mask |= POLLHUP;
-		if(n_hdlc->tx_free_buf_list.head)
+		if (!tty_is_writelocked(tty) &&
+				n_hdlc->tx_free_buf_list.head)
 			mask |= POLLOUT | POLLWRNORM;	/* writable */
 	}
 	return mask;

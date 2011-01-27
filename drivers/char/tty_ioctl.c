@@ -372,7 +372,7 @@ static int set_ltchars(struct tty_struct * tty, struct ltchars __user * ltchars)
 /*
  * Send a high priority character to the tty.
  */
-void send_prio_char(struct tty_struct *tty, char ch)
+static int send_prio_char(struct tty_struct *tty, char ch)
 {
 	int	was_stopped = tty->stopped;
 
@@ -380,11 +380,16 @@ void send_prio_char(struct tty_struct *tty, char ch)
 		tty->driver->send_xchar(tty, ch);
 		return;
 	}
+
+	if (tty_write_lock(tty, 0) < 0)
+		return -ERESTARTSYS;
 	if (was_stopped)
 		start_tty(tty);
 	tty->driver->write(tty, 0, &ch, 1);
 	if (was_stopped)
 		stop_tty(tty);
+	tty_write_unlock(tty);
+	return 0;
 }
 
 int n_tty_ioctl(struct tty_struct * tty, struct file * file,
@@ -458,11 +463,11 @@ int n_tty_ioctl(struct tty_struct * tty, struct file * file,
 				break;
 			case TCIOFF:
 				if (STOP_CHAR(tty) != __DISABLED_CHAR)
-					send_prio_char(tty, STOP_CHAR(tty));
+					return send_prio_char(tty, STOP_CHAR(tty));
 				break;
 			case TCION:
 				if (START_CHAR(tty) != __DISABLED_CHAR)
-					send_prio_char(tty, START_CHAR(tty));
+					return send_prio_char(tty, START_CHAR(tty));
 				break;
 			default:
 				return -EINVAL;

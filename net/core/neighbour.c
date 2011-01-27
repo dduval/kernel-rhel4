@@ -1551,6 +1551,8 @@ static int neigh_fill_info(struct sk_buff *skb, struct neighbour *n,
 	struct ndmsg *ndm = NLMSG_DATA(nlh);
 
 	ndm->ndm_family	 = n->ops->family;
+	ndm->ndm_pad1    = 0;
+	ndm->ndm_pad2    = 0;
 	ndm->ndm_flags	 = n->flags;
 	ndm->ndm_type	 = n->type;
 	ndm->ndm_ifindex = n->dev->ifindex;

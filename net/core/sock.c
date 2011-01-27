@@ -1081,7 +1081,7 @@ ssize_t sock_no_sendpage(struct socket *sock, struct page *page, int offset, siz
 void sock_def_wakeup(struct sock *sk)
 {
 	read_lock(&sk->sk_callback_lock);
-	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+	if (sk_has_sleeper(sk))
 		wake_up_interruptible_all(sk->sk_sleep);
 	read_unlock(&sk->sk_callback_lock);
 }
@@ -1089,7 +1089,7 @@ void sock_def_wakeup(struct sock *sk)
 void sock_def_error_report(struct sock *sk)
 {
 	read_lock(&sk->sk_callback_lock);
-	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+	if (sk_has_sleeper(sk))
 		wake_up_interruptible(sk->sk_sleep);
 	sk_wake_async(sk,0,POLL_ERR); 
 	read_unlock(&sk->sk_callback_lock);
@@ -1098,7 +1098,7 @@ void sock_def_error_report(struct sock *sk)
 void sock_def_readable(struct sock *sk, int len)
 {
 	read_lock(&sk->sk_callback_lock);
-	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+	if (sk_has_sleeper(sk))
 		wake_up_interruptible(sk->sk_sleep);
 	sk_wake_async(sk,1,POLL_IN);
 	read_unlock(&sk->sk_callback_lock);
@@ -1112,7 +1112,7 @@ void sock_def_write_space(struct sock *sk)
 	 * progress.  --DaveM
 	 */
 	if((atomic_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
-		if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
+		if (sk_has_sleeper(sk))
 			wake_up_interruptible(sk->sk_sleep);
 
 		/* Should agree with poll, otherwise some programs break */

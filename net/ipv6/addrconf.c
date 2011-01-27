@@ -2974,6 +2974,7 @@ static int inet6_fill_ifinfo(struct sk_buff *skb, struct inet6_dev *idev,
 	if (pid) nlh->nlmsg_flags |= NLM_F_MULTI;
 	r = NLMSG_DATA(nlh);
 	r->ifi_family = AF_INET6;
+	r->__ifi_pad = 0;
 	r->ifi_type = dev->type;
 	r->ifi_index = dev->ifindex;
 	r->ifi_flags = dev->flags;
@@ -3088,9 +3089,12 @@ static int inet6_fill_prefix(struct sk_buff *skb, struct inet6_dev *idev,
 	
 	pmsg = NLMSG_DATA(nlh);
 	pmsg->prefix_family = AF_INET6;
+	pmsg->prefix_pad1 = 0;
+	pmsg->prefix_pad2 = 0;
 	pmsg->prefix_ifindex = idev->dev->ifindex;
 	pmsg->prefix_len = pinfo->prefix_len;
 	pmsg->prefix_type = pinfo->type;
+	pmsg->prefix_pad3 = 0;
 	
 	pmsg->prefix_flags = 0;
 	if (pinfo->onlink)

@@ -22,4 +22,26 @@
 #define mutex_unlock(foo) up(foo)
 #define mutex_destroy(foo) do { } while (0)
 
+static inline int mutex_is_locked(struct semaphore *sema)
+{
+	/*
+	 * On RHEL4, semaphore implementation is inside
+	 * include/asm-<arch>/semaphore.h. So, each architecture has
+	 * their own semaphore implementation.
+	 * On  all architectures, the lock happens when sema->count is lower
+	 * than one.
+	 * On almost all architectures, count is defined as atomic_t.
+	 * The only two exceptions are:
+	 * 	parisc - it is defined as just "int"
+	 *	sparc - it is defined as "atomic24_t
+	 * as none of the above are supported on RHEL4, instead of patching
+	 * all semaphore.h, plus mutex.h, let's just assume that count is
+	 * atomic_t and provide an unique implementation for all supported
+	 * architetures.
+	 */
+
+	return atomic_read(&sema->count) < 1;
+}
+
+
 #endif /* __LINUX_MUTEX_H */
