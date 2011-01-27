@@ -67,7 +67,11 @@ struct list_head nfsd_list = LIST_HEAD_INIT(nfsd_list);
 #if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
 static struct svc_stat	nfsd_acl_svcstats;
 static struct svc_version *	nfsd_acl_version[] = {
+#if defined(CONFIG_NFSD_V2_ACL)
 	[2] = &nfsd_acl_version2,
+#else
+	[2] = NULL,
+#endif
 	[3] = &nfsd_acl_version3,
 };
 

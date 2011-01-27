@@ -269,6 +269,7 @@ void setup_identity_mappings(pgd_t *pgd_base, unsigned long start, unsigned long
 #if !defined(CONFIG_X86_SWITCH_PAGETABLES)
 					__pe += _PAGE_GLOBAL;
 					__PAGE_KERNEL |= _PAGE_GLOBAL;
+					__PAGE_KERNEL_EXEC |= _PAGE_GLOBAL;
 #endif
 				}
 				set_pmd(pmd, __pmd(__pe));

@@ -465,9 +465,7 @@ err_bad_prog:
 	goto sendit;
 
 err_bad_vers:
-#ifdef RPC_PARANOIA
-	printk("svc: unknown version (%d)\n", vers);
-#endif
+	dprintk("svc: unknown version (%d)\n", vers);
 	serv->sv_stats->rpcbadfmt++;
 	svc_putu32(resv, rpc_prog_mismatch);
 	svc_putu32(resv, htonl(progp->pg_lovers));

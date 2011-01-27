@@ -1,7 +1,7 @@
 
 		Linux Ethernet Bonding Driver HOWTO
 
-		Latest update: 2 June 2005
+		Latest update: 21 June 2005
 
 Initial release : Thomas Davis <tadavis at lbl.gov>
 Corrections, HA extensions : 2000/10/03-15 :
@@ -84,6 +84,8 @@ Table of Contents
 13.2.2		MT Link Monitoring for Multiple Switch Topology
 
 14. Switch Behavior Issues
+14.1	Link Establishment and Failover Delays
+14.2	Duplicated Incoming Packets
 
 15. Hardware Specific Considerations
 15.1	IBM BladeCenter
@@ -263,17 +265,31 @@ mode
 		active.  A different slave becomes active if, and only
 		if, the active slave fails.  The bond's MAC address is
 		externally visible on only one port (network adapter)
-		to avoid confusing the switch.  This mode provides
-		fault tolerance.  The primary option affects the
-		behavior of this mode.
+		to avoid confusing the switch.
+
+		In bonding version 2.6.2 or later, when a failover
+		occurs in active-backup mode, bonding will issue one
+		or more gratuitous ARPs on the newly active slave.
+		One gratutious ARP is issued for the bonding master
+		interface and each VLAN interfaces configured above
+		it, provided that the interface has at least one IP
+		address configured.  Gratuitous ARPs issued for VLAN
+		interfaces are tagged with the appropriate VLAN id.
+
+		This mode provides fault tolerance.  The primary
+		option, documented below, affects the behavior of this
+		mode.
 
 	balance-xor or 2
 
-		XOR policy: Transmit based on [(source MAC address
-		XOR'd with destination MAC address) modulo slave
-		count].  This selects the same slave for each
-		destination MAC address.  This mode provides load
-		balancing and fault tolerance.
+		XOR policy: Transmit based on the selected transmit
+		hash policy.  The default policy is a simple [(source
+		MAC address XOR'd with destination MAC address) modulo
+		slave count].  Alternate transmit policies may be
+		selected via the xmit_hash_policy option, described
+		below.
+
+		This mode provides load balancing and fault tolerance.
 
 	broadcast or 3
 
@@ -286,6 +302,16 @@ mode
 		aggregation groups that share the same speed and
 		duplex settings.  Utilizes all slaves in the active
 		aggregator according to the 802.3ad specification.
+
+		Slave selection for outgoing traffic is done according
+		to the transmit hash policy, which may be changed from
+		the default simple XOR policy via the xmit_hash_policy
+		option, documented below.  Note that not all transmit
+		policies may be 802.3ad compliant, particularly in
+		regards to the packet mis-ordering requirements of
+		section 43.2.4 of the 802.3ad standard.  Differing
+		peer implementations will have varying tolerances for
+		noncompliance.
 
 		Prerequisites:
 
@@ -413,6 +439,60 @@ use_carrier
 	0 will use the deprecated MII / ETHTOOL ioctls.  The default
 	value is 1.
 
+xmit_hash_policy
+
+	Selects the transmit hash policy to use for slave selection in
+	balance-xor and 802.3ad modes.  Possible values are:
+
+	layer2
+
+		Uses XOR of hardware MAC addresses to generate the
+		hash.  The formula is
+
+		(source MAC XOR destination MAC) modulo slave count
+
+		This algorithm will place all traffic to a particular
+		network peer on the same slave.
+
+		This algorithm is 802.3ad compliant.
+
+	layer3+4
+
+		This policy uses upper layer protocol information,
+		when available, to generate the hash.  This allows for
+		traffic to a particular network peer to span multiple
+		slaves, although a single connection will not span
+		multiple slaves.
+
+		The formula for unfragmented TCP and UDP packets is
+
+		((source port XOR dest port) XOR
+			 ((source IP XOR dest IP) AND 0xffff)
+				modulo slave count
+
+		For fragmented TCP or UDP packets and all other IP
+		protocol traffic, the source and destination port
+		information is omitted.  For non-IP traffic, the
+		formula is the same as for the layer2 transmit hash
+		policy.
+
+		This policy is intended to mimic the behavior of
+		certain switches, notably Cisco switches with PFC2 as
+		well as some Foundry and IBM products.
+
+		This algorithm is not fully 802.3ad compliant.  A
+		single TCP or UDP conversation containing both
+		fragmented and unfragmented packets will see packets
+		striped across two interfaces.  This may result in out
+		of order delivery.  Most traffic types will not meet
+		this criteria, as TCP rarely fragments traffic, and
+		most UDP traffic is not involved in extended
+		conversations.  Other implementations of 802.3ad may
+		or may not tolerate this noncompliance.
+
+	The default value is layer2.  This option was added in bonding
+version 2.6.3.  In earlier versions of bonding, this parameter does
+not exist, and the layer2 policy is the only policy.
 
 
 3. Configuring Bonding Devices
@@ -514,7 +594,7 @@ STARTMODE="onboot"
 BONDING_MASTER="yes"
 BONDING_MODULE_OPTS="mode=active-backup miimon=100"
 BONDING_SLAVE0="eth0"
-BONDING_SLAVE1="eth1"
+BONDING_SLAVE1="bus-pci-0000:06:08.1"
 
 	Replace the sample BROADCAST, IPADDR, NETMASK and NETWORK
 values with the appropriate values for your network.
@@ -544,9 +624,17 @@ for the bonding mode, link monitoring, and so on here.  Do not include
 the max_bonds bonding parameter; this will confuse the configuration
 system if you have multiple bonding devices.
 
-	Finally, supply one BONDING_SLAVEn="ethX" for each slave,
-where "n" is an increasing value, one for each slave, and "ethX" is
-the name of the slave device (eth0, eth1, etc).
+	Finally, supply one BONDING_SLAVEn="slave device" for each
+slave.  where "n" is an increasing value, one for each slave.  The
+"slave device" is either an interface name, e.g., "eth0", or a device
+specifier for the network device.  The interface name is easier to
+find, but the ethN names are subject to change at boot time if, e.g.,
+a device early in the sequence has failed.  The device specifiers
+(bus-pci-0000:06:08.1 in the example above) specify the physical
+network device, and will not change unless the device's bus location
+changes (for example, it is moved from one PCI slot to another).  The
+example above uses one of each type for demonstration purposes; most
+configurations will choose one or the other for all slave devices.
 
 	When all configuration files have been modified or created,
 networking must be restarted for the configuration changes to take
@@ -857,7 +945,6 @@ bond0     Link encap:Ethernet  HWaddr 00:C0:F0:1F:37:B4
           collisions:0 txqueuelen:0
 
 eth0      Link encap:Ethernet  HWaddr 00:C0:F0:1F:37:B4
-          inet addr:XXX.XXX.XXX.YYY  Bcast:XXX.XXX.XXX.255  Mask:255.255.252.0
           UP BROADCAST RUNNING SLAVE MULTICAST  MTU:1500  Metric:1
           RX packets:3573025 errors:0 dropped:0 overruns:0 frame:0
           TX packets:1643167 errors:1 dropped:0 overruns:1 carrier:0
@@ -865,7 +952,6 @@ eth0      Link encap:Ethernet  HWaddr 00:C0:F0:1F:37:B4
           Interrupt:10 Base address:0x1080
 
 eth1      Link encap:Ethernet  HWaddr 00:C0:F0:1F:37:B4
-          inet addr:XXX.XXX.XXX.YYY  Bcast:XXX.XXX.XXX.255  Mask:255.255.252.0
           UP BROADCAST RUNNING SLAVE MULTICAST  MTU:1500  Metric:1
           RX packets:3651769 errors:0 dropped:0 overruns:0 frame:0
           TX packets:1643480 errors:0 dropped:0 overruns:0 carrier:0
@@ -1154,7 +1240,7 @@ traffic while still maintaining carrier on.
 
 	If running SNMP agents, the bonding driver should be loaded
 before any network drivers participating in a bond.  This requirement
-is due to the the interface index (ipAdEntIfIndex) being associated to
+is due to the interface index (ipAdEntIfIndex) being associated to
 the first interface found with a given IP address.  That is, there is
 only one ipAdEntIfIndex for each IP address.  For example, if eth0 and
 eth1 are slaves of bond0 and the driver for eth0 is loaded before the
@@ -1589,7 +1675,10 @@ needed as the number of systems involved grows (remember that each
 host in the network is configured with bonding).
 
 14. Switch Behavior Issues
---------------------------
+==========================
+
+14.1 Link Establishment and Failover Delays
+-------------------------------------------
 
 	Some switches exhibit undesirable behavior with regard to the
 timing of link up and down reporting by the switch.
@@ -1622,6 +1711,45 @@ ignoring the updelay.
 switches take a long time to go into backup mode, it may be desirable
 to not activate a backup interface immediately after a link goes down.
 Failover may be delayed via the downdelay bonding module option.
+
+14.2 Duplicated Incoming Packets
+--------------------------------
+
+	It is not uncommon to observe a short burst of duplicated
+traffic when the bonding device is first used, or after it has been
+idle for some period of time.  This is most easily observed by issuing
+a "ping" to some other host on the network, and noticing that the
+output from ping flags duplicates (typically one per slave).
+
+	For example, on a bond in active-backup mode with five slaves
+all connected to one switch, the output may appear as follows:
+
+# ping -n 10.0.4.2
+PING 10.0.4.2 (10.0.4.2) from 10.0.3.10 : 56(84) bytes of data.
+64 bytes from 10.0.4.2: icmp_seq=1 ttl=64 time=13.7 ms
+64 bytes from 10.0.4.2: icmp_seq=1 ttl=64 time=13.8 ms (DUP!)
+64 bytes from 10.0.4.2: icmp_seq=1 ttl=64 time=13.8 ms (DUP!)
+64 bytes from 10.0.4.2: icmp_seq=1 ttl=64 time=13.8 ms (DUP!)
+64 bytes from 10.0.4.2: icmp_seq=1 ttl=64 time=13.8 ms (DUP!)
+64 bytes from 10.0.4.2: icmp_seq=2 ttl=64 time=0.216 ms
+64 bytes from 10.0.4.2: icmp_seq=3 ttl=64 time=0.267 ms
+64 bytes from 10.0.4.2: icmp_seq=4 ttl=64 time=0.222 ms
+
+	This is not due to an error in the bonding driver, rather, it
+is a side effect of how many switches update their MAC forwarding
+tables.  Initially, the switch does not associate the MAC address in
+the packet with a particular switch port, and so it may send the
+traffic to all ports until its MAC forwarding table is updated.  Since
+the interfaces attached to the bond may occupy multiple ports on a
+single switch, when the switch (temporarily) floods the traffic to all
+ports, the bond device receives multiple copies of the same packet
+(one per slave device).
+
+	The duplicated packet behavior is switch dependent, some
+switches exhibit this, and some do not.  On switches that display this
+behavior, it can be induced by clearing the MAC forwarding table (on
+most Cisco switches, the privileged command "clear mac address-table
+dynamic" will accomplish this).
 
 15. Hardware Specific Considerations
 ====================================
@@ -1808,7 +1936,7 @@ switches currently available support 802.3ad.
 	If not explicitly configured (with ifconfig or ip link), the
 MAC address of the bonding device is taken from its first slave
 device.  This MAC address is then passed to all following slaves and
-remains persistent (even if the the first slave is removed) until the
+remains persistent (even if the first slave is removed) until the
 bonding device is brought down or reconfigured.
 
 	If you wish to change the MAC address, you can set it with

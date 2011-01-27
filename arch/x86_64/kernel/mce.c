@@ -22,7 +22,7 @@
 #include <asm/uaccess.h>
 
 #define MISC_MCELOG_MINOR 227
-#define NR_BANKS 5
+#define NR_BANKS 6
 
 static int mce_dont_init;
 
@@ -43,7 +43,7 @@ struct mce_log mcelog = {
 	MCE_LOG_LEN,
 }; 
 
-static void mce_log(struct mce *mce)
+void mce_log(struct mce *mce)
 {
 	unsigned next, entry;
 	mce->finished = 0;
@@ -275,7 +275,8 @@ static void mce_init(void *dummy)
 	rdmsrl(MSR_IA32_MCG_CAP, cap);
 	banks = cap & 0xff;
 	if (banks > NR_BANKS) { 
-		printk(KERN_INFO "MCE: warning: using only %d banks\n", banks);
+		printk(KERN_INFO "MCE: warning: using only %d of %d banks\n",
+			NR_BANKS, banks);
 		banks = NR_BANKS; 
 	}
 
@@ -305,6 +306,17 @@ static void __init mce_cpu_quirks(struct cpuinfo_x86 *c)
 	}
 }			
 
+static void __init mce_cpu_features(struct cpuinfo_x86 *c)
+{
+       switch (c->x86_vendor) {
+       case X86_VENDOR_AMD:
+               mce_amd_feature_init(c);
+               break;
+       default:
+               break;
+       }
+}
+
 /* 
  * Called for each booted CPU to set up machine checks.
  * Must be called with preempt off. 
@@ -321,6 +333,7 @@ void __init mcheck_init(struct cpuinfo_x86 *c)
 		return;
 
 	mce_init(NULL);
+        mce_cpu_features(c);
 }
 
 /*
@@ -436,7 +449,7 @@ static int __init mcheck_enable(char *str)
 }
 
 __setup("nomce", mcheck_disable);
-__setup("mce", mcheck_enable);
+__setup("mce=", mcheck_enable);
 
 /* 
  * Sysfs support
@@ -490,12 +503,20 @@ ACCESSOR(bank1ctl,bank[1],mce_restart())
 ACCESSOR(bank2ctl,bank[2],mce_restart())
 ACCESSOR(bank3ctl,bank[3],mce_restart())
 ACCESSOR(bank4ctl,bank[4],mce_restart())
+ACCESSOR(bank5ctl,bank[5],mce_restart())
+
+static struct sysdev_attribute * bank_attributes[NR_BANKS] = {
+	&attr_bank0ctl, &attr_bank1ctl, &attr_bank2ctl,
+	&attr_bank3ctl, &attr_bank4ctl, &attr_bank5ctl};
+
 ACCESSOR(tolerant,tolerant,)
 ACCESSOR(check_interval,check_interval,mce_restart())
 
 static __init int mce_init_device(void)
 {
 	int err;
+	int i;
+
 	if (!mce_available(&boot_cpu_data))
 		return -EIO;
 	err = sysdev_class_register(&mce_sysclass);
@@ -503,11 +524,9 @@ static __init int mce_init_device(void)
 		err = sysdev_register(&device_mce);
 	if (!err) { 
 		/* could create per CPU objects, but it is not worth it. */
-		sysdev_create_file(&device_mce, &attr_bank0ctl); 
-		sysdev_create_file(&device_mce, &attr_bank1ctl); 
-		sysdev_create_file(&device_mce, &attr_bank2ctl); 
-		sysdev_create_file(&device_mce, &attr_bank3ctl); 
-		sysdev_create_file(&device_mce, &attr_bank4ctl); 
+		for (i = 0; i < banks; i++)
+			sysdev_create_file(&device_mce, bank_attributes[i]);
+
 		sysdev_create_file(&device_mce, &attr_tolerant); 
 		sysdev_create_file(&device_mce, &attr_check_interval);
 	} 

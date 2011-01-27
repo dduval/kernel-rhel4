@@ -33,6 +33,7 @@
 #include <asm/cacheflush.h>
 #include <asm/kdebug.h>
 #include <asm/desc.h>
+#include <asm/uaccess.h>
 
 void jprobe_return_end(void);
 
@@ -56,13 +57,14 @@ static inline int is_IF_modifier(kprobe_opcode_t opcode)
 
 int arch_prepare_kprobe(struct kprobe *p)
 {
-	return 0;
-}
+	/* insn: must be on special executable page on i386. */
+	p->ainsn.insn = get_insn_slot();
+	if (!p->ainsn.insn)
+		return -ENOMEM;
 
-void arch_copy_kprobe(struct kprobe *p)
-{
 	memcpy(p->ainsn.insn, p->addr, MAX_INSN_SIZE * sizeof(kprobe_opcode_t));
 	p->opcode = *p->addr;
+	return 0;
 }
 
 void arch_arm_kprobe(struct kprobe *p)
@@ -81,6 +83,9 @@ void arch_disarm_kprobe(struct kprobe *p)
 
 void arch_remove_kprobe(struct kprobe *p)
 {
+	down(&kprobe_mutex);
+	free_insn_slot(p->ainsn.insn);
+	up(&kprobe_mutex);
 }
 
 static inline void save_previous_kprobe(struct kprobe_ctlblk *kcb)
@@ -117,7 +122,7 @@ static inline void prepare_singlestep(struct kprobe *p, struct pt_regs *regs)
 	if (p->opcode == BREAKPOINT_INSTRUCTION)
 		regs->eip = (unsigned long)p->addr;
 	else
-		regs->eip = (unsigned long)&p->ainsn.insn;
+		regs->eip = (unsigned long)p->ainsn.insn;
 }
 
 /* Called with kretprobe_lock held */
@@ -139,27 +144,6 @@ void arch_prepare_kretprobe(struct kretprobe *rp, struct pt_regs *regs)
 	}
 }
 
-static int get_ldt_value(unsigned long bytecount, unsigned long *desc)
-{
-	int nr, i;
-	unsigned long size;
-	struct mm_struct * mm = current->mm;
-	char *kaddr = NULL;
-
-	if (!mm->context.size)
-	 	return 0;
- 	nr = bytecount % PAGE_SIZE;
-  	for (i = 0, size = 0; size < bytecount; size =+ PAGE_SIZE, i++)
-   		;
-    	i--;
-     	kaddr = kmap_atomic(mm->context.ldt_pages[i], KM_LDT_PAGE0);
-      	desc[0] = (unsigned long ) (*(unsigned long *) (kaddr + nr));
-       	desc[1] = (unsigned long ) (*(unsigned long *) (kaddr + nr + 4));
-
- 	kunmap_atomic(kaddr, KM_LDT_PAGE0);
-  	return 1;
-}
-
 /*
  * Interrupts are disabled on entry as trap3 is an interrupt gate and they
  * remain disabled thorough out this function.
@@ -168,9 +152,10 @@ static int kprobe_handler(struct pt_regs *regs)
 {
 	struct kprobe *p;
 	int ret = 0;
-	kprobe_opcode_t *addr = NULL;
+	kprobe_opcode_t *addr;
 	struct kprobe_ctlblk *kcb;
-	unsigned long desc[2];
+
+	addr = (kprobe_opcode_t*)(regs->eip - sizeof(kprobe_opcode_t));
 
 	/*
 	 * We don't want to be preempted for the entire
@@ -178,18 +163,6 @@ static int kprobe_handler(struct pt_regs *regs)
 	 */
 	preempt_disable();
 	kcb = get_kprobe_ctlblk();
-
-	/* Check if the application is using LDT entry for its code segment and
-	 * calculate the address by reading the base address from the LDT entry.
-	 */
-       if ((regs->xcs & 4) && (current->mm)) {
-	       if (!get_ldt_value((unsigned long)((regs->xcs >> 3) * 8),
-				       				&desc[0]))
-		       goto no_kprobe;
-	       addr = (kprobe_opcode_t *)(get_desc_base(&desc[0]) +
-			       		regs->eip - sizeof(kprobe_opcode_t));
-       } else
-	       addr = (kprobe_opcode_t *)(regs->eip - sizeof(kprobe_opcode_t));
 
 	/* Check we're not actually recursing */
 	if (kprobe_running()) {
@@ -209,11 +182,24 @@ static int kprobe_handler(struct pt_regs *regs)
 			 */
 			save_previous_kprobe(kcb);
 			set_current_kprobe(p, regs, kcb);
-			p->nmissed++;
+			kprobes_inc_nmissed_count(p);
 			prepare_singlestep(p, regs);
 			kcb->kprobe_status = KPROBE_REENTER;
 			return 1;
 		} else {
+			if (regs->eflags & VM_MASK) {
+			/* We are in virtual-8086 mode. Return 0 */
+				goto no_kprobe;
+			}
+			if (*addr != BREAKPOINT_INSTRUCTION) {
+			/* The breakpoint instruction was removed by
+			 * another cpu right after we hit, no further
+			 * handling of this interrupt is appropriate
+			 */
+				regs->eip -= sizeof(kprobe_opcode_t);
+				ret = 1;
+				goto no_kprobe;
+			}
 			p = __get_cpu_var(current_kprobe);
 			if (p->break_handler && p->break_handler(p, regs)) {
 				goto ss_probe;
@@ -367,7 +353,7 @@ static void resume_execution(struct kprobe *p, struct pt_regs *regs,
 {
 	unsigned long *tos = (unsigned long *)&regs->esp;
 	unsigned long next_eip = 0;
-	unsigned long copy_eip = (unsigned long)&p->ainsn.insn;
+	unsigned long copy_eip = (unsigned long)p->ainsn.insn;
 	unsigned long orig_eip = (unsigned long)p->addr;
 
 	switch (p->ainsn.insn[0]) {
@@ -457,15 +443,57 @@ static inline int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
 
-	if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
-		return 1;
-
-	if (kcb->kprobe_status & KPROBE_HIT_SS) {
-		resume_execution(cur, regs, kcb);
+	switch(kcb->kprobe_status) {
+	case KPROBE_HIT_SS:
+	case KPROBE_REENTER:
+		/*
+		 * We are here because the instruction being single
+		 * stepped caused a page fault. We reset the current
+		 * kprobe and the eip points back to the probe address
+		 * and allow the page fault handler to continue as a
+		 * normal page fault.
+		 */
+		regs->eip = (unsigned long)cur->addr;
 		regs->eflags |= kcb->kprobe_old_eflags;
-
-		reset_current_kprobe();
+		if (kcb->kprobe_status == KPROBE_REENTER)
+			restore_previous_kprobe(kcb);
+		else
+			reset_current_kprobe();
 		preempt_enable_no_resched();
+		break;
+	case KPROBE_HIT_ACTIVE:
+	case KPROBE_HIT_SSDONE:
+		/*
+		 * We increment the nmissed count for accounting,
+		 * we can also use npre/npostfault count for accouting
+		 * these specific fault cases.
+		 */
+		kprobes_inc_nmissed_count(cur);
+
+		/*
+		 * We come here because instructions in the pre/post
+		 * handler caused the page_fault, this could happen
+		 * if handler tries to access user space by
+		 * copy_from_user(), get_user() etc. Let the
+		 * user-specified handler try to fix it first.
+		 */
+		if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
+			return 1;
+
+		/*
+		 * In case the user-specified fault handler returned
+		 * zero, try to fix up.
+		 */
+		if (fixup_exception(regs))
+			return 1;
+
+		/*
+		 * fixup_exception() could not handle it,
+		 * Let do_page_fault() fix it.
+		 */
+		break;
+	default:
+		break;
 	}
 	return 0;
 }
@@ -479,6 +507,9 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 	struct die_args *args = (struct die_args *)data;
 	int ret = NOTIFY_DONE;
 
+	if (args->regs && user_mode(args->regs))
+		return ret;
+
 	switch (val) {
 	case DIE_INT3:
 		if (kprobe_handler(args->regs))
@@ -489,6 +520,13 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 			ret = NOTIFY_STOP;
 		break;
 	case DIE_GPF:
+	case DIE_PAGE_FAULT:
+		preempt_disable();
+		if (kprobe_running() &&
+				kprobe_fault_handler(args->regs, args->trapnr))
+				ret = NOTIFY_STOP;
+		preempt_enable();
+		break;
 	default:
 		break;
 	}

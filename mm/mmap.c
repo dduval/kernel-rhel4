@@ -60,6 +60,10 @@ int sysctl_overcommit_ratio = 50;	/* default is 50% */
 int sysctl_max_map_count = DEFAULT_MAX_MAP_COUNT;
 atomic_t vm_committed_space = ATOMIC_INIT(0);
 
+#ifdef HAVE_ARCH_PICK_MMAP_LAYOUT
+extern int sysctl_legacy_va_layout;
+#endif
+
 EXPORT_SYMBOL(sysctl_overcommit_memory);
 EXPORT_SYMBOL(sysctl_overcommit_ratio);
 EXPORT_SYMBOL(sysctl_max_map_count);
@@ -801,6 +805,9 @@ unsigned long do_mmap_pgoff(struct file * file, unsigned long addr,
 		if (!(file && (file->f_vfsmnt->mnt_flags & MNT_NOEXEC)))
 			prot |= PROT_EXEC;
 
+	if (prot & PROT_WRITE)
+		prot |= PROT_READ;
+
 	if (!len)
 		return addr;
 
@@ -1076,7 +1083,13 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		    (!vma || addr + len <= vma->vm_start))
 			return addr;
 	}
-	start_addr = addr = mm->free_area_cache;
+	/* free_area_cache is not really optimized for 32 bit apps */
+#ifdef CONFIG_X86
+	if (sysctl_legacy_va_layout)
+		start_addr = addr = mm->mmap_base;
+	else
+#endif
+		start_addr = addr = mm->free_area_cache;
 
 full_search:
 	for (vma = find_vma(mm, addr); ; vma = vma->vm_next) {
@@ -1145,6 +1158,11 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 				(!vma || addr + len <= vma->vm_start))
 			return addr;
 	}
+	/* free_area_cache is not really optimized for 32 bit apps */
+#ifdef CONFIG_X86
+	if (sysctl_legacy_va_layout)
+		goto fail;
+#endif
 
 try_again:
 	/* make sure it can fit in the remaining address space */

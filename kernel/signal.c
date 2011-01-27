@@ -1176,6 +1176,41 @@ kill_proc_info(int sig, struct siginfo *info, pid_t pid)
 	return error;
 }
 
+/* like kill_proc_info(), but doesn't use uid/euid of "current" */
+int kill_proc_info_as_uid(int sig, struct siginfo *info, pid_t pid,
+		      uid_t uid, uid_t euid)
+{
+	int ret = -EINVAL;
+	struct task_struct *p;
+
+	if (sig < 0 || sig > _NSIG)
+		return ret;
+
+	read_lock(&tasklist_lock);
+	p = find_task_by_pid(pid);
+	if (!p) {
+		ret = -ESRCH;
+		goto out_unlock;
+	}
+	if ((!info || ((unsigned long)info != 1 &&
+			(unsigned long)info != 2 && SI_FROMUSER(info)))
+	    && (euid != p->suid) && (euid != p->uid)
+	    && (uid != p->suid) && (uid != p->uid)) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+	if (sig && p->sighand) {
+		unsigned long flags;
+		spin_lock_irqsave(&p->sighand->siglock, flags);
+		ret = __group_send_sig_info(sig, info, p);
+		spin_unlock_irqrestore(&p->sighand->siglock, flags);
+	}
+out_unlock:
+	read_unlock(&tasklist_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(kill_proc_info_as_uid);
+
 int print_fatal_signals = 0;
 
 static void print_fatal_signal(struct pt_regs *regs, int signr)

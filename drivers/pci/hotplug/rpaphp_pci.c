@@ -268,17 +268,6 @@ rpaphp_pci_config_slot(struct pci_bus *bus)
 	return dev;
 }
 
-static void enable_eeh(struct device_node *dn)
-{
-	struct device_node *sib;
-
-	for (sib = dn->child; sib; sib = sib->sibling) 
-		enable_eeh(sib);
-	eeh_add_device_early(dn);
-	return;
-	
-}
-
 static void print_slot_pci_funcs(struct pci_bus *bus)
 {
 	struct device_node *dn;
@@ -304,7 +293,7 @@ int rpaphp_config_pci_adapter(struct pci_bus *bus)
 	if (!dn)
 		goto exit;
 
-	enable_eeh(dn);
+	eeh_add_tree_early(dn);
 	dev = rpaphp_pci_config_slot(bus);
 	if (!dev) {
 		err("%s: can't find any devices.\n", __FUNCTION__);

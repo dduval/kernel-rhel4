@@ -713,10 +713,8 @@ usb_alloc_dev(struct usb_device *parent, struct usb_bus *bus, unsigned port)
 	memset(dev, 0, sizeof(*dev));
 
 	bus = usb_bus_get(bus);
-	if (!bus) {
-		kfree(dev);
-		return NULL;
-	}
+	if (!bus)
+		goto fail_bus_get;
 
 	device_initialize(&dev->dev);
 	dev->dev.bus = &usb_bus_type;
@@ -761,10 +759,16 @@ usb_alloc_dev(struct usb_device *parent, struct usb_bus *bus, unsigned port)
 
 	init_MUTEX(&dev->serialize);
 
-	if (dev->bus->op->allocate)
-		dev->bus->op->allocate(dev);
+	if (dev->bus->op->allocate && dev->bus->op->allocate(dev))
+		goto fail_allocate;
 
 	return dev;
+
+fail_allocate:
+	device_fini(&dev->dev);
+fail_bus_get:
+	kfree(dev);
+	return NULL;
 }
 
 /**

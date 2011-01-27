@@ -11,6 +11,7 @@ obj-y	:= process.o semaphore.o signal.o entry.o traps.o irq.o \
 obj-y += mce.o
 obj-y += dmi_scan.o
 
+obj-$(CONFIG_X86_MCE_AMD)       += mce_amd.o
 obj-$(CONFIG_MTRR)		+= ../../i386/kernel/cpu/mtrr/
 obj-$(CONFIG_ACPI_BOOT)		+= acpi/
 obj-$(CONFIG_X86_MSR)		+= msr.o
@@ -35,6 +36,7 @@ obj-$(CONFIG_MODULES)		+= module.o
 obj-y				+= topology.o
 obj-y				+= intel_cacheinfo.o
 
+obj-$(CONFIG_X86_LOCAL_APIC_INFO_MOD)	+= lapic_status.o
 bootflag-y			+= ../../i386/kernel/bootflag.o
 cpuid-$(subst m,y,$(CONFIG_X86_CPUID))  += ../../i386/kernel/cpuid.o
 topology-y                     += ../../i386/mach-default/topology.o

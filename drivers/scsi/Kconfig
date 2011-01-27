@@ -217,8 +217,6 @@ config SCSI_ISCSI_ATTRS
 	  each attached iSCSI device to sysfs, say Y.
 	  Otherwise, say N.
 
-source "drivers/scsi/sas/Kconfig"
-
 endmenu
 
 menu "SCSI low-level drivers"
@@ -333,7 +331,7 @@ config SCSI_AACRAID
 	depends on EXPERIMENTAL && SCSI && PCI
 
 source "drivers/scsi/aic7xxx/Kconfig.aic7xxx"
-source "drivers/scsi/aic94xx/Kconfig"
+source "drivers/scsi/adp94xx/Kconfig"
 
 config SCSI_AIC7XXX_OLD
 	tristate "Adaptec AIC7xxx support (old driver)"
@@ -425,15 +423,15 @@ config SCSI_SATA
 
 config SCSI_SATA_AHCI
 	tristate "AHCI SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	depends on SCSI_SATA && PCI
 	help
 	  This option enables support for AHCI Serial ATA.
 
 	  If unsure, say N.
 
 config SCSI_SATA_SVW
-	tristate "ServerWorks Frodo / Apple K2 SATA support (EXPERIMENTAL)"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	tristate "ServerWorks Frodo / Apple K2 SATA support"
+	depends on SCSI_SATA && PCI
 	help
 	  This option enables support for Broadcom/Serverworks/Apple K2
 	  SATA support.
@@ -450,11 +448,36 @@ config SCSI_ATA_PIIX
 
 	  If unsure, say N.
 
+config SCSI_SATA_MV
+	tristate "Marvell SATA support (HIGHLY EXPERIMENTAL)"
+	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	help
+	  This option enables support for the Marvell Serial ATA family.
+	  Currently supports 88SX[56]0[48][01] chips.
+
+	  If unsure, say N.
+
 config SCSI_SATA_NV
 	tristate "NVIDIA SATA support"
 	depends on SCSI_SATA && PCI && EXPERIMENTAL
 	help
 	  This option enables support for NVIDIA Serial ATA.
+
+	  If unsure, say N.
+
+config SCSI_PDC_ADMA
+	tristate "Pacific Digital ADMA support"
+	depends on SCSI_SATA && PCI
+	help
+	  This option enables support for Pacific Digital ADMA controllers
+
+	  If unsure, say N.
+
+config SCSI_SATA_QSTOR
+	tristate "Pacific Digital SATA QStor support"
+	depends on SCSI_SATA && PCI
+	help
+	  This option enables support for Pacific Digital Serial ATA QStor.
 
 	  If unsure, say N.
 
@@ -482,29 +505,50 @@ config SCSI_SATA_SIL
 
 	  If unsure, say N.
 
+config SCSI_SATA_SIL24
+	tristate "Silicon Image 3124/3132 SATA support"
+	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	help
+	  This option enables support for Silicon Image 3124/3132 Serial ATA.
+
+	  If unsure, say N.
+
 config SCSI_SATA_SIS
 	tristate "SiS 964/180 SATA support"
-	depends on SCSI_SATA && PCI
+	depends on SCSI_SATA && PCI && EXPERIMENTAL
 	help
 	  This option enables support for SiS Serial ATA 964/180.
 
 	  If unsure, say N.
 
+config SCSI_SATA_ULI
+	tristate "ULi Electronics SATA support"
+	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	help
+	  This option enables support for ULi Electronics SATA.
+
+	  If unsure, say N.
+
 config SCSI_SATA_VIA
 	tristate "VIA SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	depends on SCSI_SATA && PCI
 	help
 	  This option enables support for VIA Serial ATA.
 
 	  If unsure, say N.
 
 config SCSI_SATA_VITESSE
-	tristate "VITESSE VSC-7174 SATA support"
-	depends on SCSI_SATA && PCI && EXPERIMENTAL
+	tristate "VITESSE VSC-7174 / INTEL 31244 SATA support"
+	depends on SCSI_SATA && PCI
 	help
-	  This option enables support for Vitesse VSC7174 Serial ATA.
+	  This option enables support for Vitesse VSC7174 and Intel 31244 Serial ATA.
 
 	  If unsure, say N.
+
+config SCSI_SATA_INTEL_COMBINED
+	bool
+	depends on IDE=y && !BLK_DEV_IDE_SATA && (SCSI_SATA_AHCI || SCSI_ATA_PIIX)
+	default y
 
 config SCSI_BUSLOGIC
 	tristate "BusLogic SCSI support"
@@ -1223,6 +1267,12 @@ config SCSI_PCI2220I
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called pci2220i.
+
+config SCSI_PROMISE_STEX
+	tristate "Promise SuperTrak EX support"
+	depends on PCI && SCSI
+	help
+	  This is support for Promise SuperTrak EX.
 
 config SCSI_PSI240I
 	tristate "PSI240i support"

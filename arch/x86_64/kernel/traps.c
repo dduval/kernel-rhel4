@@ -570,6 +570,8 @@ static void mem_parity_error(unsigned char reason, struct pt_regs * regs)
 {
 	printk("Uhhuh. NMI received. Dazed and confused, but trying to continue\n");
 	printk("You probably have a hardware problem with your RAM chips\n");
+	if (panic_on_unrecovered_nmi)
+               panic("NMI: Not continuing");
 
 	/* Clear and disable the memory parity error line. */
 	reason = (reason & 0xf) | 4;
@@ -593,6 +595,10 @@ static void unknown_nmi_error(unsigned char reason, struct pt_regs * regs)
 {	printk("Uhhuh. NMI received for unknown reason %02x.\n", reason);
 	printk("Dazed and confused, but trying to continue\n");
 	printk("Do you have a strange power saving mode enabled?\n");
+
+	if (panic_on_unrecovered_nmi)
+                panic("NMI: Not continuing");
+
 }
 
 asmlinkage void default_do_nmi(struct pt_regs * regs)
@@ -879,6 +885,10 @@ asmlinkage void do_simd_coprocessor_error(struct pt_regs *regs)
 }
 
 asmlinkage void do_spurious_interrupt_bug(struct pt_regs * regs)
+{
+}
+
+asmlinkage void __attribute__((weak)) mce_threshold_interrupt(void)
 {
 }
 

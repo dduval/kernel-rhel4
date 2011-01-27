@@ -175,13 +175,13 @@ acpi_tb_get_rsdt_address (
 
 	/*
 	 * For RSDP revision 0 or 1, we use the RSDT.
-	 * For RSDP revision 2 (and above), we use the XSDT
+	 * For RSDP revision 2 (and above), we use the XSDT if present.
 	 */
-	if (acpi_gbl_RSDP->revision < 2) {
-		out_address->pointer.value = acpi_gbl_RSDP->rsdt_physical_address;
+	if ((acpi_gbl_RSDP->revision >= 2) && acpi_gbl_RSDP->xsdt_physical_address) {
+		out_address->pointer.value = acpi_gbl_RSDP->xsdt_physical_address;
 	}
 	else {
-		out_address->pointer.value = acpi_gbl_RSDP->xsdt_physical_address;
+		out_address->pointer.value = acpi_gbl_RSDP->rsdt_physical_address;
 	}
 }
 
@@ -210,15 +210,15 @@ acpi_tb_validate_rsdt (
 
 	/*
 	 * For RSDP revision 0 or 1, we use the RSDT.
-	 * For RSDP revision 2 and above, we use the XSDT
+	 * For RSDP revision 2 and above, we use the XSDT if present.
 	 */
-	if (acpi_gbl_RSDP->revision < 2) {
-		no_match = ACPI_STRNCMP ((char *) table_ptr, RSDT_SIG,
-				  sizeof (RSDT_SIG) -1);
-	}
-	else {
+	if ((acpi_gbl_RSDP->revision >= 2) && acpi_gbl_RSDP->xsdt_physical_address) {
 		no_match = ACPI_STRNCMP ((char *) table_ptr, XSDT_SIG,
 				  sizeof (XSDT_SIG) -1);
+	}
+	else {
+		no_match = ACPI_STRNCMP ((char *) table_ptr, RSDT_SIG,
+				  sizeof (RSDT_SIG) -1);
 	}
 
 	if (no_match) {

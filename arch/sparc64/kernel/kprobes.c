@@ -258,6 +258,10 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 			     void *data)
 {
 	struct die_args *args = (struct die_args *)data;
+
+	if (args->regs && user_mode(args->regs))
+ 		return NOTIFY_DONE;
+
 	switch (val) {
 	case DIE_DEBUG:
 		if (kprobe_handler(args->regs))

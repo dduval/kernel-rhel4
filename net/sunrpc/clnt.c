@@ -52,6 +52,7 @@ static void	call_allocate(struct rpc_task *task);
 static void	call_encode(struct rpc_task *task);
 static void	call_decode(struct rpc_task *task);
 static void	call_bind(struct rpc_task *task);
+static void	call_bind_status(struct rpc_task *task);
 static void	call_transmit(struct rpc_task *task);
 static void	call_status(struct rpc_task *task);
 static void	call_refresh(struct rpc_task *task);
@@ -346,38 +347,41 @@ rpc_default_callback(struct rpc_task *task)
 }
 
 /*
- *	Export the signal mask handling for aysnchronous code that
+ *	Export the signal mask handling for synchronous code that
  *	sleeps on RPC calls
  */
+#define RPC_INTR_SIGNALS (sigmask(SIGHUP) | sigmask(SIGINT) | sigmask(SIGQUIT) | sigmask(SIGTERM))
  
-void rpc_clnt_sigmask(struct rpc_clnt *clnt, sigset_t *oldset)
+static void rpc_save_sigmask(sigset_t *oldset, int intr)
 {
 	unsigned long	sigallow = sigmask(SIGKILL);
-	unsigned long	irqflags;
-	
-	/* Turn off various signals */
-	if (clnt->cl_intr) {
-		struct k_sigaction *action = current->sighand->action;
-		if (action[SIGINT-1].sa.sa_handler == SIG_DFL)
-			sigallow |= sigmask(SIGINT);
-		if (action[SIGQUIT-1].sa.sa_handler == SIG_DFL)
-			sigallow |= sigmask(SIGQUIT);
-	}
-	spin_lock_irqsave(&current->sighand->siglock, irqflags);
-	*oldset = current->blocked;
-	siginitsetinv(&current->blocked, sigallow & ~oldset->sig[0]);
-	recalc_sigpending();
-	spin_unlock_irqrestore(&current->sighand->siglock, irqflags);
+	sigset_t sigmask;
+
+	/* Block all signals except those listed in sigallow */
+	if (intr)
+		sigallow |= RPC_INTR_SIGNALS;
+	siginitsetinv(&sigmask, sigallow);
+	sigprocmask(SIG_BLOCK, &sigmask, oldset);
+}
+
+static inline void rpc_task_sigmask(struct rpc_task *task, sigset_t *oldset)
+{
+	rpc_save_sigmask(oldset, !RPC_TASK_UNINTERRUPTIBLE(task));
+}
+
+static inline void rpc_restore_sigmask(sigset_t *oldset)
+{
+	sigprocmask(SIG_SETMASK, oldset, NULL);
+}
+
+void rpc_clnt_sigmask(struct rpc_clnt *clnt, sigset_t *oldset)
+{
+	rpc_save_sigmask(oldset, clnt->cl_intr);
 }
 
 void rpc_clnt_sigunmask(struct rpc_clnt *clnt, sigset_t *oldset)
 {
-	unsigned long	irqflags;
-	
-	spin_lock_irqsave(&current->sighand->siglock, irqflags);
-	current->blocked = *oldset;
-	recalc_sigpending();
-	spin_unlock_irqrestore(&current->sighand->siglock, irqflags);
+	rpc_restore_sigmask(oldset);
 }
 
 /*
@@ -395,26 +399,26 @@ int rpc_call_sync(struct rpc_clnt *clnt, struct rpc_message *msg, int flags)
 
 	BUG_ON(flags & RPC_TASK_ASYNC);
 
-	rpc_clnt_sigmask(clnt, &oldset);		
-
 	status = -ENOMEM;
 	task = rpc_new_task(clnt, NULL, flags);
 	if (task == NULL)
 		goto out;
 
+	/* Mask signals on RPC calls _and_ GSS_AUTH upcalls */
+	rpc_task_sigmask(task, &oldset);
+
 	rpc_call_setup(task, msg, 0);
 
 	/* Set up the call info struct and execute the task */
-	if (task->tk_status == 0)
+	if (task->tk_status == 0) {
 		status = rpc_execute(task);
-	else {
+	} else {
 		status = task->tk_status;
 		rpc_release_task(task);
 	}
 
+	rpc_restore_sigmask(&oldset);
 out:
-	rpc_clnt_sigunmask(clnt, &oldset);		
-
 	return status;
 }
 
@@ -435,8 +439,6 @@ rpc_call_async(struct rpc_clnt *clnt, struct rpc_message *msg, int flags,
 
 	flags |= RPC_TASK_ASYNC;
 
-	rpc_clnt_sigmask(clnt, &oldset);		
-
 	/* Create/initialize a new RPC task */
 	if (!callback)
 		callback = rpc_default_callback;
@@ -444,6 +446,9 @@ rpc_call_async(struct rpc_clnt *clnt, struct rpc_message *msg, int flags,
 	if (!(task = rpc_new_task(clnt, callback, flags)))
 		goto out;
 	task->tk_calldata = data;
+
+	/* Mask signals on GSS_AUTH upcalls */
+	rpc_task_sigmask(task, &oldset);		
 
 	rpc_call_setup(task, msg, 0);
 
@@ -455,9 +460,8 @@ rpc_call_async(struct rpc_clnt *clnt, struct rpc_message *msg, int flags,
 		rpc_release_task(task);
 	}
 
+	rpc_restore_sigmask(&oldset);		
 out:
-	rpc_clnt_sigunmask(clnt, &oldset);		
-
 	return status;
 }
 
@@ -621,7 +625,7 @@ call_allocate(struct rpc_task *task)
 		return;
 	printk(KERN_INFO "RPC: buffer allocation failed for task %p\n", task); 
 
-	if (RPC_IS_ASYNC(task) || !(task->tk_client->cl_intr && signalled())) {
+	if (RPC_IS_ASYNC(task) || !signalled()) {
 		xprt_release(task);
 		task->tk_action = call_reserve;
 		rpc_delay(task, HZ>>4);
@@ -686,49 +690,104 @@ static void
 call_bind(struct rpc_task *task)
 {
 	struct rpc_clnt	*clnt = task->tk_client;
-	struct rpc_xprt *xprt = clnt->cl_xprt;
 
-	dprintk("RPC: %4d call_bind xprt %p %s connected\n", task->tk_pid,
-			xprt, (xprt_connected(xprt) ? "is" : "is not"));
+	dprintk("RPC: %4d call_bind clnt 0x%p port %d (status %d)\n",
+				task->tk_pid, clnt, clnt->cl_port, task->tk_status);
 
-	task->tk_action = (xprt_connected(xprt)) ? call_transmit : call_connect;
-
+	task->tk_action = call_connect;
 	if (!clnt->cl_port) {
-		task->tk_action = call_connect;
+		task->tk_action = call_bind_status;
 		task->tk_timeout = RPC_CONNECT_TIMEOUT;
 		rpc_getport(task, clnt);
 	}
 }
 
 /*
- * 4a.	Connect to the RPC server (TCP case)
+ * 4a.	Sort out bind result
+ */
+static void
+call_bind_status(struct rpc_task *task)
+{
+	int status = -EACCES;
+
+	if (task->tk_status >= 0) {
+		dprintk("RPC: %4d call_bind_status (status %d)\n",
+					task->tk_pid, task->tk_status);
+		task->tk_status = 0;
+		task->tk_action = call_connect;
+		return;
+	}
+
+	switch (task->tk_status) {
+	case -EACCES:
+		dprintk("RPC: %4d remote rpcbind: RPC program/version unavailable\n",
+				task->tk_pid);
+		rpc_delay(task, 3*HZ);
+		goto retry_bind;
+	case -ETIMEDOUT:
+		dprintk("RPC: %4d rpcbind request timed out\n",
+				task->tk_pid);
+		if (RPC_IS_SOFT(task)) {
+			status = -EIO;
+			break;
+		}
+		goto retry_bind;
+	case -EPFNOSUPPORT:
+		dprintk("RPC: %4d remote rpcbind service unavailable\n",
+				task->tk_pid);
+		break;
+	case -EPROTONOSUPPORT:
+		dprintk("RPC: %4d remote rpcbind version 2 unavailable\n",
+				task->tk_pid);
+		break;
+	default:
+		dprintk("RPC: %4d unrecognized rpcbind error (%d)\n",
+				task->tk_pid, -task->tk_status);
+		status = -EIO;
+		break;
+	}
+
+	rpc_exit(task, status);
+	return;
+
+retry_bind:
+	task->tk_status = 0;
+	task->tk_action = call_bind;
+	return;
+}
+
+/*
+ * 4b.	Connect to the RPC server
  */
 static void
 call_connect(struct rpc_task *task)
 {
-	struct rpc_clnt *clnt = task->tk_client;
+	struct rpc_xprt *xprt = task->tk_xprt;
 
-	dprintk("RPC: %4d call_connect status %d\n",
-				task->tk_pid, task->tk_status);
+	dprintk("RPC: %4d call_connect xprt %p %s connected\n",
+			task->tk_pid, xprt,
+			(xprt_connected(xprt) ? "is" : "is not"));
 
-	if (xprt_connected(clnt->cl_xprt)) {
-		task->tk_action = call_transmit;
-		return;
+	task->tk_action = call_transmit;
+	if (!xprt_connected(xprt)) {
+		task->tk_action = call_connect_status;
+		if (task->tk_status < 0)
+			return;
+		xprt_connect(task);
 	}
-	task->tk_action = call_connect_status;
-	if (task->tk_status < 0)
-		return;
-	xprt_connect(task);
 }
 
 /*
- * 4b. Sort out connect result
+ * 4c.	Sort out connect result
  */
 static void
 call_connect_status(struct rpc_task *task)
 {
 	struct rpc_clnt *clnt = task->tk_client;
 	int status = task->tk_status;
+
+	dprintk("RPC: %5u call_connect_status (status %d)\n", 
+				task->tk_pid, task->tk_status);
 
 	task->tk_status = 0;
 	if (status >= 0) {
@@ -737,17 +796,19 @@ call_connect_status(struct rpc_task *task)
 		return;
 	}
 
-	/* Something failed: we may have to rebind */
+	/* Something failed: remote service port may have changed */
 	if (clnt->cl_autobind)
 		clnt->cl_port = 0;
+
 	switch (status) {
 	case -ENOTCONN:
 	case -ETIMEDOUT:
 	case -EAGAIN:
-		task->tk_action = (clnt->cl_port == 0) ? call_bind : call_connect;
+		task->tk_action = call_bind;
 		break;
 	default:
 		rpc_exit(task, -EIO);
+		break;
 	}
 }
 

@@ -66,6 +66,7 @@ struct dio {
 	struct bio *bio;		/* bio under assembly */
 	struct inode *inode;
 	int rw;
+	loff_t i_size;			/* i_size when submitted */
 	int lock_type;			/* doesn't change */
 	unsigned blkbits;		/* doesn't change */
 	unsigned blkfactor;		/* When we're using an alignment which
@@ -230,17 +231,28 @@ static void finished_one_bio(struct dio *dio)
 	spin_lock_irqsave(&dio->bio_lock, flags);
 	if (dio->bio_count == 1) {
 		if (dio->is_async) {
+			ssize_t transferred;
+			loff_t offset;
+
 			/*
 			 * Last reference to the dio is going away.
 			 * Drop spinlock and complete the DIO.
 			 */
 			spin_unlock_irqrestore(&dio->bio_lock, flags);
-			dio_complete(dio, dio->block_in_file << dio->blkbits,
-					dio->result);
+			/* Check for short read case */
+			transferred = dio->result;
+			offset = dio->iocb->ki_pos;
+
+			if ((dio->rw == READ) &&
+			    ((offset + transferred) > dio->i_size))
+				transferred = dio->i_size - offset;
+
+			dio_complete(dio, offset, transferred);
+
 			/* Complete AIO later if falling back to buffered i/o */
 			if (dio->result == dio->size ||
 				((dio->rw == READ) && dio->result)) {
-				aio_complete(dio->iocb, dio->result, 0);
+				aio_complete(dio->iocb, transferred, 0);
 				kfree(dio);
 				return;
 			} else {
@@ -842,13 +854,20 @@ do_holes:
 			/* Handle holes */
 			if (!buffer_mapped(map_bh)) {
 				char *kaddr;
+				loff_t i_size_aligned;
 
 				/* AKPM: eargh, -ENOTBLK is a hack */
 				if (dio->rw == WRITE)
 					return -ENOTBLK;
 
+				/*
+				 * Be sure to account for a partial block as the
+				 * last block in the file
+				 */
+				i_size_aligned = ALIGN(i_size_read(dio->inode),
+							1 << blkbits);
 				if (dio->block_in_file >=
-					i_size_read(dio->inode)>>blkbits) {
+						i_size_aligned >> blkbits) {
 					/* We hit eof */
 					page_cache_release(page);
 					goto out;
@@ -949,6 +968,7 @@ direct_io_worker(int rw, struct kiocb *iocb, struct inode *inode,
 	dio->page_errors = 0;
 	dio->result = 0;
 	dio->iocb = iocb;
+	dio->i_size = i_size_read(inode);
 
 	/*
 	 * BIO completion state.
@@ -1130,11 +1150,23 @@ direct_io_worker(int rw, struct kiocb *iocb, struct inode *inode,
 
 /*
  * This is a library function for use by filesystem drivers.
+ * The locking rules are governed by the dio_lock_type parameter.
  *
- * For writes to S_ISREG files, we are called under i_sem and return with i_sem
- * held, even though it is internally dropped.
+ * DIO_NO_LOCKING (no locking, for raw block device access)
+ * For writes, i_sem is not held on entry; it is never taken.
  *
- * For writes to S_ISBLK files, i_sem is not held on entry; it is never taken.
+ * DIO_LOCKING (simple locking for regular files)
+ * For writes we are called under i_sem and return with i_sem held, even though
+ * it is internally dropped.
+ * For reads, i_sem is not held on entry, but it is taken and dropped before
+ * returning.
+ *
+ * DIO_OWN_LOCKING (filesystem provides synchronisation and handling of
+ *	uninitialised data, allowing parallel direct readers and writers)
+ * For writes we are called without i_sem, return without it, never touch it.
+ * For reads, i_sem is held on entry and will be released before returning.
+ *
+ * Additional i_alloc_sem locking requirements described inline below.
  */
 ssize_t
 __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
@@ -1157,6 +1189,7 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 	int asegs;
 	caddr_t nbase;
 	size_t nlen;
+	int reader_with_isem = (rw == READ && dio_lock_type == DIO_OWN_LOCKING);
 
 	if (bdev)
 		bdev_blkbits = blksize_bits(bdev_hardsect_size(bdev));
@@ -1247,16 +1280,20 @@ __blockdev_direct_IO(int rw, struct kiocb *iocb, struct inode *inode,
 			struct address_space *mapping;
 
 			mapping = iocb->ki_filp->f_mapping;
-			down(&inode->i_sem);
+			if (dio_lock_type != DIO_OWN_LOCKING) {
+				down(&inode->i_sem);
+				reader_with_isem = 1;
+			}
 			retval = filemap_write_and_wait(mapping);
 			if (retval) {
-				up(&inode->i_sem);
 				kfree(dio);
 				goto out;
 			}
 
-			if (dio_lock_type == DIO_OWN_LOCKING)
+			if (dio_lock_type == DIO_OWN_LOCKING) {
 				up(&inode->i_sem);
+				reader_with_isem = 0;
+			}
 		}
 
 		if (dio_lock_type == DIO_LOCKING)
@@ -1276,7 +1313,13 @@ cluster_skip_locking:
 
 	retval = direct_io_worker(rw, iocb, inode, iov, offset,
 				nr_segs, blkbits, get_blocks, end_io, dio);
+
+	if (rw == READ && dio_lock_type == DIO_LOCKING)
+		reader_with_isem = 0;
+
 out:
+	if (reader_with_isem)
+		up(&inode->i_sem);
 	if (niov)
 		kfree(niov);
 	return retval;

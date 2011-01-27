@@ -896,6 +896,12 @@ sctp_disposition_t sctp_sf_backbeat_8_3(const struct sctp_endpoint *ep,
 		return sctp_sf_pdiscard(ep, asoc, type, arg, commands);
 
 	hbinfo = (sctp_sender_hb_info_t *) chunk->skb->data;
+	/* Make sure that the length of the parameter is what we expect */
+	if (ntohs(hbinfo->param_hdr.length) !=
+				    sizeof(sctp_sender_hb_info_t)) {
+		return SCTP_DISPOSITION_DISCARD;
+	}
+
 	from_addr = hbinfo->daddr;
 	link = sctp_assoc_lookup_paddr(asoc, &from_addr);
 
@@ -4649,7 +4655,10 @@ int sctp_eat_data(const struct sctp_association *asoc,
 	int tmp;
 	__u32 tsn;
 	int account_value;
+	__u16 num_gaps;
+	struct sctp_tsnmap *map = (struct sctp_tsnmap *)&asoc->peer.tsn_map;
 	struct sock *sk = asoc->base.sk;
+	int rcvbuf_over = 0;
 
 	data_hdr = chunk->subh.data_hdr = (sctp_datahdr_t *)chunk->skb->data;
 	skb_pull(chunk->skb, sizeof(sctp_datahdr_t));
@@ -4661,9 +4670,14 @@ int sctp_eat_data(const struct sctp_association *asoc,
 
 	/*
 	 * if we are established, and we have used up our receive
-	 * buffer memory, drop the frame
+	 * buffer memory, think about droping the frame
+	 * Note that we have an opportunity to improve performance here
+	 * if we accept one chunk from an skbuf, we have to keep all the memory 
+	 * of that skbuff around until the chunk is read into user space
+	 * therefore, once we accept 1 chunk we may as well accept all remaining 	
+	 * chunks in the skbuff.  The data_accepted flag helps us do that
 	 */
-	if (asoc->state == SCTP_STATE_ESTABLISHED) {
+	if ((asoc->state == SCTP_STATE_ESTABLISHED) && (!chunk->data_accepted)) {
 		/*
 		 * If the receive buffer policy is 1, then each
 		 * association can allocate up to sk_rcvbuf bytes
@@ -4674,9 +4688,27 @@ int sctp_eat_data(const struct sctp_association *asoc,
 			account_value = atomic_read(&asoc->rmem_alloc);
 		else
 			account_value = atomic_read(&sk->sk_rmem_alloc);
+		if (account_value > sk->sk_rcvbuf) {
+			
+			/*
+			 * We need to make forward progress, even when we are
+			 * under memory pressure, so we always allow the 
+			 * next tsn after the ctsn ack point to be accepted.
+			 * This lets us avoid deadlocks in which we have to 
+			 * drop frames that would otherwise let us drain the 
+			 * receive queue
+			 */
+			if ((sctp_tsnmap_get_ctsn(map) + 1) != tsn)
+				return SCTP_IERROR_IGNORE_TSN;
 
-		if (account_value > sk->sk_rcvbuf)
-			return SCTP_IERROR_IGNORE_TSN;
+			/*
+			 * we're going to accept the frame
+			 * but we should renege to make space for it
+			 * this will send us down that path later
+			 * in this function
+			 */
+			rcvbuf_over = 1;
+		}
 	}
 
 	/* Process ECN based congestion.
@@ -4724,6 +4756,7 @@ int sctp_eat_data(const struct sctp_association *asoc,
 	datalen -= sizeof(sctp_data_chunk_t);
 
 	deliver = SCTP_CMD_CHUNK_ULP;
+	chunk->data_accepted = 1;
 
 	/* Think about partial delivery. */
 	if ((datalen >= asoc->rwnd) && (!asoc->ulpq.pd_mode)) {
@@ -4740,7 +4773,8 @@ int sctp_eat_data(const struct sctp_association *asoc,
 	 * large spill over.
 	 */
 	if (!asoc->rwnd || asoc->rwnd_over ||
-	    (datalen > asoc->rwnd + asoc->frag_point)) {
+	    (datalen > asoc->rwnd + asoc->frag_point) ||
+	    rcvbuf_over) {
 
 		/* If this is the next TSN, consider reneging to make
 		 * room.   Note: Playing nice with a confused sender.  A
@@ -4748,8 +4782,8 @@ int sctp_eat_data(const struct sctp_association *asoc,
 		 * space and in the future we may want to detect and
 		 * do more drastic reneging.
 		 */
-		if (sctp_tsnmap_has_gap(&asoc->peer.tsn_map) &&
-		    (sctp_tsnmap_get_ctsn(&asoc->peer.tsn_map) + 1) == tsn) {
+		if (sctp_tsnmap_has_gap(map) &&
+		    (sctp_tsnmap_get_ctsn(map) + 1) == tsn) {
 			SCTP_DEBUG_PRINTK("Reneging for tsn:%u\n", tsn);
 			deliver = SCTP_CMD_RENEGE;
 		} else {

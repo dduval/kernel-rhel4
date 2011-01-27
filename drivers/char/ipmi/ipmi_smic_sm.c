@@ -48,7 +48,7 @@
 #include <linux/ipmi_msgdefs.h>		/* for completion codes */
 #include "ipmi_si_sm.h"
 
-#define IPMI_SMIC_VERSION "33.11"
+#define IPMI_SMIC_VERSION "33.13"
 
 /* smic_debug is a bit-field
  *	SMIC_DEBUG_ENABLE -	turned on for now

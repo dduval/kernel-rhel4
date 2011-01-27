@@ -13,35 +13,35 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/string.h>
+#include <linux/if_arp.h>
 #include <linux/inetdevice.h>
 #include <linux/inet.h>
 #include <linux/interrupt.h>
 #include <linux/netpoll.h>
 #include <linux/sched.h>
-#include <linux/rcupdate.h>
 #include <linux/nmi.h>
+#include <linux/delay.h>
+#include <linux/reboot.h>
+#include <linux/rcupdate.h>
+#include <linux/workqueue.h>
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <asm/unaligned.h>
-#include <asm/byteorder.h>
 
 /*
  * We maintain a small pool of fully-sized skbs, to make sure the
  * message gets out even in extreme OOM situations.
  */
 
-#define MAX_SKBS 32
 #define MAX_UDP_CHUNK 1460
+#define MAX_SKBS 32
+#define MAX_RETRIES 20000
 
-static spinlock_t skb_list_lock = SPIN_LOCK_UNLOCKED;
+static DEFINE_SPINLOCK(skb_list_lock);
 static int nr_skbs;
 static struct sk_buff *skbs;
 
-static spinlock_t rx_list_lock = SPIN_LOCK_UNLOCKED;
-static LIST_HEAD(rx_list);
-
 static atomic_t trapped;
-spinlock_t netpoll_poll_lock = SPIN_LOCK_UNLOCKED;
 
 #define NETPOLL_RX_ENABLED  1
 #define NETPOLL_RX_DROP     2
@@ -55,7 +55,7 @@ static void zap_completion_queue(void);
 static int checksum_udp(struct sk_buff *skb, struct udphdr *uh,
 			     unsigned short ulen, u32 saddr, u32 daddr)
 {
-	if (uh->check == 0)
+	if (uh->check == 0 || skb->ip_summed == CHECKSUM_UNNECESSARY)
 		return 0;
 
 	if (skb->ip_summed == CHECKSUM_HW)
@@ -68,46 +68,64 @@ static int checksum_udp(struct sk_buff *skb, struct udphdr *uh,
 }
 
 /*
- * Check whether delayed processing was scheduled for our current CPU,
- * and then manually invoke NAPI polling to pump data off the card.
+ * Check whether delayed processing was scheduled for our NIC. If so,
+ * we attempt to grab the poll lock and use ->poll() to pump the card.
+ * If this fails, either we've recursed in ->poll() or it's already
+ * running on another CPU.
+ *
+ * Note: we don't mask interrupts with this lock because we're using
+ * trylock here and interrupts are already disabled in the softirq
+ * case. Further, we test the poll_owner to avoid recursion on UP
+ * systems where the lock doesn't exist.
  *
  * In cases where there is bi-directional communications, reading only
  * one message at a time can lead to packets being dropped by the
  * network adapter, forcing superfluous retries and possibly timeouts.
  * Thus, we set our budget to greater than 1.
  */
-static void poll_napi(struct netpoll *np)
+static void poll_napi(struct net_device *dev)
 {
 	int budget = netdump_mode ? 64 : 16;
-	unsigned long flags;
-	struct softnet_data *queue;
+	struct net_device_wrapper *ndw = dev_wrapper(dev);
+	struct netpoll_info *npinfo;
 
-	spin_lock_irqsave(&netpoll_poll_lock, flags);
-	queue = &__get_cpu_var(softnet_data);
-	if (test_bit(__LINK_STATE_RX_SCHED, &np->dev->state) &&
-	    !list_empty(&queue->poll_list)) {
-		np->dev->netpoll_rx |= NETPOLL_RX_DROP;
+	if (!ndw)
+		return;
+	npinfo = ndw->npinfo;
+
+	if (test_bit(__LINK_STATE_RX_SCHED, &dev->state) &&
+	    npinfo->poll_owner != smp_processor_id() &&
+	    spin_trylock(&npinfo->poll_lock)) {
+		npinfo->rx_flags |= NETPOLL_RX_DROP;
 		atomic_inc(&trapped);
 
-		np->dev->poll(np->dev, &budget);
+		dev->poll(dev, &budget);
 
 		atomic_dec(&trapped);
-		np->dev->netpoll_rx &= ~NETPOLL_RX_DROP;
+		npinfo->rx_flags &= ~NETPOLL_RX_DROP;
+		spin_unlock(&npinfo->poll_lock);
 	}
-	spin_unlock_irqrestore(&netpoll_poll_lock, flags);
+}
+
+void netpoll_poll_dev(struct net_device *dev)
+{
+	if(!netif_running(dev) || !dev->poll_controller)
+		return;
+
+	/* Process pending work on NIC */
+	dev->poll_controller(dev);
+	if (dev->poll)
+		poll_napi(dev);
+
+	zap_completion_queue();
 }
 
 void netpoll_poll(struct netpoll *np)
 {
-	if(!np->dev || !netif_running(np->dev) || !np->dev->poll_controller)
+	if(!np->dev)
 		return;
 
-	/* Process pending work on NIC */
-	np->dev->poll_controller(np->dev);
-	if (np->dev->poll)
-		poll_napi(np);
-
-	zap_completion_queue();
+	netpoll_poll_dev(np->dev);
 }
 
 static void refill_skbs(void)
@@ -191,40 +209,65 @@ repeat:
 	return skb;
 }
 
+/*
+ *  This function can be called from virtual device drivers, such as the
+ *  bonding driver.  In this case, skb->dev is filled in with the real
+ *  device over which the packet needs to be sent.  For this reason, we use
+ *  the skb->dev instead of np->dev.  Essentially, np->dev can be, for
+ *  example, bond0, while we actually need to send the packet out over eth0.
+ */
 void netpoll_send_skb(struct netpoll *np, struct sk_buff *skb)
 {
 	int status;
+	struct net_device *dev = skb->dev;
+	struct net_device_wrapper *ndw = dev_wrapper(dev);
+	struct netpoll_info *npinfo;
 
-repeat:
-	if(!np || !np->dev || !netif_running(np->dev)) {
+	if(!ndw || !np || !dev || !netif_running(dev)) {
 		__kfree_skb(skb);
 		return;
 	}
 
-	spin_lock(&np->dev->xmit_lock);
-	np->dev->xmit_lock_owner = smp_processor_id();
+	npinfo = ndw->npinfo;
 
-	/*
-	 * network drivers do not expect to be called if the queue is
-	 * stopped.
-	 */
-	if (netif_queue_stopped(np->dev)) {
-		np->dev->xmit_lock_owner = -1;
-		spin_unlock(&np->dev->xmit_lock);
-
-		netpoll_poll(np);
-		goto repeat;
+	/* avoid recursion */
+	if (npinfo->poll_owner == smp_processor_id()) {
+		__kfree_skb(skb);
+		return;
 	}
 
-	status = np->dev->hard_start_xmit(skb, np->dev);
-	np->dev->xmit_lock_owner = -1;
-	spin_unlock(&np->dev->xmit_lock);
+	do {
+		npinfo->tries--;
+		spin_lock(&dev->xmit_lock);
+		dev->xmit_lock_owner = smp_processor_id();
 
-	/* transmit busy */
-	if(status) {
-		netpoll_poll(np);
-		goto repeat;
-	}
+		/*
+		 * network drivers do not expect to be called if the queue is
+		 * stopped.
+		 */
+		if (netif_queue_stopped(dev)) {
+			dev->xmit_lock_owner = -1;
+			spin_unlock(&dev->xmit_lock);
+			netpoll_poll_dev(dev);
+			udelay(50);
+			continue;
+		}
+
+		if (ndw->netpoll_start_xmit)
+			status = ndw->netpoll_start_xmit(np, skb, dev);
+		else
+			status = dev->hard_start_xmit(skb, dev);
+		dev->xmit_lock_owner = -1;
+		spin_unlock(&dev->xmit_lock);
+
+		if (!status) {
+			npinfo->tries = MAX_RETRIES; /* reset */
+			return;
+		}
+
+		netpoll_poll_dev(dev);
+		udelay(50);
+	} while (npinfo->tries > 0);
 }
 
 void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
@@ -237,7 +280,7 @@ void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
 
 	udp_len = len + sizeof(*udph);
 	ip_len = eth_len = udp_len + sizeof(*iph);
-	total_len = eth_len + ETH_HLEN;
+	total_len = eth_len + ETH_HLEN + NET_IP_ALIGN;
 
 	skb = find_skb(np, total_len, total_len - len);
 	if (!skb)
@@ -265,7 +308,7 @@ void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
 	iph->check    = 0;
 	put_unaligned(htonl(np->local_ip), &(iph->saddr));
 	put_unaligned(htonl(np->remote_ip), &(iph->daddr));
-	iph->check    = ip_fast_csum((unsigned char *)iph, 5);
+	iph->check    = ip_fast_csum((unsigned char *)iph, iph->ihl);
 
 	eth = (struct ethhdr *) skb_push(skb, ETH_HLEN);
 
@@ -273,30 +316,25 @@ void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
 	memcpy(eth->h_source, np->local_mac, 6);
 	memcpy(eth->h_dest, np->remote_mac, 6);
 
+	skb->dev = np->dev;
+
 	netpoll_send_skb(np, skb);
 }
 
 static void arp_reply(struct sk_buff *skb)
 {
+	struct netpoll_info *npinfo = dev_wrapper(skb->dev)->npinfo;
 	struct arphdr *arp;
 	unsigned char *arp_ptr;
 	int size, type = ARPOP_REPLY, ptype = ETH_P_ARP;
 	u32 sip, tip;
 	struct sk_buff *send_skb;
-	unsigned long flags;
-	struct list_head *p;
 	struct netpoll *np = NULL;
 
-	spin_lock_irqsave(&rx_list_lock, flags);
-	list_for_each(p, &rx_list) {
-		np = list_entry(p, struct netpoll, rx_list);
-		if ( np->dev == skb->dev )
-			break;
-		np = NULL;
-	}
-	spin_unlock_irqrestore(&rx_list_lock, flags);
-
-	if (!np) return;
+	if (npinfo->rx_np && npinfo->rx_np->dev == skb->dev)
+		np = npinfo->rx_np;
+	if (!np)
+		return;
 
 	/* No arp on this interface */
 	if (skb->dev->flags & IFF_NOARP)
@@ -372,18 +410,15 @@ static void arp_reply(struct sk_buff *skb)
 	netpoll_send_skb(np, send_skb);
 }
 
-int netpoll_rx(struct sk_buff *skb)
+int __netpoll_rx(struct sk_buff *skb)
 {
 	int proto, len, ulen;
 	struct iphdr *iph;
 	struct udphdr *uh;
-	struct netpoll *np;
-	struct list_head *p;
-	unsigned long flags;
+	struct netpoll *np = dev_wrapper(skb->dev)->npinfo->rx_np;
 
-	if (!(skb->dev->netpoll_rx & NETPOLL_RX_ENABLED))
-		return 1;
-
+	if (!np)
+		goto out;
 	if (skb->dev->type != ARPHRD_ETHER)
 		goto out;
 
@@ -425,34 +460,29 @@ int netpoll_rx(struct sk_buff *skb)
 
 	if (ulen != len)
 		goto out;
-	if (checksum_udp(skb, uh, ulen, iph->saddr, iph->daddr) < 0)
+	if (checksum_udp(skb, uh, ulen, iph->saddr, iph->daddr))
+		goto out;
+	if (np->local_ip && np->local_ip != ntohl(iph->daddr))
+		goto out;
+	if (np->remote_ip && np->remote_ip != ntohl(iph->saddr))
+		goto out;
+	if (np->local_port && np->local_port != ntohs(uh->dest))
 		goto out;
 
-	spin_lock_irqsave(&rx_list_lock, flags);
-	list_for_each(p, &rx_list) {
-		np = list_entry(p, struct netpoll, rx_list);
-		if (np->dev && np->dev != skb->dev)
-			continue;
-		if (np->local_ip && np->local_ip != ntohl(iph->daddr))
-			continue;
-		if (np->remote_ip && np->remote_ip != ntohl(iph->saddr))
-			continue;
-		if (np->local_port && np->local_port != ntohs(uh->dest))
-			continue;
+	np->rx_hook(np, ntohs(uh->source),
+		    (char *)(uh+1),
+		    ulen - sizeof(struct udphdr));
 
-		spin_unlock_irqrestore(&rx_list_lock, flags);
-
-		if (np->rx_hook)
-			np->rx_hook(np, ntohs(uh->source),
-				    (char *)(uh+1),
-				    ulen - sizeof(struct udphdr));
-
-		return 1;
-	}
-	spin_unlock_irqrestore(&rx_list_lock, flags);
+	kfree_skb(skb);
+	return 1;
 
 out:
-	return atomic_read(&trapped);
+	if (atomic_read(&trapped)) {
+		kfree_skb(skb);
+		return 1;
+	}
+
+	return 0;
 }
 
 int netpoll_parse_options(struct netpoll *np, char *opt)
@@ -567,6 +597,9 @@ int netpoll_setup(struct netpoll *np)
 {
 	struct net_device *ndev = NULL;
 	struct in_device *in_dev;
+	struct net_device_wrapper *ndw = NULL;
+	struct netpoll_info *npinfo = NULL;
+	unsigned long flags;
 
 	if (np->dev_name)
 		ndev = dev_get_by_name(np->dev_name);
@@ -575,23 +608,40 @@ int netpoll_setup(struct netpoll *np)
 		       np->name, np->dev_name);
 		return -1;
 	}
+
 	if (!ndev->poll_controller) {
 		printk(KERN_ERR "%s: %s doesn't support polling, aborting.\n",
 		       np->name, np->dev_name);
 		goto release;
 	}
 
+	np->dev = ndev;
+	ndw = dev_wrapper(ndev);
+	if (!ndw)
+		goto release;
+
+	if (!ndw->npinfo) {
+		npinfo = kmalloc(sizeof(*npinfo), GFP_KERNEL);
+		if (!npinfo)
+			goto release;
+
+		npinfo->rx_flags = 0;
+		npinfo->rx_np = NULL;
+		spin_lock_init(&npinfo->poll_lock);
+		npinfo->poll_owner = -1;
+		npinfo->tries = MAX_RETRIES;
+		spin_lock_init(&npinfo->rx_lock);
+	} else
+		npinfo = ndw->npinfo;
+
 	if (!netif_running(ndev)) {
-		unsigned short oflags;
 		unsigned long atmost, atleast;
 
 		printk(KERN_INFO "%s: device %s not up yet, forcing it\n",
 		       np->name, np->dev_name);
 
-		oflags = ndev->flags;
-
 		rtnl_shlock();
-		if (dev_change_flags(ndev, oflags | IFF_UP) < 0) {
+		if (dev_change_flags(ndev, ndev->flags | IFF_UP) < 0) {
 			printk(KERN_ERR "%s: failed to open %s\n",
 			       np->name, np->dev_name);
 			rtnl_shunlock();
@@ -600,7 +650,7 @@ int netpoll_setup(struct netpoll *np)
 		rtnl_shunlock();
 
 		atleast = jiffies + HZ/10;
- 		atmost = jiffies + 10*HZ;
+ 		atmost = jiffies + 4*HZ;
 		while (!netif_carrier_ok(ndev)) {
 			if (time_after(jiffies, atmost)) {
 				printk(KERN_NOTICE
@@ -611,12 +661,16 @@ int netpoll_setup(struct netpoll *np)
 			cond_resched();
 		}
 
+		/* If carrier appears to come up instantly, we don't
+		 * trust it and pause so that we don't pump all our
+		 * queued console messages into the bitbucket.
+		 */
+
 		if (time_before(jiffies, atleast)) {
-			printk(KERN_NOTICE "%s: carrier detect appears flaky,"
-			       " waiting 10 seconds\n",
+			printk(KERN_NOTICE "%s: carrier detect appears"
+			       " untrustworthy, waiting 4 seconds\n",
 			       np->name);
-			while (time_before(jiffies, atmost))
-				cond_resched();
+			msleep(4000);
 		}
 	}
 
@@ -625,7 +679,7 @@ int netpoll_setup(struct netpoll *np)
 
 	if (!np->local_ip) {
 		rcu_read_lock();
-		in_dev = __in_dev_get(ndev);
+		in_dev = __in_dev_get_rcu(ndev);
 
 		if (!in_dev || !in_dev->ifa_list) {
 			rcu_read_unlock();
@@ -640,40 +694,56 @@ int netpoll_setup(struct netpoll *np)
 		       np->name, HIPQUAD(np->local_ip));
 	}
 
-	np->dev = ndev;
-
-	if(np->rx_hook) {
-		unsigned long flags;
-
-		np->dev->netpoll_rx = NETPOLL_RX_ENABLED;
-
-		spin_lock_irqsave(&rx_list_lock, flags);
-		list_add(&np->rx_list, &rx_list);
-		spin_unlock_irqrestore(&rx_list_lock, flags);
+	if (np->rx_hook) {
+		spin_lock_irqsave(&npinfo->rx_lock, flags);
+		npinfo->rx_flags |= NETPOLL_RX_ENABLED;
+		npinfo->rx_np = np;
+		spin_unlock_irqrestore(&npinfo->rx_lock, flags);
 	}
 
-	if(np->dump_func)
+	if (np->dump_func)
 		netdump_func = np->dump_func;
 
+	/* fill up the skb queue */
+	refill_skbs();
+
+	/* last thing to do is link it to the net device structure */
+	ndw->npinfo = npinfo;
+
+	/* avoid racing with NAPI reading npinfo */
+	synchronize_kernel();
+
+	/* Call the device specific netpoll initialization routine. */
+	if (ndw->netpoll_setup)
+		ndw->netpoll_setup(ndev, npinfo);
+
 	return 0;
+
  release:
+	if (ndw && !ndw->npinfo)
+		kfree(npinfo);
+	np->dev = NULL;
 	dev_put(ndev);
 	return -1;
 }
 
 void netpoll_cleanup(struct netpoll *np)
 {
-	if (np->rx_hook) {
-		unsigned long flags;
+	struct net_device_wrapper *ndw;
+	struct netpoll_info *npinfo;
+	unsigned long flags;
 
-		spin_lock_irqsave(&rx_list_lock, flags);
-		list_del(&np->rx_list);
-		spin_unlock_irqrestore(&rx_list_lock, flags);
+	if (np->dev && (ndw = dev_wrapper(np->dev))) {
+		npinfo = ndw->npinfo;
+		if (npinfo && npinfo->rx_np == np) {
+			spin_lock_irqsave(&npinfo->rx_lock, flags);
+			npinfo->rx_np = NULL;
+			npinfo->rx_flags &= ~NETPOLL_RX_ENABLED;
+			spin_unlock_irqrestore(&npinfo->rx_lock, flags);
+		}
+		dev_put(np->dev);
 	}
 
-	if (np->dev)
-		np->dev->netpoll_rx = 0;
-	dev_put(np->dev);
 	np->dev = NULL;
 }
 
@@ -692,7 +762,16 @@ void netpoll_set_trap(int trap)
 
 void netpoll_reset_locks(struct netpoll *np)
 {
-	spin_lock_init(&rx_list_lock);
+	struct net_device_wrapper *ndw = dev_wrapper(np->dev);
+
+	if (ndw && ndw->npinfo) {
+		if (spin_is_locked(&ndw->npinfo->poll_lock)) {
+			printk("poll_lock is locked, unable to take a dump!\n");
+			printk("rebooting in 5 seconds\n");
+			mdelay(5000);
+			machine_restart(NULL);
+		}
+	}
 	spin_lock_init(&skb_list_lock);
 	spin_lock_init(&np->dev->xmit_lock);
 }
@@ -705,4 +784,5 @@ EXPORT_SYMBOL(netpoll_cleanup);
 EXPORT_SYMBOL(netpoll_send_skb);
 EXPORT_SYMBOL(netpoll_send_udp);
 EXPORT_SYMBOL(netpoll_poll);
+EXPORT_SYMBOL(netpoll_poll_dev);
 EXPORT_SYMBOL_GPL(netpoll_reset_locks);

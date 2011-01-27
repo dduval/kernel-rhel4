@@ -74,3 +74,9 @@ extern spinlock_t pci_config_lock;
 int pirq_enable_irq(struct pci_dev *dev);
 
 extern int (*pcibios_enable_irq)(struct pci_dev *dev);
+
+extern int pci_conf1_write( int seg,  int bus,
+                int devfn, int reg, int len, u32 value);
+extern int pci_conf1_read( int seg,  int bus,
+               int devfn, int reg, int len, u32 *value);
+

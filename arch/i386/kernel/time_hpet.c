@@ -23,7 +23,7 @@
 #include <asm/hpet.h>
 #include <linux/hpet.h>
 
-unsigned long hpet_period;	/* fsecs / HPET clock */
+unsigned long hpet_period = 0;	/* fsecs / HPET clock */
 unsigned long hpet_tick;	/* hpet clks count per tick */
 unsigned long hpet_address;	/* hpet memory map physical address */
 int hpet_use_timer;
@@ -91,7 +91,8 @@ int __init hpet_enable(void)
 	if (!(id & HPET_ID_NUMBER)) 
 		return -1;
 
-	hpet_period = hpet_readl(HPET_PERIOD);
+	if (!hpet_period)
+		hpet_period = hpet_readl(HPET_PERIOD);
 	if ((hpet_period < HPET_MIN_PERIOD) || (hpet_period > HPET_MAX_PERIOD))
 		return -1;
 
@@ -441,3 +442,9 @@ irqreturn_t hpet_rtc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 }
 #endif
 
+static int __init hpet_period_setup(char *str)
+{
+        hpet_period = simple_strtol(str,NULL,0);
+        return 0;
+}
+__setup("hpet_period=", hpet_period_setup);

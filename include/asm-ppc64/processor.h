@@ -382,6 +382,7 @@
 #define PV_970FX	0x003C
 #define	PV_630        	0x0040
 #define	PV_630p	        0x0041
+#define	PV_970MP        0x0044
 
 /* Platforms supported by PPC64 */
 #define PLATFORM_PSERIES      0x0100

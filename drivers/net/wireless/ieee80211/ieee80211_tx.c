@@ -1,6 +1,6 @@
 /******************************************************************************
 
-  Copyright(c) 2003 - 2004 Intel Corporation. All rights reserved.
+  Copyright(c) 2003 - 2005 Intel Corporation. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms of version 2 of the GNU General Public License as
@@ -33,22 +33,18 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
-#include <linux/pci.h>
 #include <linux/proc_fs.h>
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <linux/tcp.h>
 #include <linux/types.h>
-#include <linux/version.h>
 #include <linux/wireless.h>
 #include <linux/etherdevice.h>
 #include <asm/uaccess.h>
 
 #include "ieee80211.h"
 
-
 /*
-
 
 802.11 Data Frame
 
@@ -60,7 +56,18 @@ Desc. | ctrl | dura |  DA/RA  |   TA    |    SA   | Sequ |  Frame  |  fcs |
       `--------------------------------------------------|         |------'
 Total: 28 non-data bytes                                 `----.----'
                                                               |
-       .- 'Frame data' expands to <---------------------------'
+       .- 'Frame data' expands, if WEP enabled, to <----------'
+       |
+       V
+      ,-----------------------.
+Bytes |  4  |   0-2296  |  4  |
+      |-----|-----------|-----|
+Desc. | IV  | Encrypted | ICV |
+      |     | Packet    |     |
+      `-----|           |-----'
+            `-----.-----'
+                  |
+       .- 'Encrypted Packet' expands to
        |
        V
       ,---------------------------------------------------.
@@ -69,20 +76,8 @@ Bytes |  1   |  1   |    1    |    3     |  2   |  0-2304 |
 Desc. | SNAP | SNAP | Control |Eth Tunnel| Type | IP      |
       | DSAP | SSAP |         |          |      | Packet  |
       | 0xAA | 0xAA |0x03 (UI)|0x00-00-F8|      |         |
-      `-----------------------------------------|         |
-Total: 8 non-data bytes                         `----.----'
-                                                     |
-       .- 'IP Packet' expands, if WEP enabled, to <--'
-       |
-       V
-      ,-----------------------.
-Bytes |  4  |   0-2296  |  4  |
-      |-----|-----------|-----|
-Desc. | IV  | Encrypted | ICV |
-      |     | IP Packet |     |
-      `-----------------------'
+      `----------------------------------------------------
 Total: 8 non-data bytes
-
 
 802.3 Ethernet Data Frame
 
@@ -132,7 +127,7 @@ payload of each frame is reduced to 492 bytes.
 static u8 P802_1H_OUI[P80211_OUI_LEN] = { 0x00, 0x00, 0xf8 };
 static u8 RFC1042_OUI[P80211_OUI_LEN] = { 0x00, 0x00, 0x00 };
 
-static inline int ieee80211_put_snap(u8 *data, u16 h_proto)
+static int ieee80211_copy_snap(u8 * data, u16 h_proto)
 {
 	struct ieee80211_snap_hdr *snap;
 	u8 *oui;
@@ -150,44 +145,25 @@ static inline int ieee80211_put_snap(u8 *data, u16 h_proto)
 	snap->oui[1] = oui[1];
 	snap->oui[2] = oui[2];
 
-	*(u16 *)(data + SNAP_SIZE) = htons(h_proto);
+	*(u16 *) (data + SNAP_SIZE) = htons(h_proto);
 
 	return SNAP_SIZE + sizeof(u16);
 }
 
-#ifdef CONFIG_IEEE80211_CRYPT
-static inline int ieee80211_encrypt_fragment(
-	struct ieee80211_device *ieee,
-	struct sk_buff *frag,
-	int hdr_len)
+static int ieee80211_encrypt_fragment(struct ieee80211_device *ieee,
+					     struct sk_buff *frag, int hdr_len)
 {
-	struct ieee80211_crypt_data* crypt = ieee->crypt[ieee->tx_keyidx];
+	struct ieee80211_crypt_data *crypt = ieee->crypt[ieee->tx_keyidx];
 	int res;
-#ifdef CONFIG_IEEE80211_WPA
-	struct ieee80211_hdr *header;
 
-	if (ieee->tkip_countermeasures &&
-	    crypt && crypt->ops && strcmp(crypt->ops->name, "TKIP") == 0) {
-		header = (struct ieee80211_hdr *) frag->data;
-		if (net_ratelimit()) {
-			printk(KERN_DEBUG "%s: TKIP countermeasures: dropped "
-			       "TX packet to " MAC_FMT "\n",
-			       ieee->dev->name, MAC_ARG(header->addr1));
-		}
+	if (crypt == NULL)
 		return -1;
-	}
-#endif
+
 	/* To encrypt, frame format is:
 	 * IV (4 bytes), clear payload (including SNAP), ICV (4 bytes) */
-
-	// PR: FIXME: Copied from hostap. Check fragmentation/MSDU/MPDU encryption.
-	/* Host-based IEEE 802.11 fragmentation for TX is not yet supported, so
-	 * call both MSDU and MPDU encryption functions from here. */
 	atomic_inc(&crypt->refcnt);
 	res = 0;
-	if (crypt->ops->encrypt_msdu)
-		res = crypt->ops->encrypt_msdu(frag, hdr_len, crypt->priv);
-	if (res == 0 && crypt->ops->encrypt_mpdu)
+	if (crypt->ops && crypt->ops->encrypt_mpdu)
 		res = crypt->ops->encrypt_mpdu(frag, hdr_len, crypt->priv);
 
 	atomic_dec(&crypt->refcnt);
@@ -200,10 +176,9 @@ static inline int ieee80211_encrypt_fragment(
 
 	return 0;
 }
-#endif
 
-
-void ieee80211_txb_free(struct ieee80211_txb *txb) {
+void ieee80211_txb_free(struct ieee80211_txb *txb)
+{
 	int i;
 	if (unlikely(!txb))
 		return;
@@ -213,14 +188,13 @@ void ieee80211_txb_free(struct ieee80211_txb *txb) {
 	kfree(txb);
 }
 
-struct ieee80211_txb *ieee80211_alloc_txb(int nr_frags, int txb_size,
-					  int gfp_mask)
+static struct ieee80211_txb *ieee80211_alloc_txb(int nr_frags, int txb_size,
+						 int headroom, gfp_t gfp_mask)
 {
 	struct ieee80211_txb *txb;
 	int i;
-	txb = kmalloc(
-		sizeof(struct ieee80211_txb) + (sizeof(u8*) * nr_frags),
-		gfp_mask);
+	txb = kmalloc(sizeof(struct ieee80211_txb) + (sizeof(u8 *) * nr_frags),
+		      gfp_mask);
 	if (!txb)
 		return NULL;
 
@@ -229,11 +203,13 @@ struct ieee80211_txb *ieee80211_alloc_txb(int nr_frags, int txb_size,
 	txb->frag_size = txb_size;
 
 	for (i = 0; i < nr_frags; i++) {
-		txb->fragments[i] = dev_alloc_skb(txb_size);
+		txb->fragments[i] = __dev_alloc_skb(txb_size + headroom,
+						    gfp_mask);
 		if (unlikely(!txb->fragments[i])) {
 			i--;
 			break;
 		}
+		skb_reserve(txb->fragments[i], headroom);
 	}
 	if (unlikely(i != nr_frags)) {
 		while (i >= 0)
@@ -244,36 +220,38 @@ struct ieee80211_txb *ieee80211_alloc_txb(int nr_frags, int txb_size,
 	return txb;
 }
 
-/* SKBs are added to the ieee->tx_queue. */
-int ieee80211_xmit(struct sk_buff *skb,
-		   struct net_device *dev)
+/* Incoming skb is converted to a txb which consists of
+ * a block of 802.11 fragment packets (stored as skbs) */
+int ieee80211_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct ieee80211_device *ieee = netdev_priv(dev);
 	struct ieee80211_txb *txb = NULL;
-	struct ieee80211_hdr *frag_hdr;
-	int i, bytes_per_frag, nr_frags, bytes_last_frag, frag_size;
+	struct ieee80211_hdr_3addr *frag_hdr;
+	int i, bytes_per_frag, nr_frags, bytes_last_frag, frag_size,
+	    rts_required;
 	unsigned long flags;
 	struct net_device_stats *stats = &ieee->stats;
-	int ether_type, encrypt;
+	int ether_type, encrypt, host_encrypt, host_encrypt_msdu, host_build_iv;
 	int bytes, fc, hdr_len;
 	struct sk_buff *skb_frag;
-	struct ieee80211_hdr header = { /* Ensure zero initialized */
+	struct ieee80211_hdr_3addr header = {	/* Ensure zero initialized */
 		.duration_id = 0,
 		.seq_ctl = 0
 	};
 	u8 dest[ETH_ALEN], src[ETH_ALEN];
+	struct ieee80211_crypt_data *crypt;
+	int priority = skb->priority;
+	int snapped = 0;
 
-#ifdef CONFIG_IEEE80211_CRYPT
-	struct ieee80211_crypt_data* crypt;
-#endif
+	if (ieee->is_queue_full && (*ieee->is_queue_full) (dev, priority))
+		return NETDEV_TX_BUSY;
 
 	spin_lock_irqsave(&ieee->lock, flags);
 
 	/* If there is no driver handler to take the TXB, dont' bother
 	 * creating it... */
 	if (!ieee->hard_start_xmit) {
-		printk(KERN_WARNING "%s: No xmit handler.\n",
-		       ieee->dev->name);
+		printk(KERN_WARNING "%s: No xmit handler.\n", ieee->dev->name);
 		goto success;
 	}
 
@@ -285,18 +263,14 @@ int ieee80211_xmit(struct sk_buff *skb,
 
 	ether_type = ntohs(((struct ethhdr *)skb->data)->h_proto);
 
-#ifndef CONFIG_IEEE80211_CRYPT
-	encrypt = 0;
-#else   /* CONFIG_IEEE80211_CRYPT */
 	crypt = ieee->crypt[ieee->tx_keyidx];
 
-#ifndef CONFIG_IEEE80211_WPA
-	encrypt = (ether_type != ETH_P_PAE) &&
-		ieee->host_encrypt && crypt && crypt->ops;
-
-#else /* CONFIG_IEEE80211_WPA */
 	encrypt = !(ether_type == ETH_P_PAE && ieee->ieee802_1x) &&
-		ieee->host_encrypt && crypt && crypt->ops;
+	    ieee->sec.encrypt;
+
+	host_encrypt = ieee->host_encrypt && encrypt && crypt;
+	host_encrypt_msdu = ieee->host_encrypt_msdu && encrypt && crypt;
+	host_build_iv = ieee->host_build_iv && encrypt && crypt;
 
 	if (!encrypt && ieee->ieee802_1x &&
 	    ieee->drop_unencrypted && ether_type != ETH_P_PAE) {
@@ -304,20 +278,9 @@ int ieee80211_xmit(struct sk_buff *skb,
 		goto success;
 	}
 
-#endif /* CONFIG_IEEE80211_WPA */
-#ifdef CONFIG_IEEE80211_DEBUG
-	if (crypt && !encrypt && ether_type == ETH_P_PAE) {
-		struct eapol *eap = (struct eapol *)(skb->data +
-			sizeof(struct ethhdr) - SNAP_SIZE - sizeof(u16));
-		IEEE80211_DEBUG_EAP("TX: IEEE 802.11 EAPOL frame: %s\n",
-			eap_get_type(eap->type));
-	}
-#endif
-#endif  /* CONFIG_IEEE80211_CRYPT */
-
 	/* Save source and destination addresses */
-	memcpy(&dest, skb->data, ETH_ALEN);
-	memcpy(&src, skb->data+ETH_ALEN, ETH_ALEN);
+	memcpy(dest, skb->data, ETH_ALEN);
+	memcpy(src, skb->data + ETH_ALEN, ETH_ALEN);
 
 	/* Advance the SKB to the start of the payload */
 	skb_pull(skb, sizeof(struct ethhdr));
@@ -325,101 +288,169 @@ int ieee80211_xmit(struct sk_buff *skb,
 	/* Determine total amount of storage required for TXB packets */
 	bytes = skb->len + SNAP_SIZE + sizeof(u16);
 
-	if (encrypt)
+	if (host_encrypt || host_build_iv)
 		fc = IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA |
-			IEEE80211_FCTL_WEP;
+		    IEEE80211_FCTL_PROTECTED;
 	else
 		fc = IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA;
 
 	if (ieee->iw_mode == IW_MODE_INFRA) {
 		fc |= IEEE80211_FCTL_TODS;
-		/* To DS: Addr1 = BSSID, Addr2 = SA,
-		   Addr3 = DA */
-		memcpy(&header.addr1, ieee->bssid, ETH_ALEN);
-		memcpy(&header.addr2, &src, ETH_ALEN);
-		memcpy(&header.addr3, &dest, ETH_ALEN);
+		/* To DS: Addr1 = BSSID, Addr2 = SA, Addr3 = DA */
+		memcpy(header.addr1, ieee->bssid, ETH_ALEN);
+		memcpy(header.addr2, src, ETH_ALEN);
+		memcpy(header.addr3, dest, ETH_ALEN);
 	} else if (ieee->iw_mode == IW_MODE_ADHOC) {
-		/* not From/To DS: Addr1 = DA, Addr2 = SA,
-		   Addr3 = BSSID */
-		memcpy(&header.addr1, dest, ETH_ALEN);
-		memcpy(&header.addr2, src, ETH_ALEN);
-		memcpy(&header.addr3, ieee->bssid, ETH_ALEN);
+		/* not From/To DS: Addr1 = DA, Addr2 = SA, Addr3 = BSSID */
+		memcpy(header.addr1, dest, ETH_ALEN);
+		memcpy(header.addr2, src, ETH_ALEN);
+		memcpy(header.addr3, ieee->bssid, ETH_ALEN);
 	}
 	header.frame_ctl = cpu_to_le16(fc);
 	hdr_len = IEEE80211_3ADDR_LEN;
 
-	/* Determine fragmentation size based on destination (multicast
-	 * and broadcast are not fragmented) */
-	if (is_multicast_ether_addr(dest) ||
-	    is_broadcast_ether_addr(dest))
-		frag_size = MAX_FRAG_THRESHOLD;
-	else
-		frag_size = ieee->fts;
+	/* Encrypt msdu first on the whole data packet. */
+	if ((host_encrypt || host_encrypt_msdu) &&
+	    crypt && crypt->ops && crypt->ops->encrypt_msdu) {
+		int res = 0;
+		int len = bytes + hdr_len + crypt->ops->extra_msdu_prefix_len +
+		    crypt->ops->extra_msdu_postfix_len;
+		struct sk_buff *skb_new = dev_alloc_skb(len);
 
-	/* Determine amount of payload per fragment.  Regardless of if
-	 * this stack is providing the full 802.11 header, one will
-	 * eventually be affixed to this fragment -- so we must account for
-	 * it when determining the amount of payload space. */
-	bytes_per_frag = frag_size - IEEE80211_3ADDR_LEN;
-	if (ieee->config &
-	    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
-		bytes_per_frag -= IEEE80211_FCS_LEN;
+		if (unlikely(!skb_new))
+			goto failed;
 
-#ifdef CONFIG_IEEE80211_CRYPT
-	/* Each fragment may need to have room for encryptiong pre/postfix */
-	if (encrypt)
-		bytes_per_frag -= crypt->ops->extra_prefix_len +
-			crypt->ops->extra_postfix_len;
-#endif
+		skb_reserve(skb_new, crypt->ops->extra_msdu_prefix_len);
+		memcpy(skb_put(skb_new, hdr_len), &header, hdr_len);
+		snapped = 1;
+		ieee80211_copy_snap(skb_put(skb_new, SNAP_SIZE + sizeof(u16)),
+				    ether_type);
+		memcpy(skb_put(skb_new, skb->len), skb->data, skb->len);
+		res = crypt->ops->encrypt_msdu(skb_new, hdr_len, crypt->priv);
+		if (res < 0) {
+			IEEE80211_ERROR("msdu encryption failed\n");
+			dev_kfree_skb_any(skb_new);
+			goto failed;
+		}
+		dev_kfree_skb_any(skb);
+		skb = skb_new;
+		bytes += crypt->ops->extra_msdu_prefix_len +
+		    crypt->ops->extra_msdu_postfix_len;
+		skb_pull(skb, hdr_len);
+	}
 
-	/* Number of fragments is the total bytes_per_frag /
-	 * payload_per_fragment */
-	nr_frags = bytes / bytes_per_frag;
-	bytes_last_frag = bytes % bytes_per_frag;
-	if (bytes_last_frag)
+	if (host_encrypt || ieee->host_open_frag) {
+		/* Determine fragmentation size based on destination (multicast
+		 * and broadcast are not fragmented) */
+		if (is_multicast_ether_addr(dest) ||
+		    is_broadcast_ether_addr(dest))
+			frag_size = MAX_FRAG_THRESHOLD;
+		else
+			frag_size = ieee->fts;
+
+		/* Determine amount of payload per fragment.  Regardless of if
+		 * this stack is providing the full 802.11 header, one will
+		 * eventually be affixed to this fragment -- so we must account
+		 * for it when determining the amount of payload space. */
+		bytes_per_frag = frag_size - IEEE80211_3ADDR_LEN;
+		if (ieee->config &
+		    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
+			bytes_per_frag -= IEEE80211_FCS_LEN;
+
+		/* Each fragment may need to have room for encryptiong
+		 * pre/postfix */
+		if (host_encrypt)
+			bytes_per_frag -= crypt->ops->extra_mpdu_prefix_len +
+			    crypt->ops->extra_mpdu_postfix_len;
+
+		/* Number of fragments is the total
+		 * bytes_per_frag / payload_per_fragment */
+		nr_frags = bytes / bytes_per_frag;
+		bytes_last_frag = bytes % bytes_per_frag;
+		if (bytes_last_frag)
+			nr_frags++;
+		else
+			bytes_last_frag = bytes_per_frag;
+	} else {
+		nr_frags = 1;
+		bytes_per_frag = bytes_last_frag = bytes;
+		frag_size = bytes + IEEE80211_3ADDR_LEN;
+	}
+
+	rts_required = (frag_size > ieee->rts
+			&& ieee->config & CFG_IEEE80211_RTS);
+	if (rts_required)
 		nr_frags++;
-	else
-		bytes_last_frag = bytes_per_frag;
 
 	/* When we allocate the TXB we allocate enough space for the reserve
 	 * and full fragment bytes (bytes_per_frag doesn't include prefix,
 	 * postfix, header, FCS, etc.) */
-	txb = ieee80211_alloc_txb(nr_frags, frag_size, GFP_ATOMIC);
+	txb = ieee80211_alloc_txb(nr_frags, frag_size,
+				  ieee->tx_headroom, GFP_ATOMIC);
 	if (unlikely(!txb)) {
 		printk(KERN_WARNING "%s: Could not allocate TXB\n",
 		       ieee->dev->name);
 		goto failed;
 	}
 	txb->encrypted = encrypt;
-	txb->payload_size = bytes;
+	if (host_encrypt)
+		txb->payload_size = frag_size * (nr_frags - 1) +
+		    bytes_last_frag;
+	else
+		txb->payload_size = bytes;
 
-	for (i = 0; i < nr_frags; i++) {
+	if (rts_required) {
+		skb_frag = txb->fragments[0];
+		frag_hdr =
+		    (struct ieee80211_hdr_3addr *)skb_put(skb_frag, hdr_len);
+
+		/*
+		 * Set header frame_ctl to the RTS.
+		 */
+		header.frame_ctl =
+		    cpu_to_le16(IEEE80211_FTYPE_CTL | IEEE80211_STYPE_RTS);
+		memcpy(frag_hdr, &header, hdr_len);
+
+		/*
+		 * Restore header frame_ctl to the original data setting.
+		 */
+		header.frame_ctl = cpu_to_le16(fc);
+
+		if (ieee->config &
+		    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
+			skb_put(skb_frag, 4);
+
+		txb->rts_included = 1;
+		i = 1;
+	} else
+		i = 0;
+
+	for (; i < nr_frags; i++) {
 		skb_frag = txb->fragments[i];
 
-#ifdef CONFIG_IEEE80211_CRYPT
-		if (encrypt)
-			skb_reserve(skb_frag, crypt->ops->extra_prefix_len);
-#endif
+		if (host_encrypt || host_build_iv)
+			skb_reserve(skb_frag,
+				    crypt->ops->extra_mpdu_prefix_len);
 
-		frag_hdr = (struct ieee80211_hdr *)skb_put(skb_frag, hdr_len);
+		frag_hdr =
+		    (struct ieee80211_hdr_3addr *)skb_put(skb_frag, hdr_len);
 		memcpy(frag_hdr, &header, hdr_len);
 
 		/* If this is not the last fragment, then add the MOREFRAGS
 		 * bit to the frame control */
 		if (i != nr_frags - 1) {
-			frag_hdr->frame_ctl = cpu_to_le16(
-				fc | IEEE80211_FCTL_MOREFRAGS);
+			frag_hdr->frame_ctl =
+			    cpu_to_le16(fc | IEEE80211_FCTL_MOREFRAGS);
 			bytes = bytes_per_frag;
 		} else {
 			/* The last fragment takes the remaining length */
 			bytes = bytes_last_frag;
 		}
 
-	       	/* Put a SNAP header on the first fragment */
-		if (i == 0) {
-			ieee80211_put_snap(
-				skb_put(skb_frag, SNAP_SIZE + sizeof(u16)),
-				ether_type);
+		if (i == 0 && !snapped) {
+			ieee80211_copy_snap(skb_put
+					    (skb_frag, SNAP_SIZE + sizeof(u16)),
+					    ether_type);
 			bytes -= SNAP_SIZE + sizeof(u16);
 		}
 
@@ -428,40 +459,124 @@ int ieee80211_xmit(struct sk_buff *skb,
 		/* Advance the SKB... */
 		skb_pull(skb, bytes);
 
-#ifdef CONFIG_IEEE80211_CRYPT
 		/* Encryption routine will move the header forward in order
 		 * to insert the IV between the header and the payload */
-		if (encrypt)
+		if (host_encrypt)
 			ieee80211_encrypt_fragment(ieee, skb_frag, hdr_len);
-#endif
+		else if (host_build_iv) {
+			struct ieee80211_crypt_data *crypt;
+
+			crypt = ieee->crypt[ieee->tx_keyidx];
+			atomic_inc(&crypt->refcnt);
+			if (crypt->ops->build_iv)
+				crypt->ops->build_iv(skb_frag, hdr_len,
+				      ieee->sec.keys[ieee->sec.active_key],
+				      ieee->sec.key_sizes[ieee->sec.active_key],
+				      crypt->priv);
+			atomic_dec(&crypt->refcnt);
+		}
+
 		if (ieee->config &
 		    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
 			skb_put(skb_frag, 4);
 	}
 
-
- success:
+      success:
 	spin_unlock_irqrestore(&ieee->lock, flags);
 
 	dev_kfree_skb_any(skb);
 
 	if (txb) {
-		if ((*ieee->hard_start_xmit)(txb, dev) == 0) {
+		int ret = (*ieee->hard_start_xmit) (txb, dev, priority);
+		if (ret == 0) {
+			stats->tx_packets++;
+			stats->tx_bytes += txb->payload_size;
+			return 0;
+		}
+
+		if (ret == NETDEV_TX_BUSY) {
+			printk(KERN_ERR "%s: NETDEV_TX_BUSY returned; "
+			       "driver should report queue full via "
+			       "ieee_device->is_queue_full.\n",
+			       ieee->dev->name);
+		}
+
+		ieee80211_txb_free(txb);
+	}
+
+	return 0;
+
+      failed:
+	spin_unlock_irqrestore(&ieee->lock, flags);
+	netif_stop_queue(dev);
+	stats->tx_errors++;
+	return 1;
+}
+
+/* Incoming 802.11 strucure is converted to a TXB
+ * a block of 802.11 fragment packets (stored as skbs) */
+int ieee80211_tx_frame(struct ieee80211_device *ieee,
+		       struct ieee80211_hdr *frame, int len)
+{
+	struct ieee80211_txb *txb = NULL;
+	unsigned long flags;
+	struct net_device_stats *stats = &ieee->stats;
+	struct sk_buff *skb_frag;
+	int priority = -1;
+
+	spin_lock_irqsave(&ieee->lock, flags);
+
+	/* If there is no driver handler to take the TXB, dont' bother
+	 * creating it... */
+	if (!ieee->hard_start_xmit) {
+		printk(KERN_WARNING "%s: No xmit handler.\n", ieee->dev->name);
+		goto success;
+	}
+
+	if (unlikely(len < 24)) {
+		printk(KERN_WARNING "%s: skb too small (%d).\n",
+		       ieee->dev->name, len);
+		goto success;
+	}
+
+	/* When we allocate the TXB we allocate enough space for the reserve
+	 * and full fragment bytes (bytes_per_frag doesn't include prefix,
+	 * postfix, header, FCS, etc.) */
+	txb = ieee80211_alloc_txb(1, len, ieee->tx_headroom, GFP_ATOMIC);
+	if (unlikely(!txb)) {
+		printk(KERN_WARNING "%s: Could not allocate TXB\n",
+		       ieee->dev->name);
+		goto failed;
+	}
+	txb->encrypted = 0;
+	txb->payload_size = len;
+
+	skb_frag = txb->fragments[0];
+
+	memcpy(skb_put(skb_frag, len), frame, len);
+
+	if (ieee->config &
+	    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
+		skb_put(skb_frag, 4);
+
+      success:
+	spin_unlock_irqrestore(&ieee->lock, flags);
+
+	if (txb) {
+		if ((*ieee->hard_start_xmit) (txb, ieee->dev, priority) == 0) {
 			stats->tx_packets++;
 			stats->tx_bytes += txb->payload_size;
 			return 0;
 		}
 		ieee80211_txb_free(txb);
 	}
-
 	return 0;
 
- failed:
+      failed:
 	spin_unlock_irqrestore(&ieee->lock, flags);
-	netif_stop_queue(dev);
 	stats->tx_errors++;
 	return 1;
-
 }
 
+EXPORT_SYMBOL(ieee80211_tx_frame);
 EXPORT_SYMBOL(ieee80211_txb_free);

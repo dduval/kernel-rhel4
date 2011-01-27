@@ -1556,7 +1556,7 @@ done:
 static void http_lookup_vhost (tux_req_t *req, int cachemiss)
 {
 	struct dentry *dentry;
-	struct nameidata base;
+	struct nameidata base = {};
 	struct vfsmount *mnt = NULL;
 	unsigned int flag = cachemiss ? 0 : LOOKUP_ATOMIC;
 	

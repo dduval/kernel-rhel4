@@ -67,7 +67,7 @@ head-$(CONFIG_ARCH_S390X)	+= arch/$(ARCH)/kernel/head64.o
 head-y				+= arch/$(ARCH)/kernel/init_task.o
 
 core-y		+= arch/$(ARCH)/mm/ arch/$(ARCH)/kernel/ arch/$(ARCH)/crypto/ \
-		   arch/$(ARCH)/appldata/
+		   arch/$(ARCH)/appldata/ arch/$(ARCH)/hypfs/
 libs-y		+= arch/$(ARCH)/lib/
 drivers-y	+= drivers/s390/
 drivers-$(CONFIG_MATHEMU) += arch/$(ARCH)/math-emu/

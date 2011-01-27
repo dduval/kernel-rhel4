@@ -106,21 +106,6 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 static int mpc_record; 
 static struct mpc_config_translation *translation_table[MAX_MPC_ENTRY] __initdata;
 
-#ifdef CONFIG_X86_NUMAQ
-static int MP_valid_apicid(int apicid, int version)
-{
-	return hweight_long(apicid & 0xf) == 1 && (apicid >> 4) != 0xf;
-}
-#else
-static int MP_valid_apicid(int apicid, int version)
-{
-	if (version >= 0x10)
-		return apicid < 0xff;
-	else
-		return apicid < 0xf;
-}
-#endif
-
 void __init MP_processor_info (struct mpc_config_processor *m)
 {
  	int ver, apicid;
@@ -208,13 +193,6 @@ void __init MP_processor_info (struct mpc_config_processor *m)
 	num_processors++;
 	ver = m->mpc_apicver;
 
-	if (!MP_valid_apicid(apicid, ver)) {
-		printk(KERN_WARNING "Processor #%d INVALID. (Max ID: %d).\n",
-			m->mpc_apicid, MAX_APICS);
-		--num_processors;
-		return;
-	}
-
 	tmp = apicid_to_cpu_present(apicid);
 	physids_or(phys_cpu_present_map, phys_cpu_present_map, tmp);
 	
@@ -242,7 +220,7 @@ void __init MP_processor_info (struct mpc_config_processor *m)
 		  break;
 		case X86_VENDOR_AMD:
 		  if (APIC_XAPIC_AMD(ver))
-		      def_to_bigsmp = 0;
+		      def_to_bigsmp = 1;
 		  break;
 		default:
 		  def_to_bigsmp = 0;
@@ -1160,7 +1138,18 @@ int mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
                  */
                 int irq = gsi;
                 if (gsi < MAX_GSI_NUM) {
-                        if (gsi > 15)
+			extern int timer_uses_ioapic_pin_0;
+			/*
+			 * Retain the VIA chipset work-around (gsi > 15), but
+			 * avoid a problem where the 8254 timer (IRQ0) is setup
+			 * via an override (so it's not on pin 0 of the ioapic),
+			 * and at the same time, the pin 0 interrupt is a PCI
+			 * type.  The gsi > 15 test could cause these two pins
+			 * to be shared as IRQ0, and they are not shareable.
+			 * So test for this condition, and if necessary, avoid
+			 * the pin collision.
+			 */
+			if (gsi > 15 || (gsi == 0 && !timer_uses_ioapic_pin_0))
                                 gsi = pci_irq++;
                         /*
                          * Don't assign IRQ used by ACPI SCI

@@ -479,6 +479,9 @@ struct pci_controller * __devinit init_phb_dynamic(struct device_node *dn)
 	of_node_put(root);
 
 	pci_devs_phb_init_dynamic(phb);
+	if (dn->child)
+		eeh_add_tree_early(dn);
+
 	phb->last_busno = 0xff;
 	bus = pci_scan_bus(phb->first_busno, phb->ops, phb->arch_data);
 	phb->bus = bus;

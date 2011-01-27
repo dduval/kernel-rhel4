@@ -8,6 +8,7 @@
 #include <linux/trdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/if_vlan.h>
+#include <linux/ctype.h>
 
 #include <net/ipv6.h>
 #include <linux/in6.h>
@@ -16,14 +17,13 @@
 
 
 #include <linux/bitops.h>
+
 #include <asm/debug.h>
 #include <asm/qdio.h>
 #include <asm/ccwdev.h>
 #include <asm/ccwgroup.h>
 
 #include "qeth_mpc.h"
-
-#define VERSION_QETH_H 		"$Revision: 1.113 $"
 
 #ifdef CONFIG_QETH_IPV6
 #define QETH_VERSION_IPV6 	":IPv6"
@@ -68,6 +68,7 @@
 #define QETH_DBF_TRACE_INDEX 2
 #define QETH_DBF_TRACE_NR_AREAS 2
 #define QETH_DBF_TRACE_LEVEL 3
+extern debug_info_t *qeth_dbf_trace;
 
 #define QETH_DBF_SENSE_NAME "qeth_sense"
 #define QETH_DBF_SENSE_LEN 64
@@ -91,7 +92,7 @@
 		debug_event(qeth_dbf_##name,level,(void*)(addr),len); \
 	} while (0)
 
-extern DEFINE_PER_CPU(char[256], qeth_dbf_txt_buf);
+DECLARE_PER_CPU(char[256], qeth_dbf_txt_buf);
 
 #define QETH_DBF_TEXT_(name,level,text...)				\
 	do {								\
@@ -205,6 +206,11 @@ struct qeth_perf_stats {
 	__u64 outbound_do_qdio_start_time;
 	unsigned int outbound_do_qdio_cnt;
 	unsigned int outbound_do_qdio_time;
+	/* eddp data */
+	unsigned int large_send_bytes;
+	unsigned int large_send_cnt;
+	unsigned int sg_skbs_sent;
+	unsigned int sg_frags_sent;
 };
 #endif /* CONFIG_QETH_PERF_STATS */
 
@@ -285,7 +291,8 @@ qeth_is_ipa_enabled(struct qeth_ipa_info *ipa, enum qeth_ipa_funcs func)
 #define QETH_TX_TIMEOUT		100 * HZ
 #define QETH_HEADER_SIZE	32
 #define MAX_PORTNO 		15
-#define QETH_FAKE_LL_LEN 	ETH_HLEN
+#define QETH_FAKE_LL_LEN_ETH	ETH_HLEN
+#define QETH_FAKE_LL_LEN_TR	(sizeof(struct trh_hdr)-TR_MAXRIFLEN+sizeof(struct trllc))
 #define QETH_FAKE_LL_V6_ADDR_POS 24
 
 /*IPv6 address autoconfiguration stuff*/
@@ -333,16 +340,12 @@ qeth_is_ipa_enabled(struct qeth_ipa_info *ipa, enum qeth_ipa_funcs func)
 #define QETH_WATERMARK_PACK_FUZZ 1
 
 #define QETH_IP_HEADER_SIZE 40
-/* VLAN defines */
-#define QETH_EXT_HDR_VLAN_FRAME        0x01
-#define QETH_EXT_HDR_TOKEN_ID          0x02
-#define QETH_EXT_HDR_INCLUDE_VLAN_TAG  0x04
 
 struct qeth_hdr_layer3 {
 	__u8  id;
 	__u8  flags;
-	__u16 inbound_checksum;
-	__u32 token;
+	__u16 inbound_checksum; /*TSO:__u16 seqno */
+	__u32 token;		/*TSO: __u32 reserved */
 	__u16 length;
 	__u8  vlan_prio;
 	__u8  ext_flags;
@@ -361,7 +364,6 @@ struct qeth_hdr_layer2 {
 	__u16 vlan_id;
 	__u32 reserved;
 	__u8 reserved2[16];
-
 } __attribute__ ((packed));
 
 struct qeth_hdr_osn {
@@ -374,15 +376,32 @@ struct qeth_hdr_osn {
 	__u8 reserved3[18];
 	__u32 ccid;
 } __attribute__ ((packed));
-
+					    
 struct qeth_hdr {
 	union {
-		struct qeth_hdr_layer2 	l2;
-		struct qeth_hdr_layer3 	l3;
-		struct qeth_hdr_osn 	osn;
+		struct qeth_hdr_layer2 l2;
+		struct qeth_hdr_layer3 l3;
+		struct qeth_hdr_osn    osn;
+	} hdr;
+} __attribute__ ((packed));
 
-		
-	} hdr;		
+/*TCP Segmentation Offload header*/
+struct qeth_hdr_ext_tso {
+        __u16 hdr_tot_len;
+        __u8  imb_hdr_no;
+        __u8  reserved;
+        __u8  hdr_type;
+        __u8  hdr_version;
+        __u16 hdr_len;
+        __u32 payload_len;
+        __u16 mss;
+        __u16 dg_hdr_len;
+        __u8  padding[16];
+} __attribute__ ((packed));
+
+struct qeth_hdr_tso {
+        struct qeth_hdr hdr; 	/*hdr->hdr.l3.xxx*/
+	struct qeth_hdr_ext_tso ext;
 } __attribute__ ((packed));
 
 
@@ -408,13 +427,17 @@ enum qeth_layer2_frame_flags {
 enum qeth_header_ids {
 	QETH_HEADER_TYPE_LAYER3 = 0x01,
 	QETH_HEADER_TYPE_LAYER2 = 0x02,
+	QETH_HEADER_TYPE_TSO	= 0x03,
 	QETH_HEADER_TYPE_OSN    = 0x04,
 };
 /* flags for qeth_hdr.ext_flags */
-#define QETH_HDR_EXT_VLAN_FRAME      0x01
-#define QETH_HDR_EXT_CSUM_HDR_REQ    0x10
-#define QETH_HDR_EXT_CSUM_TRANSP_REQ 0x20
-#define QETH_HDR_EXT_SRC_MAC_ADDR    0x08
+#define QETH_HDR_EXT_VLAN_FRAME       0x01
+#define QETH_HDR_EXT_TOKEN_ID         0x02
+#define QETH_HDR_EXT_INCLUDE_VLAN_TAG 0x04
+#define QETH_HDR_EXT_SRC_MAC_ADDR     0x08
+#define QETH_HDR_EXT_CSUM_HDR_REQ     0x10
+#define QETH_HDR_EXT_CSUM_TRANSP_REQ  0x20
+#define QETH_HDR_EXT_UDP_TSO          0x40 /*bit off for TCP*/
 
 static inline int
 qeth_is_last_sbale(struct qdio_buffer_element *sbale)
@@ -469,11 +492,19 @@ struct qeth_qdio_q {
 	volatile int next_buf_to_init;
 } __attribute__ ((aligned(256)));
 
+/* possible types of qeth large_send support */
+enum qeth_large_send_types {
+	QETH_LARGE_SEND_NO,
+	QETH_LARGE_SEND_EDDP,
+	QETH_LARGE_SEND_TSO,
+};
+
 struct qeth_qdio_out_buffer {
 	struct qdio_buffer *buffer;
 	atomic_t state;
 	volatile int next_element_to_fill;
 	struct sk_buff_head skb_list;
+	struct list_head ctx_list;
 };
 
 struct qeth_card;
@@ -686,13 +717,18 @@ struct qeth_reply {
 	atomic_t refcnt;
 };
 
-#define QETH_BROADCAST_WITH_ECHO		0x01
-#define QETH_BROADCAST_WITHOUT_ECHO		0x02
-#define QETH_LAYER2_MAC_READ			0x01
-#define QETH_LAYER2_MAC_REGISTERED		0x02
 
+struct qeth_card_blkt {
+	int time_total;
+	int inter_packet;
+	int inter_packet_jumbo;
+};
+
+#define QETH_BROADCAST_WITH_ECHO    0x01
+#define QETH_BROADCAST_WITHOUT_ECHO 0x02
+#define QETH_LAYER2_MAC_READ	    0x01
+#define QETH_LAYER2_MAC_REGISTERED  0x02
 struct qeth_card_info {
-	char if_name[IF_NAME_LEN];
 	unsigned short unit_addr2;
 	unsigned short cula;
 	unsigned short chpid;
@@ -710,7 +746,9 @@ struct qeth_card_info {
 	int max_mtu;
 	int broadcast_capable;
 	int unique_id;
+	struct qeth_card_blkt blkt;
 	__u32 csum_mask;
+	enum qeth_ipa_promisc_modes promisc_mode;
 };
 
 struct qeth_card_options {
@@ -728,6 +766,7 @@ struct qeth_card_options {
 	int add_hhlen;
 	int fake_ll;
 	int layer2;
+	enum qeth_large_send_types large_send;
 };
 
 /*
@@ -736,6 +775,7 @@ struct qeth_card_options {
 enum qeth_threads {
 	QETH_SET_IP_THREAD  = 1,
 	QETH_RECOVER_THREAD = 2,
+	QETH_SET_PROMISC_MODE_THREAD = 4,
 };
 
 struct qeth_osn_info {
@@ -806,7 +846,9 @@ extern struct list_head qeth_notify_list;
 
 /*some helper functions*/
 
-inline static __u8
+#define QETH_CARD_IFNAME(card) (((card)->dev)? (card)->dev->name : "")
+
+static inline __u8
 qeth_get_ipa_adp_type(enum qeth_link_types link_type)
 {
 	switch (link_type) {
@@ -817,50 +859,92 @@ qeth_get_ipa_adp_type(enum qeth_link_types link_type)
 	}
 }
 
+static inline int
+qeth_realloc_headroom(struct qeth_card *card, struct sk_buff **skb, int size)
+{
+	struct sk_buff *new_skb = NULL;
+
+	if (skb_headroom(*skb) < size){
+		new_skb = skb_realloc_headroom(*skb, size);
+		if (!new_skb) {
+                        PRINT_ERR("qeth_prepare_skb: could "
+                                  "not realloc headroom for qeth_hdr "
+                                  "on interface %s", QETH_CARD_IFNAME(card));
+                        return -ENOMEM;
+                }
+		kfree_skb(*skb);
+                *skb = new_skb;
+	}
+	return 0;
+}
+
 static inline struct sk_buff *
 qeth_pskb_unshare(struct sk_buff *skb, int pri)
 {
-	struct sk_buff *nskb;
-	if (!skb_cloned(skb))
-		return skb;
-	nskb = skb_copy(skb, pri);
-	kfree_skb(skb); /* free our shared copy */
-	return nskb;
+        struct sk_buff *nskb;
+        if (!skb_cloned(skb))
+                return skb;
+        nskb = skb_copy(skb, pri);
+        kfree_skb(skb); /* free our shared copy */
+        return nskb;
 }
 
-inline static int
+static inline void *
+qeth_push_skb(struct qeth_card *card, struct sk_buff **skb, int size)
+{
+        void *hdr;
+
+	hdr = (void *) skb_push(*skb, size);
+        /*
+         * sanity check, the Linux memory allocation scheme should
+         * never present us cases like this one (the qdio header size plus
+         * the first 40 bytes of the paket cross a 4k boundary)
+         */
+        if ((((unsigned long) hdr) & (~(PAGE_SIZE - 1))) !=
+            (((unsigned long) hdr + size +
+              QETH_IP_HEADER_SIZE) & (~(PAGE_SIZE - 1)))) {
+                PRINT_ERR("qeth_prepare_skb: misaligned "
+                          "packet on interface %s. Discarded.",
+                          QETH_CARD_IFNAME(card));
+                return NULL;
+        }
+        return hdr;
+}
+
+
+static inline int
 qeth_get_hlen(__u8 link_type)
 {
 #ifdef CONFIG_QETH_IPV6
 	switch (link_type) {
 	case QETH_LINK_TYPE_HSTR:
 	case QETH_LINK_TYPE_LANE_TR:
-		return sizeof(struct qeth_hdr) + TR_HLEN;
+		return sizeof(struct qeth_hdr_tso) + TR_HLEN;
 	default:
 #ifdef CONFIG_QETH_VLAN
-		return sizeof(struct qeth_hdr) + VLAN_ETH_HLEN;
+		return sizeof(struct qeth_hdr_tso) + VLAN_ETH_HLEN;
 #else
-		return sizeof(struct qeth_hdr) + ETH_HLEN;
+		return sizeof(struct qeth_hdr_tso) + ETH_HLEN;
 #endif
 	}
 #else  /* CONFIG_QETH_IPV6 */
 #ifdef CONFIG_QETH_VLAN
-	return sizeof(struct qeth_hdr) + VLAN_HLEN;
+	return sizeof(struct qeth_hdr_tso) + VLAN_HLEN;
 #else
-	return sizeof(struct qeth_hdr);
+	return sizeof(struct qeth_hdr_tso);
 #endif
 #endif /* CONFIG_QETH_IPV6 */
 }
 
-inline static unsigned short
+static inline unsigned short
 qeth_get_netdev_flags(struct qeth_card *card)
 {
 	if (card->options.layer2 &&
-           (card->info.type == QETH_CARD_TYPE_OSAE))
-                return 0;
+	   (card->info.type == QETH_CARD_TYPE_OSAE))
+		return 0;
 	switch (card->info.type) {
 	case QETH_CARD_TYPE_IQD:
-	case QETH_CARD_TYPE_OSN:
+	case QETH_CARD_TYPE_OSN:	
 		return IFF_NOARP;
 #ifdef CONFIG_QETH_IPV6
 	default:
@@ -872,7 +956,7 @@ qeth_get_netdev_flags(struct qeth_card *card)
 	}
 }
 
-inline static int
+static inline int
 qeth_get_initial_mtu_for_card(struct qeth_card * card)
 {
 	switch (card->info.type) {
@@ -893,7 +977,7 @@ qeth_get_initial_mtu_for_card(struct qeth_card * card)
 	}
 }
 
-inline static int
+static inline int
 qeth_get_max_mtu_for_card(int cardtype)
 {
 	switch (cardtype) {
@@ -909,7 +993,7 @@ qeth_get_max_mtu_for_card(int cardtype)
 	}
 }
 
-inline static int
+static inline int
 qeth_get_mtu_out_of_mpc(int cardtype)
 {
 	switch (cardtype) {
@@ -920,7 +1004,7 @@ qeth_get_mtu_out_of_mpc(int cardtype)
 	}
 }
 
-inline static int
+static inline int
 qeth_get_mtu_outof_framesize(int framesize)
 {
 	switch (framesize) {
@@ -937,7 +1021,7 @@ qeth_get_mtu_outof_framesize(int framesize)
 	}
 }
 
-inline static int
+static inline int
 qeth_mtu_is_valid(struct qeth_card * card, int mtu)
 {
 	switch (card->info.type) {
@@ -953,7 +1037,7 @@ qeth_mtu_is_valid(struct qeth_card * card, int mtu)
 	}
 }
 
-inline static int
+static inline int
 qeth_get_arphdr_type(int cardtype, int linktype)
 {
 	switch (cardtype) {
@@ -973,7 +1057,7 @@ qeth_get_arphdr_type(int cardtype, int linktype)
 }
 
 #ifdef CONFIG_QETH_PERF_STATS
-inline static int
+static inline int
 qeth_get_micros(void)
 {
 	return (int) (get_clock() >> 12);
@@ -991,6 +1075,16 @@ qeth_get_qdio_q_format(struct qeth_card *card)
 	}
 }
 
+static inline int
+qeth_isxdigit(char * buf)
+{
+	while (*buf) {
+		if (!isxdigit(*buf++))
+			return 0;
+	}
+	return 1;
+}
+
 static inline void
 qeth_ipaddr4_to_string(const __u8 *addr, char *buf)
 {
@@ -1000,25 +1094,19 @@ qeth_ipaddr4_to_string(const __u8 *addr, char *buf)
 static inline int
 qeth_string_to_ipaddr4(const char *buf, __u8 *addr)
 {
-	const char *start, *end;
-	char abuf[4];
-	char *tmp;
-	int len;
-	int i;
+	int count = 0, rc = 0;
+	int in[4];
+	char c;
 
-	start = buf;
-	for (i = 0; i < 3; i++) {
-		if (!(end = strchr(start, '.')))
+	rc = sscanf(buf, "%u.%u.%u.%u%c", 
+		    &in[0], &in[1], &in[2], &in[3], &c);
+	if (rc != 4 && (rc != 5 || c != '\n'))
+		return -EINVAL;
+	for (count = 0; count < 4; count++) {
+		if (in[count] > 255)
 			return -EINVAL;
-		len = end - start;
-		memset(abuf, 0, 4);
-		strncpy(abuf, start, len);
-		addr[i] = simple_strtoul(abuf, &tmp, 10);
-		start = end + 1;
+		addr[count] = in[count];
 	}
-	memset(abuf, 0, 4);
-	strcpy(abuf, start);
-	addr[3] = simple_strtoul(abuf, &tmp, 10);
 	return 0;
 }
 
@@ -1036,27 +1124,50 @@ qeth_ipaddr6_to_string(const __u8 *addr, char *buf)
 static inline int
 qeth_string_to_ipaddr6(const char *buf, __u8 *addr)
 {
-	const char *start, *end;
-	u16 *tmp_addr;
-	char abuf[5];
-	char *tmp;
-	int len;
-	int i;
+	const char *end, *end_tmp, *start;
+	__u16 *in;
+        char num[5];
+        int num2, cnt, out, found, save_cnt;
+        unsigned short in_tmp[8] = {0, };
 
-	tmp_addr = (u16 *)addr;
-	start = buf;
-	for (i = 0; i < 7; i++) {
-		if (!(end = strchr(start, ':')))
-			return -EINVAL;
-		len = end - start;
-		memset(abuf, 0, 5);
-		strncpy(abuf, start, len);
-		tmp_addr[i] = simple_strtoul(abuf, &tmp, 16);
-		start = end + 1;
-	}
-	memset(abuf, 0, 5);
-	strcpy(abuf, start);
-	tmp_addr[7] = simple_strtoul(abuf, &tmp, 16);
+	cnt = out = found = save_cnt = num2 = 0;
+        end = start = buf;
+	in = (__u16 *) addr;
+	memset(in, 0, 16);
+        while (*end) {
+                end = strchr(start,':');
+                if (end == NULL) {
+			end = buf + strlen(buf);
+			if ((end_tmp = strchr(start, '\n')) != NULL)
+				end = end_tmp;
+                        out = 1;
+                }
+                if ((end - start)) { 
+                        memset(num, 0, 5);
+			if ((end - start) > 4)
+				return -EINVAL;
+                        memcpy(num, start, end - start);
+			if (!qeth_isxdigit(num))
+				return -EINVAL;
+                        sscanf(start, "%x", &num2);
+                        if (found)
+                                in_tmp[save_cnt++] = num2;
+                        else
+                                in[cnt++] = num2;
+                        if (out)
+                                break;
+                } else {
+			if (found)
+				return -EINVAL;
+                        found = 1;
+		}
+		start = ++end;
+        }
+	if (cnt + save_cnt > 8)
+		return -EINVAL;
+        cnt = 7;
+	while (save_cnt)
+                in[cnt--] = in_tmp[--save_cnt];
 	return 0;
 }
 
@@ -1118,6 +1229,15 @@ extern int
 qeth_realloc_buffer_pool(struct qeth_card *, int);
 
 extern int
+qeth_set_large_send(struct qeth_card *, enum qeth_large_send_types);
+
+extern void
+qeth_fill_header(struct qeth_card *, struct qeth_hdr *,
+		 struct sk_buff *, int, int);
+extern void
+qeth_flush_buffers(struct qeth_qdio_out_q *, int, int, int);
+
+extern int
 qeth_osn_assist(struct net_device *, void *, int);
 
 extern int
@@ -1128,5 +1248,5 @@ qeth_osn_register(unsigned char *read_dev_no,
 
 extern void
 qeth_osn_deregister(struct net_device *);
-
+		
 #endif /* __QETH_H__ */

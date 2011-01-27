@@ -937,6 +937,11 @@ int __devinit start_secondary(void *unused)
 	if (smp_ops->take_timebase)
 		smp_ops->take_timebase();
 
+	if (system_state > SYSTEM_BOOTING) {
+		struct paca_struct *lpaca = get_paca();
+		lpaca->next_jiffy_update_tb = get_tb();
+	}
+
 #ifdef CONFIG_PPC_PSERIES
 	if (cur_cpu_spec->firmware_features & FW_FEATURE_SPLPAR) {
 		vpa_init(cpu); 

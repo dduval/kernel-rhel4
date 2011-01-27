@@ -15,8 +15,6 @@
 #include <linux/kmod.h>
 #include <linux/kobj_map.h>
 
-#define MAX_PROBE_HASH 255	/* random */
-
 static struct subsystem block_subsys;
 
 /*
@@ -28,15 +26,31 @@ static struct blk_major_name {
 	struct blk_major_name *next;
 	int major;
 	char name[16];
-} *major_names[MAX_PROBE_HASH];
+} *major_names[BLKDEV_MAJOR_HASH_SIZE];
 
 static spinlock_t major_names_lock = SPIN_LOCK_UNLOCKED;
 
 /* index in the above - for now: assume no multimajor ranges */
 static inline int major_to_index(int major)
 {
-	return major % MAX_PROBE_HASH;
+	return major % BLKDEV_MAJOR_HASH_SIZE;
 }
+
+#ifdef CONFIG_PROC_FS
+
+void blkdev_show(struct seq_file *f, off_t offset)
+{
+	struct blk_major_name *dp;
+
+	if (offset < BLKDEV_MAJOR_HASH_SIZE) {
+		down_read(&block_subsys.rwsem);
+		for (dp = major_names[offset]; dp; dp = dp->next)
+			seq_printf(f, "%3d %s\n", dp->major, dp->name);
+		up_read(&block_subsys.rwsem);
+	}
+}
+
+#endif /* CONFIG_PROC_FS */
 
 /* get block device names in somewhat random order */
 int get_blkdev_list(char *p)

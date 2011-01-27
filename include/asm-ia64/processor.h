@@ -25,8 +25,8 @@
  * Limits for PMC and PMD are set to less than maximum architected values
  * but should be sufficient for a while
  */
-#define IA64_NUM_PMC_REGS	32
-#define IA64_NUM_PMD_REGS	32
+#define IA64_NUM_PMC_REGS	32 /* obsolete: replaced by PFM_NUM_PMC_REGS */
+#define IA64_NUM_PMD_REGS	32 /* obsolete: replaced by PFM_NUM_PMC_REGS */
 
 #define DEFAULT_MAP_BASE	__IA64_UL_CONST(0x2000000000000000)
 #define DEFAULT_TASK_SIZE	__IA64_UL_CONST(0xa000000000000000)
@@ -280,8 +280,8 @@ struct thread_struct {
 # define INIT_THREAD_IA32
 #endif /* CONFIG_IA32_SUPPORT */
 #ifdef CONFIG_PERFMON
-	__u64 pmcs[IA64_NUM_PMC_REGS];
-	__u64 pmds[IA64_NUM_PMD_REGS];
+	__u64 pmcs[IA64_NUM_PMC_REGS]; /* obsolete: replaced by pfm_context->th_pmcs */
+	__u64 pmds[IA64_NUM_PMD_REGS]; /* obsolete: replaced by pfm_context->th_pmds */
 	void *pfm_context;		     /* pointer to detailed PMU context */
 	unsigned long pfm_needs_checking;    /* when >0, pending perfmon work on kernel exit */
 # define INIT_THREAD_PM		.pmcs =			{0UL, },  \

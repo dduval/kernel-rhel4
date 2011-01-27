@@ -29,8 +29,11 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: mthca_srq.c 3912 2005-10-30 21:07:14Z roland $
+ * $Id: mthca_srq.c 3047 2005-08-10 03:59:35Z roland $
  */
+
+#include <linux/slab.h>
+#include <linux/string.h>
 
 #include "mthca_dev.h"
 #include "mthca_cmd.h"
@@ -46,7 +49,8 @@ struct mthca_tavor_srq_context {
 	__be32 state_pd;
 	__be32 lkey;
 	__be32 uar;
-	__be32 wqe_cnt;
+	__be16 limit_watermark;
+	__be16 wqe_cnt;
 	u32    reserved[2];
 };
 
@@ -188,7 +192,7 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 
 	/* Sanity check SRQ size before proceeding */
 	if (attr->max_wr  > dev->limits.max_srq_wqes ||
-	    attr->max_sge > dev->limits.max_sg)
+	    attr->max_sge > dev->limits.max_srq_sge)
 		return -EINVAL;
 
 	srq->max      = attr->max_wr;
@@ -198,9 +202,13 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 	if (mthca_is_memfree(dev))
 		srq->max = roundup_pow_of_two(srq->max + 1);
 
-	ds = min(64UL,
+	ds = max(64UL,
 		 roundup_pow_of_two(sizeof (struct mthca_next_seg) +
 				    srq->max_gs * sizeof (struct mthca_data_seg)));
+
+	if (!mthca_is_memfree(dev) && (ds > dev->limits.max_desc_sz))
+		return -EINVAL;
+
 	srq->wqe_shift = long_log2(ds);
 
 	srq->srqn = mthca_alloc(&dev->srq_table.alloc);
@@ -233,7 +241,7 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 		goto err_out_mailbox;
 
 	spin_lock_init(&srq->lock);
-	atomic_set(&srq->refcount, 1);
+	srq->refcount = 1;
 	init_waitqueue_head(&srq->wait);
 
 	if (mthca_is_memfree(dev))
@@ -268,6 +276,9 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 	srq->first_free = 0;
 	srq->last_free  = srq->max - 1;
 
+	attr->max_wr    = (mthca_is_memfree(dev)) ? srq->max - 1 : srq->max;
+	attr->max_sge   = srq->max_gs;
+
 	return 0;
 
 err_out_free_srq:
@@ -297,6 +308,17 @@ err_out:
 	return err;
 }
 
+static inline int get_srq_refcount(struct mthca_dev *dev, struct mthca_srq *srq)
+{
+	int c;
+
+	spin_lock_irq(&dev->srq_table.lock);
+	c = srq->refcount;
+	spin_unlock_irq(&dev->srq_table.lock);
+
+	return c;
+}
+
 void mthca_free_srq(struct mthca_dev *dev, struct mthca_srq *srq)
 {
 	struct mthca_mailbox *mailbox;
@@ -318,10 +340,10 @@ void mthca_free_srq(struct mthca_dev *dev, struct mthca_srq *srq)
 	spin_lock_irq(&dev->srq_table.lock);
 	mthca_array_clear(&dev->srq_table.srq,
 			  srq->srqn & (dev->limits.num_srqs - 1));
+	--srq->refcount;
 	spin_unlock_irq(&dev->srq_table.lock);
 
-	atomic_dec(&srq->refcount);
-	wait_event(srq->wait, !atomic_read(&srq->refcount));
+	wait_event(srq->wait, !get_srq_refcount(dev, srq));
 
 	if (!srq->ibsrq.uobject) {
 		mthca_free_srq_buf(dev, srq);
@@ -336,7 +358,7 @@ void mthca_free_srq(struct mthca_dev *dev, struct mthca_srq *srq)
 
 int mthca_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 		     enum ib_srq_attr_mask attr_mask)
-{	
+{
 	struct mthca_dev *dev = to_mdev(ibsrq->device);
 	struct mthca_srq *srq = to_msrq(ibsrq);
 	int ret;
@@ -347,6 +369,8 @@ int mthca_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 		return -EINVAL;
 
 	if (attr_mask & IB_SRQ_LIMIT) {
+		if (attr->srq_limit > srq->max)
+			return -EINVAL;
 		ret = mthca_ARM_SRQ(dev, srq->srqn, attr->srq_limit, &status);
 		if (ret)
 			return ret;
@@ -355,6 +379,41 @@ int mthca_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 	}
 
 	return 0;
+}
+
+int mthca_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
+{
+	struct mthca_dev *dev = to_mdev(ibsrq->device);
+	struct mthca_srq *srq = to_msrq(ibsrq);
+	struct mthca_mailbox *mailbox;
+	struct mthca_arbel_srq_context *arbel_ctx;
+	struct mthca_tavor_srq_context *tavor_ctx;
+	u8 status;
+	int err;
+
+	mailbox = mthca_alloc_mailbox(dev, GFP_KERNEL);
+	if (IS_ERR(mailbox))
+		return PTR_ERR(mailbox);
+
+	err = mthca_QUERY_SRQ(dev, srq->srqn, mailbox, &status);
+	if (err)
+		goto out;
+
+	if (mthca_is_memfree(dev)) {
+		arbel_ctx = mailbox->buf;
+		srq_attr->srq_limit = be16_to_cpu(arbel_ctx->limit_watermark);
+	} else {
+		tavor_ctx = mailbox->buf;
+		srq_attr->srq_limit = be16_to_cpu(tavor_ctx->limit_watermark);
+	}
+
+	srq_attr->max_wr  = (mthca_is_memfree(dev)) ? srq->max - 1 : srq->max;
+	srq_attr->max_sge = srq->max_gs;
+
+out:
+	mthca_free_mailbox(dev, mailbox);
+
+	return err;
 }
 
 void mthca_srq_event(struct mthca_dev *dev, u32 srqn,
@@ -366,7 +425,7 @@ void mthca_srq_event(struct mthca_dev *dev, u32 srqn,
 	spin_lock(&dev->srq_table.lock);
 	srq = mthca_array_get(&dev->srq_table.srq, srqn & (dev->limits.num_srqs - 1));
 	if (srq)
-		atomic_inc(&srq->refcount);
+		++srq->refcount;
 	spin_unlock(&dev->srq_table.lock);
 
 	if (!srq) {
@@ -383,8 +442,10 @@ void mthca_srq_event(struct mthca_dev *dev, u32 srqn,
 	srq->ibsrq.event_handler(&event, srq->ibsrq.srq_context);
 
 out:
-	if (atomic_dec_and_test(&srq->refcount))
+	spin_lock(&dev->srq_table.lock);
+	if (!--srq->refcount)
 		wake_up(&srq->wait);
+	spin_unlock(&dev->srq_table.lock);
 }
 
 /*
@@ -414,6 +475,7 @@ int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 {
 	struct mthca_dev *dev = to_mdev(ibsrq->device);
 	struct mthca_srq *srq = to_msrq(ibsrq);
+	__be32 doorbell[2];
 	unsigned long flags;
 	int err = 0;
 	int first_ind;
@@ -428,7 +490,7 @@ int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 
 	first_ind = srq->first_free;
 
-	for (nreq = 0; wr; ++nreq, wr = wr->next) {
+	for (nreq = 0; wr; wr = wr->next) {
 		ind = srq->first_free;
 
 		if (ind < 0) {
@@ -488,11 +550,29 @@ int mthca_tavor_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 
 		srq->wrid[ind]  = wr->wr_id;
 		srq->first_free = next_ind;
+
+		++nreq;
+		if (unlikely(nreq == MTHCA_TAVOR_MAX_WQES_PER_RECV_DB)) {
+			nreq = 0;
+
+			doorbell[0] = cpu_to_be32(first_ind << srq->wqe_shift);
+			doorbell[1] = cpu_to_be32(srq->srqn << 8);
+
+			/*
+			 * Make sure that descriptors are written
+			 * before doorbell is rung.
+			 */
+			wmb();
+
+			mthca_write64(doorbell,
+				      dev->kar + MTHCA_RECEIVE_DOORBELL,
+				      MTHCA_GET_DOORBELL_LOCK(&dev->doorbell_lock));
+
+			first_ind = srq->first_free;
+		}
 	}
 
 	if (likely(nreq)) {
-		__be32 doorbell[2];
-
 		doorbell[0] = cpu_to_be32(first_ind << srq->wqe_shift);
 		doorbell[1] = cpu_to_be32((srq->srqn << 8) | nreq);
 
@@ -594,6 +674,31 @@ int mthca_arbel_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 	return err;
 }
 
+int mthca_max_srq_sge(struct mthca_dev *dev)
+{
+	if (mthca_is_memfree(dev))
+		return dev->limits.max_sg;
+
+	/*
+	 * SRQ allocations are based on powers of 2 for Tavor,
+	 * (although they only need to be multiples of 16 bytes).
+	 *
+	 * Therefore, we need to base the max number of sg entries on
+	 * the largest power of 2 descriptor size that is <= to the
+	 * actual max WQE descriptor size, rather than return the
+	 * max_sg value given by the firmware (which is based on WQE
+	 * sizes as multiples of 16, not powers of 2).
+	 *
+	 * If SRQ implementation is changed for Tavor to be based on
+	 * multiples of 16, the calculation below can be deleted and
+	 * the FW max_sg value returned.
+	 */
+	return min_t(int, dev->limits.max_sg,
+		     ((1 << (fls(dev->limits.max_desc_sz) - 1)) -
+		      sizeof (struct mthca_next_seg)) /
+		     sizeof (struct mthca_data_seg));
+}
+
 int __devinit mthca_init_srq_table(struct mthca_dev *dev)
 {
 	int err;
@@ -618,7 +723,7 @@ int __devinit mthca_init_srq_table(struct mthca_dev *dev)
 	return err;
 }
 
-void __devexit mthca_cleanup_srq_table(struct mthca_dev *dev)
+void mthca_cleanup_srq_table(struct mthca_dev *dev)
 {
 	if (!(dev->mthca_flags & MTHCA_FLAG_SRQ))
 		return;

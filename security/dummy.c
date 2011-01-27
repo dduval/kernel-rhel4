@@ -153,7 +153,7 @@ static int dummy_vm_enough_memory(long pages)
 		* sysctl_overcommit_ratio / 100;
 	allowed += total_swap_pages;
 
-	if (atomic_read(&vm_committed_space) < allowed)
+	if (atomic_read(&vm_committed_space) < (long)allowed)
 		return 0;
 
 	vm_unacct_memory(pages);

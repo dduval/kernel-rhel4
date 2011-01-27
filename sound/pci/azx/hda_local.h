@@ -67,6 +67,12 @@ int snd_hda_mixer_amp_switch_info(snd_kcontrol_t *kcontrol, snd_ctl_elem_info_t 
 int snd_hda_mixer_amp_switch_get(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *ucontrol);
 int snd_hda_mixer_amp_switch_put(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *ucontrol);
 
+/* lowlevel accessor with caching; use carefully */
+int snd_hda_codec_amp_read(struct hda_codec *codec, hda_nid_t nid, int ch,
+			   int direction, int index);
+int snd_hda_codec_amp_update(struct hda_codec *codec, hda_nid_t nid, int ch,
+			     int direction, int idx, int mask, int val);
+
 /* mono switch binding multiple inputs */
 #define HDA_BIND_MUTE_MONO(xname, nid, channel, indices, direction) \
 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = 0,  \
@@ -87,7 +93,7 @@ int snd_hda_create_spdif_in_ctls(struct hda_codec *codec, hda_nid_t nid);
 /*
  * input MUX helper
  */
-#define HDA_MAX_NUM_INPUTS	8
+#define HDA_MAX_NUM_INPUTS	16
 struct hda_input_mux_item {
 	const char *label;
 	unsigned int index;
@@ -101,6 +107,23 @@ int snd_hda_input_mux_info(const struct hda_input_mux *imux, snd_ctl_elem_info_t
 int snd_hda_input_mux_put(struct hda_codec *codec, const struct hda_input_mux *imux,
 			  snd_ctl_elem_value_t *ucontrol, hda_nid_t nid,
 			  unsigned int *cur_val);
+
+/*
+ * Channel mode helper
+ */
+struct hda_channel_mode {
+	int channels;
+	const struct hda_verb *sequence;
+};
+
+int snd_hda_ch_mode_info(struct hda_codec *codec, snd_ctl_elem_info_t *uinfo,
+			 const struct hda_channel_mode *chmode, int num_chmodes);
+int snd_hda_ch_mode_get(struct hda_codec *codec, snd_ctl_elem_value_t *ucontrol,
+			const struct hda_channel_mode *chmode, int num_chmodes,
+			int max_channels);
+int snd_hda_ch_mode_put(struct hda_codec *codec, snd_ctl_elem_value_t *ucontrol,
+			const struct hda_channel_mode *chmode, int num_chmodes,
+			int *max_channelsp);
 
 /*
  * Multi-channel / digital-out PCM helper
@@ -194,9 +217,12 @@ enum {
 	AUTO_PIN_LAST
 };
 
+extern const char *auto_pin_cfg_labels[AUTO_PIN_LAST];
+
 struct auto_pin_cfg {
 	int line_outs;
-	hda_nid_t line_out_pins[4]; /* sorted in the order of Front/Surr/CLFE/Side */
+	hda_nid_t line_out_pins[5]; /* sorted in the order of Front/Surr/CLFE/Side */
+	hda_nid_t speaker_pin;
 	hda_nid_t hp_pin;
 	hda_nid_t input_pins[AUTO_PIN_LAST];
 	hda_nid_t dig_out_pin;
@@ -209,6 +235,33 @@ struct auto_pin_cfg {
 #define get_defcfg_sequence(cfg) (cfg & AC_DEFCFG_SEQUENCE)
 #define get_defcfg_device(cfg) ((cfg & AC_DEFCFG_DEVICE) >> AC_DEFCFG_DEVICE_SHIFT)
 
-int snd_hda_parse_pin_def_config(struct hda_codec *codec, struct auto_pin_cfg *cfg);
+int snd_hda_parse_pin_def_config(struct hda_codec *codec, struct auto_pin_cfg *cfg,
+				 hda_nid_t *ignore_nids);
+
+/* amp values */
+#define AMP_IN_MUTE(idx)	(0x7080 | ((idx)<<8))
+#define AMP_IN_UNMUTE(idx)	(0x7000 | ((idx)<<8))
+#define AMP_OUT_MUTE	0xb080
+#define AMP_OUT_UNMUTE	0xb000
+#define AMP_OUT_ZERO	0xb000
+/* pinctl values */
+#define PIN_IN		0x20
+#define PIN_VREF80	0x24
+#define PIN_VREF50	0x21
+#define PIN_OUT		0x40
+#define PIN_HP		0xc0
+#define PIN_HP_AMP	0x80
+
+/*
+ * get widget capabilities
+ */
+static inline u32 get_wcaps(struct hda_codec *codec, hda_nid_t nid)
+{
+	if (nid < codec->start_nid ||
+	    nid >= codec->start_nid + codec->num_nodes)
+		return snd_hda_param_read(codec, nid, AC_PAR_AUDIO_WIDGET_CAP);
+	return codec->wcaps[nid - codec->start_nid];
+}
+
 
 #endif /* __SOUND_HDA_LOCAL_H */

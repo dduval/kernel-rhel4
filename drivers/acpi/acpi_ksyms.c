@@ -148,6 +148,8 @@ extern int acpi_pci_irq_enable(struct pci_dev *dev);
 EXPORT_SYMBOL(acpi_pci_irq_enable);
 EXPORT_SYMBOL(acpi_pci_register_driver);
 EXPORT_SYMBOL(acpi_pci_unregister_driver);
+extern struct acpi_prt_list acpi_prt;
+EXPORT_SYMBOL_GPL(acpi_prt);
 #endif /*CONFIG_ACPI_PCI */
 
 #ifdef CONFIG_ACPI_EC

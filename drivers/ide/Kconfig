@@ -270,6 +270,12 @@ config BLK_DEV_IDESCSI
 	  If both this SCSI emulation and native ATAPI support are compiled
 	  into the kernel, the native support will be used.
 
+config BLK_DEV_IDEDUMP
+	tristate "IDE disk dump support"
+	depends on DISKDUMP && BLK_DEV_IDE
+	---help---
+	  This will provide diskdump support for IDE disks.
+
 config IDE_TASK_IOCTL
 	bool "IDE Taskfile Access"
 	help

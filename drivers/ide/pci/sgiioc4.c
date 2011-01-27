@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003 Silicon Graphics, Inc.  All Rights Reserved.
+ * Copyright (c) 2003-2006 Silicon Graphics, Inc.  All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License
@@ -533,7 +533,7 @@ sgiioc4_build_dma_table(ide_drive_t * drive, struct request *rq, int ddir)
 				       drive->name);
 				goto use_pio_instead;
 			} else {
-				u32 xcount, bcount =
+				u32 bcount =
 				    0x10000 - (cur_addr & 0xffff);
 
 				if (bcount > cur_len)
@@ -548,8 +548,7 @@ sgiioc4_build_dma_table(ide_drive_t * drive, struct request *rq, int ddir)
 				*table = 0x0;
 				table++;
 
-				xcount = bcount & 0xffff;
-				*table = cpu_to_be32(xcount);
+				*table = cpu_to_be32(bcount);
 				table++;
 
 				cur_addr += bcount;
@@ -645,24 +644,6 @@ ide_init_sgiioc4(ide_hwif_t * hwif)
 	hwif->INB = &sgiioc4_INB;
 }
 
-
-/* PB XXX FIXME ... this is a temporary workaround
-for the SGI IOC4 IDE DMA timeout issue */
-void
-sgiioc4_ide_setup_fixup(ide_hwif_t *hwif)
-{
-	int i;
-
-	for (i = 0; i < 2; i++) {
-		ide_drive_t *drive = &(hwif->drives[i]);
-
-		if (drive->present) {
-			(void) ide_do_reset(drive);
-		}
-	}
-}
-
-
 static int __init
 sgiioc4_ide_setup_pci_device(struct pci_dev *dev, ide_pci_device_t * d)
 {
@@ -720,10 +701,8 @@ sgiioc4_ide_setup_pci_device(struct pci_dev *dev, ide_pci_device_t * d)
 
 	probe_hwif_init(hwif);
 
-	sgiioc4_ide_setup_fixup(hwif);
-
 	/* Create /proc/ide entries */
-	create_proc_ide_interfaces(); 
+	create_proc_ide_interfaces();
 
 	return 0;
 }

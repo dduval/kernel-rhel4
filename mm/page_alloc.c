@@ -39,6 +39,7 @@ struct pglist_data *pgdat_list;
 unsigned long totalram_pages;
 unsigned long totalhigh_pages;
 long nr_swap_pages;
+int percpu_pagelist_fraction;
 int numnodes = 1;
 int sysctl_lower_zone_protection = 0;
 
@@ -635,21 +636,14 @@ __alloc_pages(unsigned int gfp_mask, unsigned int order,
 
 	/* Go through the zonelist once, looking for a zone with enough free */
 	for (i = 0; (z = zones[i]) != NULL; i++) {
-		int need_kswapd = 0;
 		min = z->pages_low + (1<<order) + z->protection[alloc_type];
 
-		if (z->free_pages < min) {
-			need_kswapd++;
-			if (!(gfp_mask & __GFP_WIRED))
-				continue;
-		}
+		if (z->free_pages < min)
+			continue;
 
 		page = buffered_rmqueue(z, order, gfp_mask);
-		if (page) {
-			if (need_kswapd)
-				wakeup_kswapd(z);
+		if (page)
 			goto got_pg;
-		}
 	}
 
 	for (i = 0; (z = zones[i]) != NULL; i++)
@@ -849,20 +843,19 @@ unsigned int nr_free_pages_pgdat(pg_data_t *pgdat)
 
 static unsigned int nr_free_zone_pages(int offset)
 {
-	pg_data_t *pgdat;
+	/* Just pick one node, since fallback list is circular */
+	pg_data_t *pgdat = NODE_DATA(numa_node_id());
 	unsigned int sum = 0;
+	
+	struct zonelist *zonelist = pgdat->node_zonelists + offset;
+	struct zone **zonep = zonelist->zones;
+	struct zone *zone;
 
-	for_each_pgdat(pgdat) {
-		struct zonelist *zonelist = pgdat->node_zonelists + offset;
-		struct zone **zonep = zonelist->zones;
-		struct zone *zone;
-
-		for (zone = *zonep++; zone; zone = *zonep++) {
-			unsigned long size = zone->present_pages;
-			unsigned long high = zone->pages_high;
-			if (size > high)
-				sum += size - high;
-		}
+	for (zone = *zonep++; zone; zone = *zonep++) {
+		unsigned long size = zone->present_pages;
+		unsigned long high = zone->pages_high;
+		if (size > high)
+			sum += size - high;
 	}
 
 	return sum;
@@ -1145,15 +1138,15 @@ void show_free_areas(void)
 			continue;
 		}
 
-		spin_lock_irqsave(&zone->lock, flags);
 		for (order = 0; order < MAX_ORDER; order++) {
 			nr = 0;
+			spin_lock_irqsave(&zone->lock, flags);
 			list_for_each(elem, &zone->free_area[order].free_list)
 				++nr;
+			spin_unlock_irqrestore(&zone->lock, flags);
 			total += nr << order;
 			printk("%lu*%lukB ", nr, K(1UL) << order);
 		}
-		spin_unlock_irqrestore(&zone->lock, flags);
 		printk("= %lukB\n", K(total));
 	}
 
@@ -1491,6 +1484,24 @@ void zone_init_free_lists(struct pglist_data *pgdat, struct zone *zone, unsigned
 #endif
 
 /*
+ * setup_pagelist_highmark() sets the high water mark for hot per_cpu_pagelist
+ * to the value high for the pageset p.
+ */
+
+static void setup_pagelist_highmark(struct per_cpu_pageset *p,
+				unsigned long high)
+{
+	struct per_cpu_pages *pcp;
+
+	pcp = &p->pcp[0]; /* hot list */
+	pcp->high = high;
+	pcp->batch = max(1UL, high/4);
+	if ((high/4) > (PAGE_SHIFT * 8))
+		pcp->batch = PAGE_SHIFT * 8;
+}
+
+
+/*
  * Set up the zone data structures:
  *   - mark all pages reserved
  *   - mark all memory queues empty
@@ -1608,7 +1619,8 @@ void __init node_alloc_mem_map(struct pglist_data *pgdat)
 	unsigned long size;
 
 	size = (pgdat->node_spanned_pages + 1) * sizeof(struct page);
-	pgdat->node_mem_map = alloc_bootmem_node(pgdat, size);
+	if (!pgdat->node_mem_map)
+		pgdat->node_mem_map = alloc_bootmem_node(pgdat, size);
 #ifndef CONFIG_DISCONTIGMEM
 	mem_map = contig_page_data.node_mem_map;
 #endif
@@ -2027,6 +2039,32 @@ int lower_zone_protection_sysctl_handler(ctl_table *table, int write,
 {
 	proc_dointvec_minmax(table, write, file, buffer, length, ppos);
 	setup_per_zone_protection();
+	return 0;
+}
+
+/*
+ * percpu_pagelist_fraction - changes the pcp->high for each zone on each
+ * cpu.  It is the fraction of total pages in each zone that a hot per cpu pagelist
+ * can have before it gets flushed back to buddy allocator.
+ */
+
+int percpu_pagelist_fraction_sysctl_handler(ctl_table *table, int write,
+	struct file *file, void __user *buffer, size_t *length, loff_t *ppos)
+{
+	struct zone *zone;
+	unsigned int cpu;
+	int ret;
+
+	ret = proc_dointvec_minmax(table, write, file, buffer, length, ppos);
+	if (!write || (ret == -EINVAL))
+		return ret;
+	for_each_zone(zone) {
+		for_each_online_cpu(cpu) {
+			unsigned long  high;
+			high = zone->present_pages / percpu_pagelist_fraction;
+			setup_pagelist_highmark(&zone->pageset[cpu], high);
+		}
+	}
 	return 0;
 }
 

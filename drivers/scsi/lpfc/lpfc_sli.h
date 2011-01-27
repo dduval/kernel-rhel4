@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.h 1.38.2.2 2005/06/13 17:16:49EDT sf_support Exp  $
+ * $Id: lpfc_sli.h 2757 2005-12-09 18:21:44Z sf_support $
  */
 
 #ifndef _H_LPFC_SLI
@@ -85,7 +85,7 @@ typedef struct lpfcMboxq {
 #define MBX_STOP_IOCB   4	/* Stop iocb processing till mbox cmds
 				   complete */
 
-#define LPFC_MAX_RING_MASK  4	/* max num of rctl/type masks allowed per
+#define LPFC_MAX_RING_MASK  5	/* max num of rctl/type masks allowed per
 				   ring */
 #define LPFC_MAX_RING       4	/* max num of SLI rings used by driver */
 

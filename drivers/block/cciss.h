@@ -42,6 +42,7 @@ typedef struct _drive_info_struct
 				   *to prevent it from being opened or it's queue
 				   *from being started.
 				  */
+	struct device *dev_info;
 } drive_info_struct;
 
 struct ctlr_info 
@@ -57,7 +58,6 @@ struct ctlr_info
 	unsigned long io_mem_addr;
 	unsigned long io_mem_length;
 	CfgTable_struct __iomem *cfgtable;
-	unsigned int intr;
 	int	interrupts_enabled;
 	int	major;
 	int 	max_commands;
@@ -67,6 +67,13 @@ struct ctlr_info
 	int	num_luns;
 	int 	highest_lun;
 	int	usage_count;  /* number of opens all all minor devices */
+#	define DOORBELL_INT     0
+#	define PERF_MODE_INT    1
+#	define SIMPLE_MODE_INT  2
+#	define MEMQ_MODE_INT    3
+	unsigned int intr[4];
+	unsigned int msix_vector;
+	unsigned int msi_vector;
 
 	// information about each logical volume
 	drive_info_struct drv[CISS_MAX_LUN];
@@ -124,12 +131,24 @@ struct ctlr_info
 #define SA5_INTR_PENDING	0x08
 #define SA5B_INTR_PENDING	0x04
 #define FIFO_EMPTY		0xffffffff	
+#define CCISS_ERROR_BIT_MASK	0x0fffffffc
 #define CCISS_FIRMWARE_READY	0xffff0000 /* value in scratchpad register */
 
 #define  CISS_ERROR_BIT		0x02
 
 #define CCISS_INTR_ON 	1 
 #define CCISS_INTR_OFF	0
+
+static inline ctlr_info_t *get_host(struct gendisk *disk)
+{
+	return disk->queue->queuedata;
+}
+
+static inline drive_info_struct *get_drv(struct gendisk *disk)
+{
+	return disk->private_data;
+}
+
 /* 
 	Send the command to the hardware 
 */
@@ -269,7 +288,22 @@ struct board_type {
 	struct access_method *access;
 };
 
+/* we really ought to move drive_info_struct contents in there */
+struct drv_dynamic {
+	struct device dev;	/* should be the first member */
+	struct gendisk *disk;
+#ifdef CONFIG_CCISS_DUMP
+	int (*sanity_check) (void *);
+	int (*rw_block) (void *, int, unsigned long, void *, int,
+			unsigned long, unsigned long);
+	int (*quiesce) (void *);
+	int (*shutdown) (void *);
+	void * (*probe) (struct gendisk *);
+	unsigned int (*block_add_device) (void *);
+	void *dump_device;
+#endif
+};
+
 #define CCISS_LOCK(i)	(&hba[i]->lock)
 
 #endif /* CCISS_H */
-

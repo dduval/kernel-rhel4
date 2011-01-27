@@ -12,7 +12,11 @@
 
 #include <asm/smp.h>
 
+#ifdef __GENKSYMS__
 #define NODEMAPSIZE 0xff
+#else
+#define NODEMAPSIZE 0xfff
+#endif
 
 /* Simple perfect hash to map physical addresses to node numbers */
 extern int memnode_shift; 

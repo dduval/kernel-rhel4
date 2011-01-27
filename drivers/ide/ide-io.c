@@ -841,6 +841,9 @@ ide_startstop_t start_request (ide_drive_t *drive, struct request *rq)
 
 	BUG_ON(!(rq->flags & REQ_STARTED));
 
+	if (drive->dead)
+		goto kill_rq;
+
 #ifdef DEBUG
 	printk("%s: start_request: current=0x%08lx\n",
 		HWIF(drive)->name, (unsigned long) rq);

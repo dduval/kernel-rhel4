@@ -121,7 +121,7 @@ void __init setup_node_bootmem(int nodeid, unsigned long start, unsigned long en
 /* Initialize final allocator for a zone */
 void __init setup_node_zones(int nodeid)
 { 
-	unsigned long start_pfn, end_pfn; 
+	unsigned long start_pfn, end_pfn, memmapsize, limit;
 	unsigned long zones[MAX_NR_ZONES];
 	unsigned long dma_end_pfn;
 
@@ -140,7 +140,17 @@ void __init setup_node_zones(int nodeid)
 	} else { 
 		zones[ZONE_NORMAL] = end_pfn - start_pfn; 
 	} 
-    
+
+	/* Try to allocate mem_map at end to not fill up precious <4GB
+	   memory. */
+   	memmapsize = sizeof(struct page) * (end_pfn - start_pfn);
+	limit = end_pfn << PAGE_SHIFT;
+	NODE_DATA(nodeid)->node_mem_map =
+		__alloc_bootmem_core(NODE_DATA(nodeid)->bdata,
+				memmapsize, SMP_CACHE_BYTES,
+				round_down(limit - memmapsize, PAGE_SIZE),
+				limit);
+
 	free_area_init_node(nodeid, NODE_DATA(nodeid), zones,
 			    start_pfn, NULL); 
 } 

@@ -20,6 +20,13 @@ static inline int is_const_loops_cpu(unsigned int cpu)
 	if (c->x86 == 0xf)
 		return 1;
 
+	/*
+	 * On newer P-6s, (model 14 and above) TSC runs at constant frequency
+	 * independent of cpu freq when we use EST
+	 */
+	if (c->x86 == 0x6 && c->x86_model >= 0x0e)
+		return 1;
+
 	return 0;
 }
 

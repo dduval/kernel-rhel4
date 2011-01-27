@@ -1987,10 +1987,20 @@ generic_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 
 	pagevec_init(&lru_pvec, 0);
 
-	buf = iov->iov_base + written;	/* handle partial DIO write */
+	/*
+	 * handle partial DIO write.  Adjust cur_iov if needed.
+	 */
+	if (likely(nr_segs == 1))
+		buf = iov->iov_base + written;
+	else {
+		filemap_set_next_iovec(&cur_iov, &iov_base, written);
+		buf = cur_iov->iov_base + iov_base;
+	}
+
 	do {
 		unsigned long index;
 		unsigned long offset;
+		unsigned long maxlen;
 		size_t copied;
 
 		offset = (pos & (PAGE_CACHE_SIZE -1)); /* Within page */
@@ -2005,8 +2015,10 @@ generic_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 		 * same page as we're writing to, without it being marked
 		 * up-to-date.
 		 */
-		fault_in_pages_readable(buf, bytes);
-
+		maxlen = cur_iov->iov_len - iov_base;
+		if (maxlen > bytes)
+			maxlen = bytes;
+		fault_in_pages_readable(buf, maxlen);
 		page = __grab_cache_page(mapping,index,&cached_page,&lru_pvec);
 		if (!page) {
 			status = -ENOMEM;
@@ -2043,9 +2055,14 @@ generic_file_buffered_write(struct kiocb *iocb, const struct iovec *iov,
 				count -= status;
 				pos += status;
 				buf += status;
-				if (unlikely(nr_segs > 1))
-					filemap_set_next_iovec(&cur_iov,
-							&iov_base, status);
+				if (unlikely(nr_segs > 1)) {
+ 					filemap_set_next_iovec(&cur_iov,
+ 							&iov_base, status);
+					if (count)
+						buf = cur_iov->iov_base + iov_base;
+				} else {
+					iov_base += status;
+				}
 			}
 		}
 		if (unlikely(copied != bytes))

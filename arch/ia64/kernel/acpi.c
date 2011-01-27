@@ -507,12 +507,24 @@ acpi_numa_arch_fixup (void)
 unsigned int
 acpi_register_gsi (u32 gsi, int edge_level, int active_high_low)
 {
+	int rc;
 	if (has_8259 && gsi < 16)
 		return isa_irq_to_vector(gsi);
 
-	return iosapic_register_intr(gsi,
+	rc = iosapic_register_intr(gsi,
 			(active_high_low == ACPI_ACTIVE_HIGH) ? IOSAPIC_POL_HIGH : IOSAPIC_POL_LOW,
 			(edge_level == ACPI_EDGE_SENSITIVE) ? IOSAPIC_EDGE : IOSAPIC_LEVEL);
+
+	/* Caller of acpi_register_gsi() always assumes this function
+	 * succeeds.  Output a warning message ...
+	 */
+	if (rc == -ENOSPC)
+		printk(KERN_WARNING "%s: out of interrupt vectors!\n",
+		       __FUNCTION__);
+	else if (rc < 0)
+		printk(KERN_WARNING "%s: error %d\n", __FUNCTION__, rc);
+
+	return (unsigned int)rc;
 }
 EXPORT_SYMBOL(acpi_register_gsi);
 

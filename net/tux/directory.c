@@ -80,7 +80,7 @@ static void do_dir_line (tux_req_t *req, int cachemiss)
 	char string0[MAX_OBJECTNAME_LEN+200], *tmp;
 	int len, curroff, total, str_len = 0;
 	int err, flag = cachemiss ? 0 : LOOKUP_ATOMIC;
-	struct nameidata base;
+	struct nameidata base = {};
 	struct dentry *dentry = NULL;
 	struct inode *inode = NULL;
 	struct vfsmount *mnt = NULL;

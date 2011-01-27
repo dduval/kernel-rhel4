@@ -453,6 +453,7 @@ static struct dentry *autofs4_lookup(struct inode *dir, struct dentry *dentry, s
 {
 	struct autofs_sb_info *sbi;
 	int oz_mode;
+	struct dentry *parent = dentry->d_parent;
 
 	DPRINTK("name = %.*s",
 		dentry->d_name.len, dentry->d_name.name);
@@ -514,8 +515,19 @@ static struct dentry *autofs4_lookup(struct inode *dir, struct dentry *dentry, s
 	 * doesn't do the right thing for all system calls, but it should
 	 * be OK for the operations we permit from an autofs.
 	 */
-	if ( dentry->d_inode && d_unhashed(dentry) )
+	if (dentry->d_inode && d_unhashed(dentry)) {
+		struct dentry *new;
+		/*
+		 *  In the case of replicated server entries, if a mount
+		 *  attempt fails, the daemon will remove the directory and
+		 *  recreate it.  This can leave us with an unhashed dentry,
+		 *  but a successful mount!  As such, we perform another
+		 *  cache lookup for the dentry here.
+		 */
+		if ((new = d_lookup(parent, &dentry->d_name)) != NULL)
+			return new;
 		return ERR_PTR(-ENOENT);
+	}
 
 	return NULL;
 }

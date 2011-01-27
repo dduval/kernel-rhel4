@@ -85,6 +85,8 @@
 
 /* Used by mca_asm.S */
 ia64_mca_sal_to_os_state_t	ia64_sal_to_os_handoff_state;
+ia64_mca_sal_to_os_state_t	ia64_sal_to_os_handoff_state_init[NR_CPUS];
+u64				ia64_sal_to_os_handoff_state_addr[NR_CPUS];
 ia64_mca_os_to_sal_state_t	ia64_os_to_sal_handoff_state;
 u64				ia64_mca_proc_state_dump[512];
 u64				ia64_mca_stack[1024] __attribute__((aligned(16)));
@@ -470,12 +472,23 @@ fetch_min_state (pal_min_state_area_t *ms, struct pt_regs *pt, struct switch_sta
 
 static spinlock_t init_dump_lock = SPIN_LOCK_UNLOCKED;
 static spinlock_t show_stack_lock = SPIN_LOCK_UNLOCKED;
+static atomic_t num_stopped_cpus = ATOMIC_INIT(0);
+
+static void
+freeze_cpu_osinit (struct unw_frame_info *info, void *arg)
+{
+	current->thread.ksp = (__u64)(info->sw) - 16;
+	atomic_inc(&num_stopped_cpus);
+	for (;;) local_irq_disable();
+}
 
 static void
 init_handler_platform (pal_min_state_area_t *ms,
 		       struct pt_regs *pt, struct switch_stack *sw)
 {
 	struct unw_frame_info info;
+
+	fetch_min_state(ms, pt, sw);
 
 	/* if a kernel debugger is available call it here else just dump the registers */
 
@@ -491,7 +504,6 @@ init_handler_platform (pal_min_state_area_t *ms,
 	show_min_state(ms);
 
 	printk("Backtrace of current task (pid %d, %s)\n", current->pid, current->comm);
-	fetch_min_state(ms, pt, sw);
 	unw_init_from_interruption(&info, current, pt, sw);
 	ia64_do_show_stack(&info, NULL);
 	spin_unlock(&show_stack_lock);
@@ -499,12 +511,19 @@ init_handler_platform (pal_min_state_area_t *ms,
 	if (crashdump_func() || system_state == SYSTEM_DUMPING) {
 		if (spin_trylock(&init_dump_lock)) {
 #ifdef CONFIG_SMP
-			/* Wait until other cpus call ia64_freeze_cpu */
-			udelay(3*1000000);
+			int other_cpus = num_online_cpus() - 1;
+			int wait_time = 1000 * other_cpus;
+
+			while(wait_time-- &&
+			      (atomic_read(&num_stopped_cpus) != other_cpus))
+				udelay(1000);
+			if (other_cpus && wait_time <= 0)
+				printk("timeout %d\n",
+					atomic_read(&num_stopped_cpus));
 #endif
 			try_crashdump(pt);
 		}
-		unw_init_running(ia64_freeze_cpu, NULL);
+		unw_init_running(freeze_cpu_osinit, NULL);
 	}
 
 #ifdef CONFIG_SMP
@@ -1149,18 +1168,20 @@ void
 ia64_init_handler (struct pt_regs *pt, struct switch_stack *sw)
 {
 	pal_min_state_area_t *ms;
+	ia64_mca_sal_to_os_state_t *state;
 
 	oops_in_progress = 1;	/* avoid deadlock in printk, but it makes recovery dodgy */
 
+	state = &ia64_sal_to_os_handoff_state_init[smp_processor_id()];
 	printk(KERN_INFO "Entered OS INIT handler. PSP=%lx\n",
-		ia64_sal_to_os_handoff_state.proc_state_param);
+		state->proc_state_param);
 
 	/*
 	 * Address of minstate area provided by PAL is physical,
 	 * uncacheable (bit 63 set). Convert to Linux virtual
 	 * address in region 6.
 	 */
-	ms = (pal_min_state_area_t *)(ia64_sal_to_os_handoff_state.pal_min_state | (6ul<<61));
+	ms = (pal_min_state_area_t *)(state->pal_min_state | (6ul<<61));
 
 	init_handler_platform(ms, pt, sw);	/* call platform specific routines */
 	bust_spinlocks(0);
@@ -1324,9 +1345,13 @@ ia64_mca_init(void)
 		       ia64_mc_info.imi_monarch_init_handler);
 
 	/* Register stack for os init handler */
-	for(i = 0 ; i < NR_CPUS; i++)
+	for(i = 0 ; i < NR_CPUS; i++) {
 		ia64_init_stack_addr[i] =
 			(u64)&ia64_init_stack[i*KERNEL_STACK_SIZE/8]; 
+
+		ia64_sal_to_os_handoff_state_addr[i] =
+			ia64_tpa(&ia64_sal_to_os_handoff_state_init[i]);
+	}
 
 	/* Register the os init handler with SAL */
 	if ((rc = ia64_sal_set_vectors(SAL_VECTOR_OS_INIT,

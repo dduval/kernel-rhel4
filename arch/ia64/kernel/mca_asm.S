@@ -56,6 +56,23 @@
 	st8	[_tmp]=r17,0x08;;			\
 	st8	[_tmp]=r18,0x08
 
+#define SAL_TO_OS_MCA_HANDOFF_STATE_SAVE_INIT(_tmp1, _tmp2)		\
+	LOAD_PHYSICAL(p0, _tmp1, ia64_sal_to_os_handoff_state_addr);	\
+	MINSTATE_GET_CURRENT(_tmp2);;					\
+	adds	_tmp2=IA64_TASK_SIZE+IA64_THREAD_INFO_CPU_OFFSET,_tmp2;;\
+	ld4	_tmp2=[_tmp2];;						\
+	shladd	_tmp2=_tmp2,3,_tmp1;;					\
+	ld8	_tmp1=[_tmp2];;						\
+	st8	[_tmp1]=r1,0x08;;			\
+	st8	[_tmp1]=r8,0x08;;			\
+	st8	[_tmp1]=r9,0x08;;			\
+	st8	[_tmp1]=r10,0x08;;			\
+	st8	[_tmp1]=r11,0x08;;			\
+	st8	[_tmp1]=r12,0x08;;			\
+	st8	[_tmp1]=r17,0x08;;			\
+	st8	[_tmp1]=r18,0x08
+
+
 /*
  * OS_MCA_TO_SAL_HANDOFF_STATE (SAL 3.0 spec)
  * (p6) is executed if we never entered virtual mode (TLB error)
@@ -871,7 +888,7 @@ end_os_mca_restore:
 GLOBAL_ENTRY(ia64_monarch_init_handler)
 
 	// stash the information the SAL passed to os
-	SAL_TO_OS_MCA_HANDOFF_STATE_SAVE(r2)
+	SAL_TO_OS_MCA_HANDOFF_STATE_SAVE_INIT(r2, r16)
 	;;
 	SAVE_MIN_WITH_COVER
 	;;

@@ -50,16 +50,9 @@
 #ifndef _IPS_H_
    #define _IPS_H_
 
+#include <linux/version.h>
    #include <asm/uaccess.h>
    #include <asm/io.h>
-
-   /* Prototypes */
-   extern int ips_detect(Scsi_Host_Template *);
-   extern int ips_release(struct Scsi_Host *);
-   extern int ips_eh_abort(Scsi_Cmnd *);
-   extern int ips_eh_reset(Scsi_Cmnd *);
-   extern int ips_queue(Scsi_Cmnd *, void (*) (Scsi_Cmnd *));
-   extern const char * ips_info(struct Scsi_Host *);
 
    /*
     * Some handy macros
@@ -95,15 +88,14 @@
       #define scsi_set_pci_device(sh,dev) (0)
    #endif
 
-   #if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
-   
-      #ifndef irqreturn_t
-         typedef void irqreturn_t;
-      #endif 
-      
+   #ifndef IRQ_NONE
+      typedef void irqreturn_t;
       #define IRQ_NONE
       #define IRQ_HANDLED
       #define IRQ_RETVAL(x)
+   #endif
+   
+   #if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
       #define IPS_REGISTER_HOSTS(SHT)      scsi_register_module(MODULE_SCSI_HA,SHT)
       #define IPS_UNREGISTER_HOSTS(SHT)    scsi_unregister_module(MODULE_SCSI_HA,SHT)
       #define IPS_ADD_HOST(shost,device)
@@ -119,7 +111,7 @@
       #define IPS_UNREGISTER_HOSTS(SHT)
       #define IPS_ADD_HOST(shost,device)   do { scsi_add_host(shost,device); scsi_scan_host(shost); } while (0)
       #define IPS_REMOVE_HOST(shost)       scsi_remove_host(shost)
-      #define IPS_SCSI_SET_DEVICE(sh,ha)   scsi_set_device(sh, &(ha)->pcidev->dev)
+      #define IPS_SCSI_SET_DEVICE(sh,ha)   do { } while (0)
       #define IPS_PRINTK(level, pcidev, format, arg...)                 \
             dev_printk(level , &((pcidev)->dev) , format , ## arg)
    #endif
@@ -130,6 +122,10 @@
 
    #ifndef min
       #define min(x,y) ((x) < (y) ? x : y)
+   #endif
+   
+   #ifndef __iomem       /* For clean compiles in earlier kernels without __iomem annotations */
+      #define __iomem
    #endif
 
    #define pci_dma_hi32(a)         ((a >> 16) >> 16)
@@ -454,13 +450,13 @@
     */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
    static int ips_proc24_info(char *, char **, off_t, int, int, int);
-   static void ips_select_queue_depth(struct Scsi_Host *, Scsi_Device *);
+   static void ips_select_queue_depth(struct Scsi_Host *, struct scsi_device *);
    static int ips_biosparam(Disk *disk, kdev_t dev, int geom[]);
 #else
-   int ips_proc_info(struct Scsi_Host *, char *, char **, off_t, int, int);
+   static int ips_proc_info(struct Scsi_Host *, char *, char **, off_t, int, int);
    static int ips_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 		sector_t capacity, int geom[]);
-   int ips_slave_configure(Scsi_Device *SDptr);
+   static int ips_slave_configure(struct scsi_device *SDptr);
 #endif
 
 /*
@@ -1214,13 +1210,13 @@ typedef struct {
 
 #define IPS_VER_MAJOR 7
 #define IPS_VER_MAJOR_STRING "7"
-#define IPS_VER_MINOR 10
-#define IPS_VER_MINOR_STRING "10"
-#define IPS_VER_BUILD 18
-#define IPS_VER_BUILD_STRING "18"
-#define IPS_VER_STRING "7.10.18"
+#define IPS_VER_MINOR 12
+#define IPS_VER_MINOR_STRING "12"
+#define IPS_VER_BUILD 02
+#define IPS_VER_BUILD_STRING "02"
+#define IPS_VER_STRING "7.12.02"
 #define IPS_RELEASE_ID 0x00020000
-#define IPS_BUILD_IDENT 731
+#define IPS_BUILD_IDENT 761
 #define IPS_LEGALCOPYRIGHT_STRING "(C) Copyright IBM Corp. 1994, 2002. All Rights Reserved."
 #define IPS_ADAPTECCOPYRIGHT_STRING "(c) Copyright Adaptec, Inc. 2002 to 2004. All Rights Reserved."
 #define IPS_DELLCOPYRIGHT_STRING "(c) Copyright Dell 2004. All Rights Reserved."
@@ -1231,12 +1227,12 @@ typedef struct {
 #define IPS_VER_SERVERAID2 "2.88.13"
 #define IPS_VER_NAVAJO "2.88.13"
 #define IPS_VER_SERVERAID3 "6.10.24"
-#define IPS_VER_SERVERAID4H "7.10.11"
-#define IPS_VER_SERVERAID4MLx "7.10.18"
-#define IPS_VER_SARASOTA "7.10.18"
-#define IPS_VER_MARCO "7.10.18"
-#define IPS_VER_SEBRING "7.10.18"
-#define IPS_VER_KEYWEST "7.10.18"
+#define IPS_VER_SERVERAID4H "7.12.02"
+#define IPS_VER_SERVERAID4MLx "7.12.02"
+#define IPS_VER_SARASOTA "7.12.02"
+#define IPS_VER_MARCO "7.12.02"
+#define IPS_VER_SEBRING "7.12.02"
+#define IPS_VER_KEYWEST "7.12.02"
 
 /* Compatability IDs for various adapters */
 #define IPS_COMPAT_UNKNOWN ""

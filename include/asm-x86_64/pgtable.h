@@ -16,6 +16,9 @@
 #include <asm/bitops.h>
 #include <linux/threads.h>
 #include <asm/pda.h>
+#ifdef CONFIG_MEM_MIRROR
+#include <asm/mm_track.h>
+#endif
 
 extern pgd_t level3_kernel_pgt[512];
 extern pgd_t level3_physmem_pgt[512];
@@ -75,16 +78,25 @@ extern inline int pgd_present(pgd_t pgd)	{ return !pgd_none(pgd); }
 
 static inline void set_pte(pte_t *dst, pte_t val)
 {
+#ifdef CONFIG_MEM_MIRROR
+	mm_track_pte(dst);
+#endif
 	pte_val(*dst) = pte_val(val);
 } 
 
 static inline void set_pmd(pmd_t *dst, pmd_t val)
 {
+#ifdef CONFIG_MEM_MIRROR
+	mm_track_pmd(dst);
+#endif
         pmd_val(*dst) = pmd_val(val); 
 } 
 
 static inline void set_pgd(pgd_t *dst, pgd_t val)
 {
+#ifdef CONFIG_MEM_MIRROR
+	mm_track_pgd(dst);
+#endif
 	pgd_val(*dst) = pgd_val(val); 
 } 
 
@@ -95,13 +107,24 @@ extern inline void pgd_clear (pgd_t * pgd)
 
 static inline void set_pml4(pml4_t *dst, pml4_t val)
 {
+#ifdef CONFIG_MEM_MIRROR
+	mm_track_pml4(dst);
+#endif
 	pml4_val(*dst) = pml4_val(val); 
 }
 
 #define pgd_page(pgd) \
 ((unsigned long) __va(pgd_val(pgd) & PHYSICAL_PAGE_MASK))
 
+#ifdef CONFIG_MEM_MIRROR
+static inline pte_t ptep_get_and_clear(pte_t *xp)
+{
+	mm_track_pte(xp);
+	return __pte(xchg(&(xp)->pte, 0));
+}
+#else
 #define ptep_get_and_clear(xp)	__pte(xchg(&(xp)->pte, 0))
+#endif
 #define pte_same(a, b)		((a).pte == (b).pte)
 
 #define PML4_SIZE	(1UL << PML4_SHIFT)
@@ -141,6 +164,9 @@ static inline void set_pml4(pml4_t *dst, pml4_t val)
 #define _PAGE_BIT_DIRTY		6
 #define _PAGE_BIT_PSE		7	/* 4 MB (or 2MB) page */
 #define _PAGE_BIT_GLOBAL	8	/* Global TLB entry PPro+ */
+#ifdef CONFIG_MEM_MIRROR
+#define _PAGE_BIT_SOFTDIRTY	9	/* save dirty state when hdw dirty bit cleared */
+#endif
 #define _PAGE_BIT_NX           63       /* No execute: only valid after cpuid check */
 
 #define _PAGE_PRESENT	0x001
@@ -153,6 +179,9 @@ static inline void set_pml4(pml4_t *dst, pml4_t val)
 #define _PAGE_PSE	0x080	/* 2MB page */
 #define _PAGE_FILE	0x040	/* set:pagecache, unset:swap */
 #define _PAGE_GLOBAL	0x100	/* Global TLB entry */
+#ifdef CONFIG_MEM_MIRROR
+#define _PAGE_SOFTDIRTY	0x200
+#endif
 
 #define _PAGE_PROTNONE	0x080	/* If not present */
 #define _PAGE_NX        (1UL<<_PAGE_BIT_NX)
@@ -160,7 +189,11 @@ static inline void set_pml4(pml4_t *dst, pml4_t val)
 #define _PAGE_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED | _PAGE_DIRTY)
 #define _KERNPG_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_ACCESSED | _PAGE_DIRTY)
 
+#ifdef CONFIG_MEM_MIRROR
+#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY | _PAGE_SOFTDIRTY)
+#else
 #define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY)
+#endif
 
 #define PAGE_NONE	__pgprot(_PAGE_PROTNONE | _PAGE_ACCESSED)
 #define PAGE_SHARED	__pgprot(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED | _PAGE_NX)
@@ -219,7 +252,11 @@ static inline unsigned long pgd_bad(pgd_t pgd)
 { 
        unsigned long val = pgd_val(pgd);
        val &= ~PTE_MASK; 
+#ifdef CONFIG_MEM_MIRROR
+       val &= ~(_PAGE_USER | _PAGE_DIRTY | _PAGE_SOFTDIRTY); 
+#else
        val &= ~(_PAGE_USER | _PAGE_DIRTY); 
+#endif
        return val & ~(_PAGE_PRESENT | _PAGE_RW | _PAGE_ACCESSED);      
 } 
 
@@ -248,14 +285,22 @@ static inline pte_t pfn_pte(unsigned long page_nr, pgprot_t pgprot)
 static inline int pte_user(pte_t pte)		{ return pte_val(pte) & _PAGE_USER; }
 extern inline int pte_read(pte_t pte)		{ return pte_val(pte) & _PAGE_USER; }
 extern inline int pte_exec(pte_t pte)		{ return pte_val(pte) & _PAGE_USER; }
+#ifdef CONFIG_MEM_MIRROR
+extern inline int pte_dirty(pte_t pte)		{ return pte_val(pte) & (_PAGE_DIRTY | _PAGE_SOFTDIRTY); }
+#else
 extern inline int pte_dirty(pte_t pte)		{ return pte_val(pte) & _PAGE_DIRTY; }
+#endif
 extern inline int pte_young(pte_t pte)		{ return pte_val(pte) & _PAGE_ACCESSED; }
 extern inline int pte_write(pte_t pte)		{ return pte_val(pte) & _PAGE_RW; }
 static inline int pte_file(pte_t pte)		{ return pte_val(pte) & _PAGE_FILE; }
 
 extern inline pte_t pte_rdprotect(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_USER)); return pte; }
 extern inline pte_t pte_exprotect(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_USER)); return pte; }
+#ifdef CONFIG_MEM_MIRROR
+extern inline pte_t pte_mkclean(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~(_PAGE_SOFTDIRTY|_PAGE_DIRTY))); return pte; }
+#else
 extern inline pte_t pte_mkclean(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_DIRTY)); return pte; }
+#endif
 extern inline pte_t pte_mkold(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_ACCESSED)); return pte; }
 extern inline pte_t pte_wrprotect(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_RW)); return pte; }
 extern inline pte_t pte_mkread(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) | _PAGE_USER)); return pte; }
@@ -268,7 +313,13 @@ static inline int ptep_test_and_clear_dirty(pte_t *ptep)
 {
 	if (!pte_dirty(*ptep))
 		return 0;
+#ifdef CONFIG_MEM_MIRROR
+	mm_track_pte(ptep);
+	return test_and_clear_bit(_PAGE_BIT_DIRTY, ptep) |
+	       test_and_clear_bit(_PAGE_BIT_SOFTDIRTY, ptep);
+#else
 	return test_and_clear_bit(_PAGE_BIT_DIRTY, ptep);
+#endif
 }
 
 static inline int ptep_test_and_clear_young(pte_t *ptep)
@@ -353,7 +404,11 @@ static inline pgd_t *current_pgd_offset_k(unsigned long address)
 #define pmd_none(x)	(!pmd_val(x))
 #define pmd_present(x)	(pmd_val(x) & _PAGE_PRESENT)
 #define pmd_clear(xp)	do { set_pmd(xp, __pmd(0)); } while (0)
+#ifdef CONFIG_MEM_MIRROR
+#define	pmd_bad(x)	((pmd_val(x) & (~PTE_MASK & ~_PAGE_USER & ~_PAGE_SOFTDIRTY & ~_PAGE_ACCESSED)) != (_KERNPG_TABLE & ~_PAGE_ACCESSED))
+#else
 #define	pmd_bad(x)	((pmd_val(x) & (~PTE_MASK & ~_PAGE_USER)) != _KERNPG_TABLE )
+#endif
 #define pfn_pmd(nr,prot) (__pmd(((nr) << PAGE_SHIFT) | pgprot_val(prot)))
 #define pmd_pfn(x)  ((pmd_val(x) >> PAGE_SHIFT) & __PHYSICAL_MASK)
 

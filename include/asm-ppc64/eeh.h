@@ -58,7 +58,9 @@ void __init pci_addr_cache_build(void);
  */
 struct device_node;
 void eeh_add_device_early(struct device_node *);
+void eeh_add_tree_early(struct device_node *dn);
 void eeh_add_device_late(struct pci_dev *);
+
 
 /**
  * eeh_slot_error_detail -- record and EEH error condition to the log

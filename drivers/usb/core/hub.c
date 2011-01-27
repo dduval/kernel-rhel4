@@ -1403,6 +1403,8 @@ static int hub_port_reset(struct usb_device *hdev, int port,
 
 		/* return on disconnect or reset */
 		if (status == -ENOTCONN || status == 0) {
+			if (status == 0)
+				msleep(10);	/* TRSTRCY = 10 ms */
 			clear_port_feature(hdev,
 				port + 1, USB_PORT_FEAT_C_RESET);
 			/* FIXME need disconnect() for NOTATTACHED device */
@@ -2866,3 +2868,16 @@ int usb_reset_device(struct usb_device *udev)
 
 	return r;
 }
+
+int usb_reset_device_trylock(struct usb_device *udev)
+{
+	int r;
+
+	if (down_trylock(&udev->serialize))
+		return -EBUSY;
+	r = __usb_reset_device(udev);
+	up(&udev->serialize);
+
+	return r;
+}
+EXPORT_SYMBOL(usb_reset_device_trylock);  /* Not A Kernel API! Do not use! */

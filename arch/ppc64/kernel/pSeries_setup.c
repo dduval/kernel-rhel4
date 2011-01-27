@@ -360,11 +360,7 @@ static void __init pSeries_init_early(void)
 	else if (naca->serialPortAddr) {
 		/* Map the uart for udbg. */
 		comport = (void *)__ioremap(naca->serialPortAddr, 16, _PAGE_NO_CACHE);
-		udbg_init_uart(comport);
-
-		ppc_md.udbg_putc = udbg_putc;
-		ppc_md.udbg_getc = udbg_getc;
-		ppc_md.udbg_getc_poll = udbg_getc_poll;
+		udbg_init_uart(comport, 0, 0);
 		DBG("Hello World !\n");
 	}
 

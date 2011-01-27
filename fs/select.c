@@ -23,6 +23,7 @@
 #include <linux/fs.h>
 
 #include <asm/uaccess.h>
+#include <asm/div64.h>
 
 #define ROUND_UP(x,y) (((x)+(y)-1)/(y))
 #define DEFAULT_POLLMASK (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM)
@@ -459,17 +460,26 @@ asmlinkage long sys_poll(struct pollfd __user * ufds, unsigned int nfds, long ti
  	unsigned int i;
 	struct poll_list *head;
  	struct poll_list *walk;
+	int timeout_msecs;
+	int64_t lltimeout;
 
 	/* Do a sanity check on nfds ... */
 	if (nfds > current->files->max_fdset && nfds > OPEN_MAX)
 		return -EINVAL;
 
 	if (timeout) {
-		/* Careful about overflow in the intermediate values */
-		if ((unsigned long) timeout < MAX_SCHEDULE_TIMEOUT / HZ)
-			timeout = (unsigned long)(timeout*HZ+999)/1000+1;
-		else /* Negative or overflow */
+		timeout_msecs = (int)timeout;
+		if (timeout_msecs < 0)
 			timeout = MAX_SCHEDULE_TIMEOUT;
+		else {
+			lltimeout = (int64_t)timeout_msecs * HZ + 999;
+			do_div(lltimeout, 1000);
+			lltimeout++;
+			if (lltimeout > MAX_SCHEDULE_TIMEOUT)
+				timeout = MAX_SCHEDULE_TIMEOUT;
+			else
+				timeout = (long)lltimeout;
+		}
 	}
 
 	poll_initwait(&table);

@@ -49,6 +49,8 @@
 #define _COMPONENT          ACPI_TABLES
 	 ACPI_MODULE_NAME    ("tbconvrt")
 
+u8 acpi_fadt_is_v1;
+EXPORT_SYMBOL(acpi_fadt_is_v1);
 
 /*******************************************************************************
  *
@@ -75,11 +77,11 @@ acpi_tb_get_table_count (
 	ACPI_FUNCTION_ENTRY ();
 
 
-	if (RSDP->revision < 2) {
-		pointer_size = sizeof (u32);
+	if ((RSDP->revision >= 2) && RSDP->xsdt_physical_address) {
+		pointer_size = sizeof (u64);
 	}
 	else {
-		pointer_size = sizeof (u64);
+		pointer_size = sizeof (u32);
 	}
 
 	/*
@@ -136,13 +138,13 @@ acpi_tb_convert_to_xsdt (
 	/* Copy the table pointers */
 
 	for (i = 0; i < acpi_gbl_rsdt_table_count; i++) {
-		if (acpi_gbl_RSDP->revision < 2) {
-			ACPI_STORE_ADDRESS (new_table->table_offset_entry[i],
-				(ACPI_CAST_PTR (struct rsdt_descriptor_rev1, table_info->pointer))->table_offset_entry[i]);
-		}
-		else {
+		if ((acpi_gbl_RSDP->revision >= 2) && acpi_gbl_RSDP->xsdt_physical_address) {
 			new_table->table_offset_entry[i] =
 				(ACPI_CAST_PTR (XSDT_DESCRIPTOR, table_info->pointer))->table_offset_entry[i];
+		}
+		else {
+			ACPI_STORE_ADDRESS (new_table->table_offset_entry[i],
+				(ACPI_CAST_PTR (struct rsdt_descriptor_rev1, table_info->pointer))->table_offset_entry[i]);
 		}
 	}
 
@@ -212,6 +214,7 @@ acpi_tb_convert_fadt1 (
 
 	/* ACPI 1.0 FACS */
 	/* The BIOS stored FADT should agree with Revision 1.0 */
+	acpi_fadt_is_v1 = 1;
 
 	/*
 	 * Copy the table header and the common part of the tables.
@@ -242,7 +245,8 @@ acpi_tb_convert_fadt1 (
 	 * the SMI_CMD register to assume processor performance state control
 	 * responsibility. There isn't any equivalence in 1.0, leave it zeroed.
 	 */
-	local_fadt->pstate_cnt = 0;
+	if (acpi_strict)
+		local_fadt->pstate_cnt = 0;
 
 	/*
 	 * Support for the _CST object and C States change notification.
@@ -254,12 +258,18 @@ acpi_tb_convert_fadt1 (
 	 * Support for ACPI system reset mechanism was introduced between
 	 * Spec revisions 1.0b and 2.0, for legacy free systems..
 	 */
-	if (original_fadt->revision == FADT2_INTERIM_REVISION_ID && original_fadt->length == FADT2_INTERIM_LENGTH) {
+	if (original_fadt->revision == FADT2_INTERIM_REVISION_ID) {
+		if (original_fadt->length == FADT2_INTERIM_LENGTH) {
 		/*
 		 * Copy the entire GAS, plus the 1-byte reset value that
 		 * immediately follows.
 		 */
-		ACPI_MEMCPY (&local_fadt->reset_register, &((FADT_DESCRIPTOR *)original_fadt)->reset_register, sizeof(struct acpi_generic_address) + 1);
+			ACPI_MEMCPY (&local_fadt->reset_register, 
+					&((FADT_DESCRIPTOR *)original_fadt)->reset_register, sizeof(struct acpi_generic_address) + 1);
+		} else {
+			printk(KERN_ERR "BIOS bug: Legacy-free FADT detected, but FADT size (%d) is incorrect!\n", 
+				original_fadt->length);
+		}
 	} else {
 		/*
 		 * Otherwise, there isn't any equivalence in 1.0 and it's

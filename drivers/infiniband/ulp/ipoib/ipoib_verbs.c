@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ipoib_verbs.c 3913 2005-10-30 21:20:26Z roland $
+ * $Id: ipoib_verbs.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <rdma/ib_cache.h>
@@ -65,9 +65,9 @@ int ipoib_mcast_attach(struct net_device *dev, u16 mlid, union ib_gid *mgid)
 	}
 
 	/* attach QP to multicast group */
-	down(&priv->mcast_mutex);
+	mutex_lock(&priv->mcast_mutex);
 	ret = ib_attach_mcast(priv->qp, mgid, mlid);
-	up(&priv->mcast_mutex);
+	mutex_unlock(&priv->mcast_mutex);
 	if (ret)
 		ipoib_warn(priv, "failed to attach to multicast group, ret = %d\n", ret);
 
@@ -81,9 +81,9 @@ int ipoib_mcast_detach(struct net_device *dev, u16 mlid, union ib_gid *mgid)
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	int ret;
 
-	down(&priv->mcast_mutex);
+	mutex_lock(&priv->mcast_mutex);
 	ret = ib_detach_mcast(priv->qp, mgid, mlid);
-	up(&priv->mcast_mutex);
+	mutex_unlock(&priv->mcast_mutex);
 	if (ret)
 		ipoib_warn(priv, "ib_detach_mcast failed (result = %d)\n", ret);
 
@@ -159,8 +159,8 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	struct ib_qp_init_attr init_attr = {
 		.cap = {
-			.max_send_wr  = IPOIB_TX_RING_SIZE,
-			.max_recv_wr  = IPOIB_RX_RING_SIZE,
+			.max_send_wr  = ipoib_sendq_size,
+			.max_recv_wr  = ipoib_recvq_size,
 			.max_send_sge = 1,
 			.max_recv_sge = 1
 		},
@@ -175,7 +175,7 @@ int ipoib_transport_dev_init(struct net_device *dev, struct ib_device *ca)
 	}
 
 	priv->cq = ib_create_cq(priv->ca, ipoib_ib_completion, NULL, dev,
-				IPOIB_TX_RING_SIZE + IPOIB_RX_RING_SIZE + 1);
+				ipoib_sendq_size + ipoib_recvq_size + 1);
 	if (IS_ERR(priv->cq)) {
 		printk(KERN_WARNING "%s: failed to create CQ\n", ca->name);
 		goto out_free_pd;
@@ -251,10 +251,12 @@ void ipoib_event(struct ib_event_handler *handler,
 	struct ipoib_dev_priv *priv =
 		container_of(handler, struct ipoib_dev_priv, event_handler);
 
-	if (record->event == IB_EVENT_PORT_ACTIVE ||
+	if (record->event == IB_EVENT_PORT_ERR    ||
+	    record->event == IB_EVENT_PKEY_CHANGE ||
+	    record->event == IB_EVENT_PORT_ACTIVE ||
 	    record->event == IB_EVENT_LID_CHANGE  ||
 	    record->event == IB_EVENT_SM_CHANGE) {
-		ipoib_dbg(priv, "Port active event\n");
-		schedule_work(&priv->flush_task);
+		ipoib_dbg(priv, "Port state change event\n");
+		queue_work(ipoib_workqueue, &priv->flush_task);
 	}
 }

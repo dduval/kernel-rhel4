@@ -208,6 +208,7 @@ acpi_tb_find_rsdp (
 /*
  * tbutils - common table utilities
  */
+acpi_status acpi_tb_is_table_installed(struct acpi_table_desc *new_table_desc);
 
 acpi_status
 acpi_tb_find_table (

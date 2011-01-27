@@ -91,7 +91,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	if (smp_num_siblings > 1 || smp_num_cores > 1) {
 		extern int phys_proc_id[NR_CPUS];
 		seq_printf(m, "physical id\t: %d\n", phys_proc_id[n]);
-		seq_printf(m, "siblings\t: %d\n", smp_num_siblings * smp_num_cores);
+		seq_printf(m, "siblings\t: %d\n", cpus_weight(cpu_core_map[n]));
 	}
 #endif
 #ifdef CONFIG_SMP

@@ -64,4 +64,18 @@ struct mce_log {
 #define MCE_GET_LOG_LEN      _IOR('M', 2, int)
 #define MCE_GETCLEAR_FLAGS   _IOR('M', 3, int)
 
+/* Software defined banks */
+#define MCE_EXTENDED_BANK      128
+#define MCE_THRESHOLD_BASE      MCE_EXTENDED_BANK + 1 /* MCE_AMD */
+#define MCE_THRESHOLD_DRAM_ECC  MCE_THRESHOLD_BASE + 4
+
+void mce_log(struct mce *m);
+#ifdef CONFIG_X86_MCE_AMD
+void mce_amd_feature_init(struct cpuinfo_x86 *c);
+#else
+static inline void mce_amd_feature_init(struct cpuinfo_x86 *c)
+{
+}
+#endif
+
 #endif

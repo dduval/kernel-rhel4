@@ -101,8 +101,8 @@ struct srp_direct_buf {
 struct srp_indirect_buf {
 	struct srp_direct_buf	table_desc;
 	__be32			len;
-	struct srp_direct_buf	desc_list[0] __attribute__((packed));
-};
+	struct srp_direct_buf	desc_list[0];
+} __attribute__((packed));
 
 enum {
 	SRP_MULTICHAN_SINGLE = 0,

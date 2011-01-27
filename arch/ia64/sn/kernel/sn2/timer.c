@@ -14,6 +14,7 @@
 
 #include <asm/hw_irq.h>
 #include <asm/system.h>
+#include <asm/timex.h>
 
 #include <asm/sn/leds.h>
 #include <asm/sn/shub_mmr.h>

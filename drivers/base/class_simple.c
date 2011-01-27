@@ -156,6 +156,9 @@ struct class_device *class_simple_device_add(struct class_simple *cs, dev_t dev,
 
 	class_device_create_file(&s_dev->class_dev, &cs->attr);
 
+	/* make sure we create a hotplug event after the sysfs file is created */
+	kobject_hotplug("add", &s_dev->class_dev.kobj);
+
 	spin_lock(&simple_dev_list_lock);
 	list_add(&s_dev->node, &simple_dev_list);
 	spin_unlock(&simple_dev_list_lock);

@@ -84,7 +84,6 @@ static struct gendisk *device_to_gendisk(struct device *dev)
 {
 	struct nameidata nd;
 	struct sysfs_dirent *sd;
-	struct dentry *dentry = NULL;
 	struct kobject *kobj;
 	int rc;
 
@@ -100,29 +99,41 @@ static struct gendisk *device_to_gendisk(struct device *dev)
 			return NULL;
 		goto err;
 	}
-	dentry = nd.dentry;
-	if (!dentry)
-		goto err;
-	sd = dentry->d_fsdata;
-	if (!sd)
-		goto err;
-	kobj = sd->s_element;
+	sd = nd.dentry->d_fsdata;
+	kobj = sd ? kobject_get(sd->s_element) : NULL;
+	path_release(&nd);
 	if (!kobj)
 		goto err;
-
-	dput(dentry);
-
 	return container_of(kobj, struct gendisk, kobj);
+
 err:
 	printk(KERN_WARNING "dump: device has no block attribute\n");
-	dput(dentry);
-
 	return NULL;
 }
 
 ssize_t diskdump_sysfs_store(struct device *dev, const char *buf, size_t count)
 {
 	struct gendisk *disk;
+
+	/* early cutoff */
+	if (!dump_ops || !dump_ops->add_dump || !dump_ops->remove_dump)
+		return count;
+
+	/* get disk */
+	disk = device_to_gendisk(dev);
+
+	if (disk) {
+		count = diskdump_sysfs_store_disk(disk, dev, buf, count);
+		put_disk(disk);
+	}
+
+	return count;
+}
+
+EXPORT_SYMBOL_GPL(diskdump_sysfs_store);
+
+ssize_t diskdump_sysfs_store_disk(struct gendisk *disk, struct device *dev, const char *buf, size_t count)
+{
 	struct block_device *bdev;
 	int part, remove = 0;
 
@@ -130,15 +141,19 @@ ssize_t diskdump_sysfs_store(struct device *dev, const char *buf, size_t count)
 		return count;
 
 	/* get partition number */
-	sscanf (buf, "%d\n", &part);
+	if (sscanf (buf, "%d\n", &part) != 1)
+		return -EINVAL;
+
 	if (part < 0) {
 		part = -part;
 		remove = 1;
 	}
 
+	if (part >= disk->minors)
+		return -EINVAL;
+
 	/* get block device */
-	if (!(disk = device_to_gendisk(dev)) ||
-	    !(bdev = bdget_disk(disk, part)))
+	if (!(bdev = bdget_disk(disk, part)))
 		return count;
 
 	/* add/remove device */
@@ -152,11 +167,33 @@ ssize_t diskdump_sysfs_store(struct device *dev, const char *buf, size_t count)
 	return count;
 }
 
-EXPORT_SYMBOL_GPL(diskdump_sysfs_store);
+EXPORT_SYMBOL_GPL(diskdump_sysfs_store_disk);
 
 ssize_t diskdump_sysfs_show(struct device *dev, char *buf)
 {
 	struct gendisk *disk;
+	ssize_t len;
+
+	/* early cutoff */
+	if (!dump_ops || !dump_ops->find_dump)
+		return 0;
+
+	/* get gendisk */
+	disk = device_to_gendisk(dev);
+	if (!disk)
+		return 0;
+
+	len = diskdump_sysfs_show_disk(disk, buf);
+
+	put_disk(disk);
+
+	return len;
+}
+
+EXPORT_SYMBOL_GPL(diskdump_sysfs_show);
+
+ssize_t diskdump_sysfs_show_disk(struct gendisk *disk, char *buf)
+{
 	struct block_device *bdev;
 	int part, tmp, len = 0, maxlen = 1024;
 	char* p = buf; 
@@ -165,9 +202,7 @@ ssize_t diskdump_sysfs_show(struct device *dev, char *buf)
 	if (!dump_ops || !dump_ops->find_dump)
 		return 0;
 
-	/* get gendisk */
-	disk = device_to_gendisk(dev);
-	if (!disk || !disk->part)
+	if (!disk->part)
 		return 0;
 
 	/* print device */
@@ -188,7 +223,7 @@ ssize_t diskdump_sysfs_show(struct device *dev, char *buf)
 	return len;
 }
 
-EXPORT_SYMBOL_GPL(diskdump_sysfs_show);
+EXPORT_SYMBOL_GPL(diskdump_sysfs_show_disk);
 
 /*
  * run timer/tasklet/workqueue during dump

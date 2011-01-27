@@ -22,6 +22,7 @@
 #include <linux/random.h>
 #include <linux/percpu.h>
 #include <linux/init.h>
+#include <linux/bootmem.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -149,6 +150,73 @@ int net_ratelimit(void)
 {
 	return __printk_ratelimit(net_msg_cost, net_msg_burst);
 }
+
+void * __init net_alloc_hash(const char *tablename,
+			     unsigned long bucketsize,
+			     unsigned long numentries,
+			     int scale,
+			     unsigned int *_hash_shift,
+			     unsigned int *_hash_mask,
+			     unsigned long limit)
+{
+	unsigned long long max = limit;
+	unsigned long log2qty, size, order;
+	void *table;
+
+	/* allow the kernel cmdline to have a say */
+	if (!numentries) {
+		/* round applicable memory size up to nearest megabyte */
+		numentries = nr_all_pages;
+		numentries += (1UL << (20 - PAGE_SHIFT)) - 1;
+		numentries >>= 20 - PAGE_SHIFT;
+		numentries <<= 20 - PAGE_SHIFT;
+
+		/* limit to 1 bucket per 2^scale bytes of low memory */
+		if (scale > PAGE_SHIFT)
+			numentries >>= (scale - PAGE_SHIFT);
+		else
+			numentries <<= (PAGE_SHIFT - scale);
+	}
+	/* rounded up to nearest power of 2 in size */
+	numentries = 1UL << (long_log2(numentries) + 1);
+
+	/* limit allocation size to 1/16 total memory by default */
+	if (max == 0) {
+		max = ((unsigned long long) nr_all_pages << PAGE_SHIFT) >> 4;
+		do_div(max, bucketsize);
+	}
+
+	if (numentries > max)
+		numentries = max;
+
+	log2qty = long_log2(numentries);
+
+	do {
+		size = bucketsize << log2qty;
+
+		for (order = 0; ((1UL << order) << PAGE_SHIFT) < size; order++)
+			;
+		table = (void *) __get_free_pages(GFP_ATOMIC, order);
+	} while (!table && size > PAGE_SIZE && --log2qty);
+
+	if (!table)
+		panic("Failed to allocate %s hash table\n", tablename);
+
+	printk(KERN_INFO "%s hash table entries: %d (order: %d, %lu bytes)\n",
+	       tablename,
+	       (1U << log2qty),
+	       long_log2(size) - PAGE_SHIFT,
+	       size);
+
+	if (_hash_shift)
+		*_hash_shift = log2qty;
+
+	if (_hash_mask)
+		*_hash_mask = (1UL << log2qty) - 1;
+
+	return table;
+}
+
 
 EXPORT_SYMBOL(net_random);
 EXPORT_SYMBOL(net_ratelimit);

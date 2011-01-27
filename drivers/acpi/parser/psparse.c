@@ -1129,8 +1129,9 @@ acpi_ps_parse_aml (
 			status = AE_OK;
 		}
 		else if (status != AE_OK) {
-			ACPI_REPORT_METHOD_ERROR ("Method execution failed",
-				walk_state->method_node, NULL, status);
+			if (status != AE_ALREADY_EXISTS)
+				ACPI_REPORT_METHOD_ERROR ("Method execution failed",
+					walk_state->method_node, NULL, status);
 
 			/* Check for possible multi-thread reentrancy problem */
 

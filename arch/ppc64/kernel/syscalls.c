@@ -222,25 +222,17 @@ asmlinkage int sys_uname(struct old_utsname __user * name)
 
 asmlinkage time_t sys64_time(time_t __user * tloc)
 {
-	time_t secs;
-	time_t usecs;
+	time_t i;
+	struct timeval tv;
 
-	long tb_delta = tb_ticks_since(tb_last_stamp);
-	tb_delta += (jiffies - wall_jiffies) * tb_ticks_per_jiffy;
-
-	secs  = xtime.tv_sec;  
-	usecs = (xtime.tv_nsec/1000) + tb_delta / tb_ticks_per_usec;
-	while (usecs >= USEC_PER_SEC) {
-		++secs;
-		usecs -= USEC_PER_SEC;
-	}
+	do_gettimeofday(&tv);
+	i = tv.tv_sec;
 
 	if (tloc) {
-		if (put_user(secs,tloc))
-			secs = -EFAULT;
+		if (put_user(i,tloc))
+			i = -EFAULT;
 	}
-
-	return secs;
+	return i;
 }
 
 void do_show_syscall(unsigned long r3, unsigned long r4, unsigned long r5,

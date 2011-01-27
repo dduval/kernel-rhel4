@@ -82,4 +82,6 @@ static inline cpumask_t pcibus_to_cpumask(int bus)
 
 #endif /* CONFIG_NUMA */
 
+extern cpumask_t cpu_coregroup_map(int cpu);
+
 #endif /* _ASM_I386_TOPOLOGY_H */

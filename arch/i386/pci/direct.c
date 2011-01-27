@@ -13,7 +13,7 @@
 #define PCI_CONF1_ADDRESS(bus, devfn, reg) \
 	(0x80000000 | (bus << 16) | (devfn << 8) | (reg & ~3))
 
-static int pci_conf1_read (int seg, int bus, int devfn, int reg, int len, u32 *value)
+int pci_conf1_read (int seg, int bus, int devfn, int reg, int len, u32 *value)
 {
 	unsigned long flags;
 
@@ -41,7 +41,7 @@ static int pci_conf1_read (int seg, int bus, int devfn, int reg, int len, u32 *v
 	return 0;
 }
 
-static int pci_conf1_write (int seg, int bus, int devfn, int reg, int len, u32 value)
+int pci_conf1_write (int seg, int bus, int devfn, int reg, int len, u32 value)
 {
 	unsigned long flags;
 

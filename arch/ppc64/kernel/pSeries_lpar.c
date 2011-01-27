@@ -47,6 +47,9 @@
 #define DBG(fmt...)
 #endif
 
+/* in legacy_serial.c */
+extern int add_legacy_serial_port(struct device_node *np);
+
 /* in pSeries_hvCall.S */
 EXPORT_SYMBOL(plpar_hcall);
 EXPORT_SYMBOL(plpar_hcall_4out);
@@ -244,11 +247,12 @@ int find_udbg_vterm(void)
 				found = 1;
 			}
 		}
-	} else if (strncmp(name, "serial", 6)) {
-		/* XXX fix ISA serial console */
-		printk(KERN_WARNING "serial stdout on LPAR ('%s')! "
+	} else if (strncmp(name, "serial", 6) == 0) {
+		found = add_legacy_serial_port(stdout_node);
+		if (!found)
+			printk(KERN_WARNING "serial stdout on LPAR ('%s')! "
 				"can't print udbg messages\n",
-		       stdout_node->full_name);
+				stdout_node->full_name);
 	} else {
 		printk(KERN_WARNING "don't know how to print to stdout '%s'\n",
 		       stdout_node->full_name);

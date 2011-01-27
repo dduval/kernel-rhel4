@@ -39,23 +39,8 @@
 /*
  * Literals
  */
-#define IPR_DRIVER_VERSION "2.0.11.1"
-#define IPR_DRIVER_DATE "(March 11, 2005)"
-
-/*
- * IPR_DBG_TRACE: Setting this to 1 will turn on some general function tracing
- *			resulting in a bunch of extra debugging printks to the console
- *
- * IPR_DEBUG:	Setting this to 1 will turn on some error path tracing.
- *			Enables the ipr_trace macro.
- */
-#ifdef IPR_DEBUG_ALL
-#define IPR_DEBUG				1
-#define IPR_DBG_TRACE			1
-#else
-#define IPR_DEBUG				0
-#define IPR_DBG_TRACE			0
-#endif
+#define IPR_DRIVER_VERSION "2.0.11.2"
+#define IPR_DRIVER_DATE "(January 24, 2006)"
 
 /*
  * IPR_MAX_CMD_PER_LUN: This defines the maximum number of outstanding
@@ -79,6 +64,8 @@
 #define IPR_SUBS_DEV_ID_571A	0x02C0
 #define IPR_SUBS_DEV_ID_571B	0x02BE
 #define IPR_SUBS_DEV_ID_571E  0x02BF
+#define IPR_SUBS_DEV_ID_571F	0x02D5
+#define IPR_SUBS_DEV_ID_575B	0x030D
 
 #define IPR_NAME				"ipr"
 
@@ -99,6 +86,8 @@
 #define	IPR_IOASC_IOASC_MASK			0xFFFFFF00
 #define	IPR_IOASC_SCSI_STATUS_MASK		0x000000FF
 #define IPR_IOASC_IR_RESOURCE_HANDLE		0x05250000
+#define IPR_IOASC_IR_NO_CMDS_TO_2ND_IOA		0x05258100
+#define IPR_IOASA_IR_DUAL_IOA_DISABLED		0x052C8000
 #define IPR_IOASC_BUS_WAS_RESET			0x06290000
 #define IPR_IOASC_BUS_WAS_RESET_BY_OTHER		0x06298000
 #define IPR_IOASC_ABORTED_CMD_TERM_BY_HOST	0x0B5A0000
@@ -614,6 +603,13 @@ struct ipr_hostrcb_type_04_error {
 	u8 reserved[124];
 }__attribute__((packed, aligned (4)));
 
+struct ipr_hostrcb_type_07_error {
+	u8 failure_reason[64];
+	struct ipr_std_inq_vpids vpids;
+	u8 sn[IPR_SERIAL_NUM_LEN];
+	u32 data[222];
+}__attribute__((packed, aligned (4)));
+
 struct ipr_hostrcb_error {
 	u32 failing_dev_ioasc;
 	struct ipr_res_addr failing_dev_res_addr;
@@ -625,6 +621,7 @@ struct ipr_hostrcb_error {
 		struct ipr_hostrcb_type_02_error type_02_error;
 		struct ipr_hostrcb_type_03_error type_03_error;
 		struct ipr_hostrcb_type_04_error type_04_error;
+		struct ipr_hostrcb_type_07_error type_07_error;
 	} u;
 }__attribute__((packed, aligned (4)));
 
@@ -658,6 +655,7 @@ struct ipr_hcam {
 #define IPR_HOST_RCB_OVERLAY_ID_3				0x03
 #define IPR_HOST_RCB_OVERLAY_ID_4				0x04
 #define IPR_HOST_RCB_OVERLAY_ID_6				0x06
+#define IPR_HOST_RCB_OVERLAY_ID_7				0x07
 #define IPR_HOST_RCB_OVERLAY_ID_DEFAULT			0xFF
 
 	u8 reserved1[3];
@@ -1076,11 +1074,7 @@ struct ipr_ucode_image_header {
 /*
  * Macros
  */
-#if IPR_DEBUG
-#define IPR_DBG_CMD(CMD) do { CMD; } while (0)
-#else
-#define IPR_DBG_CMD(CMD)
-#endif
+#define IPR_DBG_CMD(CMD) if (ipr_debug) { CMD; }
 
 #define ipr_breakpoint_data KERN_ERR IPR_NAME\
 ": %s: %s: Line: %d ioa_cfg: %p\n", __FILE__, \
@@ -1144,13 +1138,8 @@ __FUNCTION__, __LINE__, ioa_cfg
 #define ipr_trace ipr_dbg("%s: %s: Line: %d\n",\
 	__FILE__, __FUNCTION__, __LINE__)
 
-#if IPR_DBG_TRACE
-#define ENTER printk(KERN_INFO IPR_NAME": Entering %s\n", __FUNCTION__)
-#define LEAVE printk(KERN_INFO IPR_NAME": Leaving %s\n", __FUNCTION__)
-#else
-#define ENTER
-#define LEAVE
-#endif
+#define ENTER IPR_DBG_CMD(printk(KERN_INFO IPR_NAME": Entering %s\n", __FUNCTION__))
+#define LEAVE IPR_DBG_CMD(printk(KERN_INFO IPR_NAME": Leaving %s\n", __FUNCTION__))
 
 #define ipr_err_separator \
 ipr_err("----------------------------------------------------------\n")

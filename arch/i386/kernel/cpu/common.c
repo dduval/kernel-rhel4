@@ -199,7 +199,10 @@ int __init have_cpuid_p(void)
 
 /* Do minimum CPU detection early.
    Fields really needed: vendor, cpuid_level, family, model, mask, cache alignment.
-   The others are not touched to avoid unwanted side effects. */
+   The others are not touched to avoid unwanted side effects.
+
+   WARNING: this function is only called on the BP.  Don't add code here
+   that is supposed to run on all CPUs. */
 void __init early_cpu_detect(void)
 {
 	struct cpuinfo_x86 *c = &boot_cpu_data;
@@ -279,6 +282,10 @@ void __init generic_identify(struct cpuinfo_x86 * c)
 				get_model_name(c); /* Default name */
 		}
 	}
+
+#ifdef CONFIG_X86_HT
+	phys_proc_id[smp_processor_id()] = (cpuid_ebx(1) >> 24) & 0xff;
+#endif
 }
 
 static void __init squash_the_stupid_serial_number(struct cpuinfo_x86 *c)

@@ -1098,14 +1098,6 @@ lcs_check_multicast_support(struct lcs_card *card)
 		PRINT_ERR("Query IPAssist failed. Assuming unsupported!\n");
 		return -EOPNOTSUPP;
 	}
-	/* Print out supported assists: IPv6 */
-	PRINT_INFO("LCS device %s %s IPv6 support\n", card->dev->name,
-		   (card->ip_assists_supported & LCS_IPASS_IPV6_SUPPORT) ?
-		   "with" : "without");
-	/* Print out supported assist: Multicast */
-	PRINT_INFO("LCS device %s %s Multicast support\n", card->dev->name,
-		   (card->ip_assists_supported & LCS_IPASS_MULTICAST_SUPPORT) ?
-		   "with" : "without");
 	if (card->ip_assists_supported & LCS_IPASS_MULTICAST_SUPPORT)
 		return 0;
 	return -EOPNOTSUPP;
@@ -1160,7 +1152,7 @@ list_modified:
 		}
 	}
 	/* re-insert all entries from the failed_list into ipm_list */
-	list_for_each_entry(ipm, &failed_list, list) {
+	list_for_each_entry_safe(ipm, tmp, &failed_list, list) {
 		list_del_init(&ipm->list);
 		list_add_tail(&ipm->list, &card->ipm_list);
 	}
@@ -1471,6 +1463,8 @@ lcs_txbuffer_cb(struct lcs_channel *channel, struct lcs_buffer *buffer)
 	lcs_release_buffer(channel, buffer);
 	card = (struct lcs_card *)
 		((char *) channel - offsetof(struct lcs_card, write));
+	if (netif_queue_stopped(card->dev))
+		netif_wake_queue(card->dev);    /* stack continue */
 	spin_lock(&card->lock);
 	card->tx_emitted--;
 	if (card->tx_emitted <= 0 && card->tx_buffer != NULL)
@@ -1490,7 +1484,8 @@ __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
 		 struct net_device *dev)
 {
 	struct lcs_header *header;
-
+	int rc = 0;
+	
 	LCS_DBF_TEXT(5, trace, "hardxmit");
 	if (skb == NULL) {
 		card->stats.tx_dropped++;
@@ -1504,10 +1499,8 @@ __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
 		card->stats.tx_carrier_errors++;
 		return 0;
 	}
-	if (netif_queue_stopped(dev) ) {
-		card->stats.tx_dropped++;
-		return -EBUSY;
-	}
+	netif_stop_queue(card->dev);			/* stack slowdown */
+	spin_lock(&card->lock);
 	if (card->tx_buffer != NULL &&
 	    card->tx_buffer->count + sizeof(struct lcs_header) +
 	    skb->len + sizeof(u16) > LCS_IOBUFFERSIZE)
@@ -1518,7 +1511,8 @@ __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
 		card->tx_buffer = lcs_get_buffer(&card->write);
 		if (card->tx_buffer == NULL) {
 			card->stats.tx_dropped++;
-			return -EBUSY;
+			rc = -EBUSY;
+			goto out;
 		}
 		card->tx_buffer->callback = lcs_txbuffer_cb;
 		card->tx_buffer->count = 0;
@@ -1530,13 +1524,18 @@ __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
 	header->type = card->lan_type;
 	header->slot = card->portno;
 	memcpy(header + 1, skb->data, skb->len);
+	spin_unlock(&card->lock);
 	card->stats.tx_bytes += skb->len;
 	card->stats.tx_packets++;
 	dev_kfree_skb(skb);
-	if (card->tx_emitted <= 0)
+	netif_wake_queue(card->dev);			/* stack cont. */
+	spin_lock(&card->lock);
+	if (card->tx_emitted <= 0 && card->tx_buffer != NULL)
 		/* If this is the first tx buffer emit it immediately. */
 		__lcs_emit_txbuffer(card);
-	return 0;
+out:
+		spin_unlock(&card->lock);
+		return rc;
 }
 
 static int
@@ -1547,9 +1546,7 @@ lcs_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	LCS_DBF_TEXT(5, trace, "pktxmit");
 	card = (struct lcs_card *) dev->priv;
-	spin_lock(&card->lock);
 	rc = __lcs_start_xmit(card, skb, dev);
-	spin_unlock(&card->lock);
 	return rc;
 }
 
@@ -2198,21 +2195,18 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 	if (!dev)
 		goto out;
 	card->dev = dev;
-netdev_out:
 	card->dev->priv = card;
 	card->dev->open = lcs_open_device;
 	card->dev->stop = lcs_stop_device;
 	card->dev->hard_start_xmit = lcs_start_xmit;
 	card->dev->get_stats = lcs_getstats;
 	SET_MODULE_OWNER(dev);
-	if (lcs_register_netdev(ccwgdev) != 0)
-		goto out;
 	memcpy(card->dev->dev_addr, card->mac, LCS_MAC_LENGTH);
 #ifdef CONFIG_IP_MULTICAST
 	if (!lcs_check_multicast_support(card))
 		card->dev->set_multicast_list = lcs_set_multicast_list;
 #endif
-	netif_stop_queue(card->dev);
+netdev_out:
 	lcs_set_allowed_threads(card,0xffffffff);
 	if (recover_state == DEV_STATE_RECOVER) {
 		lcs_set_multicast_list(card->dev);
@@ -2222,6 +2216,17 @@ netdev_out:
 	} else
 		lcs_stopcard(card);
 
+	if (lcs_register_netdev(ccwgdev) != 0)
+		goto out;
+
+	/* Print out supported assists: IPv6 */
+	PRINT_INFO("LCS device %s %s IPv6 support\n", card->dev->name,
+		   (card->ip_assists_supported & LCS_IPASS_IPV6_SUPPORT) ?
+		   "with" : "without");
+	/* Print out supported assist: Multicast */
+	PRINT_INFO("LCS device %s %s Multicast support\n", card->dev->name,
+		   (card->ip_assists_supported & LCS_IPASS_MULTICAST_SUPPORT) ?
+		   "with" : "without");
 	return 0;
 out:
 

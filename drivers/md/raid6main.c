@@ -1555,6 +1555,11 @@ static int make_request (request_queue_t *q, struct bio * bi)
 	sector_t logical_sector, last_sector;
 	struct stripe_head *sh;
 
+	if (unlikely(bio_barrier(bi))) {
+		bio_endio(bi, bi->bi_size, -EOPNOTSUPP);
+		return 0;
+	}
+
 	if (bio_data_dir(bi)==WRITE) {
 		disk_stat_inc(mddev->gendisk, writes);
 		disk_stat_add(mddev->gendisk, write_sectors, bio_sectors(bi));
@@ -2055,6 +2060,7 @@ static int raid6_resize(mddev_t *mddev, sector_t sectors)
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 	}
 	mddev->size = sectors /2;
+	mddev->resync_max_sectors = sectors;
 	return 0;
 }
 

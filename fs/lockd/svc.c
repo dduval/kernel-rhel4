@@ -215,6 +215,8 @@ lockd(struct svc_rqst *rqstp)
 
 	}
 
+	flush_signals(current);
+
 	/*
 	 * Check whether there's a new lockd process before
 	 * shutting down the hosts and clearing the slot.

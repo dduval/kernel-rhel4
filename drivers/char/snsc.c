@@ -192,8 +192,8 @@ scdrv_read(struct file *file, char __user *buf, size_t count, loff_t *f_pos)
 		}
 
 		len = CHUNKSIZE;
-		add_wait_queue(&sd->sd_rq, &wait);
 		set_current_state(TASK_INTERRUPTIBLE);
+		add_wait_queue(&sd->sd_rq, &wait);
 		spin_unlock_irqrestore(&sd->sd_rlock, flags);
 
 		schedule_timeout(SCDRV_TIMEOUT);
@@ -288,8 +288,8 @@ scdrv_write(struct file *file, const char __user *buf,
 			return -EAGAIN;
 		}
 
-		add_wait_queue(&sd->sd_wq, &wait);
 		set_current_state(TASK_INTERRUPTIBLE);
+		add_wait_queue(&sd->sd_wq, &wait);
 		spin_unlock_irqrestore(&sd->sd_wlock, flags);
 
 		schedule_timeout(SCDRV_TIMEOUT);
@@ -357,6 +357,8 @@ static struct file_operations scdrv_fops = {
 	.release =	scdrv_release,
 };
 
+static struct class_simple *snsc_class;
+
 /*
  * scdrv_init
  *
@@ -372,10 +374,9 @@ scdrv_init(void)
 	char *devnamep;
 	struct sysctl_data_s *scd;
 	void *salbuf;
-	struct class_simple *snsc_class;
 	dev_t first_dev, dev;
 
-	if (alloc_chrdev_region(&first_dev, 0, numionodes,
+	if (alloc_chrdev_region(&first_dev, 0, num_cnodes,
 				SYSCTL_BASENAME) < 0) {
 		printk("%s: failed to register SN system controller device\n",
 		       __FUNCTION__);
@@ -383,7 +384,7 @@ scdrv_init(void)
 	}
 	snsc_class = class_simple_create(THIS_MODULE, SYSCTL_BASENAME);
 
-	for (cnode = 0; cnode < numionodes; cnode++) {
+	for (cnode = 0; cnode < num_cnodes; cnode++) {
 			geoid = cnodeid_get_geoid(cnode);
 			devnamep = devname;
 			format_module_id(devnamep, geo_module(geoid),
@@ -435,7 +436,7 @@ scdrv_init(void)
 				continue;
 			}
 
-			class_simple_device_add(snsc_class, dev, NULL,
+ 			class_simple_device_add(snsc_class, dev, NULL,
 						"%s", devname);
 
 			ia64_sn_irtr_intr_enable(scd->scd_nasid,

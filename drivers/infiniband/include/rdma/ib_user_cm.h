@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ib_user_cm.h 3933 2005-11-01 19:26:04Z sean.hefty $
+ * $Id: ib_user_cm.h 2576 2005-06-09 17:00:30Z libor $
  */
 
 #ifndef IB_USER_CM_H

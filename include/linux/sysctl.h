@@ -137,6 +137,8 @@ enum
 	KERN_UNKNOWN_NMI_PANIC=66, /* int: unknown nmi panic flag */
 	KERN_SETUID_DUMPABLE=67, /* int: behaviour of dumps for setuid core */
 	KERN_SERCONS_ESC=68,	/* int: ascii code of ser-cons "break" or -1 */
+	KERN_PANIC_ON_NMI=69,	/* int: whether we will panic on an unrecovered */
+	KERN_WAKE_BALANCE=70,   /* int: behavior of load balancing on wakeup */
 };
 
 
@@ -171,6 +173,8 @@ enum
 	VM_VFS_CACHE_PRESSURE=26, /* dcache/icache reclaim pressure */
 	VM_LEGACY_VA_LAYOUT=27, /* legacy/compatibility virtual address space layout */
 	VM_OOM_KILL=28,		/* oom killer enabled */
+	VM_MAX_QUEUE_DEPTH=29,	/* max IO queue depth */
+	VM_PERCPU_PAGELIST_FRACTION=30,/* int: fraction of pages in each percpu_pagelist */
 };
 
 

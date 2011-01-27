@@ -80,14 +80,9 @@ static DECLARE_MUTEX(ipt_mutex);
    them in the softirq when updating the counters and therefore
    only need to read-lock in the softirq; doing a write_lock_bh() in user
    context stops packets coming through and allows user context to read
-   the counters or update the rules.
-
-   To be cache friendly on SMP, we arrange them like so:
-   [ n-entries ]
-   ... cache-align padding ...
-   [ n-entries ]
-
-   Hence the start of any table is given by get_table() below.  */
+   the counters or update the rules. Each table is allocated with a
+   separate k/vmalloc depending on the size of the table, and their addresses
+   are tracked in the entries array. */
 
 /* The table itself */
 struct ipt_table_info
@@ -105,18 +100,15 @@ struct ipt_table_info
 
 	/* ipt_entry tables: one per CPU */
 	char entries[0] ____cacheline_aligned;
+#ifndef __GENKSYMS__
+	char *tblentries[NR_CPUS];
+#endif
 };
 
 static LIST_HEAD(ipt_target);
 static LIST_HEAD(ipt_match);
 static LIST_HEAD(ipt_tables);
 #define ADD_COUNTER(c,b,p) do { (c).bcnt += (b); (c).pcnt += (p); } while(0)
-
-#ifdef CONFIG_SMP
-#define TABLE_OFFSET(t,p) (SMP_ALIGN((t)->size)*(p))
-#else
-#define TABLE_OFFSET(t,p) 0
-#endif
 
 #if 0
 #define down(x) do { printk("DOWN:%u:" #x "\n", __LINE__); down(x); } while(0)
@@ -289,8 +281,7 @@ ipt_do_table(struct sk_buff **pskb,
 
 	read_lock_bh(&table->lock);
 	IP_NF_ASSERT(table->valid_hooks & (1 << hook));
-	table_base = (void *)table->private->entries
-		+ TABLE_OFFSET(table->private, smp_processor_id());
+	table_base = (void *)table->private->tblentries[smp_processor_id()];
 	e = get_entry(table_base, table->private->hook_entry[hook]);
 
 #ifdef CONFIG_NETFILTER_DEBUG
@@ -496,13 +487,14 @@ static int
 mark_source_chains(struct ipt_table_info *newinfo, unsigned int valid_hooks)
 {
 	unsigned int hook;
+	char *entry0 = newinfo->tblentries[0];
 
 	/* No recursion; use packet counter to save back ptrs (reset
 	   to 0 as we leave), and comefrom to save source hook bitmask */
 	for (hook = 0; hook < NF_IP_NUMHOOKS; hook++) {
 		unsigned int pos = newinfo->hook_entry[hook];
 		struct ipt_entry *e
-			= (struct ipt_entry *)(newinfo->entries + pos);
+			= (struct ipt_entry *)(entry0 + pos);
 
 		if (!(valid_hooks & (1 << hook)))
 			continue;
@@ -552,13 +544,13 @@ mark_source_chains(struct ipt_table_info *newinfo, unsigned int valid_hooks)
 						goto next;
 
 					e = (struct ipt_entry *)
-						(newinfo->entries + pos);
+						(entry0 + pos);
 				} while (oldpos == pos + e->next_offset);
 
 				/* Move along one */
 				size = e->next_offset;
 				e = (struct ipt_entry *)
-					(newinfo->entries + pos + size);
+					(entry0 + pos + size);
 				e->counters.pcnt = pos;
 				pos += size;
 			} else {
@@ -575,7 +567,7 @@ mark_source_chains(struct ipt_table_info *newinfo, unsigned int valid_hooks)
 					newpos = pos + e->next_offset;
 				}
 				e = (struct ipt_entry *)
-					(newinfo->entries + newpos);
+					(entry0 + newpos);
 				e->counters.pcnt = pos;
 				pos = newpos;
 			}
@@ -799,6 +791,7 @@ translate_table(const char *name,
 {
 	unsigned int i;
 	int ret;
+	char *entry0 = newinfo->tblentries[0];
 
 	newinfo->size = size;
 	newinfo->number = number;
@@ -812,11 +805,11 @@ translate_table(const char *name,
 	duprintf("translate_table: size %u\n", newinfo->size);
 	i = 0;
 	/* Walk through entries, checking offsets. */
-	ret = IPT_ENTRY_ITERATE(newinfo->entries, newinfo->size,
+	ret = IPT_ENTRY_ITERATE(entry0, newinfo->size,
 				check_entry_size_and_hooks,
 				newinfo,
-				newinfo->entries,
-				newinfo->entries + size,
+				entry0,
+				entry0 + size,
 				hook_entries, underflows, &i);
 	if (ret != 0)
 		return ret;
@@ -849,20 +842,19 @@ translate_table(const char *name,
 
 	/* Finally, each sanity check must pass */
 	i = 0;
-	ret = IPT_ENTRY_ITERATE(newinfo->entries, newinfo->size,
+	ret = IPT_ENTRY_ITERATE(entry0, newinfo->size,
 				check_entry, name, size, &i);
 
 	if (ret != 0) {
-		IPT_ENTRY_ITERATE(newinfo->entries, newinfo->size,
+		IPT_ENTRY_ITERATE(entry0, newinfo->size,
 				  cleanup_entry, &i);
 		return ret;
 	}
 
 	/* And one copy for every other CPU */
-	for (i = 1; i < NR_CPUS; i++) {
-		memcpy(newinfo->entries + SMP_ALIGN(newinfo->size)*i,
-		       newinfo->entries,
-		       SMP_ALIGN(newinfo->size));
+	for_each_cpu(i) {
+		if (newinfo->tblentries[i] && newinfo->tblentries[i] != entry0)
+			memcpy(newinfo->tblentries[i], entry0, newinfo->size);
 	}
 
 	return ret;
@@ -881,11 +873,9 @@ replace_table(struct ipt_table *table,
 		struct ipt_entry *table_base;
 		unsigned int i;
 
-		for (i = 0; i < NR_CPUS; i++) {
+		for_each_cpu(i) {
 			table_base =
-				(void *)newinfo->entries
-				+ TABLE_OFFSET(newinfo, i);
-
+				(void *)newinfo->tblentries[i];
 			table_base->comefrom = 0xdead57ac;
 		}
 	}
@@ -928,9 +918,9 @@ get_counters(const struct ipt_table_info *t,
 	unsigned int cpu;
 	unsigned int i;
 
-	for (cpu = 0; cpu < NR_CPUS; cpu++) {
+	for_each_cpu(cpu) {
 		i = 0;
-		IPT_ENTRY_ITERATE(t->entries + TABLE_OFFSET(t, cpu),
+		IPT_ENTRY_ITERATE(t->tblentries[cpu],
 				  t->size,
 				  add_entry_to_counter,
 				  counters,
@@ -964,7 +954,8 @@ copy_entries_to_user(unsigned int total_size,
 	write_unlock_bh(&table->lock);
 
 	/* ... then copy entire thing from CPU 0... */
-	if (copy_to_user(userptr, table->private->entries, total_size) != 0) {
+	if (copy_to_user(userptr, table->private->tblentries[0],
+	    total_size) != 0) {
 		ret = -EFAULT;
 		goto free_counters;
 	}
@@ -976,7 +967,7 @@ copy_entries_to_user(unsigned int total_size,
 		struct ipt_entry_match *m;
 		struct ipt_entry_target *t;
 
-		e = (struct ipt_entry *)(table->private->entries + off);
+		e = (struct ipt_entry *)(table->private->tblentries[0] + off);
 		if (copy_to_user(userptr + off
 				 + offsetof(struct ipt_entry, counters),
 				 &counters[num],
@@ -1045,6 +1036,50 @@ get_entries(const struct ipt_get_entries *entries,
 	return ret;
 }
 
+void ipt_free_table_info(struct ipt_table_info *info)
+{
+	int cpu;
+	for_each_cpu(cpu) {
+		if (info->size <= PAGE_SIZE)
+			kfree(info->tblentries[cpu]);
+		else
+			vfree(info->tblentries[cpu]);
+	}
+	kfree(info);
+}
+
+struct ipt_table_info *ipt_alloc_table_info(unsigned int size)
+{
+	struct ipt_table_info *newinfo;
+	unsigned int cpu;
+
+	/* Pedantry: prevent them from hitting BUG() in vmalloc.c --RR */
+	if ((SMP_ALIGN(size) >> PAGE_SHIFT) + 2 > num_physpages)
+		return NULL;
+
+	/* kzalloc the main struct */
+	newinfo = kzalloc(sizeof(struct ipt_table_info), GFP_KERNEL);
+	if (!newinfo)
+		return NULL;
+
+	newinfo->size = size;
+
+	/* allocate the table for each CPU */
+	for_each_cpu(cpu) {
+		if (size <= PAGE_SIZE)
+			newinfo->tblentries[cpu] = kmalloc(size, GFP_KERNEL);
+		else
+			newinfo->tblentries[cpu] = vmalloc(size);
+
+		if (newinfo->tblentries[cpu] == NULL) {
+			ipt_free_table_info(newinfo);
+			return NULL;
+		}
+	}
+
+	return newinfo;
+}
+
 static int
 do_replace(void __user *user, unsigned int len)
 {
@@ -1061,16 +1096,18 @@ do_replace(void __user *user, unsigned int len)
 	if (len != sizeof(tmp) + tmp.size)
 		return -ENOPROTOOPT;
 
-	/* Pedantry: prevent them from hitting BUG() in vmalloc.c --RR */
-	if ((SMP_ALIGN(tmp.size) >> PAGE_SHIFT) + 2 > num_physpages)
+	/* overflow check */
+	if (tmp.size >= (INT_MAX - sizeof(struct ipt_table_info)) / NR_CPUS -
+			SMP_CACHE_BYTES)
+		return -ENOMEM;
+	if (tmp.num_counters >= INT_MAX / sizeof(struct ipt_counters))
 		return -ENOMEM;
 
-	newinfo = vmalloc(sizeof(struct ipt_table_info)
-			  + SMP_ALIGN(tmp.size) * NR_CPUS);
+	newinfo = ipt_alloc_table_info(tmp.size);
 	if (!newinfo)
 		return -ENOMEM;
 
-	if (copy_from_user(newinfo->entries, user + sizeof(tmp),
+	if (copy_from_user(newinfo->tblentries[0], user + sizeof(tmp),
 			   tmp.size) != 0) {
 		ret = -EFAULT;
 		goto free_newinfo;
@@ -1127,8 +1164,9 @@ do_replace(void __user *user, unsigned int len)
 	/* Get the old counters. */
 	get_counters(oldinfo, counters);
 	/* Decrease module usage counts and free resource */
-	IPT_ENTRY_ITERATE(oldinfo->entries, oldinfo->size, cleanup_entry,NULL);
-	vfree(oldinfo);
+	IPT_ENTRY_ITERATE(oldinfo->tblentries[0], oldinfo->size,
+				cleanup_entry,NULL);
+	ipt_free_table_info(oldinfo);
 	/* Silent error: too late now. */
 	copy_to_user(tmp.counters, counters,
 		     sizeof(struct ipt_counters) * tmp.num_counters);
@@ -1141,11 +1179,12 @@ do_replace(void __user *user, unsigned int len)
  free_newinfo_counters_untrans_unlock:
 	up(&ipt_mutex);
  free_newinfo_counters_untrans:
-	IPT_ENTRY_ITERATE(newinfo->entries, newinfo->size, cleanup_entry,NULL);
+	IPT_ENTRY_ITERATE(newinfo->tblentries[0], newinfo->size,
+				cleanup_entry,NULL);
  free_newinfo_counters:
 	vfree(counters);
  free_newinfo:
-	vfree(newinfo);
+	ipt_free_table_info(newinfo);
 	return ret;
 }
 
@@ -1205,7 +1244,7 @@ do_add_counters(void __user *user, unsigned int len)
 	}
 
 	i = 0;
-	IPT_ENTRY_ITERATE(t->private->entries,
+	IPT_ENTRY_ITERATE(t->private->tblentries[0],
 			  t->private->size,
 			  add_counter_to_entry,
 			  paddc->counters,
@@ -1378,12 +1417,11 @@ int ipt_register_table(struct ipt_table *table)
 	static struct ipt_table_info bootstrap
 		= { 0, 0, 0, { 0 }, { 0 }, { } };
 
-	newinfo = vmalloc(sizeof(struct ipt_table_info)
-			  + SMP_ALIGN(table->table->size) * NR_CPUS);
+	newinfo = ipt_alloc_table_info(table->table->size);
 	if (!newinfo)
 		return -ENOMEM;
 
-	memcpy(newinfo->entries, table->table->entries, table->table->size);
+	memcpy(newinfo->tblentries[0], table->table->entries, table->table->size);
 
 	ret = translate_table(table->name, table->valid_hooks,
 			      newinfo, table->table->size,
@@ -1391,13 +1429,13 @@ int ipt_register_table(struct ipt_table *table)
 			      table->table->hook_entry,
 			      table->table->underflow);
 	if (ret != 0) {
-		vfree(newinfo);
+		ipt_free_table_info(newinfo);
 		return ret;
 	}
 
 	ret = down_interruptible(&ipt_mutex);
 	if (ret != 0) {
-		vfree(newinfo);
+		ipt_free_table_info(newinfo);
 		return ret;
 	}
 
@@ -1426,7 +1464,7 @@ int ipt_register_table(struct ipt_table *table)
 	return ret;
 
  free_unlock:
-	vfree(newinfo);
+	ipt_free_table_info(newinfo);
 	goto unlock;
 }
 
@@ -1437,9 +1475,9 @@ void ipt_unregister_table(struct ipt_table *table)
 	up(&ipt_mutex);
 
 	/* Decrease module usage counts and free resources */
-	IPT_ENTRY_ITERATE(table->private->entries, table->private->size,
+	IPT_ENTRY_ITERATE(table->private->tblentries[0], table->private->size,
 			  cleanup_entry, NULL);
-	vfree(table->private);
+	ipt_free_table_info(table->private);
 }
 
 /* Returns 1 if the port is matched by the range, 0 otherwise */

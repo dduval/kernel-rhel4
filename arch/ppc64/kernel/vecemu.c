@@ -263,7 +263,7 @@ emulate_altivec(struct pt_regs *regs)
 	unsigned int va, vb, vc, vd;
 	vector128 *vrs;
 
-	if (get_user(instr, (unsigned int *) regs->nip))
+	if (__copy_from_user_inatomic(&instr, (unsigned int *) regs->nip, sizeof(unsigned int *)))
 		return -EFAULT;
 	if ((instr >> 26) != 4)
 		return -EINVAL;		/* not an altivec instruction */

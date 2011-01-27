@@ -364,7 +364,7 @@ int cap_vm_enough_memory(long pages)
 		allowed -= allowed / 32;
 	allowed += total_swap_pages;
 
-	if (atomic_read(&vm_committed_space) < allowed)
+	if (atomic_read(&vm_committed_space) < (long)allowed)
 		return 0;
 
 	vm_unacct_memory(pages);

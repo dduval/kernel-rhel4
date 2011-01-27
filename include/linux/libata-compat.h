@@ -3,6 +3,8 @@
 
 #include <asm/scatterlist.h>
 
+typedef unsigned int pm_message_t;
+
 static inline void sg_set_buf(struct scatterlist *sg, void *buf,
 			      unsigned int buflen)
 {
@@ -16,14 +18,6 @@ static inline void sg_init_one(struct scatterlist *sg, void *buf,
 {
 	memset(sg, 0, sizeof(*sg));
 	sg_set_buf(sg, buf, buflen);
-}
-
-static inline void *kzalloc(size_t size, int flags)
-{
-	void *mem = kmalloc(size, flags);
-	if (mem)
-		memset(mem, 0, size);
-	return mem;
 }
 
 static inline void

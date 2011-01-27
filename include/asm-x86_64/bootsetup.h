@@ -2,7 +2,9 @@
 #ifndef _X86_64_BOOTSETUP_H
 #define _X86_64_BOOTSETUP_H 1
 
-extern char x86_boot_params[2048];
+#include <asm/setup.h>
+
+extern char x86_boot_params[COMMAND_LINE_SIZE];
 
 /*
  * This is set up by the setup-routine at boot-time

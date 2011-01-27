@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_nportdisc.c 1.160.1.2 2005/06/13 17:16:39EDT sf_support Exp  $
+ * $Id: lpfc_nportdisc.c 2888 2006-03-10 16:43:38Z sf_support $
  */
 
 #include <linux/version.h>
@@ -59,55 +59,76 @@ lpfc_check_adisc(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 	return (1);
 }
 
-
 int
 lpfc_check_sparm(struct lpfc_hba * phba,
 		 struct lpfc_nodelist * ndlp, struct serv_parm * sp,
 		 uint32_t class)
 {
 	volatile struct serv_parm *hsp = &phba->fc_sparam;
-	/* First check for supported version */
+	uint16_t hsp_value, ssp_value = 0;
 
-	/* Next check for class validity */
+	/*
+	 * The receive data field size and buffer-to-buffer receive data field
+	 * size entries are 16 bits but are represented as two 8-bit fields in
+	 * the driver data structure to account for rsvd bits and other control
+	 * bits.  Reconstruct and compare the fields as a 16-bit values before
+	 * correcting the byte values.
+	 */
 	if (sp->cls1.classValid) {
-
-		if (sp->cls1.rcvDataSizeMsb > hsp->cls1.rcvDataSizeMsb)
-			sp->cls1.rcvDataSizeMsb = hsp->cls1.rcvDataSizeMsb;
-		if (sp->cls1.rcvDataSizeLsb > hsp->cls1.rcvDataSizeLsb)
+		hsp_value = (hsp->cls1.rcvDataSizeMsb << 8) |
+				hsp->cls1.rcvDataSizeLsb;
+		ssp_value = (sp->cls1.rcvDataSizeMsb << 8) |
+				sp->cls1.rcvDataSizeLsb;
+		if (ssp_value > hsp_value) {
 			sp->cls1.rcvDataSizeLsb = hsp->cls1.rcvDataSizeLsb;
+			sp->cls1.rcvDataSizeMsb = hsp->cls1.rcvDataSizeMsb;
+		}
 	} else if (class == CLASS1) {
-		return (0);
+		return 0;
 	}
 
 	if (sp->cls2.classValid) {
-
-		if (sp->cls2.rcvDataSizeMsb > hsp->cls2.rcvDataSizeMsb)
-			sp->cls2.rcvDataSizeMsb = hsp->cls2.rcvDataSizeMsb;
-		if (sp->cls2.rcvDataSizeLsb > hsp->cls2.rcvDataSizeLsb)
+		hsp_value = (hsp->cls2.rcvDataSizeMsb << 8) |
+				hsp->cls2.rcvDataSizeLsb;
+		ssp_value = (sp->cls2.rcvDataSizeMsb << 8) |
+				sp->cls2.rcvDataSizeLsb;
+		if (ssp_value > hsp_value) {
 			sp->cls2.rcvDataSizeLsb = hsp->cls2.rcvDataSizeLsb;
+			sp->cls2.rcvDataSizeMsb = hsp->cls2.rcvDataSizeMsb;
+		}
 	} else if (class == CLASS2) {
-		return (0);
+		return 0;
 	}
 
 	if (sp->cls3.classValid) {
-
-		if (sp->cls3.rcvDataSizeMsb > hsp->cls3.rcvDataSizeMsb)
-			sp->cls3.rcvDataSizeMsb = hsp->cls3.rcvDataSizeMsb;
-		if (sp->cls3.rcvDataSizeLsb > hsp->cls3.rcvDataSizeLsb)
+		hsp_value = (hsp->cls3.rcvDataSizeMsb << 8) |
+				hsp->cls3.rcvDataSizeLsb;
+		ssp_value = (sp->cls3.rcvDataSizeMsb << 8) |
+				sp->cls3.rcvDataSizeLsb;
+		if (ssp_value > hsp_value) {
 			sp->cls3.rcvDataSizeLsb = hsp->cls3.rcvDataSizeLsb;
+			sp->cls3.rcvDataSizeMsb = hsp->cls3.rcvDataSizeMsb;
+		}
 	} else if (class == CLASS3) {
-		return (0);
+		return 0;
 	}
 
-	if (sp->cmn.bbRcvSizeMsb > hsp->cmn.bbRcvSizeMsb)
-		sp->cmn.bbRcvSizeMsb = hsp->cmn.bbRcvSizeMsb;
-	if (sp->cmn.bbRcvSizeLsb > hsp->cmn.bbRcvSizeLsb)
+	/*
+	 * Preserve the upper four bits of the MSB from the PLOGI response.
+	 * These bits contain the Buffer-to-Buffer State Change Number
+	 * from the target and need to be passed to the FW.
+	 */
+	hsp_value = (hsp->cmn.bbRcvSizeMsb << 8) | hsp->cmn.bbRcvSizeLsb;
+	ssp_value = (sp->cmn.bbRcvSizeMsb << 8) | sp->cmn.bbRcvSizeLsb;
+	if (ssp_value > hsp_value) {
 		sp->cmn.bbRcvSizeLsb = hsp->cmn.bbRcvSizeLsb;
+		sp->cmn.bbRcvSizeMsb = (sp->cmn.bbRcvSizeMsb & 0xF0) |
+				       (hsp->cmn.bbRcvSizeMsb & 0x0F);
+	}
 
-	/* If check is good, copy wwpn wwnn into ndlp */
 	memcpy(&ndlp->nlp_nodename, &sp->nodeName, sizeof (struct lpfc_name));
 	memcpy(&ndlp->nlp_portname, &sp->portName, sizeof (struct lpfc_name));
-	return (1);
+	return 1;
 }
 
 static void *
@@ -182,7 +203,7 @@ lpfc_els_abort(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 			continue;
 
 		list_del_init(&evtp->evt_listp);
-		icmd = &iocb->iocb;
+		icmd = &saveq->iocb;
 		icmd->ulpStatus = IOSTAT_LOCAL_REJECT;
 		icmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
 		(iocb->iocb_cmpl) (phba, iocb, saveq);
@@ -253,14 +274,7 @@ lpfc_els_abort(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 	
 	/* If we are delaying issuing an ELS command, cancel it */
 	if(ndlp->nlp_flag & NLP_DELAY_TMO) {
-		ndlp->nlp_flag &= ~NLP_DELAY_TMO;
-		spin_unlock_irq(phba->host->host_lock);
-		del_timer_sync(&ndlp->nlp_delayfunc);
-		spin_lock_irq(phba->host->host_lock);
-		if (!list_empty(&ndlp->els_retry_evt.
-				evt_listp))
-			list_del_init(&ndlp->els_retry_evt.
-				      evt_listp);
+		lpfc_cancel_retry_delay_tmo(phba,ndlp);
 	}
 	return (0);
 }
@@ -398,6 +412,12 @@ out:
 	if(ndlp->nlp_state == NLP_STE_PLOGI_ISSUE) {
 		/* software abort outstanding PLOGI */
 		lpfc_els_abort(phba, ndlp, 1);
+	} else if((ndlp->nlp_flag & NLP_NPR_2B_DISC) &&
+		  (!(ndlp->nlp_flag & NLP_NPR_ADISC))) {
+		if(ndlp->nlp_flag & NLP_DELAY_TMO) {
+			lpfc_cancel_retry_delay_tmo(phba,ndlp);
+		}
+		ndlp->nlp_flag &= ~NLP_NPR_2B_DISC;
 	}
 	ndlp->nlp_flag |= NLP_RCV_PLOGI;
 	lpfc_els_rsp_acc(phba, ELS_CMD_PLOGI, cmdiocb, ndlp, mbox, 0);
@@ -611,6 +631,7 @@ lpfc_consistent_bind_create(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 
 	struct lpfc_bindlist *blp;
 	uint16_t index;
+	uint32_t start_sid_cnt;
 
 
 	/* NOTE: if scan-down = 2 and we have private loop, then we use
@@ -645,34 +666,49 @@ lpfc_consistent_bind_create(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 		}
 	}
 
+	start_sid_cnt = phba->sid_cnt;
 	while (1) {
 		if ((lpfc_binding_useid(phba, phba->sid_cnt))
 		     || (lpfc_mapping_useid (phba, phba->sid_cnt))) {
 
 			phba->sid_cnt++;
-		} else {
-			if ((blp =
-			     lpfc_create_binding(phba, ndlp,
-						 phba->sid_cnt,
-						 phba->fcp_mapping))) {
-				blp->nlp_bind_type |= FCP_SEED_AUTO;
+			if (phba->sid_cnt >= LPFC_MAX_TARGET)
+				phba->sid_cnt = 0;
 
-				phba->sid_cnt++;
-				return (blp);
-			}
-			goto errid;
+			if (phba->sid_cnt == start_sid_cnt) {
+				lpfc_printf_log(phba, KERN_ERR,
+						LOG_DISCOVERY | LOG_FCP,
+						"%d:0249 All %d target ids in "
+						"use. Bind creation failed.\n",
+						phba->brd_no, LPFC_MAX_TARGET);
+				goto errid;
+		       }
+
+		} else {
+			if (phba->sid_cnt >= LPFC_MAX_TARGET)
+				goto errid;     
+
+			blp = lpfc_create_binding(phba, ndlp, phba->sid_cnt,
+						  phba->fcp_mapping);
+			if (blp == NULL)
+				goto errid;
+
+			blp->nlp_bind_type |= FCP_SEED_AUTO;
+			phba->sid_cnt++;
+			if (phba->sid_cnt >= LPFC_MAX_TARGET)
+				phba->sid_cnt = 0;
+			return blp;
 		}
 	}
 errid:
 	/* Cannot assign scsi id on NPort <nlp_DID> */
 	lpfc_printf_log(phba,
-			KERN_INFO,
+			KERN_ERR,
 			LOG_DISCOVERY | LOG_FCP,
 			"%d:0230 Cannot assign scsi ID on NPort x%x "
-			"Data: x%x x%x x%x\n",
-			phba->brd_no,
-			ndlp->nlp_DID, ndlp->nlp_flag, ndlp->nlp_state,
-			ndlp->nlp_rpi);
+			"Data: x%x, x%x x%x x%x\n",
+			phba->brd_no, ndlp->nlp_DID, phba->sid_cnt, 
+			ndlp->nlp_flag, ndlp->nlp_state, ndlp->nlp_rpi);
 
 	return NULL;
 }
@@ -1268,11 +1304,7 @@ lpfc_cmpl_reglogin_reglogin_issue(struct lpfc_hba * phba,
 		return (ndlp->nlp_state);
 	}
 
-	if (ndlp->nlp_rpi != 0)
-		lpfc_findnode_remove_rpi(phba, ndlp->nlp_rpi);
-
 	ndlp->nlp_rpi = mb->un.varWords[0];
-	lpfc_addnode_rpi(phba, ndlp, ndlp->nlp_rpi);
 
 	/* Only if we are not a fabric nport do we issue PRLI */
 	if (!(ndlp->nlp_type & NLP_FABRIC)) {
@@ -1660,7 +1692,7 @@ lpfc_rcv_plogi_npr_node(struct lpfc_hba * phba,
 	}
 
 	if(lpfc_rcv_plogi(phba, ndlp, cmdiocb)) {
-		ndlp->nlp_flag &= ~(NLP_NPR_ADISC | NLP_NPR_2B_DISC);
+		ndlp->nlp_flag &= ~NLP_NPR_ADISC;
 		return (ndlp->nlp_state);
 	}
 
@@ -1751,14 +1783,7 @@ lpfc_rcv_prlo_npr_node(struct lpfc_hba * phba,
 		if (ndlp->nlp_last_elscmd == (unsigned long)ELS_CMD_PLOGI) {
 			return (ndlp->nlp_state);
 		} else {
-			ndlp->nlp_flag &= ~NLP_DELAY_TMO;
-			spin_unlock_irq(phba->host->host_lock);
-			del_timer_sync(&ndlp->nlp_delayfunc);
-			spin_lock_irq(phba->host->host_lock);
-			if (!list_empty(&ndlp->els_retry_evt.
-					evt_listp))
-				list_del_init(&ndlp->els_retry_evt.
-					      evt_listp);
+			lpfc_cancel_retry_delay_tmo(phba,ndlp);
 		}
 	}
 
@@ -1788,12 +1813,7 @@ lpfc_cmpl_reglogin_npr_node(struct lpfc_hba * phba,
 	pmb = (LPFC_MBOXQ_t *) arg;
 	mb = &pmb->mb;
 
-	/* save rpi */
-	if (ndlp->nlp_rpi != 0)
-		lpfc_findnode_remove_rpi(phba, ndlp->nlp_rpi);
-
 	ndlp->nlp_rpi = mb->un.varWords[0];
-	lpfc_addnode_rpi(phba, ndlp, ndlp->nlp_rpi);
 
 	return (ndlp->nlp_state);
 }
@@ -1812,7 +1832,9 @@ lpfc_device_recov_npr_node(struct lpfc_hba * phba,
 			    struct lpfc_nodelist * ndlp, void *arg,
 			    uint32_t evt)
 {
-	ndlp->nlp_flag &= ~NLP_NPR_2B_DISC;
+	if (ndlp->nlp_flag & NLP_DELAY_TMO) {
+		lpfc_cancel_retry_delay_tmo(phba,ndlp);
+	}
 	return (ndlp->nlp_state);
 }
 

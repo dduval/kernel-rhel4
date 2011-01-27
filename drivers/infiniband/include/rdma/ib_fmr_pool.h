@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ib_fmr_pool.h 3202 2005-08-26 17:11:34Z roland $
+ * $Id: ib_fmr_pool.h 2730 2005-06-28 16:43:03Z sean.hefty $
  */
 
 #if !defined(IB_FMR_POOL_H)
@@ -43,6 +43,7 @@ struct ib_fmr_pool;
 /**
  * struct ib_fmr_pool_param - Parameters for creating FMR pool
  * @max_pages_per_fmr:Maximum number of pages per map request.
+ * @page_shift: Log2 of sizeof "pages" mapped by this fmr
  * @access:Access flags for FMRs in pool.
  * @pool_size:Number of FMRs to allocate for pool.
  * @dirty_watermark:Flush is triggered when @dirty_watermark dirty
@@ -55,6 +56,7 @@ struct ib_fmr_pool;
  */
 struct ib_fmr_pool_param {
 	int                     max_pages_per_fmr;
+	int                     page_shift;
 	enum ib_access_flags    access;
 	int                     pool_size;
 	int                     dirty_watermark;

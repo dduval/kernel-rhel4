@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: sa_query.c 3925 2005-10-31 23:03:17Z roland $
+ * $Id: sa_query.c 2811 2005-07-06 18:11:43Z halr $
  */
 
 #include <linux/module.h>
@@ -43,6 +43,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/kref.h>
 #include <linux/idr.h>
+#include <linux/workqueue.h>
 
 #include <rdma/ib_pack.h>
 #include <rdma/ib_sa.h>
@@ -412,6 +413,32 @@ static void ib_sa_event(struct ib_event_handler *handler, struct ib_event *event
 	}
 }
 
+int ib_sa_pack_attr(void *dst, void *src, int attr_id)
+{
+	switch (attr_id) {
+	case IB_SA_ATTR_PATH_REC:
+		ib_pack(path_rec_table, ARRAY_SIZE(path_rec_table), src, dst);
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(ib_sa_pack_attr);
+
+int ib_sa_unpack_attr(void *dst, void *src, int attr_id)
+{
+	switch (attr_id) {
+	case IB_SA_ATTR_PATH_REC:
+		ib_unpack(path_rec_table, ARRAY_SIZE(path_rec_table), src, dst);
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(ib_sa_unpack_attr);
+
 /**
  * ib_sa_cancel_query - try to cancel an SA query
  * @id:ID of query to cancel
@@ -439,6 +466,20 @@ void ib_sa_cancel_query(int id, struct ib_sa_query *query)
 	ib_cancel_mad(agent, mad_buf);
 }
 EXPORT_SYMBOL(ib_sa_cancel_query);
+
+void ib_sa_flush(struct ib_device *device)
+{
+	struct ib_sa_device *sa_dev = ib_get_client_data(device, &sa_client);
+	int i;
+
+	if (!sa_dev)
+		return;
+
+	for (i = 0; i <= sa_dev->end_port - sa_dev->start_port; ++i) {
+		ib_flush_mad_agent(sa_dev->port[i].agent);
+	}
+}
+EXPORT_SYMBOL(ib_sa_flush);
 
 static void init_mad(struct ib_sa_mad *mad, struct ib_mad_agent *agent)
 {
@@ -955,6 +996,8 @@ static void ib_sa_remove_one(struct ib_device *device)
 
 	ib_unregister_event_handler(&sa_dev->event_handler);
 
+	flush_scheduled_work();
+
 	for (i = 0; i <= sa_dev->end_port - sa_dev->start_port; ++i) {
 		ib_unregister_mad_agent(sa_dev->port[i].agent);
 		kref_put(&sa_dev->port[i].sm_ah->ref, free_sm_ah);
@@ -982,6 +1025,7 @@ static int __init ib_sa_init(void)
 static void __exit ib_sa_cleanup(void)
 {
 	ib_unregister_client(&sa_client);
+	idr_destroy(&query_idr);
 }
 
 module_init(ib_sa_init);

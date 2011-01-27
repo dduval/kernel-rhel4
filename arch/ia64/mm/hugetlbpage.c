@@ -39,7 +39,7 @@ huge_pte_alloc (struct mm_struct *mm, unsigned long addr)
 	return pte;
 }
 
-static pte_t *
+pte_t *
 huge_pte_offset (struct mm_struct *mm, unsigned long addr)
 {
 	unsigned long taddr = htlbpage_to_page(addr);

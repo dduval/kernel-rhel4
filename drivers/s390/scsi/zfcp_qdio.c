@@ -495,6 +495,16 @@ zfcp_qdio_reqid_check(struct zfcp_adapter *adapter, void *sbale_addr)
 	/* valid request id and thus (hopefully :) valid fsf_req address */
 	fsf_req = (struct zfcp_fsf_req *) sbale_addr;
 
+	/* serialize with zfcp_fsf_req_dismiss_all */
+	spin_lock(&adapter->fsf_req_list_lock);
+	if (list_empty(&adapter->fsf_req_list_head)) {
+		spin_unlock(&adapter->fsf_req_list_lock);
+		return 0;
+	}
+	list_del(&fsf_req->list);
+	atomic_dec(&adapter->fsf_reqs_active);
+	spin_unlock(&adapter->fsf_req_list_lock);
+	
 	if (unlikely(adapter != fsf_req->adapter)) {
 		ZFCP_LOG_NORMAL("bug: invalid reqid (fsf_req=%p, "
 				"fsf_req->adapter=%p, adapter=%p)\n",

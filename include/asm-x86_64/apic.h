@@ -109,6 +109,8 @@ extern unsigned int nmi_watchdog;
 #define NMI_LOCAL_APIC	2
 #define NMI_INVALID	3
 
+extern void setup_threshold_lvt(unsigned long lvt_off);
+
 #endif /* CONFIG_X86_LOCAL_APIC */
 
 #define esr_disable 0

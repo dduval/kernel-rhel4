@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_els.c 1.165.2.3 2005/07/08 19:33:28EDT sf_support Exp  $
+ * $Id: lpfc_els.c 2905 2006-04-13 17:11:39Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -110,7 +110,6 @@ lpfc_prep_els_iocb(struct lpfc_hba * phba,
 	struct lpfc_dmabuf *pcmd, *prsp, *pbuflist;
 	struct ulp_bde64 *bpl;
 	IOCB_t *icmd;
-	uint32_t tag;
 
 	psli = &phba->sli;
 	pring = &psli->ring[LPFC_ELS_RING];	/* ELS ring */
@@ -189,10 +188,7 @@ lpfc_prep_els_iocb(struct lpfc_hba * phba,
 		icmd->ulpCommand = CMD_XMIT_ELS_RSP64_CX;
 	}
 
-	/* NOTE: we don't use ulpIoTag0 because it is a t2 structure */
-	tag = lpfc_sli_next_iotag(phba, pring);
-	icmd->ulpIoTag = (uint16_t)(tag & 0xffff);
-	icmd->un.elsreq64.bdl.ulpIoTag32 = tag;
+	icmd->un.elsreq64.bdl.ulpIoTag32 = 0;
 	icmd->ulpBdeCount = 1;
 	icmd->ulpLe = 1;
 	icmd->ulpClass = CLASS3;
@@ -715,6 +711,7 @@ lpfc_cmpl_els_plogi(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		/* Do not call DSM for lpfc_els_abort'ed ELS cmds */
 		if((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
 		   ((irsp->un.ulpWord[4] == IOERR_SLI_ABORTED) ||
+		   (irsp->un.ulpWord[4] == IOERR_LINK_DOWN) ||
 		   (irsp->un.ulpWord[4] == IOERR_SLI_DOWN))) {
 			disc = (ndlp->nlp_flag & NLP_NPR_2B_DISC);
 		}
@@ -864,6 +861,7 @@ lpfc_cmpl_els_prli(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		/* Do not call DSM for lpfc_els_abort'ed ELS cmds */
 		if((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
 		   ((irsp->un.ulpWord[4] == IOERR_SLI_ABORTED) ||
+		   (irsp->un.ulpWord[4] == IOERR_LINK_DOWN) ||
 		   (irsp->un.ulpWord[4] == IOERR_SLI_DOWN))) {
 			goto out;
 		}
@@ -1037,6 +1035,7 @@ lpfc_cmpl_els_adisc(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		/* Do not call DSM for lpfc_els_abort'ed ELS cmds */
 		if((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
 		   ((irsp->un.ulpWord[4] == IOERR_SLI_ABORTED) ||
+		   (irsp->un.ulpWord[4] == IOERR_LINK_DOWN) ||
 		   (irsp->un.ulpWord[4] == IOERR_SLI_DOWN))) {
 			disc = (ndlp->nlp_flag & NLP_NPR_2B_DISC);
 		}
@@ -1181,6 +1180,7 @@ lpfc_cmpl_els_logo(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
 		/* Do not call DSM for lpfc_els_abort'ed ELS cmds */
 		if((irsp->ulpStatus == IOSTAT_LOCAL_REJECT) &&
 		   ((irsp->un.ulpWord[4] == IOERR_SLI_ABORTED) ||
+		   (irsp->un.ulpWord[4] == IOERR_LINK_DOWN) ||
 		   (irsp->un.ulpWord[4] == IOERR_SLI_DOWN))) {
 			goto out;
 		}
@@ -1375,6 +1375,47 @@ lpfc_issue_els_farpr(struct lpfc_hba * phba, uint32_t nportid, uint8_t retry)
 	return (0);
 }
 
+
+void
+lpfc_cancel_retry_delay_tmo(struct lpfc_hba *phba, struct lpfc_nodelist * nlp)
+{
+	nlp->nlp_flag &= ~NLP_DELAY_TMO;
+	spin_unlock_irq_dump(phba->host->host_lock);
+	del_timer_sync(&nlp->nlp_delayfunc);
+	spin_lock_irq(phba->host->host_lock);
+
+	if (!list_empty(&nlp->els_retry_evt.evt_listp))
+		list_del_init(&nlp->els_retry_evt.evt_listp);
+
+	if (nlp->nlp_flag & NLP_NPR_2B_DISC) {
+		nlp->nlp_flag &= ~NLP_NPR_2B_DISC;
+		if (phba->num_disc_nodes) {
+			/* Check to see if there are more
+			 * PLOGIs to be sent
+			 */
+			lpfc_more_plogi(phba);
+		}
+
+		if (phba->num_disc_nodes == 0) {
+			phba->fc_flag &= ~FC_NDISC_ACTIVE;
+			lpfc_can_disctmo(phba);
+			if (phba->fc_flag & FC_RSCN_MODE) {
+				/* Check to see if more RSCNs
+				 * came in while we were
+				 * processing this one.
+				 */
+				if((phba->fc_rscn_id_cnt==0) &&
+				   (!(phba->fc_flag & FC_RSCN_DISCOVERY))) {
+					phba->fc_flag &= ~FC_RSCN_MODE;
+				}
+				else {
+					lpfc_els_handle_rscn(phba);
+				}
+			}
+		}
+	}
+}
+
 void
 lpfc_els_retry_delay(unsigned long ptr)
 {
@@ -1417,9 +1458,20 @@ lpfc_els_retry_delay_handler(struct lpfc_nodelist *ndlp)
 	cmd = (uint32_t) (ndlp->nlp_last_elscmd);
 
 	if (!(ndlp->nlp_flag & NLP_DELAY_TMO)) {
-		spin_unlock_irq(phba->host->host_lock);
+		spin_unlock_irq_dump(phba->host->host_lock);
 		return;
 	}
+
+	/*
+	 * If a discovery event readded nlp_delayfunc after timer
+	 * firing and before processing the timer, cancel the
+	 * nlp_delayfunc.
+	 */
+	spin_unlock_irq_dump(phba->host->host_lock);
+	del_timer_sync(&ndlp->nlp_delayfunc);
+	spin_lock_irq(phba->host->host_lock);
+	if (!list_empty(&ndlp->els_retry_evt.evt_listp))
+		list_del_init(&ndlp->els_retry_evt.evt_listp);
 
 	ndlp->nlp_flag &= ~NLP_DELAY_TMO;
 	retry = ndlp->nlp_retry;
@@ -1429,27 +1481,31 @@ lpfc_els_retry_delay_handler(struct lpfc_nodelist *ndlp)
 		lpfc_issue_els_flogi(phba, ndlp, retry);
 		break;
 	case ELS_CMD_PLOGI:
-		ndlp->nlp_state = NLP_STE_PLOGI_ISSUE;
-		lpfc_nlp_list(phba, ndlp, NLP_PLOGI_LIST);
-		lpfc_issue_els_plogi(phba, ndlp, retry);
+		if (!lpfc_issue_els_plogi(phba, ndlp, retry)) {
+			ndlp->nlp_state = NLP_STE_PLOGI_ISSUE;
+			lpfc_nlp_list(phba, ndlp, NLP_PLOGI_LIST);
+		}
 		break;
 	case ELS_CMD_ADISC:
-		ndlp->nlp_state = NLP_STE_ADISC_ISSUE;
-		lpfc_nlp_list(phba, ndlp, NLP_ADISC_LIST);
-		lpfc_issue_els_adisc(phba, ndlp, retry);
+		if (!lpfc_issue_els_adisc(phba, ndlp, retry)) {
+			ndlp->nlp_state = NLP_STE_ADISC_ISSUE;
+			lpfc_nlp_list(phba, ndlp, NLP_ADISC_LIST);
+		}
 		break;
 	case ELS_CMD_PRLI:
-		ndlp->nlp_state = NLP_STE_PRLI_ISSUE;
-		lpfc_nlp_list(phba, ndlp, NLP_PRLI_LIST);
-		lpfc_issue_els_prli(phba, ndlp, retry);
+		if (!lpfc_issue_els_prli(phba, ndlp, retry)) {
+			ndlp->nlp_state = NLP_STE_PRLI_ISSUE;
+			lpfc_nlp_list(phba, ndlp, NLP_PRLI_LIST);
+		}
 		break;
 	case ELS_CMD_LOGO:
-		ndlp->nlp_state = NLP_STE_NPR_NODE;
-		lpfc_nlp_list(phba, ndlp, NLP_NPR_LIST);
-		lpfc_issue_els_logo(phba, ndlp, retry);
+		if (!lpfc_issue_els_logo(phba, ndlp, retry)) {
+			ndlp->nlp_state = NLP_STE_NPR_NODE;
+			lpfc_nlp_list(phba, ndlp, NLP_NPR_LIST);
+		}
 		break;
 	}
-	spin_unlock_irq(phba->host->host_lock);
+	spin_unlock_irq_dump(phba->host->host_lock);
 	return;
 }
 
@@ -2295,14 +2351,7 @@ lpfc_rscn_recovery_check(struct lpfc_hba * phba)
 				lpfc_disc_state_machine(phba, ndlp, NULL,
 						NLP_EVT_DEVICE_RECOVERY);
 				if(ndlp->nlp_flag & NLP_DELAY_TMO) {
-					ndlp->nlp_flag &= ~NLP_DELAY_TMO;
-					del_timer_sync(&ndlp->nlp_delayfunc);
-					
-					if (!list_empty(&ndlp->
-							els_retry_evt.evt_listp))
-						list_del_init(&ndlp->
-							      els_retry_evt.
-							      evt_listp);
+					lpfc_cancel_retry_delay_tmo(phba,ndlp);
 				}
 			}
 		}
@@ -2763,7 +2812,7 @@ lpfc_els_timeout_handler(struct lpfc_hba *phba)
 	spin_lock_irq(phba->host->host_lock);
 	/* If the timer is already canceled do nothing */
 	if (!(phba->work_hba_events & WORKER_ELS_TMO)) {
-		spin_unlock_irq(phba->host->host_lock);
+		spin_unlock_irq_dump(phba->host->host_lock);
 		return;
 	}
 
@@ -2832,11 +2881,10 @@ lpfc_els_timeout_handler(struct lpfc_hba *phba)
 		}
 	}
 
-	if (phba->sli.ring[LPFC_ELS_RING].txcmplq_cnt) {
-		phba->els_tmofunc.expires = jiffies + HZ * timeout;
-		add_timer(&phba->els_tmofunc);
-	}
-	spin_unlock_irq(phba->host->host_lock);
+	if (phba->sli.ring[LPFC_ELS_RING].txcmplq_cnt)
+		mod_timer(&phba->els_tmofunc, jiffies + HZ * timeout);
+
+	spin_unlock_irq_dump(phba->host->host_lock);
 }
 
 void
@@ -3033,7 +3081,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_PLOGI:
 		phba->fc_stat.elsRcvPLOGI++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = LSEXP_NOTHING_MORE;
+			rjt_err = 1;
 			break;
 		}
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_PLOGI);
@@ -3048,7 +3096,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_LOGO:
 		phba->fc_stat.elsRcvLOGO++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = LSEXP_NOTHING_MORE;
+			rjt_err = 1;
 			break;
 		}
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_LOGO);
@@ -3056,7 +3104,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_PRLO:
 		phba->fc_stat.elsRcvPRLO++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = LSEXP_NOTHING_MORE;
+			rjt_err = 1;
 			break;
 		}
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_PRLO);
@@ -3071,7 +3119,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_ADISC:
 		phba->fc_stat.elsRcvADISC++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = LSEXP_NOTHING_MORE;
+			rjt_err = 1;
 			break;
 		}
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_ADISC);
@@ -3079,7 +3127,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_PDISC:
 		phba->fc_stat.elsRcvPDISC++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = LSEXP_NOTHING_MORE;
+			rjt_err = 1;
 			break;
 		}
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_PDISC);
@@ -3103,7 +3151,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	case ELS_CMD_PRLI:
 		phba->fc_stat.elsRcvPRLI++;
 		if(phba->hba_state < LPFC_DISC_AUTH) {
-			rjt_err = LSEXP_NOTHING_MORE;
+			rjt_err = 1;
 			break;
 		}
 		lpfc_disc_state_machine(phba, ndlp, elsiocb, NLP_EVT_RCV_PRLI);
@@ -3114,7 +3162,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 		break;
 	default:
 		/* Unsupported ELS command, reject */
-		rjt_err = LSEXP_NOTHING_MORE;
+		rjt_err = 1;
 
 		/* Unknown ELS command <elsCmd> received from NPORT <did> */
 		lpfc_printf_log(phba, KERN_ERR, LOG_ELS,
@@ -3130,7 +3178,7 @@ lpfc_els_unsol_event(struct lpfc_hba * phba,
 	if (rjt_err) {
 		stat.un.b.lsRjtRsvd0 = 0;
 		stat.un.b.lsRjtRsnCode = LSRJT_UNABLE_TPC;
-		stat.un.b.lsRjtRsnCodeExp = rjt_err;
+		stat.un.b.lsRjtRsnCodeExp = LSEXP_NOTHING_MORE;
 		stat.un.b.vendorUnique = 0;
 		lpfc_els_rsp_reject(phba, stat.un.lsRjtError, elsiocb, ndlp);
 	}
@@ -3148,5 +3196,55 @@ dropit:
 				icmd->ulpStatus, icmd->un.ulpWord[4]);
 		phba->fc_stat.elsRcvDrop++;
 	}
+	return;
+}
+
+void
+lpfc_loopback_event(struct lpfc_hba *phba,
+		    struct lpfc_sli_ring *pring, struct lpfc_iocbq *piocbq)
+{
+	IOCB_t *icmd = &piocbq->iocb;
+	struct lpfc_iocbq *next_piocbq;
+	struct list_head head;
+	struct lpfc_dmabuf *pnext;
+	int i;
+
+	if (icmd->ulpStatus) {
+		return;
+	}
+
+	if (icmd->ulpBdeCount == 0) {
+		phba->fc_loopback_rxxri = icmd->ulpContext;
+		return;
+	}
+
+	phba->fc_loopback_data = NULL;
+
+	INIT_LIST_HEAD(&head);
+	list_add_tail(&head, &piocbq->list);
+	list_for_each_entry_safe(piocbq, next_piocbq, &head, list) {
+		icmd = &piocbq->iocb;
+
+		for (i = 0; i < icmd->ulpBdeCount; i++) {
+			pnext = lpfc_sli_ringpostbuf_get(phba, pring,
+							 getPaddr(icmd->un.
+								  cont64[i].
+								  addrHigh,
+								  icmd->un.
+								  cont64[i].
+								  addrLow));
+			if (!pnext) {
+				return;
+			}
+			if (!phba->fc_loopback_data) {
+				phba->fc_loopback_data = pnext;
+				INIT_LIST_HEAD(&phba->fc_loopback_data->list);
+			} else {
+				list_add_tail(&pnext->list,
+					      &phba->fc_loopback_data->list);
+			}
+		}
+	}
+	list_del(&head);
 	return;
 }

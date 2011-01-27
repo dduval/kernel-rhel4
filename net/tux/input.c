@@ -114,7 +114,7 @@ struct dentry * tux_lookup (tux_req_t *req, const char *filename,
 			const unsigned int flag, struct vfsmount **mnt)
 {
 	struct dentry *dentry;
-	struct nameidata base;
+	struct nameidata base = {};
 
 	Dprintk("tux_lookup(%p, %s, %d, virtual: %d, host: %s (%d).)\n", req, filename, flag, req->virtual, req->host, req->host_len);
 

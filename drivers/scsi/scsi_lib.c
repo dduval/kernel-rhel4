@@ -1404,6 +1404,8 @@ void scsi_block_requests(struct Scsi_Host *shost)
  */
 void scsi_unblock_requests(struct Scsi_Host *shost)
 {
+	if (crashdump_mode())
+		return;
 	shost->host_self_blocked = 0;
 	scsi_run_host_queues(shost);
 }

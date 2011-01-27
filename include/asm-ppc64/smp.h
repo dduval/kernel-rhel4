@@ -61,6 +61,11 @@ extern int __cpu_disable(void);
 extern void __cpu_die(unsigned int cpu);
 extern void cpu_die(void) __attribute__((noreturn));
 extern int query_cpu_stopped(unsigned int pcpu);
+
+#else
+
+#define smp_processor_id()			0
+#define hard_smp_processor_id()			0
 #endif /* !(CONFIG_SMP) */
 
 #define get_hard_smp_processor_id(CPU) (paca[(CPU)].hw_cpu_id)

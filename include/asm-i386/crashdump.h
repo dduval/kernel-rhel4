@@ -48,12 +48,14 @@ extern unsigned long next_ram_page (unsigned long);
 
 static inline void platform_init_stack(void **stackptr)
 {
+#ifdef CONFIG_4KSTACKS
 	*stackptr = (void *)kmalloc(sizeof(union irq_ctx), GFP_KERNEL);
 	if (*stackptr)
 		memset(*stackptr, 0, sizeof(union irq_ctx));
 	else
 		printk(KERN_WARNING
 		       "crashdump: unable to allocate separate stack\n");
+#endif
 }
 
 typedef asmlinkage void (*crashdump_func_t)(struct pt_regs *, void *);
@@ -62,6 +64,7 @@ static inline void platform_start_crashdump(void *stackptr,
 					   crashdump_func_t dumpfunc,
 					   struct pt_regs *regs)
 {
+#ifdef CONFIG_4KSTACKS
 	u32 *dsp;
 	union irq_ctx * curctx;
 	union irq_ctx * dumpctx;
@@ -90,6 +93,10 @@ static inline void platform_start_crashdump(void *stackptr,
 			: "memory", "cc", "edx", "ecx"
 		);
 	}
+#else
+	dumpfunc(regs, NULL);
+#endif
+
 }
 
 #define platform_cleanup_stack(stackptr)	\

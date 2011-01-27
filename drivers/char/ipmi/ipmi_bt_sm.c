@@ -33,7 +33,7 @@
 #include <linux/ipmi_msgdefs.h>		/* for completion codes */
 #include "ipmi_si_sm.h"
 
-#define IPMI_BT_VERSION "33.11"
+#define IPMI_BT_VERSION "33.13"
 
 static int bt_debug = 0x00;	/* Production value 0, see following flags */
 

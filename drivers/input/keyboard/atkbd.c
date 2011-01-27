@@ -845,8 +845,6 @@ static void atkbd_connect(struct serio *serio, struct serio_driver *drv)
 			return;
 	}
 
-	if (!atkbd->write)
-		atkbd_softrepeat = 1;
 	if (atkbd_softrepeat)
 		atkbd_softraw = 1;
 

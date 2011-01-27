@@ -71,6 +71,8 @@ int dirty_background_ratio = 10;
  */
 int vm_dirty_ratio = 40;
 
+int vm_max_queue_depth = 0;
+
 /*
  * The interval between `kupdate'-style writebacks, in centiseconds
  * (hundredths of a second)
@@ -160,12 +162,12 @@ get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty, s
 	if (dirty_ratio > unmapped_ratio / 2)
 		dirty_ratio = unmapped_ratio / 2;
 
-	if (dirty_ratio < 5)
-		dirty_ratio = 5;
+	if (dirty_ratio < 1)
+		dirty_ratio = 1;
 
 	background_ratio = dirty_background_ratio;
 	if (background_ratio >= dirty_ratio)
-		background_ratio = dirty_ratio / 2;
+		background_ratio = ((dirty_ratio>1)?dirty_ratio/2:dirty_ratio);
 
 	background = (background_ratio * available_memory) / 100;
 	dirty = (dirty_ratio * available_memory) / 100;
@@ -173,6 +175,17 @@ get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty, s
 	if (tsk->flags & PF_LESS_THROTTLE || rt_task(tsk)) {
 		background += background / 4;
 		dirty += dirty / 4;
+	}
+	/* vm_max_queue_depth allows setting the dirty_ratio to less than 1% of RAM
+	 * and prevents the dirty_background_ratio from being greater than dirty_ratio.
+	 */
+	if (vm_max_queue_depth && (vm_max_queue_depth<<(20-PAGE_SHIFT)) < dirty) {
+		dirty = vm_max_queue_depth<<(20-PAGE_SHIFT);
+		if (background > dirty)
+			if (dirty_ratio > background_ratio)
+				background = dirty/2;
+			else
+				background = dirty;
 	}
 	*pbackground = background;
 	*pdirty = dirty;

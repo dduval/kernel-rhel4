@@ -30,10 +30,11 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ud_header.c 3202 2005-08-26 17:11:34Z roland $
+ * $Id: ud_header.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/errno.h>
+#include <linux/string.h>
 
 #include <rdma/ib_pack.h>
 

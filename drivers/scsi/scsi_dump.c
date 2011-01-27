@@ -49,6 +49,7 @@
 
 #define MAX_RETRIES 5
 #define SD_TIMEOUT (60 * HZ)
+#define CMND_BUF_SIZE 256
 
 #define Dbg(x, ...)	pr_debug("scsi_dump: " x "\n", ## __VA_ARGS__)
 #define Err(x, ...)	pr_err  ("scsi_dump: " x "\n", ## __VA_ARGS__)
@@ -72,6 +73,7 @@ static int quiesce_ok = 0;
 static struct scsi_cmnd scsi_dump_cmnd;
 static struct request scsi_dump_req;
 static uint32_t module_crc;
+static char *cmnd_buf;
 
 static void rw_intr(struct scsi_cmnd * scmd)
 {
@@ -403,7 +405,7 @@ retry_out:
 static void
 enable_write_cache(struct scsi_device *sdev)
 {
-	char buf[256];
+	char *buf = cmnd_buf;
 	int ret;
 	int data_len;
 
@@ -452,11 +454,14 @@ scsi_dump_sanity_check(struct disk_dump_device *dump_device)
 	struct Scsi_Host *host = sdev->host;
 	int adapter_sanity = 0;
 	int sanity = 0;
+	static int crc_valid = 0;
 
-	if (!check_crc_module()) {
+	if (!crc_valid && !check_crc_module()) {
 		Err("checksum error. scsi dump module may be compromised.");
 		return -EINVAL;
 	}
+	crc_valid = 1;
+
 	/*
 	 * If host's spinlock is already taken, assume it's part
 	 * of crash and skip it.
@@ -498,7 +503,7 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 {
 	struct Scsi_Host *host = sdev->host;
 	struct scsi_host_template *hostt = host->hostt;
-	char buf[256];
+	char *buf = cmnd_buf;
 	int ret, i;
 
 	init_sense_command(sdev, &scsi_dump_cmnd, buf);
@@ -649,10 +654,16 @@ static void scsi_dump_remove_device(struct disk_dump_device *dump_device)
 	scsi_device_put(sdev);
 }
 
+static void scsi_dump_compute_cksum(void)
+{
+	set_crc_modules();
+}
+
 static struct disk_dump_type scsi_dump_type = {
 	.probe		= scsi_dump_probe,
 	.add_device	= scsi_dump_add_device,
 	.remove_device	= scsi_dump_remove_device,
+	.compute_cksum	= scsi_dump_compute_cksum,
 	.owner		= THIS_MODULE,
 };
 
@@ -664,7 +675,11 @@ static int init_scsi_dump(void)
 		Err("register failed");
 		return ret;
 	}
-	set_crc_modules();
+	if ((cmnd_buf = kmalloc(CMND_BUF_SIZE, GFP_KERNEL)) == NULL) {
+		Err("kmalloc failed.");
+		unregister_disk_dump_type(&scsi_dump_type);
+		return -ENOMEM;
+	}
 	return ret;
 }
 
@@ -672,6 +687,7 @@ static void cleanup_scsi_dump(void)
 {
 	if (unregister_disk_dump_type(&scsi_dump_type) < 0)
 		Err("register failed");
+	kfree(cmnd_buf);
 }
 
 module_init(init_scsi_dump);

@@ -48,7 +48,7 @@
 #include <linux/ioctl32.h>
 #include <linux/compat.h>
 
-#define IPMI_DEVINTF_VERSION "33.11"
+#define IPMI_DEVINTF_VERSION "33.13"
 
 struct ipmi_file_private
 {

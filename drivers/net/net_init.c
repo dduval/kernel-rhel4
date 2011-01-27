@@ -81,7 +81,9 @@ struct net_device *alloc_netdev(int sizeof_priv, const char *mask,
 
 	alloc_size = (sizeof(struct net_device) + NETDEV_ALIGN_CONST)
 			& ~NETDEV_ALIGN_CONST;
-	alloc_size += sizeof_priv + NETDEV_ALIGN_CONST;
+	alloc_size += (sizeof_priv + NETDEV_ALIGN_CONST)
+			& ~NETDEV_ALIGN_CONST;
+	alloc_size += sizeof(struct net_device_wrapper)  + NETDEV_ALIGN_CONST;
 
 	p = kmalloc (alloc_size, GFP_KERNEL);
 	if (!p) {
@@ -95,11 +97,18 @@ struct net_device *alloc_netdev(int sizeof_priv, const char *mask,
 				& ~NETDEV_ALIGN_CONST);
 	dev->padded = (char *)dev - (char *)p;
 
+	dev->priv_len = sizeof_priv;
 	if (sizeof_priv)
 		dev->priv = netdev_priv(dev);
 
 	setup(dev);
 	strcpy(dev->name, mask);
+
+	/*
+	 * Protect against netpoll recursion in napi poll.   The wrapper is
+	 * implemented to preserve kABI.
+	 */
+	dev->priv_flags |= IFF_EXTENDED;
 
 	return dev;
 }

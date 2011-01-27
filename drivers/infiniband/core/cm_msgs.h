@@ -191,7 +191,6 @@ static inline void cm_req_set_qp_type(struct cm_req_msg *req_msg,
 		req_msg->offset40 = cpu_to_be32(be32_to_cpu(
 						 req_msg->offset40) &
 						  0xFFFFFFF9);
-		break;
 	}
 }
 

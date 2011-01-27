@@ -58,10 +58,19 @@ asmlinkage void ret_from_fork(void) __asm__("ret_from_fork");
  */
 unsigned long thread_saved_pc(struct task_struct *tsk)
 {
-	struct stack_frame *sf;
+	struct stack_frame *sf, *low, *high;
 
-	sf = (struct stack_frame *) tsk->thread.ksp;
-	sf = (struct stack_frame *) sf->back_chain;
+	if (!tsk || !tsk->thread_info)
+		return 0;
+	low = (struct stack_frame *) tsk->thread_info;
+	high = (struct stack_frame *)
+		((unsigned long) tsk->thread_info + THREAD_SIZE) - 1;
+	sf = (struct stack_frame *) (tsk->thread.ksp & PSW_ADDR_INSN);
+	if (sf <= low || sf > high)
+		return 0;
+	sf = (struct stack_frame *) (sf->back_chain & PSW_ADDR_INSN);
+	if (sf <= low || sf > high)
+		return 0;
 	return sf->gprs[8];
 }
 

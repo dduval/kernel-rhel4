@@ -22,6 +22,17 @@ config CTC
 	  available.  This option is also available as a module which will be
 	  called ctc.ko.  If you do not know what it is, it's safe to say "Y".
 
+config MPC
+	tristate "MPC SNA device support"
+	depends on NETDEVICES
+	help
+	  This driver supports channel-to-channel MPC SNA devices.
+	  MPC is a SNA protocol device used by Comm Server for Linux.
+	  If you don't have Comm Server for Linux you don't need the device.
+	  To compile as a module choose M here:  The module will be called
+	  ctcmpc.ko to compile into the kernel choose Y
+	  If you do not need SNA MPC device just say N
+
 config IUCV
 	tristate "IUCV support (VM only)"
 	help

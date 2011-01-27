@@ -1300,6 +1300,7 @@ extern int bd_claim(struct block_device *, void *);
 extern void bd_release(struct block_device *);
 
 /* fs/char_dev.c */
+#define CHRDEV_MAJOR_HASH_SIZE		255
 extern int alloc_chrdev_region(dev_t *, unsigned, unsigned, char *);
 extern int register_chrdev_region(dev_t, unsigned, char *);
 extern int register_chrdev(unsigned int, const char *,
@@ -1307,14 +1308,17 @@ extern int register_chrdev(unsigned int, const char *,
 extern int unregister_chrdev(unsigned int, const char *);
 extern void unregister_chrdev_region(dev_t, unsigned);
 extern int chrdev_open(struct inode *, struct file *);
+extern void chrdev_show(struct seq_file *,off_t);
 
 /* fs/block_dev.c */
+#define BLKDEV_MAJOR_HASH_SIZE		255
 #define BDEVNAME_SIZE	32	/* Largest string for a blockdev identifier */
 extern const char *__bdevname(dev_t, char *buffer);
 extern const char *bdevname(struct block_device *bdev, char *buffer);
 extern struct block_device *lookup_bdev(const char *);
 extern struct block_device *open_bdev_excl(const char *, int, void *);
 extern void close_bdev_excl(struct block_device *);
+extern void blkdev_show(struct seq_file *,off_t);
 
 extern void init_special_inode(struct inode *, umode_t, dev_t);
 

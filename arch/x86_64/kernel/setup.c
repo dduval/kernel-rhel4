@@ -80,11 +80,10 @@ extern int acpi_numa;
 extern int __initdata numa_off;
 #endif
 
+int disable_timer_pin_1 __initdata;
+
 int sibling_ht_mask = 0;
 int disable_x86_ht;
-
-/* For PCI or other memory-mapped resources */
-unsigned long pci_mem_start = 0x10000000;
 
 unsigned long saved_video_mode;
 
@@ -290,6 +289,8 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 			acpi_strict = 1;
 		}
 #endif
+		else if (!memcmp(from, "disable_timer_pin_1", 19))
+			disable_timer_pin_1 = 1;
 
 		if (!memcmp(from, "nolapic", 7) ||
 		    !memcmp(from, "disableapic", 11))
@@ -452,17 +453,28 @@ static inline void copy_edd(void)
 #endif
 
 #define EBDA_ADDR_POINTER 0x40E
-static void __init reserve_ebda_region(void)
+
+unsigned __initdata ebda_addr;
+unsigned __initdata ebda_size;
+
+static void discover_ebda(void)
 {
-	unsigned int addr;
-	/** 
+	/*
 	 * there is a real-mode segmented pointer pointing to the 
 	 * 4K EBDA area at 0x40E
 	 */
-	addr = *(unsigned short *)phys_to_virt(EBDA_ADDR_POINTER);
-	addr <<= 4;
-	if (addr)
-		reserve_bootmem_generic(addr, PAGE_SIZE);
+	ebda_addr = *(unsigned short *)EBDA_ADDR_POINTER;
+	ebda_addr <<= 4;
+
+	ebda_size = *(unsigned short *)(unsigned long)ebda_addr;
+
+	/* Round EBDA up to pages */
+	if (ebda_size == 0)
+		ebda_size = 1;
+	ebda_size <<= 10;
+	ebda_size = round_up(ebda_size + (ebda_addr & ~PAGE_MASK), PAGE_SIZE);
+	if (ebda_size > 64*1024)
+		ebda_size = 64*1024;
 }
 
 static void noht_init(void)
@@ -504,7 +516,6 @@ static void noht_init(void)
 
 void __init setup_arch(char **cmdline_p)
 {
-	unsigned long low_mem_size;
 	unsigned long kernel_end;
 
  	ROOT_DEV = old_decode_dev(ORIG_ROOT_DEV);
@@ -544,6 +555,8 @@ void __init setup_arch(char **cmdline_p)
 	end_pfn = e820_end_of_ram();
 
 	check_efer();
+
+	discover_ebda();
 
 	init_memory_mapping(); 
 
@@ -618,7 +631,8 @@ void __init setup_arch(char **cmdline_p)
 	reserve_bootmem_generic(0, PAGE_SIZE);
 
 	/* reserve ebda region */
-	reserve_ebda_region();
+	if (ebda_addr)
+		reserve_bootmem_generic(ebda_addr, ebda_size);
 
 #ifdef CONFIG_SMP
 	/*
@@ -700,13 +714,7 @@ void __init setup_arch(char **cmdline_p)
 		request_resource(&ioport_resource, &standard_io_resources[i]);
 	}
 
-	/* Will likely break when you have unassigned resources with more
-	   than 4GB memory and bridges that don't support more than 4GB. 
-	   Doing it properly would require to use pci_alloc_consistent
-	   in this case. */
-	low_mem_size = ((end_pfn << PAGE_SHIFT) + 0xfffff) & ~0xfffff;
-	if (low_mem_size > pci_mem_start)
-		pci_mem_start = low_mem_size;
+	e820_setup_gap();
 
 #ifdef CONFIG_GART_IOMMU
        iommu_hole_init();
@@ -780,7 +788,6 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 #ifdef CONFIG_SMP
 	int cpu = smp_processor_id();
 	unsigned bits;
-	int initial_apic_id;
 
 	bits = 0;
 	while ((1 << bits) < c->x86_num_cores)
@@ -790,14 +797,6 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 	cpu_core_id[cpu] = phys_proc_id[cpu] & ((1 << bits)-1);
 	/* Convert the APIC ID into the socket ID */
 	phys_proc_id[cpu] >>= bits;
-
-	initial_apic_id = hard_smp_processor_id();
-	printk(KERN_INFO  "AMD CPU%d: Physical Processor ID: %d\n",
-	       cpu, phys_proc_id[cpu]);
-	printk(KERN_INFO  "AMD CPU%d: Processor Core ID: %d\n",
-	       cpu, cpu_core_id[cpu]);
-	printk(KERN_INFO  "AMD CPU%d: Initial APIC ID: %d\n",
-	       cpu, initial_apic_id);
 #endif
 }
 
@@ -806,6 +805,23 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 	int r;
 	int level;
 	int cpu;
+
+#ifdef CONFIG_SMP
+	unsigned long value;
+                                                                                               
+	/*
+	 * Disable TLB flush filter by setting HWCR.FFDIS on K8
+	 * bit 6 of msr C001_0015
+	 *
+	 * Errata 63 for SH-B3 steppings
+	 * Errata 122 for all steppings (F+ have it disabled by default)
+	 */
+	if (c->x86 == 15) {
+		rdmsrl(MSR_K8_HWCR, value);
+		value |= 1 << 6;
+		wrmsrl(MSR_K8_HWCR, value);
+	}
+#endif
 
 	/* Bit 31 in normal CPUID used for nonstandard 3DNow ID;
 	   3DNow is IDd by bit 31 in extended CPUID (1*32+31) anyway */
@@ -830,7 +846,6 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 
 #ifdef CONFIG_SMP
 	if (cpuid_eax(0x80000000) >= 0x80000008) {
-	        phys_proc_id[c->x86_apicid] = c->x86_apicid;
 		c->x86_num_cores = (cpuid_ecx(0x80000008) & 0xff) + 1;
 		if (c->x86_num_cores & (c->x86_num_cores - 1))
 			c->x86_num_cores = 1;
@@ -1042,6 +1057,10 @@ void __init early_identify_cpu(struct cpuinfo_x86 *c)
 		/* Have CPUID level 0 only - unheard of */
 		c->x86 = 4;
 	}
+
+#ifdef CONFIG_SMP
+	phys_proc_id[smp_processor_id()] = (cpuid_ebx(1) >> 24) & 0xff;
+#endif
 }
 
 /*
@@ -1219,10 +1238,11 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	if (c->x86_cache_size >= 0) 
 		seq_printf(m, "cache size\t: %d KB\n", c->x86_cache_size);
 	
-#if defined (CONFIG_X86_HT) && defined (X86_FEATURE_CMP_LEGACY)
+#ifdef CONFIG_SMP
 	if (smp_num_siblings > 1 || c->x86_num_cores > 1) {
+		int cpu = c - cpu_data;
 		seq_printf(m, "physical id\t: %d\n", phys_proc_id[c - cpu_data]);
-		seq_printf(m, "siblings\t: %d\n", smp_num_siblings * c->x86_num_cores);
+		seq_printf(m, "siblings\t: %d\n", cpus_weight(cpu_core_map[cpu]));
 		seq_printf(m, "core id\t\t: %d\n", cpu_core_id[c - cpu_data]);
 		seq_printf(m, "cpu cores\t: %d\n", c->x86_num_cores);
 	}

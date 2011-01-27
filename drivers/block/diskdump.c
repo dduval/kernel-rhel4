@@ -81,12 +81,19 @@ module_param_named(compress, compress, int, S_IRUGO);
 static unsigned long timestamp_1sec;
 static uint32_t module_crc;
 static char *scratch;
-static char *bitmap;
+static struct disk_dump_bitmap dump_bitmap;
+static int rewrite_header;
+static int free_list_is_valid = 1;
 static struct disk_dump_header dump_header;
 static struct disk_dump_sub_header dump_sub_header;
 
 /* Registered dump devices */
 static LIST_HEAD(disk_dump_devices);
+
+/* Registered dump partitions */
+static LIST_HEAD(disk_dump_partitions);
+
+#define NEXT_PART(part)	list_entry((part)->part_list.next, struct disk_dump_partition, part_list)
 
 /* Registered dump types, e.g. SCSI, ... */
 static LIST_HEAD(disk_dump_types);
@@ -98,8 +105,6 @@ static unsigned int bitmap_blocks;		/* The size of bitmap header */
 static unsigned int ram_bitmap_blocks;		/* The size of ram bitmaps */
 static unsigned int total_ram_blocks;		/* The size of memory */
 static unsigned int total_blocks;		/* The sum of above */
-
-static unsigned int bitmap_index;		/* next block to write bitmap */
 
 static int compress_block_order;
 static char *compress_buffer;
@@ -163,7 +168,8 @@ static int page_is_dumpable(unsigned long pfn)
 		return 0;
 	if ((dump_level & DUMP_EXCLUDE_CLEAN) && check_zero_page(page))
 		return 0;
-	if ((dump_level & DUMP_EXCLUDE_FREE) && PageNosaveFree(page))
+	if ((dump_level & DUMP_EXCLUDE_FREE) && free_list_is_valid
+	    && PageNosaveFree(page))
 		return 0;
 	if ((dump_level & DUMP_EXCLUDE_ANON) && PageAnon(page))
 		return 0;
@@ -243,6 +249,7 @@ static inline void print_last_status(int nr, int nr_skipped, int maxnr,
 		printk("%d compressed into %d\n", blocks_uncompressed, nr);
 	lapse = 0;
 }
+
 /*
  * Checking the signature on a block. The format is as follows.
  *
@@ -318,10 +325,6 @@ static int write_blocks(struct disk_dump_partition *dump_part, unsigned int offs
 }
 
 /*
- * Initialize the common header
- */
-
-/*
  * Write the common header
  */
 static int write_header(struct disk_dump_partition *dump_part)
@@ -333,7 +336,7 @@ static int write_header(struct disk_dump_partition *dump_part)
 }
 
 /*
- * Check the signaures in all blocks of the dump partition
+ * Check the signatures in all blocks of the dump partition
  * Return 1 if the signature is correct, else return 0
  */
 static int check_dump_partition(struct disk_dump_partition *dump_part,
@@ -383,7 +386,7 @@ redo:
 }
 
 /*
- * Check the signaures in the first blocks of the swap partition
+ * Check the signatures in the first blocks of the swap partition
  * Return 1 if the signature is correct, else return 0
  */
 static int check_swap_partition(struct disk_dump_partition *dump_part,
@@ -404,11 +407,50 @@ static int check_swap_partition(struct disk_dump_partition *dump_part,
 	if (swh->info.version != 1)
 		return 0;
 
-	if (swh->info.last_page + 1 != SECTOR_BLOCK(dump_part->nr_sects) ||
-				swh->info.last_page < partition_size)
+	if (swh->info.last_page + 1 != SECTOR_BLOCK(dump_part->nr_sects))
+		return 0;
+
+	if (strict_size_check() && (swh->info.last_page < partition_size))
 		return 0;
 
 	return 1;
+}
+
+/*
+ * Shutdown the devices.
+ */
+static void diskdump_shutdown(void)
+{
+	struct disk_dump_device *dump_device;
+
+	list_for_each_entry(dump_device, &disk_dump_devices, list) {
+		Dbg("do adapter shutdown.");
+		if (dump_device->need_shutdown && dump_device->ops.shutdown)
+			if (dump_device->ops.shutdown(dump_device))
+				Err("adapter shutdown failed.");
+	}
+}
+
+static int clear_extra_bitmap(struct disk_dump_partition *dump_part,
+			unsigned int bitmap_offset, unsigned int bitmap_blocks)
+{
+	int nr;
+	unsigned int offset;
+	int ret;
+
+	if (!strict_size_check()) {
+		memset(scratch, 0, PAGE_SIZE);
+		for (nr = 0; nr < bitmap_blocks; nr++) {
+			offset = bitmap_offset + bitmap_blocks + nr;
+			if ((ret = write_blocks(dump_part, offset, scratch, 1))
+					< 0) {
+				Err("I/O error %d on block %u", ret, offset);
+				return -1;
+			}
+		}
+	}
+
+	return 0;
 }
 
 /*
@@ -444,10 +486,15 @@ static int write_bitmap(struct disk_dump_partition *dump_part,
 		if ((ret = write_blocks(dump_part, bitmap_offset + nr,
 					scratch, 1)) < 0) {
 			Err("I/O error %d on block %u", ret, bitmap_offset + nr);
-			break;
+			return ret;
 		}
 	}
-	return ret;
+
+	if ((ret = clear_extra_bitmap(dump_part, bitmap_offset, bitmap_blocks))
+			< 0)
+		return ret;
+
+	return 0;
 }
 
 /*
@@ -457,14 +504,19 @@ static int flush_bitmap(struct disk_dump_partition *dump_part)
 {
 	int ret = 0;
 
-	if (!dump_level)
+	if (strict_size_check())
+		return 0;
+	if (dump_bitmap.bit == 0 && dump_bitmap.byte == 0)
 		return 0;
 
-	if ((ret = write_blocks(dump_part, bitmap_index, bitmap, 1)) < 0)
-		Err("I/O error %d on block %u", ret, bitmap_index);
+	if ((ret = write_blocks(dump_part, dump_bitmap.index,
+				dump_bitmap.map, 1)) < 0)
+		Err("I/O error %d on block %u", ret, dump_bitmap.index);
 
-	memset(bitmap, 0, PAGE_SIZE);
-	bitmap_index++;
+	memset(dump_bitmap.map, 0, PAGE_SIZE);
+	dump_bitmap.index++;
+	dump_bitmap.flushed = 1;
+
 	return ret;
 }
 
@@ -474,24 +526,68 @@ static int flush_bitmap(struct disk_dump_partition *dump_part)
  */
 static int set_bitmap(struct disk_dump_partition *dump_part, unsigned long val)
 {
-	static int bit, byte;
 	int ret = 0;
 
-	if (!dump_level)
+	if (strict_size_check())
 		return 0;
 
-	bitmap[byte] |= val ? (1<<bit) : 0;
+	dump_bitmap.map[dump_bitmap.byte] |= val ? (1<<dump_bitmap.bit) : 0;
 
-	if (++bit == 8) {
-		bit = 0;
-		++byte;
+	if (++dump_bitmap.bit == 8) {
+		dump_bitmap.bit = 0;
+		++dump_bitmap.byte;
 	}
-	if (byte == PAGE_SIZE) {
+	if (dump_bitmap.byte == PAGE_SIZE) {
 		/* If bitmap is full, write it to the disk. */
 		if ((ret = flush_bitmap(dump_part)) < 0)
 			return ret;
-		byte = 0;
+		dump_bitmap.byte = 0;
 	}
+	return 0;
+}
+
+/*
+ * In case of compressed data:
+ * Size of data in buffer = current_blks_buff * block size + size of fraction.
+ * Size of next data to be buffered <= size of page header + block size.
+ * If remaining space in partition becomes less than
+ * the current blocks in buffer + 3 blocks, there is
+ * chance that (fraction + next data) may not fit into that space.
+ *
+ * return 0 : data not overflow
+ *        1 : data overflow
+ *
+ */
+static int check_overflow(unsigned int current_blks_part,
+			unsigned int current_blks_buff,
+			unsigned int partition_size)
+{
+	unsigned int current_total_blks;
+
+	if (compress)
+		current_total_blks = current_blks_part + current_blks_buff + 2;
+	else
+		current_total_blks = current_blks_part;
+
+	if (current_total_blks >= partition_size)
+		return 1;
+	else
+		return 0;
+}
+
+/*
+ * When the bitmap is flushed, update the dump
+ * header to show the size at that time even if
+ * the dumping is interrupted by something.
+ */
+static int update_header(struct disk_dump_partition *dump_part)
+{
+	if (rewrite_header) {
+		rewrite_header = 0;
+		if (write_header(dump_part) < 0)
+			return -1;
+	}
+
 	return 0;
 }
 
@@ -501,21 +597,39 @@ static int set_bitmap(struct disk_dump_partition *dump_part, unsigned long val)
  */
 static int write_memory(struct disk_dump_partition *dump_part, int offset,
 			unsigned int blocks_written_expected,
-			unsigned int max_blocks_written,
-			unsigned int *blocks_written)
+			unsigned int max_blocks_written)
 {
 	char *kaddr;
 	unsigned int blocks = 0, blocks_uncompressed = 0;
 	int blocks_skipped = dump_level ? 0 : -1;
 	struct page *page;
 	unsigned long nr;
-	int ret = 0;
+	int ret = -1, short_area = 0, size = 0;
 	int blk_in_chunk = 0;
 	int dumpable;
+
+	dump_header.status = DUMP_HEADER_IN_PROGRESS;
+	if (compress)
+		dump_header.status |= DUMP_HEADER_COMPRESSED;
 
 	for (nr = next_ram_page(ULONG_MAX); nr < max_pfn; nr = next_ram_page(nr)) {
 		print_status(blocks_uncompressed, blocks_skipped,
 			     blocks_written_expected);
+
+		/* Check the possibility of the partition overflow.
+		 */
+		if (check_overflow(blocks, (size>>PAGE_SHIFT),
+					max_blocks_written))
+			short_area = 1;
+
+		if (short_area) {
+			int disregarded_pages
+				= total_ram_blocks - (blocks_uncompressed
+				+ (blocks_skipped == -1 ? 0 : blocks_skipped)); 
+			Warn("dump device is too small. %d pages will be disregarded",
+				disregarded_pages);
+			break;
+		}
 
 		dumpable = page_is_dumpable(nr);
 		if ((ret = set_bitmap(dump_part, dumpable)) < 0) {
@@ -525,11 +639,6 @@ static int write_memory(struct disk_dump_partition *dump_part, int offset,
 		if (!dumpable) {
 			blocks_skipped++;
 			continue;
-		}
-
-		if (blocks >= max_blocks_written) {
-			Warn("dump device is too small. %lu pages were not saved", max_pfn - blocks);
-			goto out;
 		}
 
 		page = pfn_to_page(nr);
@@ -566,9 +675,10 @@ static int write_memory(struct disk_dump_partition *dump_part, int offset,
 
 write:
 		if (compress) {
-			ret = diskdump_compress_write(dump_part, &offset,
-						      &blocks, page);
-			if (ret) {
+			size = diskdump_compress_write(dump_part, &offset,
+						       &blocks, page);
+			if (size < 0) {
+				ret = size;
 				Err("compress error pfn=%lu: %d", nr, ret);
 				break;
 			}
@@ -585,57 +695,93 @@ write:
 					break;
 				}
 				offset += blk_in_chunk;
+				dump_header.written_blocks += blk_in_chunk;
 				blk_in_chunk = 0;
+				if (dump_bitmap.flushed) {
+					/* Execute update_header() immediately
+					 * after write_blocks() not to destroy
+					 * scratch.
+					 */
+					dump_bitmap.flushed = 0;
+					rewrite_header = 1;
+				}
 			}
 		}
+
+		if (rewrite_header && (ret = update_header(dump_part)) < 0) {
+			Err("updating header failed. error %d", ret);
+			goto out;
+		}
+
 		blocks_uncompressed++;
 	}
-	if (compress)
-		diskdump_compress_flush(dump_part, offset, &blocks);
-	else if (ret >= 0 && blk_in_chunk > 0) {
-		ret = write_blocks(dump_part, offset, scratch, blk_in_chunk);
-		if (ret < 0)
-			Err("I/O error %d on block %u", ret, offset);
+	if (ret >= 0) {
+		if (compress)
+			ret = diskdump_compress_flush(dump_part, offset,
+						      &blocks);
+		else if (blk_in_chunk > 0) {
+			ret = write_blocks(dump_part, offset, scratch,
+				blk_in_chunk);
+			if (ret < 0)
+				Err("I/O error %d on block %u", ret, offset);
+			dump_header.written_blocks += blk_in_chunk;
+		}
 	}
 
 out:
 	print_last_status(blocks, blocks_skipped, blocks_written_expected,
 			  blocks_uncompressed);
-	flush_bitmap(dump_part);
+	/*
+	 * bitmap.byte or bitmap.bit must not be 0 if dump_level != 0.
+	 */
+	if (ret >= 0 && (dump_bitmap.byte || dump_bitmap.bit))
+		ret = flush_bitmap(dump_part);
 
-	*blocks_written = blocks;
+	if (ret >= 0 && !strict_size_check()) {
+		/* If ret >= 0, blocks must not be 0. */
+		ret = short_area;
+	}
 	return ret;
 }
 
 /*
- * Select most suitable dump device. sanity_check() returns the state
+ * Select suitable dump device. sanity_check() returns the state
  * of each dump device. 0 means OK, negative value means NG, and
  * positive value means it maybe work. select_dump_partition() first
  * try to select a sane device and if it has no sane device and
  * allow_risky_dumps is set, it select one from maybe OK devices.
  *
- * XXX We cannot handle multiple partitions yet.
  */
-static struct disk_dump_partition *select_dump_partition(void)
+static struct disk_dump_partition *select_dump_partition(struct disk_dump_partition *prev_dump_part)
 {
 	struct disk_dump_device *dump_device;
 	struct disk_dump_partition *dump_part;
 	int sanity;
+	struct list_head *head, *list;
 	int strict_check = 1;
 
+	if (prev_dump_part == NULL)
+		head = &disk_dump_partitions;
+	else
+		head = &prev_dump_part->part_list;
 redo:
 	/*
 	 * Select a sane polling driver.
 	 */
-	list_for_each_entry(dump_device, &disk_dump_devices, list) {
+	list_for_each(list, head) {
 		sanity = 0;
+		if (list == &disk_dump_partitions)
+			break;
+		dump_part = container_of(list, struct disk_dump_partition, part_list);
+		dump_device = dump_part->device;
 		if (dump_device->ops.sanity_check)
 			sanity = dump_device->ops.sanity_check(dump_device);
 		if (sanity < 0 || (sanity > 0 && strict_check))
 			continue;
-		list_for_each_entry(dump_part, &dump_device->partitions, list)
-				return dump_part;
+
+		return dump_part;
 	}
+
 	if (allow_risky_dumps && strict_check) {
 		strict_check = 0;
 		goto redo;
@@ -756,10 +902,11 @@ done:
 static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 {
 	struct pt_regs myregs;
-	unsigned int max_written_blocks, written_blocks;
+	unsigned int max_written_blocks;
 	struct disk_dump_device *dump_device = NULL;
 	struct disk_dump_partition *dump_part = NULL;
-	int ret;
+	int ret, short_area;
+	char name[BDEVNAME_SIZE];
 
 	dump_err = -EIO;
 
@@ -775,52 +922,80 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 
 	diskdump_setup_timestamp();
 
-	platform_fix_regs();
-
-	if (list_empty(&disk_dump_devices)) {
-		Err("adapter driver is not registered.");
-		goto done;
-	}
-
-	printk("start dumping\n");
-
-	if (!(dump_part = select_dump_partition())) {
-		Err("No sane dump device found");
-		goto done;
-	}
-	dump_device = dump_part->device;
-
 	/*
-	 * Stop ongoing I/O with polling driver and make the shift to I/O mode
-	 * for dump
+	 * The common header
 	 */
-	Dbg("do quiesce");
-	if (dump_device->ops.quiesce)
-		if ((ret = dump_device->ops.quiesce(dump_device)) < 0) {
-			Err("quiesce failed. error %d", ret);
-			goto done;
-		}
+	memcpy(dump_header.signature, DISK_DUMP_SIGNATURE,
+	       sizeof(dump_header.signature));
+	dump_header.utsname	     = system_utsname;
+	dump_header.timestamp	     = xtime;
+	dump_header.block_size	     = PAGE_SIZE;
+	dump_header.sub_hdr_size     = size_of_sub_header();
+	dump_header.max_mapnr	     = max_pfn;
+	dump_header.total_ram_blocks = total_ram_blocks;
+	dump_header.current_cpu	     = smp_processor_id();
+	dump_header.nr_cpus	     = num_online_cpus();
+
+	platform_fix_regs();
 
 	if ((dump_level & DUMP_EXCLUDE_FREE) && diskdump_mark_free_pages() < 0)
 		/*
 		 * The free page list is broken.
 		 * Free pages will be dumped.
 		 */
-		dump_level &= ~DUMP_EXCLUDE_FREE;
+		free_list_is_valid = 0;
 
 	/* Prepare for compression */
 	if ((compress_buffer == NULL) || (deflate_workspace == NULL))
 		compress = 0;
+
+	/* partial dump requires an extra bitmap */
+	if (!strict_size_check())
+		bitmap_blocks <<= 1;
+
+
+retry:
+	short_area = 0;
+	dump_bitmap.bit     = 0;
+	dump_bitmap.byte    = 0;
+	dump_bitmap.flushed = 0;
+	rewrite_header = 0;
+
+	if (!(dump_part = select_dump_partition(dump_part))) {
+		Err("No more dump device found");
+		diskdump_shutdown();
+		return;
+	}
+
+	dump_device = dump_part->device;
+	dump_device->need_shutdown = 1;
+
+	printk("start dumping to %s\n", bdevname(dump_part->bdev, name));
+
+	/*
+	 * Stop ongoing I/O with polling driver and make the shift to I/O mode
+	 * for dump
+	 */
+	Dbg("do quiesce");
+	if (dump_device->quiesce_done) {
+		if (dump_device->quiesce_result < 0)
+			goto retry;
+	} else if (dump_device->ops.quiesce) {
+		dump_device->quiesce_done = 1;
+		ret = dump_device->ops.quiesce(dump_device);
+		dump_device->quiesce_result = ret;
+		if (ret< 0) {
+			Err("quiesce failed. error %d", ret);
+			goto retry;
+		}
+	}
+
 	if (compress)
 		curr_buf = dump_buf = compress_buffer;
 
-	/* partial dump requires an extra bitmap */
-	if (dump_level)		
-		bitmap_blocks <<= 1;
-
 	if (SECTOR_BLOCK(dump_part->nr_sects) < header_blocks + bitmap_blocks) {
 		Warn("dump partition is too small. Aborted");
-		goto done;
+		goto retry;
 	}
 
 	/* Check dump partition */
@@ -828,30 +1003,23 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 	if (!check_swap_partition(dump_part, total_blocks) &&
 	    !check_dump_partition(dump_part, total_blocks)) {
 		Err("check partition failed.");
-		goto done;
+		goto retry;
 	}
 
 	/*
 	 * Write the common header
 	 */
-	memcpy(dump_header.signature, DISK_DUMP_SIGNATURE,
-	       sizeof(dump_header.signature));
-	dump_header.utsname	     = system_utsname;
-	dump_header.timestamp	     = xtime;
 	dump_header.status	     = DUMP_HEADER_INCOMPLETED;
 	if (compress)
 		dump_header.status   |= DUMP_HEADER_COMPRESSED;
-	dump_header.block_size	     = PAGE_SIZE;
-	dump_header.sub_hdr_size     = size_of_sub_header();
 	dump_header.bitmap_blocks    = bitmap_blocks;
-	dump_header.max_mapnr	     = max_pfn;
-	dump_header.total_ram_blocks = total_ram_blocks;
 	dump_header.device_blocks    = SECTOR_BLOCK(dump_part->nr_sects);
-	dump_header.current_cpu	     = smp_processor_id();
-	dump_header.nr_cpus	     = num_online_cpus();
 	dump_header.written_blocks   = 2;
 
-	write_header(dump_part);
+	if ((ret = write_header(dump_part)) < 0) {
+		Err("writing header failed. error %d", ret);
+		goto retry;
+	}
 
 	/*
 	 * Write the architecture dependent header
@@ -859,26 +1027,30 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 	Dbg("write sub header");
 	if ((ret = write_sub_header()) < 0) {
 		Err("writing sub header failed. error %d", ret);
-		goto done;
+		goto retry;
 	}
 
 	Dbg("writing memory bitmaps..");
 	if ((ret = write_bitmap(dump_part, header_blocks, ram_bitmap_blocks)) < 0)
-		goto done;
+		goto retry;
 
 	max_written_blocks = total_ram_blocks;
 	if (strict_size_check() && dump_header.device_blocks < total_blocks) {
 		Warn("dump partition is too small. actual blocks %u. expected blocks %u. whole memory will not be saved",
 				dump_header.device_blocks, total_blocks);
 		max_written_blocks -= (total_blocks - dump_header.device_blocks);
+		short_area = 1;
 	}
 
 	/* Set start block of the second bitmap */
-	bitmap_index = header_blocks + ram_bitmap_blocks;
+	dump_bitmap.index = header_blocks + ram_bitmap_blocks;
 
 	dump_header.written_blocks += dump_header.sub_hdr_size;
 	dump_header.written_blocks += dump_header.bitmap_blocks;
-	write_header(dump_part);
+	if ((ret = write_header(dump_part)) < 0) {
+		Err("writing header failed. error %d", ret);
+		goto retry;
+	}
 
 	printk("dumping memory");
 	if (dump_level)
@@ -886,28 +1058,38 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 	printk("..\n");
 	ret = write_memory(dump_part, header_blocks + bitmap_blocks,
 			   max_written_blocks,
-			   dump_header.device_blocks - dump_header.written_blocks,
-			   &written_blocks);
+			   dump_header.device_blocks - dump_header.written_blocks);
 
 	/*
 	 * Set the number of block that is written into and write it
 	 * into partition again.
 	 */
-	dump_header.written_blocks += written_blocks;
-	if (!ret) {
-		dump_header.status = DUMP_HEADER_COMPLETED;
-		if (compress)
-			dump_header.status |= DUMP_HEADER_COMPRESSED;
+	if (ret < 0) {
+		Err("writing memory failed. error %d", ret);
+		goto retry;
 	}
-	write_header(dump_part);
+
+	if (!strict_size_check()) { /* ret = 0 or 1. */
+		if (!ret)
+			dump_header.status = DUMP_HEADER_COMPLETED;
+		else
+			dump_header.status = DUMP_HEADER_SHORT_AREA;
+	} else { /* ret = 0. */
+		if (!short_area)
+			dump_header.status = DUMP_HEADER_COMPLETED;
+		else
+			dump_header.status = DUMP_HEADER_INCOMPLETED;
+	}
+	if (compress)
+		dump_header.status |= DUMP_HEADER_COMPRESSED;
+	if ((ret = write_header(dump_part)) < 0) {
+		Err("writing header failed. error %d", ret);
+		goto retry;
+	}
 
 	dump_err = 0;
 
-done:
-	Dbg("do adapter shutdown.");
-	if (dump_device && dump_device->ops.shutdown)
-		if (dump_device->ops.shutdown(dump_device))
-			Err("adapter shutdown failed.");
+	diskdump_shutdown();
 }
 
 static struct disk_dump_partition *find_dump_partition(struct block_device *bdev)
@@ -927,7 +1109,7 @@ static struct disk_dump_device *find_dump_device(struct disk_dump_device *device
 	struct disk_dump_device *dump_device;
 
 	list_for_each_entry(dump_device, &disk_dump_devices, list)
-		if (device->device == dump_device->device)
+		if (device == dump_device->device)
 			return  dump_device;
 	return NULL;
 }
@@ -972,7 +1154,8 @@ static int add_dump_partition(struct disk_dump_device *dump_device,
 		Warn("%s is too small to save whole system memory\n",
 			bdevname(bdev, buffer));
 
-	list_add(&dump_part->list, &dump_device->partitions);
+	list_add_tail(&dump_part->list, &dump_device->partitions);
+	list_add_tail(&dump_part->part_list, &disk_dump_partitions);
 
 	return 0;
 }
@@ -1022,13 +1205,16 @@ static int add_dump(struct device *dev, struct block_device *bdev)
 			blkdev_put(bdev);
 			return ret;
 		}
-		if (!try_module_get(dump_type->owner))
+		if (!try_module_get(dump_type->owner)) {
+			kfree(dump_device);
+			blkdev_put(bdev);
 			return -EINVAL;
-		list_add(&dump_device->list, &disk_dump_devices);
+		}
+		list_add_tail(&dump_device->list, &disk_dump_devices);
 	}
 
 	ret = add_dump_partition(dump_device, bdev);
-	if (ret < 0 && list_empty(&dump_device->list)) {
+	if (ret < 0 && list_empty(&dump_device->partitions)) {
 		dump_type->remove_device(dump_device);
 		module_put(dump_type->owner);
 		list_del(&dump_device->list);
@@ -1058,6 +1244,7 @@ static int remove_dump(struct block_device *bdev)
 	blkdev_put(bdev);
 	dump_device = dump_part->device;
 	list_del(&dump_part->list);
+	list_del(&dump_part->part_list);
 	kfree(dump_part);
 
 	if (list_empty(&dump_device->partitions)) {
@@ -1075,14 +1262,12 @@ static int remove_dump(struct block_device *bdev)
 static struct disk_dump_partition *dump_part_by_pos(struct seq_file *seq,
 						    loff_t pos)
 {
-	struct disk_dump_device *dump_device;
 	struct disk_dump_partition *dump_part;
 
-	list_for_each_entry(dump_device, &disk_dump_devices, list) {
-		seq->private = dump_device;
-		list_for_each_entry(dump_part, &dump_device->partitions, list)
-			if (!pos--)
-				return dump_part;
+	list_for_each_entry(dump_part, &disk_dump_partitions, part_list) {
+		seq->private = dump_part;
+		if (!pos--)
+			return dump_part;
 	}
 	return NULL;
 }
@@ -1101,28 +1286,16 @@ static void *disk_dump_seq_start(struct seq_file *seq, loff_t *pos)
 
 static void *disk_dump_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
-	struct list_head *partition = v;
-	struct list_head *device = seq->private;
-	struct disk_dump_device *dump_device;
+	struct disk_dump_partition *partition = v;
 
 	(*pos)++;
 	if (v == (void *)1)
 		return dump_part_by_pos(seq, 0);
 
-	dump_device = list_entry(device, struct disk_dump_device, list);
-
-	partition = partition->next;
-	if (partition != &dump_device->partitions)
-		return partition;
-
-	device = device->next;
-	seq->private = device;
-	if (device == &disk_dump_devices)
+	if (partition->part_list.next == &disk_dump_partitions)
 		return NULL;
-
-	dump_device = list_entry(device, struct disk_dump_device, list);
-
-	return dump_device->partitions.next;
+	else
+		return NEXT_PART(partition);
 }
 
 static void disk_dump_seq_stop(struct seq_file *seq, void *v)
@@ -1214,6 +1387,9 @@ int register_disk_dump_type(struct disk_dump_type *dump_type)
 	down(&disk_dump_mutex);
 	list_add(&dump_type->list, &disk_dump_types);
 	set_crc_modules();
+	list_for_each_entry(dump_type, &disk_dump_types, list)
+		if (dump_type->compute_cksum)
+			dump_type->compute_cksum();
 	up(&disk_dump_mutex);
 
 	return 0;
@@ -1356,8 +1532,8 @@ static int diskdump_compress_page(char *addr, struct page *page)
 }
 
 /*
- * return 0  : continue
- *        <0 : error
+ * return >= 0 : continue
+ *        < 0  : error
  */
 static int diskdump_compress_write(struct disk_dump_partition *dump_part,
 				   int *offset, unsigned int *blocks,
@@ -1371,7 +1547,7 @@ static int diskdump_compress_write(struct disk_dump_partition *dump_part,
 	}
 
 	if (size < DUMP_BUFFER_SIZE)
-		return 0;
+		return size;
 
 	ret = write_blocks(dump_part, *offset, dump_buf, NR_BUFFER_PAGES);
 	remain = size - DUMP_BUFFER_SIZE;
@@ -1381,11 +1557,17 @@ static int diskdump_compress_write(struct disk_dump_partition *dump_part,
 	}
 	*offset += NR_BUFFER_PAGES;
 	*blocks += NR_BUFFER_PAGES;
+	dump_header.written_blocks += NR_BUFFER_PAGES;
+	if (dump_bitmap.flushed) {
+		rewrite_header = 1;
+		dump_bitmap.flushed = 0;
+	}
+
 	if (remain)
 		memcpy(dump_buf, dump_buf + DUMP_BUFFER_SIZE, remain);
 
 	curr_buf = dump_buf + remain;
-	return 0;
+	return remain;
 }
 
 static int diskdump_compress_flush(struct disk_dump_partition *dump_part,
@@ -1395,10 +1577,6 @@ static int diskdump_compress_flush(struct disk_dump_partition *dump_part,
 	int size = curr_buf - dump_buf;
 
 	len = (size + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
-	/*
-	 * Even if len >= DUMP_BUFFER_SIZE, no data is broken
-	 * because size of dump_buf == DUMP_BUFFER_SIZE + PAGE_SIZE*2.
-	 */
 	memset(curr_buf, 'm', len - size);
 
 	ret = write_blocks(dump_part, offset, dump_buf, len >> PAGE_SHIFT);
@@ -1406,6 +1584,7 @@ static int diskdump_compress_flush(struct disk_dump_partition *dump_part,
 		Err("I/O error %d on block %u", ret, offset);
 		return -1;
 	}
+	dump_header.written_blocks += len >> PAGE_SHIFT;
 	*blocks += len >> PAGE_SHIFT;
 	return 0;
 }
@@ -1502,20 +1681,20 @@ static int init_diskdump(void)
 		free_pages((unsigned long)scratch, block_order);
 		return -1;
 	}
-	bitmap = page_address(page);
-	memset(bitmap, 0, PAGE_SIZE);
+	dump_bitmap.map = page_address(page);
+	memset(dump_bitmap.map, 0, PAGE_SIZE);
 
 	if (diskdump_register_hook(start_disk_dump)) {
 		Err("failed to register hooks.");
 		free_pages((unsigned long)scratch, block_order);
-		free_pages((unsigned long)bitmap, 0);
+		free_pages((unsigned long)dump_bitmap.map, 0);
 		return -1;
 	}
 
 	if (diskdump_register_ops(&dump_ops)) {
 		Err("failed to register ops.");
 		free_pages((unsigned long)scratch, block_order);
-		free_pages((unsigned long)bitmap, 0);
+		free_pages((unsigned long)dump_bitmap.map, 0);
 		return -1;
 	}
 
@@ -1556,7 +1735,7 @@ static void cleanup_diskdump(void)
 	diskdump_unregister_ops();
 	platform_cleanup_stack(diskdump_stack);
 	free_pages((unsigned long)scratch, block_order);
-	free_pages((unsigned long)bitmap, 0);
+	free_pages((unsigned long)dump_bitmap.map, 0);
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("diskdump", NULL);
 #endif

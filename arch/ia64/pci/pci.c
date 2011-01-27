@@ -46,6 +46,8 @@
 #define DBG(x...)
 #endif
 
+static int pci_routeirq = 1;
+
 /*
  * Low-level SAL-based PCI configuration access functions. Note that SAL
  * calls are already serialized (via sal_lock), so we don't need another
@@ -141,13 +143,16 @@ extern acpi_status acpi_map_iosapic (acpi_handle, u32, void*, void**);
 
 	acpi_get_devices(NULL, acpi_map_iosapic, NULL, NULL);
 #endif
-	/*
-	 * PCI IRQ routing is set up by pci_enable_device(), but we
-	 * also do it here in case there are still broken drivers that
-	 * don't use pci_enable_device().
-	 */
-	while ((dev = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL)
-		acpi_pci_irq_enable(dev);
+
+	if (pci_routeirq) {
+		/*
+		 * PCI IRQ routing is set up by pci_enable_device(), but we
+		 * also do it here in case there are still broken drivers that
+		 * don't use pci_enable_device().
+		 */
+		while ((dev = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL)
+			acpi_pci_irq_enable(dev);
+	}
 
 	return 0;
 }
@@ -443,6 +448,8 @@ pcibios_align_resource (void *data, struct resource *res,
 char * __init
 pcibios_setup (char *str)
 {
+	if (!strcmp(str, "norouteirq"))
+		pci_routeirq = 0;
 	return NULL;
 }
 

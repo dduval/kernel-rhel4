@@ -56,6 +56,7 @@ struct hw_interrupt_type;
 #define CALL_FUNCTION_VECTOR	0xfa
 #define KDB_VECTOR	0xf9
 
+#define THRESHOLD_APIC_VECTOR   0xf1
 #define THERMAL_APIC_VECTOR	0xf0
 
 

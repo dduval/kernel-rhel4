@@ -281,7 +281,10 @@ void __init init_memory_mapping(void)
 	pmds = (end + PMD_SIZE - 1) >> PMD_SHIFT; 
 	tables = round_up(pgds*8, PAGE_SIZE) + round_up(pmds * 8, PAGE_SIZE); 
 
-	table_start = find_e820_area(0x8000, __pa_symbol(&_text), tables); 
+ 	/* RED-PEN putting page tables only on node 0 could
+ 	   cause a hotspot and fill up ZONE_DMA. The page tables
+ 	   need roughly 0.5KB per GB. */
+	table_start = find_e820_area(0x8000, end, tables); 
 	if (table_start == -1UL) 
 		panic("Cannot find space for the kernel page tables"); 
 
@@ -676,3 +679,91 @@ int in_gate_area(struct task_struct *task, unsigned long addr)
 	struct vm_area_struct *vma = get_gate_vma(task);
 	return (addr >= vma->vm_start) && (addr < vma->vm_end);
 }
+
+#ifdef CONFIG_MEM_MIRROR
+/*
+ * For memory-tracking purposes, see mm_track.h for details.
+ */
+struct mm_tracker mm_tracking_struct = {0, ATOMIC_INIT(0), 0, 0};
+EXPORT_SYMBOL_GPL(mm_tracking_struct);
+
+void default_mm_track_pte(void * val)
+{
+	pte_t *ptep = (pte_t*)val;
+	unsigned long pfn;
+
+	if (!pte_present(*ptep))
+		return;
+
+	pfn = pte_pfn(*ptep);
+
+	if (pfn >= mm_tracking_struct.bitcnt)
+		return;
+
+	if (!test_and_set_bit(pfn, mm_tracking_struct.vector))
+		atomic_inc(&mm_tracking_struct.count);
+}
+
+#define LARGE_PMD_SIZE	(1 << PMD_SHIFT)
+
+void default_mm_track_pmd(void *val)
+{
+	int i;
+	pte_t *pte;
+	pmd_t *pmd = (pmd_t*)val;
+
+	if (!pmd_present(*pmd))
+		return;
+
+	if (unlikely(pmd_large(*pmd))) {
+		unsigned long addr = pte_pfn(*(pte_t*)val) << PAGE_SHIFT;
+		unsigned long end = addr + LARGE_PMD_SIZE;
+		while (addr < end) {
+			do_mm_track_phys((void*)addr);
+			addr +=  PAGE_SIZE;
+		}
+		return;
+	}
+
+	pte = pte_offset_kernel(pmd, 0);
+
+	for (i = 0; i < PTRS_PER_PTE; i++, pte++)
+		do_mm_track_pte(pte);
+}
+
+void default_mm_track_pgd(void *val)
+{
+	do_mm_track_pte((pte_t*)val);
+}
+
+void default_mm_track_pml4(void *val)
+{
+	do_mm_track_pte((pte_t*)val);
+}
+
+void default_mm_track_phys(void *val)
+{
+	unsigned long pfn;
+
+	pfn = (unsigned long)val >> PAGE_SHIFT;
+
+	if (pfn >= mm_tracking_struct.bitcnt)
+		return;
+
+	if (!test_and_set_bit(pfn, mm_tracking_struct.vector))
+		atomic_inc(&mm_tracking_struct.count);
+}
+
+void (*do_mm_track_pte)(void *) = default_mm_track_pte;
+void (*do_mm_track_pmd)(void *) = default_mm_track_pmd;
+void (*do_mm_track_pgd)(void *) = default_mm_track_pgd;
+void (*do_mm_track_pml4)(void *) = default_mm_track_pml4;
+void (*do_mm_track_phys)(void *) = default_mm_track_phys;
+
+EXPORT_SYMBOL_GPL(do_mm_track_pte);
+EXPORT_SYMBOL_GPL(do_mm_track_pmd);
+EXPORT_SYMBOL_GPL(do_mm_track_pgd);
+EXPORT_SYMBOL_GPL(do_mm_track_pml4);
+EXPORT_SYMBOL_GPL(do_mm_track_phys);
+
+#endif

@@ -2426,6 +2426,7 @@ static int update_array_info(mddev_t *mddev, mdu_array_info_t *info)
 	if (mddev->size != info->size) {
 		mdk_rdev_t * rdev;
 		struct list_head *tmp;
+		int fit = (info->size == 0);
 		if (mddev->pers->resize == NULL)
 			return -EINVAL;
 		/* The "size" is the amount of each device that is used.
@@ -2442,7 +2443,6 @@ static int update_array_info(mddev_t *mddev, mdu_array_info_t *info)
 			return -EBUSY;
 		ITERATE_RDEV(mddev,rdev,tmp) {
 			sector_t avail;
-			int fit = (info->size == 0);
 			if (rdev->sb_offset > rdev->data_offset)
 				avail = (rdev->sb_offset*2) - rdev->data_offset;
 			else
@@ -3350,6 +3350,8 @@ static void md_do_sync(mddev_t *mddev)
 							     mddev2->curr_resync < mddev->curr_resync)) {
 					flush_signals(current);
 					mddev_put(mddev2);
+					set_bit(MD_RECOVERY_INTR,
+						&mddev->recovery);
 					goto skip;
 				}
 			}

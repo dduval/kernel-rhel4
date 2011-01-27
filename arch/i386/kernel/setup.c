@@ -40,6 +40,8 @@
 #include <linux/init.h>
 #include <linux/edd.h>
 #include <video/edid.h>
+
+#include <asm/apic.h>
 #include <asm/e820.h>
 #include <asm/mpspec.h>
 #include <asm/setup.h>
@@ -120,6 +122,7 @@ extern void early_cpu_init(void);
 extern void dmi_scan_machine(void);
 extern void generic_apic_probe(char *);
 extern int root_mountflags;
+extern int disable_timer_pin_1;
 
 unsigned long saved_videomode;
 
@@ -354,14 +357,24 @@ static void __init limit_regions(unsigned long long size)
 		}
 	}
 	for (i = 0; i < e820.nr_map; i++) {
-		if (e820.map[i].type == E820_RAM) {
-			current_addr = e820.map[i].addr + e820.map[i].size;
-			if (current_addr >= size) {
-				e820.map[i].size -= current_addr-size;
-				e820.nr_map = i + 1;
-				return;
-			}
+		current_addr = e820.map[i].addr + e820.map[i].size;
+		if (current_addr < size)
+			continue;
+
+		if (e820.map[i].type != E820_RAM)
+			continue;
+
+		if (e820.map[i].addr >= size) {
+			/*
+			 * This region starts past the end of the
+			 * requested size, skip it completely.
+			 */
+			e820.nr_map = i;
+		} else {
+			e820.nr_map = i + 1;
+			e820.map[i].size -= current_addr - size;
 		}
+		return;
 	}
 }
 
@@ -824,14 +837,22 @@ static void __init parse_cmdline_early (char ** cmdline_p)
 #ifdef CONFIG_X86_IO_APIC
 		else if (!memcmp(from, "acpi_skip_timer_override", 24))
 			acpi_skip_timer_override = 1;
-#endif
-
-#ifdef CONFIG_X86_LOCAL_APIC
 		/* disable IO-APIC */
 		else if (!memcmp(from, "noapic", 6))
 			disable_ioapic_setup();
+#endif
+
+#ifdef CONFIG_X86_LOCAL_APIC
+		/* enable Local APIC */
+		else if (!memcmp(from, "lapic", 5))
+			lapic_enable();
+		/* disable Local APIC */
+		else if (!memcmp(from, "nolapic", 6))
+			lapic_disable();
 #endif /* CONFIG_X86_LOCAL_APIC */
 #endif /* CONFIG_ACPI_BOOT */
+		else if (!memcmp(from, "disable_timer_pin_1", 19))
+			disable_timer_pin_1 = 1;
 
 		/*
 		 * highmem=size forces highmem to be exactly 'size' bytes.
@@ -1182,9 +1203,10 @@ legacy_init_iomem_resources(struct resource *code_resource, struct resource *dat
 /*
  * Request address space for all standard resources
  */
-static void __init register_memory(unsigned long max_low_pfn)
+static void __init register_memory(void)
 {
-	unsigned long low_mem_size;
+	unsigned long gapstart, gapsize, round;
+	unsigned long long last;
 	int	      i;
 
 	if (efi_enabled)
@@ -1199,10 +1221,47 @@ static void __init register_memory(unsigned long max_low_pfn)
 	for (i = 0; i < STANDARD_IO_RESOURCES; i++)
 		request_resource(&ioport_resource, &standard_io_resources[i]);
 
-	/* Tell the PCI layer not to allocate too close to the RAM area.. */
-	low_mem_size = ((max_low_pfn << PAGE_SHIFT) + 0xfffff) & ~0xfffff;
-	if (low_mem_size > pci_mem_start)
-		pci_mem_start = low_mem_size;
+	/* 
+	 * Search for the biggest gap in the low 32 bits of the e820
+	 * memory space.
+	 */
+	last = 0x100000000ull;
+	gapstart = 0x10000000;
+	gapsize = 0x400000;
+	i = e820.nr_map;
+	while (--i >= 0) {
+		unsigned long long start = e820.map[i].addr;
+		unsigned long long end = start + e820.map[i].size;
+
+		/* 
+		 *Since "last" is at most 4GB, we know we'll
+		 * fit in 32 bits if this condition is true
+		 */
+
+		if (last > end) {
+			unsigned long gap = last - end;
+
+			if (gap > gapsize) {
+				gapsize = gap;
+				gapstart = end;
+			}
+		}
+		if (start < last)
+			last = start;
+	}
+
+	/*
+	 * Start allocating dynamic PCI memory in the gap.
+	 * See how much we want to round up: start off with
+	 * rounding to the next 1MB area
+	 */
+	round = 0x100000;
+	while ((gapsize >> 4) > round)
+		round += round;
+	pci_mem_start = (gapstart + round) & -round;
+
+	printk("Allocating PCI resources starting at %08lx (gap: %08lx:%08lx)\n",
+		pci_mem_start, gapstart, gapsize);
 }
 
 /* Use inline assembly to define this because the nops are defined 
@@ -1422,6 +1481,7 @@ void __init setup_arch(char **cmdline_p)
 
 
 	dmi_scan_machine();
+	check_ioapic();
 
 #ifdef CONFIG_X86_GENERICARCH
 	generic_apic_probe(*cmdline_p);
@@ -1446,7 +1506,7 @@ void __init setup_arch(char **cmdline_p)
 		get_smp_config();
 #endif
 
-	register_memory(max_low_pfn);
+	register_memory();
 
 #ifdef CONFIG_VT
 #if defined(CONFIG_VGA_CONSOLE)

@@ -1,9 +1,9 @@
 /*
  *  linux/drivers/s390/crypto/z90main.c
  *
- *  z90crypt 1.3.2
+ *  z90crypt 1.3.3
  *
- *  Copyright (C)  2001, 2004 IBM Corporation
+ *  Copyright (C)  2001, 2005 IBM Corporation
  *  Author(s): Robert Burroughs (burrough@us.ibm.com)
  *             Eric Rossman (edrossma@us.ibm.com)
  *
@@ -31,6 +31,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>   // for tasklets
 #include <linux/ioctl32.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/proc_fs.h>
@@ -38,19 +39,8 @@
 #include <linux/version.h>
 #include "z90crypt.h"
 #include "z90common.h"
-#ifndef Z90CRYPT_USE_HOTPLUG
-#include <linux/miscdevice.h>
-#endif
 
-#define VERSION_CODE(vers, rel, seq) (((vers)<<16) | ((rel)<<8) | (seq))
-#if LINUX_VERSION_CODE < VERSION_CODE(2,4,0) /* version < 2.4 */
-#  error "This kernel is too old: not supported"
-#endif
-#if LINUX_VERSION_CODE > VERSION_CODE(2,7,0) /* version > 2.6 */
-#  error "This kernel is too recent: not supported by this file"
-#endif
-
-#define VERSION_Z90MAIN_C "$Revision: 1.57 $"
+#define VERSION_Z90MAIN_C "$Revision: 1.62 $"
 
 static char z90main_version[] __initdata =
 	"z90main.o (" VERSION_Z90MAIN_C "/"
@@ -62,20 +52,11 @@ extern char z90hardware_version[];
  * Defaults that may be modified.
  */
 
-#ifndef Z90CRYPT_USE_HOTPLUG
 /**
  * You can specify a different minor at compile time.
  */
 #ifndef Z90CRYPT_MINOR
 #define Z90CRYPT_MINOR	MISC_DYNAMIC_MINOR
-#endif
-#else
-/**
- * You can specify a different major at compile time.
- */
-#ifndef Z90CRYPT_MAJOR
-#define Z90CRYPT_MAJOR	0
-#endif
 #endif
 
 /**
@@ -96,7 +77,7 @@ extern char z90hardware_version[];
  * older than CLEANUPTIME seconds in the past.
  */
 #ifndef CLEANUPTIME
-#define CLEANUPTIME 20 
+#define CLEANUPTIME 15 
 #endif
 
 /**
@@ -248,7 +229,7 @@ struct device_x {
  */
 struct device {
 	int		 dev_type;	    // PCICA, PCICC, PCIXCC_MCL2,
-					    // PCIXCC_MCL3, CEX2C
+					    // PCIXCC_MCL3, CEX2C, CEX2A
 	enum devstat	 dev_stat;	    // current device status
 	int		 dev_self_x;	    // Index in array
 	int		 disabled;	    // Set when device is in error
@@ -297,6 +278,10 @@ struct z90crypt {
  * it contains the request; at READ, the response. The function
  * send_to_crypto_device converts the request to device-dependent
  * form and use the caller's OPEN-allocated buffer for the response.
+ *
+ * For the contents of caller_dev_dep_req and caller_dev_dep_req_p
+ * because that points to it, see the discussion in z90hardware.c.
+ * Search for "extended request message block".
  */
 struct caller {
 	int		 caller_buf_l;		 // length of original request
@@ -397,24 +382,9 @@ static int z90crypt_status_write(struct file *, const char __user *,
 				 unsigned long, void *);
 
 /**
- * Hotplug support
- */
-
-#ifdef Z90CRYPT_USE_HOTPLUG
-#define Z90CRYPT_HOTPLUG_ADD	 1
-#define Z90CRYPT_HOTPLUG_REMOVE	 2
-
-static void z90crypt_hotplug_event(int, int, int);
-#endif
-
-/**
  * Storage allocated at initialization and used throughout the life of
  * this insmod
  */
-#ifdef Z90CRYPT_USE_HOTPLUG
-static int z90crypt_major = Z90CRYPT_MAJOR;
-#endif
-
 static int domain = DOMAIN_INDEX;
 static struct z90crypt z90crypt;
 static int quiesce_z90crypt;
@@ -440,14 +410,12 @@ static struct file_operations z90crypt_fops = {
 	.release = z90crypt_release
 };
 
-#ifndef Z90CRYPT_USE_HOTPLUG
 static struct miscdevice z90crypt_misc_device = {
 	.minor	    = Z90CRYPT_MINOR,
 	.name	    = DEV_NAME,
 	.fops	    = &z90crypt_fops,
 	.devfs_name = DEV_NAME
 };
-#endif
 
 /**
  * Documentation values.
@@ -455,7 +423,7 @@ static struct miscdevice z90crypt_misc_device = {
 MODULE_AUTHOR("zSeries Linux Crypto Team: Robert H. Burroughs, Eric D. Rossman"
 	      "and Jochen Roehrig");
 MODULE_DESCRIPTION("zSeries Linux Cryptographic Coprocessor device driver, "
-		   "Copyright 2001, 2004 IBM Corporation");
+		   "Copyright 2001, 2005 IBM Corporation");
 MODULE_LICENSE("GPL");
 module_param(domain, int, 0);
 MODULE_PARM_DESC(domain, "domain index for device");
@@ -558,9 +526,10 @@ trans_modexpo_crt32(unsigned int fd, unsigned int cmd, unsigned long arg,
 static int compatible_ioctls[] = {
 	ICAZ90STATUS, Z90QUIESCE, Z90STAT_TOTALCOUNT, Z90STAT_PCICACOUNT,
 	Z90STAT_PCICCCOUNT, Z90STAT_PCIXCCCOUNT, Z90STAT_PCIXCCMCL2COUNT,
-	Z90STAT_PCIXCCMCL3COUNT, Z90STAT_CEX2CCOUNT, Z90STAT_REQUESTQ_COUNT,
-	Z90STAT_PENDINGQ_COUNT, Z90STAT_TOTALOPEN_COUNT, Z90STAT_DOMAIN_INDEX,
-	Z90STAT_STATUS_MASK, Z90STAT_QDEPTH_MASK, Z90STAT_PERDEV_REQCNT,
+	Z90STAT_PCIXCCMCL3COUNT, Z90STAT_CEX2CCOUNT, Z90STAT_CEX2ACOUNT,
+	Z90STAT_REQUESTQ_COUNT, Z90STAT_PENDINGQ_COUNT, Z90STAT_TOTALOPEN_COUNT,
+	Z90STAT_DOMAIN_INDEX, Z90STAT_STATUS_MASK, Z90STAT_QDEPTH_MASK,
+	Z90STAT_PERDEV_REQCNT,
 };
 
 static void z90_unregister_ioctl32s(void)
@@ -634,7 +603,6 @@ z90crypt_init_module(void)
 		return -EINVAL;
 	}
 
-#ifndef Z90CRYPT_USE_HOTPLUG
 	/* Register as misc device with given minor (or get a dynamic one). */
 	result = misc_register(&z90crypt_misc_device);
 	if (result < 0) {
@@ -642,18 +610,6 @@ z90crypt_init_module(void)
 			z90crypt_misc_device.minor, result);
 		return result;
 	}
-#else
-	/* Register the major (or get a dynamic one). */
-	result = register_chrdev(z90crypt_major, REG_NAME, &z90crypt_fops);
-	if (result < 0) {
-		PRINTKW("register_chrdev (major %d) failed with %d.\n",
-			z90crypt_major, result);
-		return result;
-	}
-
-	if (z90crypt_major == 0)
-		z90crypt_major = result;
-#endif
 
 	PDEBUG("Registered " DEV_NAME " with result %d\n", result);
 
@@ -675,11 +631,6 @@ z90crypt_init_module(void)
 		       domain);
 	} else
 		PRINTK("No devices at startup\n");
-
-#ifdef Z90CRYPT_USE_HOTPLUG
-	/* generate hotplug event for device node generation */
-	z90crypt_hotplug_event(z90crypt_major, 0, Z90CRYPT_HOTPLUG_ADD);
-#endif
 
 	/* Initialize globals. */
 	spin_lock_init(&queuespinlock);
@@ -737,17 +688,10 @@ z90crypt_init_module(void)
 init_module_cleanup:
 	z90_unregister_ioctl32s();
 
-#ifndef Z90CRYPT_USE_HOTPLUG
 	if ((nresult = misc_deregister(&z90crypt_misc_device)))
 		PRINTK("misc_deregister failed with %d.\n", nresult);
 	else
 		PDEBUG("misc_deregister successful.\n");
-#else
-	if ((nresult = unregister_chrdev(z90crypt_major, REG_NAME)))
-		PRINTK("unregister_chrdev failed with %d.\n", nresult);
-	else
-		PDEBUG("unregister_chrdev successful.\n");
-#endif
 
 	return result; // failure
 }
@@ -766,19 +710,10 @@ z90crypt_cleanup_module(void)
 
 	remove_proc_entry("driver/z90crypt", 0);
 
-#ifndef Z90CRYPT_USE_HOTPLUG
 	if ((nresult = misc_deregister(&z90crypt_misc_device)))
 		PRINTK("misc_deregister failed with %d.\n", nresult);
 	else
 		PDEBUG("misc_deregister successful.\n");
-#else
-	z90crypt_hotplug_event(z90crypt_major, 0, Z90CRYPT_HOTPLUG_REMOVE);
-
-	if ((nresult = unregister_chrdev(z90crypt_major, REG_NAME)))
-		PRINTK("unregister_chrdev failed with %d.\n", nresult);
-	else
-		PDEBUG("unregister_chrdev successful.\n");
-#endif
 
 	/* Remove the tasks */
 	tasklet_kill(&reader_tasklet);
@@ -966,6 +901,12 @@ get_status_CEX2Ccount(void)
 }
 
 static inline int
+get_status_CEX2Acount(void)
+{
+	return z90crypt.hdware_info->type_mask[CEX2A].st_count;
+}
+
+static inline int
 get_status_requestq_count(void)
 {
 	return requestq_count;
@@ -1098,6 +1039,7 @@ remove_device(struct device *device_p)
  * PCIXCC_MCL2   512-2048     ----- (applying any GA LIC will make an MCL3 card)
  * PCIXCC_MCL3   -----        128-2048
  * CEX2C         512-2048     128-2048
+ * CEX2A          ??-2048     same (the lower limit is less than 128 bit...)
  *
  * ext_bitlens (extended bitlengths) is a global, since you should not apply an
  * MCL to just one card in a machine. We assume, at first, that all cards have
@@ -1114,11 +1056,13 @@ static inline int
 select_device_type(int *dev_type_p, int bytelength)
 {
 	static int count = 0;
-	int PCICA_avail, PCIXCC_MCL3_avail, CEX2C_avail, index_to_use;
+	int PCICA_avail, PCIXCC_MCL3_avail, CEX2C_avail, CEX2A_avail,
+	    index_to_use;
 	struct status *stat;
 	if ((*dev_type_p != PCICC) && (*dev_type_p != PCICA) &&
 	    (*dev_type_p != PCIXCC_MCL2) && (*dev_type_p != PCIXCC_MCL3) &&
-	    (*dev_type_p != CEX2C) && (*dev_type_p != ANYDEV))
+	    (*dev_type_p != CEX2C) && (*dev_type_p != CEX2A) &&
+	    (*dev_type_p != ANYDEV))
 		return -1;
 	if (*dev_type_p != ANYDEV) {
 		stat = &z90crypt.hdware_info->type_mask[*dev_type_p];
@@ -1128,7 +1072,13 @@ select_device_type(int *dev_type_p, int bytelength)
 		return -1;
 	}
 
-	/* Assumption: PCICA, PCIXCC_MCL3, and CEX2C are all similar in speed */
+	/**
+	 * Assumption: PCICA, PCIXCC_MCL3, CEX2C, and CEX2A are all similar in
+	 * speed.
+	 *
+	 * PCICA and CEX2A do NOT co-exist, so it would be either one or the
+	 * other present.
+	 */
 	stat = &z90crypt.hdware_info->type_mask[PCICA];
 	PCICA_avail = stat->st_count -
 			(stat->disabled_count + stat->user_disabled_count);
@@ -1138,29 +1088,38 @@ select_device_type(int *dev_type_p, int bytelength)
 	stat = &z90crypt.hdware_info->type_mask[CEX2C];
 	CEX2C_avail = stat->st_count -
 			(stat->disabled_count + stat->user_disabled_count);
-	if (PCICA_avail || PCIXCC_MCL3_avail || CEX2C_avail) {
+	stat = &z90crypt.hdware_info->type_mask[CEX2A];
+	CEX2A_avail = stat->st_count -
+			(stat->disabled_count + stat->user_disabled_count);
+	if (PCICA_avail || PCIXCC_MCL3_avail || CEX2C_avail || CEX2A_avail) {
 		/**
-		 * bitlength is a factor, PCICA is the most capable, even with
-		 * the new MCL.
+		 * bitlength is a factor, PCICA or CEX2A are the most capable,
+		 * even with the new MCL for PCIXCC.
 		 */
 		if ((bytelength < PCIXCC_MIN_MOD_SIZE) ||
 		    (!ext_bitlens && (bytelength < OLD_PCIXCC_MIN_MOD_SIZE))) {
-			if (!PCICA_avail)
-				return -1;
-			else {
+			if (PCICA_avail) {
 				*dev_type_p = PCICA;
 				return 0;
 			}
+			if (CEX2A_avail) {
+				*dev_type_p = CEX2A;
+				return 0;
+			}
+			return -1;
 		}
 
 		index_to_use = count % (PCICA_avail + PCIXCC_MCL3_avail +
-					CEX2C_avail);
+					CEX2C_avail + CEX2A_avail);
 		if (index_to_use < PCICA_avail)
 			*dev_type_p = PCICA;
 		else if (index_to_use < (PCICA_avail + PCIXCC_MCL3_avail))
 			*dev_type_p = PCIXCC_MCL3;
-		else
+		else if (index_to_use < (PCICA_avail + PCIXCC_MCL3_avail +
+					 CEX2C_avail))
 			*dev_type_p = CEX2C;
+		else
+			*dev_type_p = CEX2A;
 		count++;
 		return 0;
 	}
@@ -1465,7 +1424,7 @@ build_caller(struct work_element *we_p, short function)
 
 	if ((we_p->devtype != PCICC) && (we_p->devtype != PCICA) &&
 	    (we_p->devtype != PCIXCC_MCL2) && (we_p->devtype != PCIXCC_MCL3) &&
-	    (we_p->devtype != CEX2C))
+	    (we_p->devtype != CEX2C) && (we_p->devtype != CEX2A))
 		return SEN_NOT_AVAIL;
 
 	memcpy(caller_p->caller_id, we_p->caller_id,
@@ -1534,7 +1493,8 @@ get_crypto_request_buffer(struct work_element *we_p)
 
 	if ((we_p->devtype != PCICA) && (we_p->devtype != PCICC) &&
 	    (we_p->devtype != PCIXCC_MCL2) && (we_p->devtype != PCIXCC_MCL3) &&
-	    (we_p->devtype != CEX2C) && (we_p->devtype != ANYDEV)) {
+	    (we_p->devtype != CEX2C) && (we_p->devtype != CEX2A) &&
+	    (we_p->devtype != ANYDEV)) {
 		PRINTK("invalid device type\n");
 		return SEN_USER_ERROR;
 	}
@@ -1609,8 +1569,9 @@ get_crypto_request_buffer(struct work_element *we_p)
 
 	function = PCI_FUNC_KEY_ENCRYPT;
 	switch (we_p->devtype) {
-	/* PCICA does everything with a simple RSA mod-expo operation */
+	/* PCICA and CEX2A do everything with a simple RSA mod-expo operation */
 	case PCICA:
+	case CEX2A:
 		function = PCI_FUNC_KEY_ENCRYPT;
 		break;
 	/**
@@ -1768,7 +1729,8 @@ z90crypt_rsa(struct priv_data *private_data_p, pid_t pid,
 		 * trigger a fallback to software.
 		 */
 		case -EINVAL:
-			if (we_p->devtype != PCICA)
+			if ((we_p->devtype != PCICA) &&
+			    (we_p->devtype != CEX2A))
 				rv = -EGETBUFF;
 			break;
 		case -ETIMEOUT:
@@ -1882,6 +1844,12 @@ z90crypt_ioctl(struct inode *inode, struct file *filp,
 
 	case Z90STAT_CEX2CCOUNT:
 		tempstat = get_status_CEX2Ccount();
+		if (copy_to_user((int __user *)arg, &tempstat, sizeof(int)) != 0)
+			ret = -EFAULT;
+		break;
+
+	case Z90STAT_CEX2ACOUNT:
+		tempstat = get_status_CEX2Acount();
 		if (copy_to_user((int __user *)arg, &tempstat, sizeof(int)) != 0)
 			ret = -EFAULT;
 		break;
@@ -2126,6 +2094,8 @@ z90crypt_status(char *resp_buff, char **start, off_t offset,
 		get_status_PCIXCCMCL3count());
 	len += sprintf(resp_buff+len, "CEX2C count: %d\n",
 		get_status_CEX2Ccount());
+	len += sprintf(resp_buff+len, "CEX2A count: %d\n",
+		get_status_CEX2Acount());
 	len += sprintf(resp_buff+len, "requestq count: %d\n",
 		get_status_requestq_count());
 	len += sprintf(resp_buff+len, "pendingq count: %d\n",
@@ -2133,8 +2103,8 @@ z90crypt_status(char *resp_buff, char **start, off_t offset,
 	len += sprintf(resp_buff+len, "Total open handles: %d\n\n",
 		get_status_totalopen_count());
 	len += sprinthx(
-		"Online devices: 1: PCICA, 2: PCICC, 3: PCIXCC (MCL2), "
-		"4: PCIXCC (MCL3), 5: CEX2C",
+		"Online devices: 1=PCICA 2=PCICC 3=PCIXCC(MCL2) "
+		"4=PCIXCC(MCL3) 5=CEX2C 6=CEX2A",
 		resp_buff+len,
 		get_status_status_mask(workarea),
 		Z90CRYPT_NUM_APS);
@@ -2241,12 +2211,13 @@ z90crypt_status_write(struct file *file, const char __user *buffer,
 		default:
 			eol = 1;
 			break;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
+		case '0':	// no device
+		case '1':	// PCICA
+		case '2':	// PCICC
+		case '3':	// PCIXCC_MCL2
+		case '4':	// PCIXCC_MCL3
+		case '5':	// CEX2C
+		case '6':       // CEX2A
 			j++;
 			break;
 		case 'd':
@@ -3114,7 +3085,9 @@ create_crypto_device(int index)
 			z90crypt.hdware_info->device_type_array[index] = 4;
 		else if (deviceType == CEX2C)
 			z90crypt.hdware_info->device_type_array[index] = 5;
-		else
+		else if (deviceType == CEX2A)
+			z90crypt.hdware_info->device_type_array[index] = 6;
+		else // No idea how this would happen.
 			z90crypt.hdware_info->device_type_array[index] = -1;
 	}
 
@@ -3362,7 +3335,7 @@ probe_PCIXCC_type(struct device *devPtr)
 {
 	int rv, dv, i, index, length;
 	unsigned char psmid[8];
-	static unsigned char loc_testmsg[548];
+	static unsigned char loc_testmsg[sizeof(MCL3_testmsg)];
 	struct CPRBX *cprbx_p;
 
 	index = devPtr->dev_self_x;
@@ -3456,46 +3429,6 @@ probe_PCIXCC_type(struct device *devPtr)
 	/* In a general error case, the card is not marked online */
 	return rv;
 }
-
-#ifdef Z90CRYPT_USE_HOTPLUG
-static void
-z90crypt_hotplug_event(int dev_major, int dev_minor, int action)
-{
-#ifdef CONFIG_HOTPLUG
-	char *argv[3];
-	char *envp[6];
-	char  major[20];
-	char  minor[20];
-
-	sprintf(major, "MAJOR=%d", dev_major);
-	sprintf(minor, "MINOR=%d", dev_minor);
-
-	argv[0] = hotplug_path;
-	argv[1] = "z90crypt";
-	argv[2] = 0;
-
-	envp[0] = "HOME=/";
-	envp[1] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
-
-	switch (action) {
-	case Z90CRYPT_HOTPLUG_ADD:
-		envp[2] = "ACTION=add";
-		break;
-	case Z90CRYPT_HOTPLUG_REMOVE:
-		envp[2] = "ACTION=remove";
-		break;
-	default:
-		BUG();
-		break;
-	}
-	envp[3] = major;
-	envp[4] = minor;
-	envp[5] = 0;
-
-	call_usermodehelper(argv[0], argv, envp, 0);
-#endif
-}
-#endif
 
 module_init(z90crypt_init_module);
 module_exit(z90crypt_cleanup_module);

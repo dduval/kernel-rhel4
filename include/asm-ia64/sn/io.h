@@ -11,12 +11,10 @@
 #include <linux/compiler.h>
 #include <asm/intrinsics.h>
 
-#define __force
-
 extern void * sn_io_addr(unsigned long port) __attribute_const__; /* Forward definition */
 extern void __sn_mmiowb(void); /* Forward definition */
 
-extern int numionodes;
+extern int num_cnodes;
 
 #define __sn_mf_a()   ia64_mfa()
 
@@ -36,6 +34,15 @@ extern void sn_dma_flush(unsigned long);
 #define __sn_readw_relaxed ___sn_readw_relaxed
 #define __sn_readl_relaxed ___sn_readl_relaxed
 #define __sn_readq_relaxed ___sn_readq_relaxed
+
+/*
+ * Convenience macros for setting/clearing bits using the above accessors
+ */
+
+#define __sn_setq_relaxed(addr, val) \
+	writeq((__sn_readq_relaxed(addr) | (val)), (addr))
+#define __sn_clrq_relaxed(addr, val) \
+	writeq((__sn_readq_relaxed(addr) & ~(val)), (addr))
 
 /*
  * The following routines are SN Platform specific, called when

@@ -122,7 +122,7 @@ struct iscsi_session {
 	/*
 	 * various accounting sutff
 	 */
-
+	char			has_logged_in;
 	/*
 	 * *_time fields used to detect sessions that die as soo
 	 * as we hit FF
@@ -260,5 +260,6 @@ extern int iscsi_wait_for_session(struct iscsi_session *session,
 extern void iscsi_mod_session_timer(struct iscsi_session *session, int timeout);
 
 extern struct list_head iscsi_sessions;
+extern int iscsi_max_initial_login_retries;
 
 #endif

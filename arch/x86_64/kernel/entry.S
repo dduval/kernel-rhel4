@@ -538,6 +538,9 @@ retint_kernel:
 	CFI_ENDPROC
 	.endm
 
+ENTRY(threshold_interrupt)
+        apicinterrupt THRESHOLD_APIC_VECTOR,mce_threshold_interrupt
+		
 #ifdef CONFIG_SMP	
 ENTRY(reschedule_interrupt)
 	apicinterrupt RESCHEDULE_VECTOR,smp_reschedule_interrupt

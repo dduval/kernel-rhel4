@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsi.h 1.71.1.3 2005/06/21 15:48:51EDT sf_support Exp  $
+ * $Id: lpfc_scsi.h 2905 2006-04-13 17:11:39Z sf_support $
  */
 
 #ifndef _H_LPFC_SCSI
@@ -31,6 +31,9 @@
 
 struct lpfc_hba;
 
+#define lpfc_list_first_entry(pos, head, member)                \
+	(pos = ((list_empty(head)) ? NULL :                     \
+		list_entry((head)->next, typeof(*pos), member)))
 
 struct lpfc_target {
 	struct lpfc_nodelist *pnode;	/* Pointer to the node structure. */
@@ -49,6 +52,8 @@ struct lpfc_target {
 #ifdef SLES_FC
 	struct timer_list dev_loss_timer;
 #endif
+	unsigned long last_ramp_up_time;
+	unsigned long last_q_full_time;
 };
 
 struct lpfc_scsi_buf {
@@ -89,5 +94,14 @@ struct lpfc_scsi_buf {
 #define LPFC_BPL_SIZE          1024
 
 #define MDAC_DIRECT_CMD                  0x22
+
+#if defined(RHEL_FC) && defined(DISKDUMP_FC)
+#include <linux/diskdump.h>
+#define LPFC_MDELAY(n)				diskdump_mdelay(n)
+#else
+#define LPFC_MDELAY(n)				mdelay(n)
+#define spin_unlock_irq_dump(host_lock)		spin_unlock_irq(host_lock)
+#endif
+
 
 #endif				/* _H_LPFC_SCSI */

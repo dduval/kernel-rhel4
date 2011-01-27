@@ -1249,10 +1249,9 @@ int fcntl_setlease(unsigned int fd, struct file *filp, long arg)
 
 	time_out_leases(inode);
 
-	/*
-	 * FIXME: What about F_RDLCK and files open for writing?
-	 */
 	error = -EAGAIN;
+	if ((arg == F_RDLCK) && (atomic_read(&inode->i_writecount) > 0))
+		goto out_unlock;
 	if ((arg == F_WRLCK)
 	    && ((atomic_read(&dentry->d_count) > 1)
 		|| (atomic_read(&inode->i_count) > 1)))

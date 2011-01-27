@@ -73,6 +73,9 @@ rpc_getport(struct rpc_task *task, struct rpc_clnt *clnt)
 		task->tk_status = PTR_ERR(pmap_clnt);
 		goto bailout;
 	}
+	/* use the soft setting from the orignal clnt */
+	pmap_clnt->cl_softrtry = clnt->cl_softrtry;
+
 	/* Don't need reserved ports to get ports from portmappers */
 	pmap_clnt->cl_xprt->resvport = 0;
 	task->tk_status = 0;
@@ -139,15 +142,15 @@ pmap_getport_done(struct rpc_task *task)
 	struct rpc_clnt	*clnt = task->tk_client;
 	struct rpc_portmap *map = clnt->cl_pmap;
 
-	dprintk("RPC: %4d pmap_getport_done(status %d, port %d)\n",
-			task->tk_pid, task->tk_status, clnt->cl_port);
+	dprintk("RPC: %4d pmap_getport_done(status %d)\n",
+			task->tk_pid, task->tk_status);
+
 	if (task->tk_status < 0) {
-		/* Make the calling task exit with an error */
-		task->tk_action = NULL;
+		/* Pass error up */
+		clnt->cl_port = 0;
 	} else if (clnt->cl_port == 0) {
 		/* Program not registered */
 		task->tk_status = -EACCES;
-		task->tk_action = NULL;
 	} else {
 		/* byte-swap port number first */
 		clnt->cl_port = htons(clnt->cl_port);

@@ -504,7 +504,7 @@ qla2x00_read_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 	uint16_t *wptr;
 	uint32_t *dwptr;
 
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
 		/* Dword reads to flash. */
 		dwptr = (uint32_t *)buf;
 		for (i = 0; i < bytes >> 2; i++, naddr++)
@@ -579,7 +579,7 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 	case 0xbf: // STT flash
 		rest_addr = 0x1fff;
 		sec_mask = 0x3e000;
-		if (flash_id == 0x80)
+		if (flash_id == 0x80 || flash_id == 0x8e)
 			conf_addr = flash_conf_to_access_addr(0x0352);
 		break;
 	case 0x13: // ST M25P80
@@ -628,6 +628,9 @@ qla24xx_write_flash_data(scsi_qla_host_t *ha, uint32_t *dwptr, uint32_t faddr,
 		}
 	} while (0);
 
+	/* Enable flash write-protection. */
+	qla24xx_write_flash_dword(ha, flash_conf_to_access_addr(0x101), 0x9c);
+
 	/* Disable flash write. */
 	WRT_REG_DWORD(&reg->ctrl_status,
 	    RD_REG_DWORD(&reg->ctrl_status) & ~CSRX_FLASH_ENABLE);
@@ -649,7 +652,7 @@ qla2x00_write_nvram_data(scsi_qla_host_t *ha, uint8_t *buf, uint32_t naddr,
 
 	ret = QLA_SUCCESS;
 
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
 		/* Enable flash write. */
 		WRT_REG_DWORD(&reg->ctrl_status,
 		    RD_REG_DWORD(&reg->ctrl_status) | CSRX_FLASH_ENABLE);

@@ -38,10 +38,9 @@ struct iscsi_session_ioctl;
 struct iscsi_task;
 struct iscsi_hdr;
 
-#define ISCSI_DRIVER_VERSION	"4:0.1.11-2"
+#define ISCSI_DRIVER_VERSION	"4:0.1.11-3"
 #define ISCSI_MAX_CMD_LEN	16
 #define ISCSI_CMDS_PER_LUN	32
-#define ISCSI_MAX_CMDS_PER_LUN  128
 /*
  * we rely on scsi-ml's starvation code here
  */
@@ -132,6 +131,7 @@ extern int iscsi_create_host(struct iscsi_session_ioctl *ioctld);
 extern struct class_device_attribute *iscsi_host_attrs[];
 extern struct device_attribute *iscsi_dev_attrs[];
 extern struct iscsi_function_template iscsi_fnt;
+extern unsigned int iscsi_cmds_per_lun;
 
 static inline void sg_init_one(struct scatterlist *sg,
                                u8 *buf, unsigned int buflen)

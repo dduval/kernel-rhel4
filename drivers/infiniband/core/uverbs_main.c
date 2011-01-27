@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2005 Topspin Communications.  All rights reserved.
- * Copyright (c) 2005 Cisco Systems.  All rights reserved.
+ * Copyright (c) 2005, 2006 Cisco Systems.  All rights reserved.
  * Copyright (c) 2005 Mellanox Technologies. All rights reserved.
  * Copyright (c) 2005 Voltaire, Inc. All rights reserved.
  * Copyright (c) 2005 PathScale, Inc. All rights reserved.
@@ -33,7 +33,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: uverbs_main.c 3946 2005-11-02 15:23:43Z roland $
+ * $Id: uverbs_main.c 2733 2005-06-28 19:14:34Z roland $
  */
 
 #include <linux/module.h>
@@ -68,7 +68,7 @@ enum {
 
 static struct class *uverbs_class;
 
-DECLARE_MUTEX(ib_uverbs_idr_mutex);
+DEFINE_MUTEX(ib_uverbs_idr_mutex);
 DEFINE_IDR(ib_uverbs_pd_idr);
 DEFINE_IDR(ib_uverbs_mr_idr);
 DEFINE_IDR(ib_uverbs_mw_idr);
@@ -93,10 +93,12 @@ static ssize_t (*uverbs_cmd_table[])(struct ib_uverbs_file *file,
 	[IB_USER_VERBS_CMD_DEREG_MR]      	= ib_uverbs_dereg_mr,
 	[IB_USER_VERBS_CMD_CREATE_COMP_CHANNEL] = ib_uverbs_create_comp_channel,
 	[IB_USER_VERBS_CMD_CREATE_CQ]     	= ib_uverbs_create_cq,
+	[IB_USER_VERBS_CMD_RESIZE_CQ]     	= ib_uverbs_resize_cq,
 	[IB_USER_VERBS_CMD_POLL_CQ]     	= ib_uverbs_poll_cq,
 	[IB_USER_VERBS_CMD_REQ_NOTIFY_CQ]     	= ib_uverbs_req_notify_cq,
 	[IB_USER_VERBS_CMD_DESTROY_CQ]    	= ib_uverbs_destroy_cq,
 	[IB_USER_VERBS_CMD_CREATE_QP]     	= ib_uverbs_create_qp,
+	[IB_USER_VERBS_CMD_QUERY_QP]     	= ib_uverbs_query_qp,
 	[IB_USER_VERBS_CMD_MODIFY_QP]     	= ib_uverbs_modify_qp,
 	[IB_USER_VERBS_CMD_DESTROY_QP]    	= ib_uverbs_destroy_qp,
 	[IB_USER_VERBS_CMD_POST_SEND]    	= ib_uverbs_post_send,
@@ -108,6 +110,7 @@ static ssize_t (*uverbs_cmd_table[])(struct ib_uverbs_file *file,
 	[IB_USER_VERBS_CMD_DETACH_MCAST]  	= ib_uverbs_detach_mcast,
 	[IB_USER_VERBS_CMD_CREATE_SRQ]    	= ib_uverbs_create_srq,
 	[IB_USER_VERBS_CMD_MODIFY_SRQ]    	= ib_uverbs_modify_srq,
+	[IB_USER_VERBS_CMD_QUERY_SRQ]     	= ib_uverbs_query_srq,
 	[IB_USER_VERBS_CMD_DESTROY_SRQ]   	= ib_uverbs_destroy_srq,
 };
 
@@ -115,52 +118,6 @@ static struct vfsmount *uverbs_event_mnt;
 
 static void ib_uverbs_add_one(struct ib_device *device);
 static void ib_uverbs_remove_one(struct ib_device *device);
-/*
- * XXX copied over from libfs.c -- not exported there in linux 2.6.9
- */
-static struct super_block *
-get_sb_pseudo(struct file_system_type *fs_type, char *name,
-	struct super_operations *ops, unsigned long magic)
-{
-	struct super_block *s = sget(fs_type, NULL, set_anon_super, NULL);
-	static struct super_operations default_ops = {.statfs = simple_statfs};
-	struct dentry *dentry;
-	struct inode *root;
-	struct qstr d_name = {.name = name, .len = strlen(name)};
-
-	if (IS_ERR(s))
-		return s;
-
-	s->s_flags = MS_NOUSER;
-	s->s_maxbytes = ~0ULL;
-	s->s_blocksize = 1024;
-	s->s_blocksize_bits = 10;
-	s->s_magic = magic;
-	s->s_op = ops ? ops : &default_ops;
-	root = new_inode(s);
-	if (!root)
-		goto Enomem;
-	root->i_mode = S_IFDIR | S_IRUSR | S_IWUSR;
-	root->i_uid = root->i_gid = 0;
-	root->i_atime = root->i_mtime = root->i_ctime = CURRENT_TIME;
-	dentry = d_alloc(NULL, &d_name);
-	if (!dentry) {
-		iput(root);
-		goto Enomem;
-	}
-	dentry->d_sb = s;
-	dentry->d_parent = dentry;
-	d_instantiate(dentry, root);
-	s->s_root = dentry;
-	s->s_flags |= MS_ACTIVE;
-	return s;
-
-Enomem:
-	up_write(&s->s_umount);
-	deactivate_super(s);
-	return ERR_PTR(-ENOMEM);
-}
-
 
 static void ib_uverbs_release_dev(struct kref *ref)
 {
@@ -208,6 +165,18 @@ void ib_uverbs_release_uevent(struct ib_uverbs_file *file,
 	spin_unlock_irq(&file->async_file->lock);
 }
 
+static void ib_uverbs_detach_umcast(struct ib_qp *qp,
+				    struct ib_uqp_object *uobj)
+{
+	struct ib_uverbs_mcast_entry *mcast, *tmp;
+
+	list_for_each_entry_safe(mcast, tmp, &uobj->mcast_list, list) {
+		ib_detach_mcast(qp, &mcast->gid, mcast->lid);
+		list_del(&mcast->list);
+		kfree(mcast);
+	}
+}
+
 static int ib_uverbs_cleanup_ucontext(struct ib_uverbs_file *file,
 				      struct ib_ucontext *context)
 {
@@ -216,7 +185,7 @@ static int ib_uverbs_cleanup_ucontext(struct ib_uverbs_file *file,
 	if (!context)
 		return 0;
 
-	down(&ib_uverbs_idr_mutex);
+	mutex_lock(&ib_uverbs_idr_mutex);
 
 	list_for_each_entry_safe(uobj, tmp, &context->ah_list, list) {
 		struct ib_ah *ah = idr_find(&ib_uverbs_ah_idr, uobj->id);
@@ -228,13 +197,14 @@ static int ib_uverbs_cleanup_ucontext(struct ib_uverbs_file *file,
 
 	list_for_each_entry_safe(uobj, tmp, &context->qp_list, list) {
 		struct ib_qp *qp = idr_find(&ib_uverbs_qp_idr, uobj->id);
-		struct ib_uevent_object *uevent =
-			container_of(uobj, struct ib_uevent_object, uobject);
+		struct ib_uqp_object *uqp =
+			container_of(uobj, struct ib_uqp_object, uevent.uobject);
 		idr_remove(&ib_uverbs_qp_idr, uobj->id);
+		ib_uverbs_detach_umcast(qp, uqp);
 		ib_destroy_qp(qp);
 		list_del(&uobj->list);
-		ib_uverbs_release_uevent(file, uevent);
-		kfree(uevent);
+		ib_uverbs_release_uevent(file, &uqp->uevent);
+		kfree(uqp);
 	}
 
 	list_for_each_entry_safe(uobj, tmp, &context->cq_list, list) {
@@ -285,7 +255,7 @@ static int ib_uverbs_cleanup_ucontext(struct ib_uverbs_file *file,
 		kfree(uobj);
 	}
 
-	up(&ib_uverbs_idr_mutex);
+	mutex_unlock(&ib_uverbs_idr_mutex);
 
 	return context->device->dealloc_ucontext(context);
 }
@@ -496,7 +466,6 @@ void ib_uverbs_cq_event_handler(struct ib_event *event, void *context_ptr)
 	ib_uverbs_async_handler(uobj->uverbs_file, uobj->uobject.user_handle,
 				event->event, &uobj->async_list,
 				&uobj->async_events_reported);
-				
 }
 
 void ib_uverbs_qp_event_handler(struct ib_event *event, void *context_ptr)
@@ -634,7 +603,7 @@ static ssize_t ib_uverbs_write(struct file *filp, const char __user *buf,
 	if (hdr.in_words * 4 != count)
 		return -EINVAL;
 
-	if (hdr.command < 0 				||
+	if (hdr.command < 0				||
 	    hdr.command >= ARRAY_SIZE(uverbs_cmd_table) ||
 	    !uverbs_cmd_table[hdr.command]		||
 	    !(file->device->ib_dev->uverbs_cmd_mask & (1ull << hdr.command)))
@@ -688,7 +657,7 @@ static int ib_uverbs_open(struct inode *inode, struct file *filp)
 	file->ucontext	 = NULL;
 	file->async_file = NULL;
 	kref_init(&file->ref);
-	init_MUTEX(&file->mutex);
+	mutex_init(&file->mutex);
 
 	filp->private_data = file;
 
@@ -715,135 +684,6 @@ static int ib_uverbs_close(struct inode *inode, struct file *filp)
 	kref_put(&file->ref, ib_uverbs_release_file);
 
 	return 0;
-}
-
-/**
- * The following 5 static functions were added in kernel 2.6.13.
- * They are added here as static functions, with one change --
- * in function create_class(), there is no owner field in
- * struct class in this kernel release, so the "owner" parameter
- * in the function is unused.
- * Also, in function class_device_create, struct class_device has
- * no devt field, so this also has been commented out.
- * Finally, in kernel 2.6.13, there is also a function
- * class_device_destroy().  This function is not used here, since
- * it depends entirely on the presence of the devt field in the
- * struct class_device.  Instead, class_device_unregister is
- * called directly.
- */
-
-static void class_create_release(struct class *cls)
-{
-        kfree(cls);
-}
-
-static void class_device_create_release(struct class_device *class_dev)
-{
-        kfree(class_dev);
-}
-
-/**
- * class_create - create a struct class structure
- * @owner: pointer to the module that is to "own" this struct class
- * @name: pointer to a string for the name of this class.
- *
- * This is used to create a struct class pointer that can then be used
- * in calls to class_device_create().
- *
- * Note, the pointer created here is to be destroyed when finished by
- * making a call to class_destroy().
- */
-static struct class *class_create(struct module *owner, char *name)
-{
-        struct class *cls;
-        int retval;
-
-        cls = kzalloc(sizeof(*cls), GFP_KERNEL);
-        if (!cls) {
-                retval = -ENOMEM;
-                goto error;
-        }
-
-        cls->name = name;
-        /* cls->owner = owner; */
-        cls->class_release = class_create_release;
-        cls->release = class_device_create_release;
-
-        retval = class_register(cls);
-        if (retval)
-                goto error;
-
-        return cls;
-
-error:
-        kfree(cls);
-        return ERR_PTR(retval);
-}
-
-/**
- * class_destroy - destroys a struct class structure
- * @cs: pointer to the struct class that is to be destroyed
- *
- * Note, the pointer to be destroyed must have been created with a call
- * to class_create().
- */
-static void class_destroy(struct class *cls)
-{
-        if ((cls == NULL) || (IS_ERR(cls)))
-                return;
-
-        class_unregister(cls);
-}
-
-/**
- * class_device_create - creates a class device and registers it with sysfs
- * @cs: pointer to the struct class that this device should be registered to.
- * @dev: the dev_t for the char device to be added.
- * @device: a pointer to a struct device that is assiociated with this class device.
- * @fmt: string for the class device's name
- *
- * This function can be used by char device classes.  A struct
- * class_device will be created in sysfs, registered to the specified
- * class.  A "dev" file will be created, showing the dev_t for the
- * device.  The pointer to the struct class_device will be returned from
- * the call.  Any further sysfs files that might be required can be
- * created using this pointer.
- *
- * Note: the struct class passed to this function must have previously
- * been created with a call to class_create().
- */
-static struct class_device *class_device_create(struct class *cls, dev_t devt,
-                                         struct device *device, char *fmt, ...)
-{
-        va_list args;
-        struct class_device *class_dev = NULL;
-        int retval = -ENODEV;
-
-        if (cls == NULL || IS_ERR(cls))
-                goto error;
-
-        class_dev = kzalloc(sizeof(*class_dev), GFP_KERNEL);
-        if (!class_dev) {
-                retval = -ENOMEM;
-                goto error;
-        }
-
-        /* class_dev->devt = devt; */
-        class_dev->dev = device;
-        class_dev->class = cls;
-
-        va_start(args, fmt);
-        vsnprintf(class_dev->class_id, BUS_ID_SIZE, fmt, args);
-        va_end(args);
-        retval = class_device_register(class_dev);
-        if (retval)
-                goto error;
-
-        return class_dev;
-
-error:
-        kfree(class_dev);
-        return ERR_PTR(retval);
 }
 
 static ssize_t show_dev(struct class_device *class_dev, char *buf)
@@ -940,7 +780,8 @@ static void ib_uverbs_add_one(struct ib_device *device)
 	if (cdev_add(uverbs_dev->dev, IB_UVERBS_BASE_DEV + uverbs_dev->devnum, 1))
 		goto err_cdev;
 
-	uverbs_dev->class_dev = class_device_create(uverbs_class, uverbs_dev->dev->dev,
+	uverbs_dev->class_dev = class_device_create(uverbs_class,
+						    uverbs_dev->dev->dev,
 						    device->dma_device,
 						    "uverbs%d", uverbs_dev->devnum);
 	if (IS_ERR(uverbs_dev->class_dev))
@@ -1078,6 +919,14 @@ static void __exit ib_uverbs_cleanup(void)
 	unregister_filesystem(&uverbs_event_fs);
 	class_destroy(uverbs_class);
 	unregister_chrdev_region(IB_UVERBS_BASE_DEV, IB_UVERBS_MAX_DEVICES);
+	flush_scheduled_work();
+	idr_destroy(&ib_uverbs_pd_idr);
+	idr_destroy(&ib_uverbs_mr_idr);
+	idr_destroy(&ib_uverbs_mw_idr);
+	idr_destroy(&ib_uverbs_ah_idr);
+	idr_destroy(&ib_uverbs_cq_idr);
+	idr_destroy(&ib_uverbs_qp_idr);
+	idr_destroy(&ib_uverbs_srq_idr);
 }
 
 module_init(ib_uverbs_init);

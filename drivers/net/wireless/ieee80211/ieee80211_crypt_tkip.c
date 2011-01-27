@@ -10,7 +10,6 @@
  */
 
 #include <linux/config.h>
-#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -22,7 +21,6 @@
 #include <asm/string.h>
 
 #include "ieee80211.h"
-
 
 #include <linux/crypto.h>
 #include <asm/scatterlist.h>
@@ -60,16 +58,32 @@ struct ieee80211_tkip_data {
 
 	/* scratch buffers for virt_to_page() (crypto API) */
 	u8 rx_hdr[16], tx_hdr[16];
+
+	unsigned long flags;
 };
 
-static void * ieee80211_tkip_init(int key_idx)
+static unsigned long ieee80211_tkip_set_flags(unsigned long flags, void *priv)
+{
+	struct ieee80211_tkip_data *_priv = priv;
+	unsigned long old_flags = _priv->flags;
+	_priv->flags = flags;
+	return old_flags;
+}
+
+static unsigned long ieee80211_tkip_get_flags(void *priv)
+{
+	struct ieee80211_tkip_data *_priv = priv;
+	return _priv->flags;
+}
+
+static void *ieee80211_tkip_init(int key_idx)
 {
 	struct ieee80211_tkip_data *priv;
 
-	priv = kmalloc(sizeof(*priv), GFP_ATOMIC);
+	priv = kzalloc(sizeof(*priv), GFP_ATOMIC);
 	if (priv == NULL)
 		goto fail;
-	memset(priv, 0, sizeof(*priv));
+
 	priv->key_idx = key_idx;
 
 	priv->tfm_arc4 = crypto_alloc_tfm("arc4", 0);
@@ -88,7 +102,7 @@ static void * ieee80211_tkip_init(int key_idx)
 
 	return priv;
 
-fail:
+      fail:
 	if (priv) {
 		if (priv->tfm_michael)
 			crypto_free_tfm(priv->tfm_michael);
@@ -100,7 +114,6 @@ fail:
 	return NULL;
 }
 
-
 static void ieee80211_tkip_deinit(void *priv)
 {
 	struct ieee80211_tkip_data *_priv = priv;
@@ -111,51 +124,42 @@ static void ieee80211_tkip_deinit(void *priv)
 	kfree(priv);
 }
 
-
 static inline u16 RotR1(u16 val)
 {
 	return (val >> 1) | (val << 15);
 }
-
 
 static inline u8 Lo8(u16 val)
 {
 	return val & 0xff;
 }
 
-
 static inline u8 Hi8(u16 val)
 {
 	return val >> 8;
 }
-
 
 static inline u16 Lo16(u32 val)
 {
 	return val & 0xffff;
 }
 
-
 static inline u16 Hi16(u32 val)
 {
 	return val >> 16;
 }
-
 
 static inline u16 Mk16(u8 hi, u8 lo)
 {
 	return lo | (((u16) hi) << 8);
 }
 
-
-static inline u16 Mk16_le(u16 *v)
+static inline u16 Mk16_le(u16 * v)
 {
 	return le16_to_cpu(*v);
 }
 
-
-static const u16 Sbox[256] =
-{
+static const u16 Sbox[256] = {
 	0xC6A5, 0xF884, 0xEE99, 0xF68D, 0xFF0D, 0xD6BD, 0xDEB1, 0x9154,
 	0x6050, 0x0203, 0xCEA9, 0x567D, 0xE719, 0xB562, 0x4DE6, 0xEC9A,
 	0x8F45, 0x1F9D, 0x8940, 0xFA87, 0xEF15, 0xB2EB, 0x8EC9, 0xFB0B,
@@ -190,17 +194,16 @@ static const u16 Sbox[256] =
 	0x82C3, 0x29B0, 0x5A77, 0x1E11, 0x7BCB, 0xA8FC, 0x6DD6, 0x2C3A,
 };
 
-
 static inline u16 _S_(u16 v)
 {
 	u16 t = Sbox[Hi8(v)];
 	return Sbox[Lo8(v)] ^ ((t << 8) | (t >> 8));
 }
 
-
 #define PHASE1_LOOP_COUNT 8
 
-static void tkip_mixing_phase1(u16 *TTAK, const u8 *TK, const u8 *TA, u32 IV32)
+static void tkip_mixing_phase1(u16 * TTAK, const u8 * TK, const u8 * TA,
+			       u32 IV32)
 {
 	int i, j;
 
@@ -221,13 +224,12 @@ static void tkip_mixing_phase1(u16 *TTAK, const u8 *TK, const u8 *TA, u32 IV32)
 	}
 }
 
-
-static void tkip_mixing_phase2(u8 *WEPSeed, const u8 *TK, const u16 *TTAK,
+static void tkip_mixing_phase2(u8 * WEPSeed, const u8 * TK, const u16 * TTAK,
 			       u16 IV16)
 {
 	/* Make temporary area overlap WEP seed so that the final copy can be
 	 * avoided on little endian hosts. */
-	u16 *PPK = (u16 *) &WEPSeed[4];
+	u16 *PPK = (u16 *) & WEPSeed[4];
 
 	/* Step 1 - make copy of TTAK and bring in TSC */
 	PPK[0] = TTAK[0];
@@ -238,15 +240,15 @@ static void tkip_mixing_phase2(u8 *WEPSeed, const u8 *TK, const u16 *TTAK,
 	PPK[5] = TTAK[4] + IV16;
 
 	/* Step 2 - 96-bit bijective mixing using S-box */
-	PPK[0] += _S_(PPK[5] ^ Mk16_le((u16 *) &TK[0]));
-	PPK[1] += _S_(PPK[0] ^ Mk16_le((u16 *) &TK[2]));
-	PPK[2] += _S_(PPK[1] ^ Mk16_le((u16 *) &TK[4]));
-	PPK[3] += _S_(PPK[2] ^ Mk16_le((u16 *) &TK[6]));
-	PPK[4] += _S_(PPK[3] ^ Mk16_le((u16 *) &TK[8]));
-	PPK[5] += _S_(PPK[4] ^ Mk16_le((u16 *) &TK[10]));
+	PPK[0] += _S_(PPK[5] ^ Mk16_le((u16 *) & TK[0]));
+	PPK[1] += _S_(PPK[0] ^ Mk16_le((u16 *) & TK[2]));
+	PPK[2] += _S_(PPK[1] ^ Mk16_le((u16 *) & TK[4]));
+	PPK[3] += _S_(PPK[2] ^ Mk16_le((u16 *) & TK[6]));
+	PPK[4] += _S_(PPK[3] ^ Mk16_le((u16 *) & TK[8]));
+	PPK[5] += _S_(PPK[4] ^ Mk16_le((u16 *) & TK[10]));
 
-	PPK[0] += RotR1(PPK[5] ^ Mk16_le((u16 *) &TK[12]));
-	PPK[1] += RotR1(PPK[0] ^ Mk16_le((u16 *) &TK[14]));
+	PPK[0] += RotR1(PPK[5] ^ Mk16_le((u16 *) & TK[12]));
+	PPK[1] += RotR1(PPK[0] ^ Mk16_le((u16 *) & TK[14]));
 	PPK[2] += RotR1(PPK[1]);
 	PPK[3] += RotR1(PPK[2]);
 	PPK[4] += RotR1(PPK[3]);
@@ -257,7 +259,7 @@ static void tkip_mixing_phase2(u8 *WEPSeed, const u8 *TK, const u16 *TTAK,
 	WEPSeed[0] = Hi8(IV16);
 	WEPSeed[1] = (Hi8(IV16) | 0x20) & 0x7F;
 	WEPSeed[2] = Lo8(IV16);
-	WEPSeed[3] = Lo8((PPK[5] ^ Mk16_le((u16 *) &TK[0])) >> 1);
+	WEPSeed[3] = Lo8((PPK[5] ^ Mk16_le((u16 *) & TK[0])) >> 1);
 
 #ifdef __BIG_ENDIAN
 	{
@@ -268,20 +270,22 @@ static void tkip_mixing_phase2(u8 *WEPSeed, const u8 *TK, const u16 *TTAK,
 #endif
 }
 
-static int ieee80211_tkip_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
+static int ieee80211_tkip_hdr(struct sk_buff *skb, int hdr_len,
+			      u8 * rc4key, int keylen, void *priv)
 {
 	struct ieee80211_tkip_data *tkey = priv;
 	int len;
-	u8 rc4key[16], *pos, *icv;
-	struct ieee80211_hdr *hdr;
-	u32 crc;
-	struct scatterlist sg;
+	u8 *pos;
+	struct ieee80211_hdr_4addr *hdr;
 
-	if (skb_headroom(skb) < 8 || skb_tailroom(skb) < 4 ||
-	    skb->len < hdr_len)
+	hdr = (struct ieee80211_hdr_4addr *)skb->data;
+
+	if (skb_headroom(skb) < 8 || skb->len < hdr_len)
 		return -1;
 
-	hdr = (struct ieee80211_hdr *) skb->data;
+	if (rc4key == NULL || keylen < 16)
+		return -1;
+
 	if (!tkey->tx_phase1_done) {
 		tkip_mixing_phase1(tkey->tx_ttak, tkey->key, hdr->addr2,
 				   tkey->tx_iv32);
@@ -293,16 +297,54 @@ static int ieee80211_tkip_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	pos = skb_push(skb, 8);
 	memmove(pos, pos + 8, hdr_len);
 	pos += hdr_len;
-	icv = skb_put(skb, 4);
 
-	*pos++ = rc4key[0];
-	*pos++ = rc4key[1];
-	*pos++ = rc4key[2];
-	*pos++ = (tkey->key_idx << 6) | (1 << 5) /* Ext IV included */;
+	*pos++ = *rc4key;
+	*pos++ = *(rc4key + 1);
+	*pos++ = *(rc4key + 2);
+	*pos++ = (tkey->key_idx << 6) | (1 << 5) /* Ext IV included */ ;
 	*pos++ = tkey->tx_iv32 & 0xff;
 	*pos++ = (tkey->tx_iv32 >> 8) & 0xff;
 	*pos++ = (tkey->tx_iv32 >> 16) & 0xff;
 	*pos++ = (tkey->tx_iv32 >> 24) & 0xff;
+
+	tkey->tx_iv16++;
+	if (tkey->tx_iv16 == 0) {
+		tkey->tx_phase1_done = 0;
+		tkey->tx_iv32++;
+	}
+
+	return 8;
+}
+
+static int ieee80211_tkip_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
+{
+	struct ieee80211_tkip_data *tkey = priv;
+	int len;
+	u8 rc4key[16], *pos, *icv;
+	u32 crc;
+	struct scatterlist sg;
+
+	if (tkey->flags & IEEE80211_CRYPTO_TKIP_COUNTERMEASURES) {
+		if (net_ratelimit()) {
+			struct ieee80211_hdr_4addr *hdr =
+			    (struct ieee80211_hdr_4addr *)skb->data;
+			printk(KERN_DEBUG ": TKIP countermeasures: dropped "
+			       "TX packet to " MAC_FMT "\n",
+			       MAC_ARG(hdr->addr1));
+		}
+		return -1;
+	}
+
+	if (skb_tailroom(skb) < 4 || skb->len < hdr_len)
+		return -1;
+
+	len = skb->len - hdr_len;
+	pos = skb->data + hdr_len;
+
+	if ((ieee80211_tkip_hdr(skb, hdr_len, rc4key, 16, priv)) < 0)
+		return -1;
+
+	icv = skb_put(skb, 4);
 
 	crc = ~crc32_le(~0, pos, len);
 	icv[0] = crc;
@@ -316,12 +358,6 @@ static int ieee80211_tkip_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	sg.length = len + 4;
 	crypto_cipher_encrypt(tkey->tfm_arc4, &sg, &sg, len + 4);
 
-	tkey->tx_iv16++;
-	if (tkey->tx_iv16 == 0) {
-		tkey->tx_phase1_done = 0;
-		tkey->tx_iv32++;
-	}
-
 	return 0;
 }
 
@@ -332,16 +368,26 @@ static int ieee80211_tkip_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	u8 keyidx, *pos;
 	u32 iv32;
 	u16 iv16;
-	struct ieee80211_hdr *hdr;
+	struct ieee80211_hdr_4addr *hdr;
 	u8 icv[4];
 	u32 crc;
 	struct scatterlist sg;
 	int plen;
 
+	hdr = (struct ieee80211_hdr_4addr *)skb->data;
+
+	if (tkey->flags & IEEE80211_CRYPTO_TKIP_COUNTERMEASURES) {
+		if (net_ratelimit()) {
+			printk(KERN_DEBUG ": TKIP countermeasures: dropped "
+			       "received packet from " MAC_FMT "\n",
+			       MAC_ARG(hdr->addr2));
+		}
+		return -1;
+	}
+
 	if (skb->len < hdr_len + 8 + 4)
 		return -1;
 
-	hdr = (struct ieee80211_hdr *) skb->data;
 	pos = skb->data + hdr_len;
 	keyidx = pos[3];
 	if (!(keyidx & (1 << 5))) {
@@ -427,9 +473,8 @@ static int ieee80211_tkip_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	return keyidx;
 }
 
-
-static int michael_mic(struct ieee80211_tkip_data *tkey, u8 *key, u8 *hdr,
-		       u8 *data, size_t data_len, u8 *mic)
+static int michael_mic(struct ieee80211_tkip_data *tkey, u8 * key, u8 * hdr,
+		       u8 * data, size_t data_len, u8 * mic)
 {
 	struct scatterlist sg[2];
 
@@ -453,37 +498,37 @@ static int michael_mic(struct ieee80211_tkip_data *tkey, u8 *key, u8 *hdr,
 	return 0;
 }
 
-static void michael_mic_hdr(struct sk_buff *skb, u8 *hdr)
+static void michael_mic_hdr(struct sk_buff *skb, u8 * hdr)
 {
-	struct ieee80211_hdr *hdr11;
+	struct ieee80211_hdr_4addr *hdr11;
 
-	hdr11 = (struct ieee80211_hdr *) skb->data;
+	hdr11 = (struct ieee80211_hdr_4addr *)skb->data;
 	switch (le16_to_cpu(hdr11->frame_ctl) &
 		(IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_TODS)) {
 	case IEEE80211_FCTL_TODS:
-		memcpy(hdr, hdr11->addr3, ETH_ALEN); /* DA */
-		memcpy(hdr + ETH_ALEN, hdr11->addr2, ETH_ALEN); /* SA */
+		memcpy(hdr, hdr11->addr3, ETH_ALEN);	/* DA */
+		memcpy(hdr + ETH_ALEN, hdr11->addr2, ETH_ALEN);	/* SA */
 		break;
 	case IEEE80211_FCTL_FROMDS:
-		memcpy(hdr, hdr11->addr1, ETH_ALEN); /* DA */
-		memcpy(hdr + ETH_ALEN, hdr11->addr3, ETH_ALEN); /* SA */
+		memcpy(hdr, hdr11->addr1, ETH_ALEN);	/* DA */
+		memcpy(hdr + ETH_ALEN, hdr11->addr3, ETH_ALEN);	/* SA */
 		break;
 	case IEEE80211_FCTL_FROMDS | IEEE80211_FCTL_TODS:
-		memcpy(hdr, hdr11->addr3, ETH_ALEN); /* DA */
-		memcpy(hdr + ETH_ALEN, hdr11->addr4, ETH_ALEN); /* SA */
+		memcpy(hdr, hdr11->addr3, ETH_ALEN);	/* DA */
+		memcpy(hdr + ETH_ALEN, hdr11->addr4, ETH_ALEN);	/* SA */
 		break;
 	case 0:
-		memcpy(hdr, hdr11->addr1, ETH_ALEN); /* DA */
-		memcpy(hdr + ETH_ALEN, hdr11->addr2, ETH_ALEN); /* SA */
+		memcpy(hdr, hdr11->addr1, ETH_ALEN);	/* DA */
+		memcpy(hdr + ETH_ALEN, hdr11->addr2, ETH_ALEN);	/* SA */
 		break;
 	}
 
-	hdr[12] = 0; /* priority */
-	hdr[13] = hdr[14] = hdr[15] = 0; /* reserved */
+	hdr[12] = 0;		/* priority */
+	hdr[13] = hdr[14] = hdr[15] = 0;	/* reserved */
 }
 
-
-static int ieee80211_michael_mic_add(struct sk_buff *skb, int hdr_len, void *priv)
+static int ieee80211_michael_mic_add(struct sk_buff *skb, int hdr_len,
+				     void *priv)
 {
 	struct ieee80211_tkip_data *tkey = priv;
 	u8 *pos;
@@ -504,11 +549,9 @@ static int ieee80211_michael_mic_add(struct sk_buff *skb, int hdr_len, void *pri
 	return 0;
 }
 
-
-#if WIRELESS_EXT >= 18
 static void ieee80211_michael_mic_failure(struct net_device *dev,
-				       struct ieee80211_hdr *hdr,
-				       int keyidx)
+					  struct ieee80211_hdr_4addr *hdr,
+					  int keyidx)
 {
 	union iwreq_data wrqu;
 	struct iw_michaelmicfailure ev;
@@ -524,35 +567,11 @@ static void ieee80211_michael_mic_failure(struct net_device *dev,
 	memcpy(ev.src_addr.sa_data, hdr->addr2, ETH_ALEN);
 	memset(&wrqu, 0, sizeof(wrqu));
 	wrqu.data.length = sizeof(ev);
-	wireless_send_event(dev, IWEVMICHAELMICFAILURE, &wrqu, (char *) &ev);
+	wireless_send_event(dev, IWEVMICHAELMICFAILURE, &wrqu, (char *)&ev);
 }
-#elif WIRELESS_EXT >= 15
-static void ieee80211_michael_mic_failure(struct net_device *dev,
-				       struct ieee80211_hdr *hdr,
-				       int keyidx)
-{
-	union iwreq_data wrqu;
-	char buf[128];
-
-	/* TODO: needed parameters: count, keyid, key type, TSC */
-	sprintf(buf, "MLME-MICHAELMICFAILURE.indication(keyid=%d %scast addr="
-		MAC_FMT ")", keyidx, hdr->addr1[0] & 0x01 ? "broad" : "uni",
-		MAC_ARG(hdr->addr2));
-	memset(&wrqu, 0, sizeof(wrqu));
-	wrqu.data.length = strlen(buf);
-	wireless_send_event(dev, IWEVCUSTOM, &wrqu, buf);
-}
-#else /* WIRELESS_EXT >= 15 */
-static inline void ieee80211_michael_mic_failure(struct net_device *dev,
-					      struct ieee80211_hdr *hdr,
-					      int keyidx)
-{
-}
-#endif /* WIRELESS_EXT >= 15 */
-
 
 static int ieee80211_michael_mic_verify(struct sk_buff *skb, int keyidx,
-				     int hdr_len, void *priv)
+					int hdr_len, void *priv)
 {
 	struct ieee80211_tkip_data *tkey = priv;
 	u8 mic[8];
@@ -565,8 +584,8 @@ static int ieee80211_michael_mic_verify(struct sk_buff *skb, int keyidx,
 			skb->data + hdr_len, skb->len - 8 - hdr_len, mic))
 		return -1;
 	if (memcmp(mic, skb->data + skb->len - 8, 8) != 0) {
-		struct ieee80211_hdr *hdr;
-		hdr = (struct ieee80211_hdr *) skb->data;
+		struct ieee80211_hdr_4addr *hdr;
+		hdr = (struct ieee80211_hdr_4addr *)skb->data;
 		printk(KERN_DEBUG "%s: Michael MIC verification failed for "
 		       "MSDU from " MAC_FMT " keyidx=%d\n",
 		       skb->dev ? skb->dev->name : "N/A", MAC_ARG(hdr->addr2),
@@ -587,8 +606,7 @@ static int ieee80211_michael_mic_verify(struct sk_buff *skb, int keyidx,
 	return 0;
 }
 
-
-static int ieee80211_tkip_set_key(void *key, int len, u8 *seq, void *priv)
+static int ieee80211_tkip_set_key(void *key, int len, u8 * seq, void *priv)
 {
 	struct ieee80211_tkip_data *tkey = priv;
 	int keyidx;
@@ -603,22 +621,21 @@ static int ieee80211_tkip_set_key(void *key, int len, u8 *seq, void *priv)
 	if (len == TKIP_KEY_LEN) {
 		memcpy(tkey->key, key, TKIP_KEY_LEN);
 		tkey->key_set = 1;
-		tkey->tx_iv16 = 1; /* TSC is initialized to 1 */
+		tkey->tx_iv16 = 1;	/* TSC is initialized to 1 */
 		if (seq) {
 			tkey->rx_iv32 = (seq[5] << 24) | (seq[4] << 16) |
-				(seq[3] << 8) | seq[2];
+			    (seq[3] << 8) | seq[2];
 			tkey->rx_iv16 = (seq[1] << 8) | seq[0];
 		}
-	} else if (len == 0) {
+	} else if (len == 0)
 		tkey->key_set = 0;
-	} else
+	else
 		return -1;
 
 	return 0;
 }
 
-
-static int ieee80211_tkip_get_key(void *key, int len, u8 *seq, void *priv)
+static int ieee80211_tkip_get_key(void *key, int len, u8 * seq, void *priv)
 {
 	struct ieee80211_tkip_data *tkey = priv;
 
@@ -647,8 +664,7 @@ static int ieee80211_tkip_get_key(void *key, int len, u8 *seq, void *priv)
 	return TKIP_KEY_LEN;
 }
 
-
-static char * ieee80211_tkip_print_stats(char *p, void *priv)
+static char *ieee80211_tkip_print_stats(char *p, void *priv)
 {
 	struct ieee80211_tkip_data *tkip = priv;
 	p += sprintf(p, "key[%d] alg=TKIP key_set=%d "
@@ -674,38 +690,35 @@ static char * ieee80211_tkip_print_stats(char *p, void *priv)
 	return p;
 }
 
-
 static struct ieee80211_crypto_ops ieee80211_crypt_tkip = {
-	.name			= "TKIP",
-	.init			= ieee80211_tkip_init,
-	.deinit			= ieee80211_tkip_deinit,
-	.encrypt_mpdu		= ieee80211_tkip_encrypt,
-	.decrypt_mpdu		= ieee80211_tkip_decrypt,
-	.encrypt_msdu		= ieee80211_michael_mic_add,
-	.decrypt_msdu		= ieee80211_michael_mic_verify,
-	.set_key		= ieee80211_tkip_set_key,
-	.get_key		= ieee80211_tkip_get_key,
-	.print_stats		= ieee80211_tkip_print_stats,
-	.extra_prefix_len	= 4 + 4, /* IV + ExtIV */
-	.extra_postfix_len	= 8 + 4, /* MIC + ICV */
-	.owner		        = THIS_MODULE,
+	.name = "TKIP",
+	.init = ieee80211_tkip_init,
+	.deinit = ieee80211_tkip_deinit,
+	.build_iv = ieee80211_tkip_hdr,
+	.encrypt_mpdu = ieee80211_tkip_encrypt,
+	.decrypt_mpdu = ieee80211_tkip_decrypt,
+	.encrypt_msdu = ieee80211_michael_mic_add,
+	.decrypt_msdu = ieee80211_michael_mic_verify,
+	.set_key = ieee80211_tkip_set_key,
+	.get_key = ieee80211_tkip_get_key,
+	.print_stats = ieee80211_tkip_print_stats,
+	.extra_mpdu_prefix_len = 4 + 4,	/* IV + ExtIV */
+	.extra_mpdu_postfix_len = 4,	/* ICV */
+	.extra_msdu_postfix_len = 8,	/* MIC */
+	.get_flags = ieee80211_tkip_get_flags,
+	.set_flags = ieee80211_tkip_set_flags,
+	.owner = THIS_MODULE,
 };
-
 
 static int __init ieee80211_crypto_tkip_init(void)
 {
-	if (ieee80211_register_crypto_ops(&ieee80211_crypt_tkip) < 0)
-		return -1;
-
-	return 0;
+	return ieee80211_register_crypto_ops(&ieee80211_crypt_tkip);
 }
-
 
 static void __exit ieee80211_crypto_tkip_exit(void)
 {
 	ieee80211_unregister_crypto_ops(&ieee80211_crypt_tkip);
 }
-
 
 module_init(ieee80211_crypto_tkip_init);
 module_exit(ieee80211_crypto_tkip_exit);

@@ -21,6 +21,7 @@
 #include <linux/config.h>
 #include <linux/wait.h>
 #include <linux/stringify.h>
+#include <linux/init.h>
 #include <asm/socket.h>
 
 struct poll_table_struct;
@@ -199,6 +200,10 @@ extern int	     net_ratelimit(void);
 extern unsigned long net_random(void);
 extern void	     net_srandom(unsigned long);
 extern void	     net_random_init(void);
+
+extern void * __init net_alloc_hash(const char *, unsigned long,
+				    unsigned long, int, unsigned int *,
+				    unsigned int *, unsigned long);
 
 extern int   	     kernel_sendmsg(struct socket *sock, struct msghdr *msg,
 				    struct kvec *vec, size_t num, size_t len);

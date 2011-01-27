@@ -473,6 +473,7 @@ extern struct page *zero_page_memmap_ptr;
 struct mmu_gather;
 extern void hugetlb_free_pgtables(struct mmu_gather *tlb,
 	struct vm_area_struct * prev, unsigned long start, unsigned long end);
+extern pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr);
 #endif
 
 /*

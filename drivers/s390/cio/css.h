@@ -156,4 +156,8 @@ extern int need_rescan;
 
 extern struct workqueue_struct *slow_path_wq;
 extern struct work_struct slow_path_work;
+
+extern int cm_enabled;
+extern struct semaphore cm_sem;
+
 #endif

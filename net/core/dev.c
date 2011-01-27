@@ -1410,10 +1410,8 @@ int netif_rx(struct sk_buff *skb)
 	unsigned long flags;
 
 #ifdef CONFIG_NETPOLL
-	if (skb->dev->netpoll_rx && netpoll_rx(skb)) {
-		kfree_skb(skb);
+	if (netpoll_rx(skb))
 		return NET_RX_DROP;
-	}
 #endif
 	
 	if (!skb->stamp.tv_sec)
@@ -1463,14 +1461,36 @@ drop:
 	return NET_RX_DROP;
 }
 
-static __inline__ void skb_bond(struct sk_buff *skb)
+static inline struct net_device *skb_bond(struct sk_buff *skb)
 {
 	struct net_device *dev = skb->dev;
 
 	if (dev->master) {
+		/*
+		 * On bonding slaves other than the currently active
+		 * slave, suppress duplicates except for 802.3ad
+		 * ETH_P_SLOW and alb non-mcast/bcast.
+		 */
+		if (dev->priv_flags & IFF_SLAVE_INACTIVE) {
+			if (dev->master->priv_flags & IFF_MASTER_ALB) {
+				if (skb->pkt_type != PACKET_BROADCAST &&
+				    skb->pkt_type != PACKET_MULTICAST)
+					goto keep;
+			}
+
+			if (dev->master->priv_flags & IFF_MASTER_8023AD &&
+			    skb->protocol == __constant_htons(ETH_P_SLOW))
+				goto keep;
+		
+			kfree_skb(skb);
+			return NULL;
+		}
+keep:
 		skb->real_dev = skb->dev;
 		skb->dev = dev->master;
 	}
+
+	return dev;
 }
 
 static void net_tx_action(struct softirq_action *h)
@@ -1593,20 +1613,25 @@ int ing_filter(struct sk_buff *skb)
 int netif_receive_skb(struct sk_buff *skb)
 {
 	struct packet_type *ptype, *pt_prev;
+	struct net_device *orig_dev;
 	int ret = NET_RX_DROP;
 	unsigned short type;
 
 #ifdef CONFIG_NETPOLL
-	if (skb->dev->netpoll_rx && skb->dev->poll && netpoll_rx(skb)) {
-		kfree_skb(skb);
+	if (skb->dev->poll && netpoll_rx(skb))
 		return NET_RX_DROP;
-	}
 #endif
 
 	if (!skb->stamp.tv_sec)
 		net_timestamp(&skb->stamp);
 
-	skb_bond(skb);
+	if (!skb->input_dev)
+		skb->input_dev = skb->dev;
+
+	orig_dev = skb_bond(skb);
+
+	if (!orig_dev)
+		return NET_RX_DROP;
 
 	__get_cpu_var(netdev_rx_stat).total++;
 
@@ -1734,7 +1759,7 @@ static void net_rx_action(struct softirq_action *h)
 	struct softnet_data *queue = &__get_cpu_var(softnet_data);
 	unsigned long start_time = jiffies;
 	int budget = netdev_max_backlog;
-
+	void *have;
 	
 	local_irq_disable();
 
@@ -1749,7 +1774,10 @@ static void net_rx_action(struct softirq_action *h)
 		dev = list_entry(queue->poll_list.next,
 				 struct net_device, poll_list);
 
+		have = netpoll_poll_lock(dev);
+
 		if (dev->quota <= 0 || dev->poll(dev, &budget)) {
+			netpoll_poll_unlock(have);
 			local_irq_disable();
 			list_del(&dev->poll_list);
 			list_add_tail(&dev->poll_list, &queue->poll_list);
@@ -1758,6 +1786,7 @@ static void net_rx_action(struct softirq_action *h)
 			else
 				dev->quota = dev->weight;
 		} else {
+			netpoll_poll_unlock(have);
 			dev_put(dev);
 			local_irq_disable();
 		}
@@ -2555,13 +2584,14 @@ int dev_ioctl(unsigned int cmd, void __user *arg)
 		case SIOCBONDENSLAVE:
 		case SIOCBONDRELEASE:
 		case SIOCBONDSETHWADDR:
-		case SIOCBONDSLAVEINFOQUERY:
-		case SIOCBONDINFOQUERY:
 		case SIOCBONDCHANGEACTIVE:
 		case SIOCBRADDIF:
 		case SIOCBRDELIF:
 			if (!capable(CAP_NET_ADMIN))
 				return -EPERM;
+			/* fall through */
+		case SIOCBONDSLAVEINFOQUERY:
+		case SIOCBONDINFOQUERY:
 			dev_load(ifr.ifr_name);
 			rtnl_lock();
 			ret = dev_ifsioc(&ifr, cmd);

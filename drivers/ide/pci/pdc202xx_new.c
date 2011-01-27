@@ -48,7 +48,6 @@
 static u8 pdcnew_proc = 0;
 #define PDC202_MAX_DEVS		5
 static struct pci_dev *pdc202_devs[PDC202_MAX_DEVS];
-static int n_pdc202_devs;
 
 static char * pdcnew_info(char *buf, struct pci_dev *dev)
 {
@@ -83,8 +82,10 @@ static int pdcnew_get_info (char *buffer, char **addr, off_t offset, int count)
 	char *p = buffer;
 	int i, len;
 
-	for (i = 0; i < n_pdc202_devs; i++) {
+	for (i = 0; i < PDC202_MAX_DEVS; i++) {
 		struct pci_dev *dev	= pdc202_devs[i];
+		if (dev == NULL)
+			continue;
 		p = pdcnew_info(buffer, dev);
 	}
 	/* p - buffer must be less than 4k! */
@@ -406,6 +407,8 @@ static void __devinit apple_kiwi_init(struct pci_dev *pdev)
 
 static unsigned int __devinit init_chipset_pdcnew(struct pci_dev *dev, const char *name)
 {
+	int i;
+
 	if (dev->resource[PCI_ROM_RESOURCE].start) {
 		pci_write_config_dword(dev, PCI_ROM_ADDRESS,
 			dev->resource[PCI_ROM_RESOURCE].start | PCI_ROM_ADDRESS_ENABLE);
@@ -418,12 +421,19 @@ static unsigned int __devinit init_chipset_pdcnew(struct pci_dev *dev, const cha
 #endif
 
 #if defined(DISPLAY_PDC202XX_TIMINGS) && defined(CONFIG_PROC_FS)
-	pdc202_devs[n_pdc202_devs++] = dev;
+	for (i = 0; i < PDC202_MAX_DEVS; i++) {
+		if (pdc202_devs[i] == NULL)
+			break;
+	}
+
+	if (i != PDC202_MAX_DEVS)
+		pdc202_devs[i] = dev;
 
 	if (!pdcnew_proc) {
 		pdcnew_proc = 1;
 		ide_pci_create_host_proc("pdcnew", pdcnew_get_info);
 	}
+
 #endif /* DISPLAY_PDC202XX_TIMINGS && CONFIG_PROC_FS */
 
 	return dev->irq;
@@ -518,6 +528,31 @@ static int __devinit pdc202new_init_one(struct pci_dev *dev, const struct pci_de
 	return 0;
 }
 
+/**
+ *	pdc202new_remove_one	-	called when a pdc202xx is removed
+ *	@dev: the pdc202new device
+ *
+ * Called by the PCI denumeration code when on of our supported devices
+ * is removed.
+ */
+ 
+static void __devexit pdc202new_remove_one(struct pci_dev *dev)
+{
+	int i;
+
+#if defined(DISPLAY_PDC202XX_TIMINGS) && defined(CONFIG_PROC_FS)
+	for (i = 0; i < PDC202_MAX_DEVS; i++) {
+		if (pdc202_devs[i] == dev) {
+			pdc202_devs[i] = NULL;
+			break;
+		}
+	}
+#endif
+
+	ide_pci_remove_hwifs(dev);
+	pci_disable_device(dev);
+}
+
 static struct pci_device_id pdc202new_pci_tbl[] = {
 	{ PCI_VENDOR_ID_PROMISE, PCI_DEVICE_ID_PROMISE_20268, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{ PCI_VENDOR_ID_PROMISE, PCI_DEVICE_ID_PROMISE_20269, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 1},
@@ -534,6 +569,7 @@ static struct pci_driver driver = {
 	.name		= "Promise_IDE",
 	.id_table	= pdc202new_pci_tbl,
 	.probe		= pdc202new_init_one,
+	.remove		= pdc202new_remove_one,
 };
 
 static int pdc202new_ide_init(void)

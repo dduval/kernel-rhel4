@@ -38,9 +38,9 @@ static int ata_scsi_dump_run_bottomhalf(struct ata_port *ap)
 
 	host_set = ap->host_set;
 
-	if (!list_empty(&ap->pio_task.entry)) {
-		list_del_init(&ap->pio_task.entry);
-		clear_bit(0, &ap->pio_task.pending);
+	if (!list_empty(&ap->port_task.entry)) {
+		list_del_init(&ap->port_task.entry);
+		clear_bit(0, &ap->port_task.pending);
 
 		ata_pio_task(ap);
 		handled = 1;

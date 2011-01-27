@@ -34,6 +34,7 @@
 #include <asm/pgtable.h>
 #include <asm/kdebug.h>
 #include <asm/sections.h>
+#include <asm/uaccess.h>
 
 extern void jprobe_inst_return(void);
 
@@ -439,11 +440,20 @@ int arch_prepare_kprobe(struct kprobe *p)
 	return 0;
 }
 
+void flush_insn_slot(struct kprobe *p)
+{
+	unsigned long arm_addr;
+
+	arm_addr = ((unsigned long)&p->opcode.bundle) & ~0xFULL;
+	flush_icache_range(arm_addr, arm_addr + sizeof(bundle_t));
+}
+
 void arch_arm_kprobe(struct kprobe *p)
 {
 	unsigned long addr = (unsigned long)p->addr;
 	unsigned long arm_addr = addr & ~0xFULL;
 
+	flush_insn_slot(p);
 	memcpy((char *)arm_addr, &p->ainsn.insn.bundle, sizeof(bundle_t));
 	flush_icache_range(arm_addr, arm_addr + sizeof(bundle_t));
 }
@@ -456,10 +466,6 @@ void arch_disarm_kprobe(struct kprobe *p)
 	/* p->opcode contains the original unaltered bundle */
 	memcpy((char *) arm_addr, (char *) &p->opcode.bundle, sizeof(bundle_t));
 	flush_icache_range(arm_addr, arm_addr + sizeof(bundle_t));
-}
-
-void arch_remove_kprobe(struct kprobe *p)
-{
 }
 
 /*
@@ -621,7 +627,7 @@ static int pre_kprobes_handler(struct die_args *args)
 			 */
 			save_previous_kprobe(kcb);
 			set_current_kprobe(p, kcb);
-			p->nmissed++;
+			kprobes_inc_nmissed_count(p);
 			prepare_ss(p, regs);
 			kcb->kprobe_status = KPROBE_REENTER;
 			return 1;
@@ -633,6 +639,13 @@ static int pre_kprobes_handler(struct die_args *args)
 			if (p->break_handler && p->break_handler(p, regs)) {
 				goto ss_probe;
 			}
+		} else if (!is_ia64_break_inst(regs)) {
+			/* The breakpoint instruction was removed by
+			 * another cpu right after we hit, no further
+			 * handling of this interrupt is appropriate
+			 */
+			ret = 1;
+			goto no_kprobe;
 		} else {
 			/* Not our break */
 			goto no_kprobe;
@@ -710,13 +723,50 @@ static int kprobes_fault_handler(struct pt_regs *regs, int trapnr)
 	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
 
-	if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
-		return 1;
 
-	if (kcb->kprobe_status & KPROBE_HIT_SS) {
-		resume_execution(cur, regs);
-		reset_current_kprobe();
+	switch(kcb->kprobe_status) {
+	case KPROBE_HIT_SS:
+	case KPROBE_REENTER:
+		/*
+		 * We are here because the instruction being single
+		 * stepped caused a page fault. We reset the current
+		 * kprobe and the instruction pointer points back to
+		 * the probe address and allow the page fault handler
+		 * to continue as a normal page fault.
+		 */
+		regs->cr_iip = ((unsigned long)cur->addr) & ~0xFULL;
+		ia64_psr(regs)->ri = ((unsigned long)cur->addr) & 0xf;
+		if (kcb->kprobe_status == KPROBE_REENTER)
+			restore_previous_kprobe(kcb);
+		else
+			reset_current_kprobe();
 		preempt_enable_no_resched();
+		break;
+	case KPROBE_HIT_ACTIVE:
+	case KPROBE_HIT_SSDONE:
+		/*
+		 * We increment the nmissed count for accounting,
+		 * we can also use npre/npostfault count for accouting
+		 * these specific fault cases.
+		 */
+		kprobes_inc_nmissed_count(cur);
+
+		/*
+		 * We come here because instructions in the pre/post
+		 * handler caused the page_fault, this could happen
+		 * if handler tries to access user space by
+		 * copy_from_user(), get_user() etc. Let the
+		 * user-specified handler try to fix it first.
+		 */
+		if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
+			return 1;
+
+		/*
+		 * Let ia64_do_page_fault() fix it.
+		 */
+		break;
+	default:
+		break;
 	}
 
 	return 0;
@@ -728,6 +778,9 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 	struct die_args *args = (struct die_args *)data;
 	int ret = NOTIFY_DONE;
 
+	if (args->regs && user_mode(args->regs))
+		return ret;
+
 	switch(val) {
 	case DIE_BREAK:
 		if (pre_kprobes_handler(args))
@@ -737,10 +790,43 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 		if (post_kprobes_handler(args->regs))
 			ret = NOTIFY_STOP;
 		break;
+	case DIE_PAGE_FAULT:
+		preempt_disable();
+		if (kprobe_running() &&
+				kprobes_fault_handler(args->regs, args->trapnr))
+				ret = NOTIFY_STOP;
+		preempt_enable();
+		break;
 	default:
 		break;
 	}
 	return ret;
+}
+
+struct param_bsp_cfm {
+	unsigned long ip;
+	unsigned long *bsp;
+	unsigned long cfm;
+};
+
+static void ia64_get_bsp_cfm(struct unw_frame_info *info, void *arg)
+{
+	unsigned long ip;
+	struct param_bsp_cfm *lp = arg;
+
+	do {
+		unw_get_ip(info, &ip);
+		if (ip == 0)
+			break;
+		if (ip == lp->ip) {
+			unw_get_bsp(info, (unsigned long*)&lp->bsp);
+			unw_get_cfm(info, (unsigned long*)&lp->cfm);
+			return;
+		}
+	} while (unw_unwind(info) >= 0);
+	lp->bsp = 0;
+	lp->cfm = 0;
+	return;
 }
 
 int setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
@@ -748,6 +834,25 @@ int setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
 	struct jprobe *jp = container_of(p, struct jprobe, kp);
 	unsigned long addr = ((struct fnptr *)(jp->entry))->ip;
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+	struct param_bsp_cfm pa;
+	int bytes;
+
+	/*
+	 * Callee owns the argument space and could overwrite it, eg
+	 * tail call optimization. So to be absolutely safe
+	 * we save the argument space before transfering the control
+	 * to instrumented jprobe function which runs in
+	 * the process context
+	 */
+	pa.ip = regs->cr_iip;
+	unw_init_running(ia64_get_bsp_cfm, &pa);
+	bytes = (char *)ia64_rse_skip_regs(pa.bsp, pa.cfm & 0x3f)
+				- (char *)pa.bsp;
+	memcpy( kcb->jprobes_saved_stacked_regs,
+		pa.bsp,
+		bytes );
+	kcb->bsp = pa.bsp;
+	kcb->cfm = pa.cfm;
 
 	/* save architectural state */
 	kcb->jprobe_saved_regs = *regs;
@@ -769,8 +874,20 @@ int setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
 int longjmp_break_handler(struct kprobe *p, struct pt_regs *regs)
 {
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+	int bytes;
 
-	*regs = kcb->jprobe_saved_regs;
+	/* restoring architectural state */
+ 	*regs = kcb->jprobe_saved_regs;
+
+	/* restoring the original argument space */
+	flush_register_stack();
+	bytes = (char *)ia64_rse_skip_regs(kcb->bsp, kcb->cfm & 0x3f)
+				- (char *)kcb->bsp;
+	memcpy( kcb->bsp,
+		kcb->jprobes_saved_stacked_regs,
+		bytes );
+	invalidate_stacked_regs();
+
 	preempt_enable_no_resched();
 	return 1;
 }

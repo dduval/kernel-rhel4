@@ -750,6 +750,35 @@ static int __devinit pci_init(void)
 	return 0;
 }
 
+static int __pci_find_next_cap(struct pci_bus *bus, unsigned int devfn, u8 pos, int cap)
+{
+        u8 id;
+        int ttl = 48;
+
+        while (ttl--) {
+                pci_bus_read_config_byte(bus, devfn, pos, &pos);
+                if (pos < 0x40)
+                        break;
+                pos &= ~3;
+                pci_bus_read_config_byte(bus, devfn, pos + PCI_CAP_LIST_ID,
+                                         &id);
+                if (id == 0xff)
+                        break;
+                if (id == cap) 
+                        return pos;
+                pos += PCI_CAP_LIST_NEXT;
+        }
+        return 0;
+}
+
+int pci_find_next_capability(struct pci_dev *dev, u8 pos, int cap)
+{
+        return __pci_find_next_cap(dev->bus, dev->devfn,
+                                   pos + PCI_CAP_LIST_NEXT, cap);
+}
+EXPORT_SYMBOL_GPL(pci_find_next_capability);
+
+
 static int __devinit pci_setup(char *str)
 {
 	while (str) {

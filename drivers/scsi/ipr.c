@@ -93,6 +93,7 @@ static int ipr_testmode = 0;
 static unsigned int ipr_fastfail = 0;
 static unsigned int ipr_transop_timeout = IPR_OPERATIONAL_TIMEOUT;
 static spinlock_t ipr_driver_lock = SPIN_LOCK_UNLOCKED;
+static unsigned int ipr_debug = 0;
 
 /* This table describes the differences between DMA controller chips */
 static const struct ipr_chip_cfg_t ipr_chip_cfg[] = {
@@ -151,6 +152,8 @@ module_param_named(fastfail, ipr_fastfail, int, 0);
 MODULE_PARM_DESC(fastfail, "Reduce timeouts and retries");
 module_param_named(transop_timeout, ipr_transop_timeout, int, 0);
 MODULE_PARM_DESC(transop_timeout, "Time in seconds to wait for adapter to come operational (default: 300)");
+module_param_named(debug, ipr_debug, int, 0);
+MODULE_PARM_DESC(debug, "Enable device driver debugging logging. Set to 1 to enable. (default: 0)");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(IPR_DRIVER_VERSION);
 
@@ -286,12 +289,18 @@ struct ipr_error_table_t ipr_error_table[] = {
 	"3110: Device bus error, message or command phase"},
 	{0x04670400, 0, 1,
 	"9091: Incorrect hardware configuration change has been detected"},
+	{0x04678000, 0, 1,
+	"9073: Invalid multi-adapter configuration"},
 	{0x046E0000, 0, 1,
 	"FFF4: Command to logical unit failed"},
 	{0x05240000, 1, 0,
 	"Illegal request, invalid request type or request packet"},
 	{0x05250000, 0, 0,
 	"Illegal request, invalid resource handle"},
+	{0x05258000, 0, 0,
+	"Illegal request, commands not allowed to this device"},
+	{0x05258100, 0, 0,
+	"Illegal request, command not allowed to a secondary adapter"},
 	{0x05260000, 0, 0,
 	"Illegal request, invalid field in parameter list"},
 	{0x05260100, 0, 0,
@@ -300,6 +309,8 @@ struct ipr_error_table_t ipr_error_table[] = {
 	"Illegal request, parameter value invalid"},
 	{0x052C0000, 0, 0,
 	"Illegal request, command sequence error"},
+	{0x052C8000, 1, 0,
+	"Illegal request, dual adapter support not enabled"},
 	{0x06040500, 0, 1,
 	"9031: Array protection temporarily suspended, protection resuming"},
 	{0x06040600, 0, 1,
@@ -316,18 +327,26 @@ struct ipr_error_table_t ipr_error_table[] = {
 	"3029: A device replacement has occurred"},
 	{0x064C8000, 0, 1,
 	"9051: IOA cache data exists for a missing or failed device"},
+	{0x064C8100, 0, 1,
+	"9055: Auxiliary cache IOA contains cache data needed by the primary IOA"},
 	{0x06670100, 0, 1,
 	"9025: Disk unit is not supported at its physical location"},
 	{0x06670600, 0, 1,
 	"3020: IOA detected a SCSI bus configuration error"},
 	{0x06678000, 0, 1,
 	"3150: SCSI bus configuration error"},
+	{0x06678100, 0, 1,
+	"9074: Asymmetric advanced function disk configuration"},
 	{0x06690200, 0, 1,
 	"9041: Array protection temporarily suspended"},
 	{0x06698200, 0, 1,
 	"9042: Corrupt array parity detected on specified device"},
 	{0x066B0200, 0, 1,
 	"9030: Array no longer protected due to missing or failed disk unit"},
+	{0x066B8000, 0, 1,
+	"9071: Link operational transition"},
+	{0x066B8100, 0, 1,
+	"9072: Link not operational transition"},
 	{0x066B8200, 0, 1,
 	"9032: Array exposed but still protected"},
 	{0x07270000, 0, 0,
@@ -1058,7 +1077,7 @@ static void ipr_log_array_error(struct ipr_ioa_cfg *ioa_cfg,
 				array_entry->dev_res_addr.lun);
 		}
 
-		if (array_entry->dev_res_addr.bus >= IPR_MAX_NUM_BUSES) {
+		if (array_entry->expected_dev_res_addr.bus >= IPR_MAX_NUM_BUSES) {
 			ipr_err("Expected Location: unknown\n");
 		} else {
 			ipr_err("Expected Location: %d:%d:%d:%d\n",
@@ -1078,6 +1097,55 @@ static void ipr_log_array_error(struct ipr_ioa_cfg *ioa_cfg,
 }
 
 /**
+ * ipr_log_hex_data - Log additional hex IOA error data.
+ * @data:		IOA error data
+ * @len:		data length
+ *
+ * Return value:
+ * 	none
+ **/
+static void ipr_log_hex_data(u32 *data, int len)
+{
+	int i;
+
+	if (len == 0)
+		return;
+
+	for (i = 0; i < len / 4; i += 4) {
+		ipr_err("%08X: %08X %08X %08X %08X\n", i*4,
+			be32_to_cpu(data[i]),
+			be32_to_cpu(data[i+1]),
+			be32_to_cpu(data[i+2]),
+			be32_to_cpu(data[i+3]));
+	}
+}
+
+/**
+ * ipr_log_dual_ioa_error - Log a dual adapter error.
+ * @ioa_cfg:	ioa config struct
+ * @hostrcb:	hostrcb struct
+ *
+ * Return value:
+ * 	none
+ **/
+static void ipr_log_dual_ioa_error(struct ipr_ioa_cfg *ioa_cfg,
+				   struct ipr_hostrcb *hostrcb)
+{
+	struct ipr_hostrcb_type_07_error *error;
+
+	error = &hostrcb->hcam.u.error.u.type_07_error;
+	error->failure_reason[sizeof(error->failure_reason) - 1] = '\0';
+
+	ipr_err("%s\n", error->failure_reason);
+	ipr_err("Remote Adapter VPD:\n");
+	ipr_log_vpd(&error->vpids, error->sn);
+	ipr_log_hex_data(error->data,
+			 be32_to_cpu(hostrcb->hcam.length) -
+			 (offsetof(struct ipr_hostrcb_error, u) +
+			  offsetof(struct ipr_hostrcb_type_07_error, data)));
+}
+
+/**
  * ipr_log_generic_error - Log an adapter error.
  * @ioa_cfg:	ioa config struct
  * @hostrcb:	hostrcb struct
@@ -1088,22 +1156,8 @@ static void ipr_log_array_error(struct ipr_ioa_cfg *ioa_cfg,
 static void ipr_log_generic_error(struct ipr_ioa_cfg *ioa_cfg,
 				  struct ipr_hostrcb *hostrcb)
 {
-	int i;
-	int ioa_data_len = be32_to_cpu(hostrcb->hcam.length);
-
-	if (ioa_data_len == 0)
-		return;
-
-	ipr_err("IOA Error Data:\n");
-	ipr_err("Offset    0 1 2 3  4 5 6 7  8 9 A B  C D E F\n");
-
-	for (i = 0; i < ioa_data_len / 4; i += 4) {
-		ipr_err("%08X: %08X %08X %08X %08X\n", i*4,
-			be32_to_cpu(hostrcb->hcam.u.raw.data[i]),
-			be32_to_cpu(hostrcb->hcam.u.raw.data[i+1]),
-			be32_to_cpu(hostrcb->hcam.u.raw.data[i+2]),
-			be32_to_cpu(hostrcb->hcam.u.raw.data[i+3]));
-	}
+	ipr_log_hex_data(hostrcb->hcam.u.raw.data,
+			 be32_to_cpu(hostrcb->hcam.length));
 }
 
 /**
@@ -1192,13 +1246,12 @@ static void ipr_handle_log_data(struct ipr_ioa_cfg *ioa_cfg,
 	case IPR_HOST_RCB_OVERLAY_ID_6:
 		ipr_log_array_error(ioa_cfg, hostrcb);
 		break;
-	case IPR_HOST_RCB_OVERLAY_ID_DEFAULT:
-		ipr_log_generic_error(ioa_cfg, hostrcb);
+	case IPR_HOST_RCB_OVERLAY_ID_7:
+		ipr_log_dual_ioa_error(ioa_cfg, hostrcb);
 		break;
+	case IPR_HOST_RCB_OVERLAY_ID_DEFAULT:
 	default:
-		dev_err(&ioa_cfg->pdev->dev,
-			"Unknown error received. Overlay ID: %d\n",
-			hostrcb->hcam.overlay_id);
+		ipr_log_generic_error(ioa_cfg, hostrcb);
 		break;
 	}
 }
@@ -3874,6 +3927,7 @@ static void ipr_erp_start(struct ipr_ioa_cfg *ioa_cfg,
 		scsi_cmd->result |= (DID_IMM_RETRY << 16);
 		break;
 	case IPR_IOASC_IR_RESOURCE_HANDLE:
+	case IPR_IOASC_IR_NO_CMDS_TO_2ND_IOA:
 		scsi_cmd->result |= (DID_NO_CONNECT << 16);
 		break;
 	case IPR_IOASC_HW_SEL_TIMEOUT:
@@ -3886,6 +3940,7 @@ static void ipr_erp_start(struct ipr_ioa_cfg *ioa_cfg,
 		scsi_cmd->result |= (DID_IMM_RETRY << 16);
 		break;
 	case IPR_IOASC_MED_DO_NOT_REALLOC: /* prevent retries */
+	case IPR_IOASA_IR_DUAL_IOA_DISABLED:
 		scsi_cmd->result |= (DID_PASSTHROUGH << 16);
 		break;
 	case IPR_IOASC_BUS_WAS_RESET:
@@ -4283,7 +4338,7 @@ static int ipr_set_supported_devs(struct ipr_cmnd *ipr_cmd)
 	ipr_cmd->job_step = ipr_ioa_reset_done;
 
 	list_for_each_entry_continue(res, &ioa_cfg->used_res_q, queue) {
-		if (!ipr_is_af_dasd_device(res))
+		if (!IPR_IS_DASD_DEVICE(res->cfgte.std_inq_data))
 			continue;
 
 		ipr_cmd->u.res = res;
@@ -5081,6 +5136,7 @@ static int ipr_reset_restore_cfg_space(struct ipr_cmnd *ipr_cmd)
 	int rc;
 
 	ENTER;
+	pci_unblock_user_cfg_access(ioa_cfg->pdev);
 	rc = pci_restore_state(ioa_cfg->pdev, ioa_cfg->pci_cfg_buf);
 
 	if (rc != PCIBIOS_SUCCESSFUL) {
@@ -5135,6 +5191,7 @@ static int ipr_reset_start_bist(struct ipr_cmnd *ipr_cmd)
 	int rc;
 
 	ENTER;
+	pci_block_user_cfg_access(ioa_cfg->pdev);
 	rc = pci_write_config_byte(ioa_cfg->pdev, PCI_BIST, PCI_BIST_START);
 
 	if (rc != PCIBIOS_SUCCESSFUL) {
@@ -6039,6 +6096,7 @@ static void __ipr_remove(struct pci_dev *pdev)
 
 	spin_unlock_irqrestore(ioa_cfg->host->host_lock, host_lock_flags);
 	wait_event(ioa_cfg->reset_wait_q, !ioa_cfg->in_reset_reload);
+	flush_scheduled_work();
 	spin_lock_irqsave(ioa_cfg->host->host_lock, host_lock_flags);
 
 	spin_lock(&ipr_driver_lock);
@@ -6069,8 +6127,6 @@ static void ipr_remove(struct pci_dev *pdev)
 
 	ENTER;
 
-	ioa_cfg->allow_cmds = 0;
-	flush_scheduled_work();
 	ipr_remove_trace_file(&ioa_cfg->host->shost_classdev.kobj,
 			      &ipr_trace_attr);
 	ipr_remove_dump_file(&ioa_cfg->host->shost_classdev.kobj,
@@ -6138,6 +6194,7 @@ static int __devinit ipr_probe(struct pci_dev *pdev,
 	ipr_scan_vsets(ioa_cfg);
 	scsi_add_device(ioa_cfg->host, IPR_IOA_BUS, IPR_IOA_TARGET, IPR_IOA_LUN);
 	ioa_cfg->allow_ml_add_del = 1;
+	ioa_cfg->host->max_channel = IPR_VSET_BUS;
 	schedule_work(&ioa_cfg->work_q);
 	return 0;
 }
@@ -6185,11 +6242,17 @@ static struct pci_device_id ipr_pci_table[] __devinitdata = {
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE,
 		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571A,
 	      0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
+	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_CITRINE,
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_575B,
+		0, 0, (kernel_ulong_t)&ipr_chip_cfg[0] },
 	{ PCI_VENDOR_ID_IBM, PCI_DEVICE_ID_IBM_SNIPE,
 		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_2780,
 		0, 0, (kernel_ulong_t)&ipr_chip_cfg[1] },
 	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_SCAMP,
 		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571E,
+		0, 0, (kernel_ulong_t)&ipr_chip_cfg[1] },
+	{ PCI_VENDOR_ID_ADAPTEC2, PCI_DEVICE_ID_ADAPTEC2_SCAMP,
+		PCI_VENDOR_ID_IBM, IPR_SUBS_DEV_ID_571F,
 		0, 0, (kernel_ulong_t)&ipr_chip_cfg[1] },
 	{ }
 };

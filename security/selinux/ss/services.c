@@ -438,18 +438,7 @@ out:
 
 }
 
-/**
- * security_context_to_sid - Obtain a SID for a given security context.
- * @scontext: security context
- * @scontext_len: length in bytes
- * @sid: security identifier, SID
- *
- * Obtains a SID associated with the security context that
- * has the string representation specified by @scontext.
- * Returns -%EINVAL if the context is invalid, -%ENOMEM if insufficient
- * memory is available, or 0 on success.
- */
-int security_context_to_sid(char *scontext, u32 scontext_len, u32 *sid)
+static int security_context_to_sid_core(char *scontext, u32 scontext_len, u32 *sid, int ignore_mls)
 {
 	char *scontext2;
 	struct context context;
@@ -544,11 +533,18 @@ int security_context_to_sid(char *scontext, u32 scontext_len, u32 *sid)
 	if (rc)
 		goto out_unlock;
 
+	/*
+	 * Special case for compatibility with RHEL5 disks, where the
+	 * MLS field is enabled: just ignore the MLS field.
+	 */
 	if ((p - scontext2) < scontext_len) {
+		if (!selinux_mls_enabled && ignore_mls && oldc == ':')
+			goto ignore_mls_field;
 		rc = -EINVAL;
 		goto out_unlock;
 	}
 
+ignore_mls_field:
 	/* Check the validity of the new context. */
 	if (!policydb_context_isvalid(&policydb, &context)) {
 		rc = -EINVAL;
@@ -562,6 +558,40 @@ out_unlock:
 	kfree(scontext2);
 out:
 	return rc;
+}
+
+/**
+ * security_context_to_sid - Obtain a SID for a given security context.
+ * @scontext: security context
+ * @scontext_len: length in bytes
+ * @sid: security identifier, SID
+ *
+ * Obtains a SID associated with the security context that
+ * has the string representation specified by @scontext.
+ * Returns -%EINVAL if the context is invalid, -%ENOMEM if insufficient
+ * memory is available, or 0 on success.
+ */
+int security_context_to_sid(char *scontext, u32 scontext_len, u32 *sid)
+{
+	return security_context_to_sid_core(scontext, scontext_len, sid, 0);
+}
+
+/**
+ * security_context_to_sid_mlscompat - Obtain a SID for a given security
+ * context, ignoring MLS field if MLS is disabled.  For compatibility with
+ * MLS-labeled disks.
+ * @scontext: security context
+ * @scontext_len: length in bytes
+ * @sid: security identifier, SID
+ *
+ * Obtains a SID associated with the security context that
+ * has the string representation specified by @scontext.
+ * Returns -%EINVAL if the context is invalid, -%ENOMEM if insufficient
+ * memory is available, or 0 on success.
+ */
+int security_context_to_sid_mlscompat(char *scontext, u32 scontext_len, u32 *sid)
+{
+	return security_context_to_sid_core(scontext, scontext_len, sid, 1);
 }
 
 static int compute_sid_handle_invalid_context(

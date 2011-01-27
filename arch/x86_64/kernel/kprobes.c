@@ -35,16 +35,15 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/preempt.h>
-#include <linux/moduleloader.h>
+#include <linux/module.h>
 
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
 #include <asm/kdebug.h>
+#include <asm/uaccess.h>
 
-static DECLARE_MUTEX(kprobe_mutex);
-static kprobe_opcode_t *get_insn_slot(void);
-static void free_insn_slot(kprobe_opcode_t *slot);
 void jprobe_return_end(void);
+static void arch_copy_kprobe(struct kprobe *p);
 
 DEFINE_PER_CPU(struct kprobe *, current_kprobe) = NULL;
 DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
@@ -70,12 +69,11 @@ static inline int is_IF_modifier(kprobe_opcode_t *insn)
 int arch_prepare_kprobe(struct kprobe *p)
 {
 	/* insn: must be on special executable page on x86_64. */
-	down(&kprobe_mutex);
 	p->ainsn.insn = get_insn_slot();
-	up(&kprobe_mutex);
 	if (!p->ainsn.insn) {
 		return -ENOMEM;
 	}
+	arch_copy_kprobe(p);
 	return 0;
 }
 
@@ -182,7 +180,7 @@ static inline s32 *is_riprel(u8 *insn)
 	return NULL;
 }
 
-void arch_copy_kprobe(struct kprobe *p)
+static void arch_copy_kprobe(struct kprobe *p)
 {
 	s32 *ripdisp;
 	memcpy(p->ainsn.insn, p->addr, MAX_INSN_SIZE);
@@ -328,12 +326,21 @@ int kprobe_handler(struct pt_regs *regs)
 				 */
 				save_previous_kprobe(kcb);
 				set_current_kprobe(p, regs, kcb);
-				p->nmissed++;
+				kprobes_inc_nmissed_count(p);
 				prepare_singlestep(p, regs);
 				kcb->kprobe_status = KPROBE_REENTER;
 				return 1;
 			}
 		} else {
+			if (*addr != BREAKPOINT_INSTRUCTION) {
+			/* The breakpoint instruction was removed by
+			 * another cpu right after we hit, no further
+			 * handling of this interrupt is appropriate
+			 */
+				regs->rip = (unsigned long)addr;
+				ret = 1;
+				goto no_kprobe;
+			}
 			p = __get_cpu_var(current_kprobe);
 			if (p->break_handler && p->break_handler(p, regs)) {
 				goto ss_probe;
@@ -569,16 +576,62 @@ int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 {
 	struct kprobe *cur = kprobe_running();
 	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+	const struct exception_table_entry *fixup;
 
-	if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
-		return 1;
-
-	if (kcb->kprobe_status & KPROBE_HIT_SS) {
-		resume_execution(cur, regs, kcb);
+	switch(kcb->kprobe_status) {
+	case KPROBE_HIT_SS:
+	case KPROBE_REENTER:
+		/*
+		 * We are here because the instruction being single
+		 * stepped caused a page fault. We reset the current
+		 * kprobe and the rip points back to the probe address
+		 * and allow the page fault handler to continue as a
+		 * normal page fault.
+		 */
+		regs->rip = (unsigned long)cur->addr;
 		regs->eflags |= kcb->kprobe_old_rflags;
-
-		reset_current_kprobe();
+		if (kcb->kprobe_status == KPROBE_REENTER)
+			restore_previous_kprobe(kcb);
+		else
+			reset_current_kprobe();
 		preempt_enable_no_resched();
+		break;
+	case KPROBE_HIT_ACTIVE:
+	case KPROBE_HIT_SSDONE:
+		/*
+		 * We increment the nmissed count for accounting,
+		 * we can also use npre/npostfault count for accouting
+		 * these specific fault cases.
+		 */
+		kprobes_inc_nmissed_count(cur);
+
+		/*
+		 * We come here because instructions in the pre/post
+		 * handler caused the page_fault, this could happen
+		 * if handler tries to access user space by
+		 * copy_from_user(), get_user() etc. Let the
+		 * user-specified handler try to fix it first.
+		 */
+		if (cur->fault_handler && cur->fault_handler(cur, regs, trapnr))
+			return 1;
+
+		/*
+		 * In case the user-specified fault handler returned
+		 * zero, try to fix up.
+		 */
+		fixup = search_exception_tables(regs->rip);
+		if (fixup) {
+			regs->rip = fixup->fixup;
+			return 1;
+		}
+
+		/*
+		 * fixup() could not handle it,
+		 * Let do_page_fault() fix it.
+		 */
+		break;
+	default:
+		break;
 	}
 	return 0;
 }
@@ -592,6 +645,9 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 	struct die_args *args = (struct die_args *)data;
 	int ret = NOTIFY_DONE;
 
+	if (args->regs && user_mode(args->regs))
+		return ret;
+
 	switch (val) {
 	case DIE_INT3:
 		if (kprobe_handler(args->regs))
@@ -602,6 +658,13 @@ int kprobe_exceptions_notify(struct notifier_block *self, unsigned long val,
 			ret = NOTIFY_STOP;
 		break;
 	case DIE_GPF:
+	case DIE_PAGE_FAULT:
+		preempt_disable();
+		if (kprobe_running() &&
+				kprobe_fault_handler(args->regs, args->trapnr))
+				ret = NOTIFY_STOP;
+		preempt_enable();
+		break;
 	default:
 		break;
 	}
@@ -670,115 +733,6 @@ int longjmp_break_handler(struct kprobe *p, struct pt_regs *regs)
 		return 1;
 	}
 	return 0;
-}
-
-/*
- * kprobe->ainsn.insn points to the copy of the instruction to be single-stepped.
- * By default on x86_64, pages we get from kmalloc or vmalloc are not
- * executable.  Single-stepping an instruction on such a page yields an
- * oops.  So instead of storing the instruction copies in their respective
- * kprobe objects, we allocate a page, map it executable, and store all the
- * instruction copies there.  (We can allocate additional pages if somebody
- * inserts a huge number of probes.)  Each page can hold up to INSNS_PER_PAGE
- * instruction slots, each of which is MAX_INSN_SIZE*sizeof(kprobe_opcode_t)
- * bytes.
- */
-#define INSNS_PER_PAGE (PAGE_SIZE/(MAX_INSN_SIZE*sizeof(kprobe_opcode_t)))
-struct kprobe_insn_page {
-	struct hlist_node hlist;
-	kprobe_opcode_t *insns;		/* page of instruction slots */
-	char slot_used[INSNS_PER_PAGE];
-	int nused;
-};
-
-static struct hlist_head kprobe_insn_pages;
-
-/**
- * get_insn_slot() - Find a slot on an executable page for an instruction.
- * We allocate an executable page if there's no room on existing ones.
- */
-static kprobe_opcode_t *get_insn_slot(void)
-{
-	struct kprobe_insn_page *kip;
-	struct hlist_node *pos;
-
-	hlist_for_each(pos, &kprobe_insn_pages) {
-		kip = hlist_entry(pos, struct kprobe_insn_page, hlist);
-		if (kip->nused < INSNS_PER_PAGE) {
-			int i;
-			for (i = 0; i < INSNS_PER_PAGE; i++) {
-				if (!kip->slot_used[i]) {
-					kip->slot_used[i] = 1;
-					kip->nused++;
-					return kip->insns + (i*MAX_INSN_SIZE);
-				}
-			}
-			/* Surprise!  No unused slots.  Fix kip->nused. */
-			kip->nused = INSNS_PER_PAGE;
-		}
-	}
-
-	/* All out of space.  Need to allocate a new page. Use slot 0.*/
-	kip = kmalloc(sizeof(struct kprobe_insn_page), GFP_KERNEL);
-	if (!kip) {
-		return NULL;
-	}
-
-	/*
-	 * For the %rip-relative displacement fixups to be doable, we
-	 * need our instruction copy to be within +/- 2GB of any data it
-	 * might access via %rip.  That is, within 2GB of where the
-	 * kernel image and loaded module images reside.  So we allocate
-	 * a page in the module loading area.
-	 */
-	kip->insns = module_alloc(PAGE_SIZE);
-	if (!kip->insns) {
-		kfree(kip);
-		return NULL;
-	}
-	INIT_HLIST_NODE(&kip->hlist);
-	hlist_add_head(&kip->hlist, &kprobe_insn_pages);
-	memset(kip->slot_used, 0, INSNS_PER_PAGE);
-	kip->slot_used[0] = 1;
-	kip->nused = 1;
-	return kip->insns;
-}
-
-/**
- * free_insn_slot() - Free instruction slot obtained from get_insn_slot().
- */
-static void free_insn_slot(kprobe_opcode_t *slot)
-{
-	struct kprobe_insn_page *kip;
-	struct hlist_node *pos;
-
-	hlist_for_each(pos, &kprobe_insn_pages) {
-		kip = hlist_entry(pos, struct kprobe_insn_page, hlist);
-		if (kip->insns <= slot
-		    && slot < kip->insns+(INSNS_PER_PAGE*MAX_INSN_SIZE)) {
-			int i = (slot - kip->insns) / MAX_INSN_SIZE;
-			kip->slot_used[i] = 0;
-			kip->nused--;
-			if (kip->nused == 0) {
-				/*
-				 * Page is no longer in use.  Free it unless
-				 * it's the last one.  We keep the last one
-				 * so as not to have to set it up again the
-				 * next time somebody inserts a probe.
-				 */
-				hlist_del(&kip->hlist);
-				if (hlist_empty(&kprobe_insn_pages)) {
-					INIT_HLIST_NODE(&kip->hlist);
-					hlist_add_head(&kip->hlist,
-						&kprobe_insn_pages);
-				} else {
-					module_free(NULL, kip->insns);
-					kfree(kip);
-				}
-			}
-			return;
-		}
-	}
 }
 
 static struct kprobe trampoline_p = {

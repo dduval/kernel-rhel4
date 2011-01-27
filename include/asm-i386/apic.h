@@ -17,7 +17,18 @@
 #define APIC_DEBUG   2
 
 extern int apic_verbosity;
+extern int enable_local_apic;
 
+static inline void lapic_disable(void)
+{
+	enable_local_apic = -1;
+	clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
+}
+
+static inline void lapic_enable(void)
+{
+	enable_local_apic = 1;
+}
 /*
  * Define the default level of output to be very little
  * This can be turned up by using apic=verbose for more
@@ -110,6 +121,7 @@ extern void enable_APIC_timer(void);
 
 extern int check_nmi_watchdog (void);
 extern void enable_NMI_through_LVT0 (void * dummy);
+extern int modern_apic(void);
 
 extern unsigned int nmi_watchdog;
 #define NMI_NONE	0

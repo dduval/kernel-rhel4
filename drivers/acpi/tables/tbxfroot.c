@@ -251,13 +251,13 @@ acpi_get_firmware_table (
 	for (i = 0, j = 0; i < table_count; i++) {
 		/* Get the next table pointer, handle RSDT vs. XSDT */
 
-		if (acpi_gbl_RSDP->revision < 2) {
+		if ((acpi_gbl_RSDP->revision >= 2) && acpi_gbl_RSDP->xsdt_physical_address) {
 			address.pointer.value = (ACPI_CAST_PTR (
-				RSDT_DESCRIPTOR, rsdt_info->pointer))->table_offset_entry[i];
+				XSDT_DESCRIPTOR, rsdt_info->pointer))->table_offset_entry[i];
 		}
 		else {
 			address.pointer.value = (ACPI_CAST_PTR (
-				XSDT_DESCRIPTOR, rsdt_info->pointer))->table_offset_entry[i];
+				RSDT_DESCRIPTOR, rsdt_info->pointer))->table_offset_entry[i];
 		}
 
 		/* Get the table header */

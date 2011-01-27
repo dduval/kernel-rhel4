@@ -18,22 +18,6 @@
  */
 #include "qla_def.h"
 
-static inline ms_iocb_entry_t *
-qla2x00_prep_ms_iocb(scsi_qla_host_t *, uint32_t, uint32_t);
-
-static inline void *
-qla24xx_prep_ms_iocb(scsi_qla_host_t *, uint32_t, uint32_t);
-
-static inline struct ct_sns_req *
-qla2x00_prep_ct_req(struct ct_sns_req *, uint16_t, uint16_t);
-
-static inline struct sns_cmd_pkt *
-qla2x00_prep_sns_cmd(scsi_qla_host_t *, uint16_t, uint16_t, uint16_t);
-
-static int
-qla2x00_chk_ms_status(scsi_qla_host_t *, ms_iocb_entry_t *, struct ct_sns_rsp *,
-    const char *);
-
 static int qla2x00_sns_ga_nxt(scsi_qla_host_t *, fc_port_t *);
 static int qla2x00_sns_gid_pt(scsi_qla_host_t *, sw_info_t *);
 static int qla2x00_sns_gpn_id(scsi_qla_host_t *, sw_info_t *);
@@ -41,46 +25,6 @@ static int qla2x00_sns_gnn_id(scsi_qla_host_t *, sw_info_t *);
 static int qla2x00_sns_rft_id(scsi_qla_host_t *);
 static int qla2x00_sns_rnn_id(scsi_qla_host_t *);
 
-
-/**
- * qla2x00_prep_ms_iocb() - Prepare common MS/CT IOCB fields for SNS CT query.
- * @ha: HA context
- * @req_size: request size in bytes
- * @rsp_size: response size in bytes
- *
- * Returns a pointer to the @ha's ms_iocb.
- */
-static inline ms_iocb_entry_t *
-qla2x00_prep_ms_iocb(scsi_qla_host_t *ha, uint32_t req_size, uint32_t rsp_size)
-{
-	ms_iocb_entry_t *ms_pkt;
-
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha))
-		return qla24xx_prep_ms_iocb(ha, req_size, rsp_size);
-
-	ms_pkt = ha->ms_iocb;
-	memset(ms_pkt, 0, sizeof(ms_iocb_entry_t));
-
-	ms_pkt->entry_type = MS_IOCB_TYPE;
-	ms_pkt->entry_count = 1;
-	SET_TARGET_ID(ha, ms_pkt->loop_id, SIMPLE_NAME_SERVER);
-	ms_pkt->control_flags = __constant_cpu_to_le16(CF_READ | CF_HEAD_TAG);
-	ms_pkt->timeout = __constant_cpu_to_le16(25);
-	ms_pkt->cmd_dsd_count = __constant_cpu_to_le16(1);
-	ms_pkt->total_dsd_count = __constant_cpu_to_le16(2);
-	ms_pkt->rsp_bytecount = cpu_to_le32(rsp_size);
-	ms_pkt->req_bytecount = cpu_to_le32(req_size);
-
-	ms_pkt->dseg_req_address[0] = cpu_to_le32(LSD(ha->ct_sns_dma));
-	ms_pkt->dseg_req_address[1] = cpu_to_le32(MSD(ha->ct_sns_dma));
-	ms_pkt->dseg_req_length = ms_pkt->req_bytecount;
-
-	ms_pkt->dseg_rsp_address[0] = cpu_to_le32(LSD(ha->ct_sns_dma));
-	ms_pkt->dseg_rsp_address[1] = cpu_to_le32(MSD(ha->ct_sns_dma));
-	ms_pkt->dseg_rsp_length = ms_pkt->rsp_bytecount;
-
-	return (ms_pkt);
-}
 
 /**
  * qla24xx_prep_ms_iocb() - Prepare common CT IOCB fields for SNS CT query.
@@ -119,6 +63,46 @@ qla24xx_prep_ms_iocb(scsi_qla_host_t *ha, uint32_t req_size, uint32_t rsp_size)
 }
 
 /**
+ * qla2x00_prep_ms_iocb() - Prepare common MS/CT IOCB fields for SNS CT query.
+ * @ha: HA context
+ * @req_size: request size in bytes
+ * @rsp_size: response size in bytes
+ *
+ * Returns a pointer to the @ha's ms_iocb.
+ */
+static inline ms_iocb_entry_t *
+qla2x00_prep_ms_iocb(scsi_qla_host_t *ha, uint32_t req_size, uint32_t rsp_size)
+{
+	ms_iocb_entry_t *ms_pkt;
+
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
+		return qla24xx_prep_ms_iocb(ha, req_size, rsp_size);
+
+	ms_pkt = ha->ms_iocb;
+	memset(ms_pkt, 0, sizeof(ms_iocb_entry_t));
+
+	ms_pkt->entry_type = MS_IOCB_TYPE;
+	ms_pkt->entry_count = 1;
+	SET_TARGET_ID(ha, ms_pkt->loop_id, SIMPLE_NAME_SERVER);
+	ms_pkt->control_flags = __constant_cpu_to_le16(CF_READ | CF_HEAD_TAG);
+	ms_pkt->timeout = __constant_cpu_to_le16(25);
+	ms_pkt->cmd_dsd_count = __constant_cpu_to_le16(1);
+	ms_pkt->total_dsd_count = __constant_cpu_to_le16(2);
+	ms_pkt->rsp_bytecount = cpu_to_le32(rsp_size);
+	ms_pkt->req_bytecount = cpu_to_le32(req_size);
+
+	ms_pkt->dseg_req_address[0] = cpu_to_le32(LSD(ha->ct_sns_dma));
+	ms_pkt->dseg_req_address[1] = cpu_to_le32(MSD(ha->ct_sns_dma));
+	ms_pkt->dseg_req_length = ms_pkt->req_bytecount;
+
+	ms_pkt->dseg_rsp_address[0] = cpu_to_le32(LSD(ha->ct_sns_dma));
+	ms_pkt->dseg_rsp_address[1] = cpu_to_le32(MSD(ha->ct_sns_dma));
+	ms_pkt->dseg_rsp_length = ms_pkt->rsp_bytecount;
+
+	return (ms_pkt);
+}
+
+/**
  * qla2x00_prep_ct_req() - Prepare common CT request fields for SNS query.
  * @ct_req: CT request buffer
  * @cmd: GS command
@@ -152,7 +136,7 @@ qla2x00_chk_ms_status(scsi_qla_host_t *ha, ms_iocb_entry_t *ms_pkt,
 		DEBUG2_3(printk("scsi(%ld): %s failed, error status (%x).\n",
 		    ha->host_no, routine, ms_pkt->entry_status));
 	} else {
-		if (IS_QLA24XX(ha) || IS_QLA25XX(ha))
+		if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
 			comp_status =
 			    ((struct ct_entry_24xx *)ms_pkt)->comp_status;
 		else
@@ -511,7 +495,7 @@ qla2x00_rft_id(scsi_qla_host_t *ha)
 
 	ct_req->req.rft_id.fc4_types[2] = 0x01;		/* FCP-3 */
 	if (ha->flags.enable_ip)
-		ct_req->req.rft_id.fc4_types[1] = 0x20;	/* IP */
+		ct_req->req.rft_id.fc4_types[3] = 0x20;	/* IP */
 
 	/* Execute MS IOCB */
 	rval = qla2x00_issue_iocb(ha, ha->ms_iocb, ha->ms_iocb_dma,
@@ -566,6 +550,7 @@ qla2x00_rff_id(scsi_qla_host_t *ha)
 	ct_req->req.rff_id.port_id[1] = ha->d_id.b.area;
 	ct_req->req.rff_id.port_id[2] = ha->d_id.b.al_pa;
 
+	ct_req->req.rff_id.fc4_feature = BIT_1;
 	ct_req->req.rff_id.fc4_type = 0x08;		/* SCSI - FCP */
 
 	/* Execute MS IOCB */
@@ -1197,7 +1182,7 @@ qla2x00_prep_ms_fdmi_iocb(scsi_qla_host_t *ha, uint32_t req_size,
 {
 	ms_iocb_entry_t *ms_pkt;
 
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha))
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
 		return qla24xx_prep_ms_fdmi_iocb(ha, req_size, rsp_size);
 
 	ms_pkt = ha->ms_iocb;
@@ -1230,7 +1215,7 @@ qla2x00_update_ms_fdmi_iocb(scsi_qla_host_t *ha, uint32_t req_size)
 	ms_iocb_entry_t *ms_pkt = ha->ms_iocb;
 	struct ct_entry_24xx *ct_pkt = (struct ct_entry_24xx *)ha->ms_iocb;
 
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
 		ct_pkt->cmd_byte_count = cpu_to_le32(req_size);
 		ct_pkt->dseg_0_len = ct_pkt->cmd_byte_count;
 	} else {
@@ -1550,20 +1535,20 @@ qla2x00_fdmi_rpa(scsi_qla_host_t *ha)
 	eiter->len = __constant_cpu_to_be16(4 + 32);
 	eiter->a.fc4_types[2] = 0x01;
 	if (ha->flags.enable_ip)
-		eiter->a.fc4_types[1] = 0x20;
+		eiter->a.fc4_types[3] = 0x20;
 	size += 4 + 32;
 
 	DEBUG13(printk("%s(%ld): FC4_TYPES=%02x %02x.\n", __func__, ha->host_no,
-	    eiter->a.fc4_types[2], eiter->a.fc4_types[1]));
+	    eiter->a.fc4_types[2], eiter->a.fc4_types[3]));
 
 	/* Supported speed. */
 	eiter = (struct ct_fdmi_port_attr *) (entries + size);
 	eiter->type = __constant_cpu_to_be16(FDMI_PORT_SUPPORT_SPEED);
 	eiter->len = __constant_cpu_to_be16(4 + 4);
-	if (IS_QLA25XX(ha))
-		eiter->a.sup_speed = __constant_cpu_to_be32(4);
-	else if (IS_QLA24XX(ha))
+	if (IS_QLA54XX(ha))
 		eiter->a.sup_speed = __constant_cpu_to_be32(8);
+	else if (IS_QLA24XX(ha))
+		eiter->a.sup_speed = __constant_cpu_to_be32(4);
 	else if (IS_QLA23XX(ha))
 		eiter->a.sup_speed = __constant_cpu_to_be32(2);
 	else
@@ -1585,9 +1570,6 @@ qla2x00_fdmi_rpa(scsi_qla_host_t *ha)
 		eiter->a.cur_speed = __constant_cpu_to_be32(2);
 		break;
 	case 3:
-		eiter->a.cur_speed = __constant_cpu_to_be32(8);
-		break;
-	case 4:
 		eiter->a.cur_speed = __constant_cpu_to_be32(4);
 		break;
 	}
@@ -1600,7 +1582,7 @@ qla2x00_fdmi_rpa(scsi_qla_host_t *ha)
 	eiter = (struct ct_fdmi_port_attr *) (entries + size);
 	eiter->type = __constant_cpu_to_be16(FDMI_PORT_MAX_FRAME_SIZE);
 	eiter->len = __constant_cpu_to_be16(4 + 4);
-	max_frame_size = IS_QLA24XX(ha) || IS_QLA25XX(ha) ?
+	max_frame_size = IS_QLA24XX(ha) || IS_QLA54XX(ha) ?
 		(uint32_t) icb24->frame_payload_size:
 		(uint32_t) ha->init_cb->frame_payload_size;
 	eiter->a.max_frame_size = cpu_to_be32(max_frame_size);

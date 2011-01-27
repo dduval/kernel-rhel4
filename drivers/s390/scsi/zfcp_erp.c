@@ -952,17 +952,17 @@ static int
 zfcp_erp_strategy_check_fsfreq(struct zfcp_erp_action *erp_action)
 {
 	int retval = 0;
-	struct zfcp_fsf_req *fsf_req;
+	struct zfcp_fsf_req *fsf_req = NULL;
 	struct zfcp_adapter *adapter = erp_action->adapter;
 
 	if (erp_action->fsf_req) {
 		/* take lock to ensure that request is not being deleted meanwhile */
-		write_lock(&adapter->fsf_req_list_lock);
+		spin_lock(&adapter->fsf_req_list_lock);
 		/* check whether fsf req does still exist */
 		list_for_each_entry(fsf_req, &adapter->fsf_req_list_head, list)
 		    if (fsf_req == erp_action->fsf_req)
 			break;
-		if (fsf_req == erp_action->fsf_req) {
+		if (fsf_req && (fsf_req->erp_action == erp_action)) {
 			/* fsf_req still exists */
 			debug_text_event(adapter->erp_dbf, 3, "a_ca_req");
 			debug_event(adapter->erp_dbf, 3, &fsf_req,
@@ -1000,7 +1000,7 @@ zfcp_erp_strategy_check_fsfreq(struct zfcp_erp_action *erp_action)
 			 */
 			erp_action->fsf_req = NULL;
 		}
-		write_unlock(&adapter->fsf_req_list_lock);
+		spin_unlock(&adapter->fsf_req_list_lock);
 	} else
 		debug_text_event(adapter->erp_dbf, 3, "a_ca_noreq");
 
@@ -2353,17 +2353,19 @@ static int
 zfcp_erp_adapter_strategy_open_fsf_xconfig(struct zfcp_erp_action *erp_action)
 {
 	int retval = ZFCP_ERP_SUCCEEDED;
-	int retries;
 	struct zfcp_adapter *adapter = erp_action->adapter;
+	int retries = ZFCP_EXCHANGE_CONFIG_DATA_RETRIES;
+	int sleep = ZFCP_EXCHANGE_CONFIG_DATA_FIRST_SLEEP;
 
 	atomic_clear_mask(ZFCP_STATUS_ADAPTER_XCONFIG_OK, &adapter->status);
-	retries = ZFCP_EXCHANGE_CONFIG_DATA_RETRIES;
 
-	do {
+	while (retries--) {
 		atomic_clear_mask(ZFCP_STATUS_ADAPTER_HOST_CON_INIT,
 				  &adapter->status);
 		ZFCP_LOG_DEBUG("Doing exchange config data\n");
+		write_lock(&adapter->erp_lock);
 		zfcp_erp_action_to_running(erp_action);
+		write_unlock(&adapter->erp_lock);
 		zfcp_erp_timeout_init(erp_action);
 		if (zfcp_fsf_exchange_config_data(erp_action)) {
 			retval = ZFCP_ERP_FAILED;
@@ -2397,16 +2399,17 @@ zfcp_erp_adapter_strategy_open_fsf_xconfig(struct zfcp_erp_action *erp_action)
 				      zfcp_get_busid_by_adapter(adapter));
 			break;
 		}
-		if (atomic_test_mask(ZFCP_STATUS_ADAPTER_HOST_CON_INIT,
-				     &adapter->status)) {
-			ZFCP_LOG_DEBUG("host connection still initialising... "
-				       "waiting and retrying...\n");
-			/* sleep a little bit before retry */
-			msleep(jiffies_to_msecs(ZFCP_EXCHANGE_CONFIG_DATA_SLEEP));
-		}
-	} while ((retries--) &&
-		 atomic_test_mask(ZFCP_STATUS_ADAPTER_HOST_CON_INIT,
-				  &adapter->status));
+
+		if (!atomic_test_mask(ZFCP_STATUS_ADAPTER_HOST_CON_INIT,
+				      &adapter->status))
+			break;
+
+		ZFCP_LOG_DEBUG("host connection still initialising... "
+			       "waiting and retrying...\n");
+		/* sleep a little bit before retry */
+		msleep(jiffies_to_msecs(sleep));
+		sleep *= 2;
+	}
 
 	if (!atomic_test_mask(ZFCP_STATUS_ADAPTER_XCONFIG_OK,
 			      &adapter->status)) {
@@ -3245,11 +3248,19 @@ zfcp_erp_action_enqueue(int action,
 		/* fall through !!! */
 
 	case ZFCP_ERP_ACTION_REOPEN_PORT_FORCED:
-		if (atomic_test_mask
-		    (ZFCP_STATUS_COMMON_ERP_INUSE, &port->status)
-		    && port->erp_action.action ==
-		    ZFCP_ERP_ACTION_REOPEN_PORT_FORCED) {
-			debug_text_event(adapter->erp_dbf, 4, "pf_actenq_drp");
+		if (atomic_test_mask(ZFCP_STATUS_COMMON_ERP_INUSE,
+				     &port->status)) {
+			if (port->erp_action.action !=
+			    ZFCP_ERP_ACTION_REOPEN_PORT_FORCED) {
+				ZFCP_LOG_INFO("dropped erp action %i (port "
+					      "0x%016Lx, action in use: %i)\n",
+					      action, port->wwpn,
+					      port->erp_action.action);
+				debug_text_event(adapter->erp_dbf, 4,
+						 "pf_actenq_drp");
+			} else 
+				debug_text_event(adapter->erp_dbf, 4,
+						 "pf_actenq_drpcp");
 			debug_event(adapter->erp_dbf, 4, &port->wwpn,
 				    sizeof (wwn_t));
 			goto out;

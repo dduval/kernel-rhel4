@@ -40,7 +40,7 @@
 
 #define PFX "powernow-k8: "
 #define BFX PFX "BIOS error: "
-#define VERSION "version 1.50.04-rh"
+#define VERSION "version 1.60.0"
 #include "powernow-k8.h"
 
 static int disable __initdata = 0;
@@ -323,6 +323,7 @@ static int core_frequency_transition(struct powernow_k8_data *data, u32 reqfid)
 	u32 vcoreqfid;
 	u32 vcocurrfid;
 	u32 vcofiddiff;
+	u32 fid_interval;
 	u32 savevid = data->currvid;
 
 	if ((reqfid < HI_FID_TABLE_BOTTOM) && (data->currfid < HI_FID_TABLE_BOTTOM)) {
@@ -347,9 +348,11 @@ static int core_frequency_transition(struct powernow_k8_data *data, u32 reqfid)
 	    : vcoreqfid - vcocurrfid;
 
 	while (vcofiddiff > 2) {
+               (data->currfid & 1) ? (fid_interval = 1) : (fid_interval = 2);
+
 		if (reqfid > data->currfid) {
 			if (data->currfid > LO_FID_TABLE_TOP) {
-				if (write_new_fid(data, data->currfid + 2)) {
+				if (write_new_fid(data, data->currfid + fid_interval)) {
 					return 1;
 				}
 			} else {
@@ -359,7 +362,7 @@ static int core_frequency_transition(struct powernow_k8_data *data, u32 reqfid)
 				}
 			}
 		} else {
-			if (write_new_fid(data, data->currfid - 2))
+			if (write_new_fid(data, data->currfid - fid_interval))
 				return 1;
 		}
 
@@ -453,7 +456,7 @@ static int check_supported_cpu(unsigned int cpu)
 	schedule();
 
 	if (smp_processor_id() != cpu) {
-		printk(KERN_ERR "limiting to cpu %u failed\n", cpu);
+		printk(KERN_ERR PFX "limiting to cpu %u failed\n", cpu);
 		goto out;
 	}
 
@@ -463,7 +466,7 @@ static int check_supported_cpu(unsigned int cpu)
 	eax = cpuid_eax(CPUID_PROCESSOR_SIGNATURE);
 	if (((eax & CPUID_USE_XFAM_XMOD) != CPUID_USE_XFAM_XMOD) ||
 	    ((eax & CPUID_XFAM) != CPUID_XFAM_K8) ||
-	    ((eax & CPUID_XMOD) > CPUID_XMOD_REV_F)) {
+	    ((eax & CPUID_XMOD) > CPUID_XMOD_REV_G)) {
 		printk(KERN_INFO PFX "Processor cpuid %x not supported\n", eax);
 		goto out;
 	}
@@ -508,22 +511,26 @@ static int check_pst_table(struct powernow_k8_data *data, struct pst_s *pst, u8 
 			printk(KERN_ERR BFX "maxvid exceeded with pstate %d\n", j);
 			return -ENODEV;
 		}
-		if ((pst[j].fid > MAX_FID)
-		    || (pst[j].fid & 1)
-		    || (j && (pst[j].fid < HI_FID_TABLE_BOTTOM))) {
+		
+		if (pst[j].fid > MAX_FID) {
+                       printk(KERN_ERR BFX "maxfid exceeded with pstate %d\n", j);
+                       return -ENODEV;
+		}
+
+		if (j && (pst[j].fid < HI_FID_TABLE_BOTTOM)) {
 			/* Only first fid is allowed to be in "low" range */
-			printk(KERN_ERR PFX "fid %d invalid : 0x%x\n", j, pst[j].fid);
+			printk(KERN_ERR BFX "fid %d invalid : 0x%x\n", j, pst[j].fid);
 			return -EINVAL;
 		}
 		if (pst[j].fid < lastfid)
 			lastfid = pst[j].fid;
 	}
 	if (lastfid & 1) {
-		printk(KERN_ERR PFX "lastfid invalid\n");
+		printk(KERN_ERR BFX "lastfid invalid\n");
 		return -EINVAL;
 	}
 	if (lastfid > LO_FID_TABLE_TOP)
-		printk(KERN_INFO PFX  "first fid not from lo freq table\n");
+		printk(KERN_INFO BFX  "first fid not from lo freq table\n");
 
 	return 0;
 }
@@ -796,6 +803,10 @@ static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 	data->numps = data->acpi_data.state_count;
 	print_basics(data);
 	powernow_k8_acpi_pst_values(data, 0);
+
+	/* notify BIOS that we exist */
+	acpi_processor_notify_smm(THIS_MODULE);
+
 	return 0;
 err_out:
 	acpi_processor_unregister_performance(&data->acpi_data, data->cpu);
@@ -900,7 +911,7 @@ static int powernowk8_target(struct cpufreq_policy *pol, unsigned targfreq, unsi
 	schedule();
 
 	if (smp_processor_id() != pol->cpu) {
-		printk(KERN_ERR "limiting to cpu %u failed\n", pol->cpu);
+		printk(KERN_ERR PFX "limiting to cpu %u failed\n", pol->cpu);
 		goto err_out;
 	}
 
@@ -983,8 +994,8 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
 	int rc;
 	u32 eax, ebx, ecx, edx;
 
-	if (!check_supported_cpu(pol->cpu))
-		return -ENODEV;
+	if (!cpu_online(pol->cpu))
+               return -ENODEV;
 
 	data = kmalloc(sizeof(struct powernow_k8_data), GFP_KERNEL);
 	if (!data) {
@@ -1024,7 +1035,7 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
 	schedule();
 
 	if (smp_processor_id() != pol->cpu) {
-		printk(KERN_ERR "limiting to cpu %u failed\n", pol->cpu);
+		printk(KERN_ERR PFX "limiting to cpu %u failed\n", pol->cpu);
 		goto err_out;
 	}
 

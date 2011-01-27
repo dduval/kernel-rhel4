@@ -62,6 +62,10 @@ u8 phys_proc_id[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
 u8 cpu_core_id[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
 EXPORT_SYMBOL(cpu_core_id);
 
+/* Last level cache ID of each logical CPU */
+int cpu_llc_id[NR_CPUS] __initdata = {[0 ... NR_CPUS-1] = BAD_APICID};
+cpumask_t cpu_llc_shared_map[NR_CPUS] __initdata;
+
 /* Bitmask of currently online CPUs */
 cpumask_t cpu_online_map;
 
@@ -76,6 +80,10 @@ struct cpuinfo_x86 cpu_data[NR_CPUS] __cacheline_aligned;
 int smp_threads_ready;
 
 cpumask_t cpu_sibling_map[NR_CPUS] __cacheline_aligned;
+
+/* representing HT and core siblings of each logical CPU */
+cpumask_t cpu_core_map[NR_CPUS] __cacheline_aligned;
+EXPORT_SYMBOL(cpu_core_map);
 
 /*
  * Trampoline 80x86 program as an array.
@@ -338,6 +346,51 @@ void __init smp_callin(void)
 
 int cpucount;
 
+/* representing cpus for which sibling maps can be computed */
+static cpumask_t cpu_sibling_setup_map;
+
+static inline void set_cpu_sibling_map(int cpu)
+{
+	int i;
+
+	cpu_set(cpu, cpu_sibling_setup_map);
+
+	if (smp_num_siblings > 1) {
+		for_each_cpu_mask(i, cpu_sibling_setup_map) {
+			if (phys_proc_id[cpu] == phys_proc_id[i] &&
+			    cpu_core_id[cpu] == cpu_core_id[i]) {
+				cpu_set(i, cpu_sibling_map[cpu]);
+				cpu_set(cpu, cpu_sibling_map[i]);
+				cpu_set(i, cpu_core_map[cpu]);
+				cpu_set(cpu, cpu_core_map[i]);
+				cpu_set(i, cpu_llc_shared_map[cpu]);
+				cpu_set(cpu, cpu_llc_shared_map[i]);
+			}
+		}
+	} else {
+		cpu_set(cpu, cpu_sibling_map[cpu]);
+	}
+
+	cpu_set(cpu, cpu_llc_shared_map[cpu]);
+
+	if (current_cpu_data.x86_num_cores == 1) {
+		cpu_core_map[cpu] = cpu_sibling_map[cpu];
+		return;
+	}
+
+	for_each_cpu_mask(i, cpu_sibling_setup_map) {
+		if (cpu_llc_id[cpu] != BAD_APICID &&
+		    cpu_llc_id[cpu] == cpu_llc_id[i]) {
+			cpu_set(i, cpu_llc_shared_map[cpu]);
+			cpu_set(cpu, cpu_llc_shared_map[i]);
+		}
+		if (phys_proc_id[cpu] == phys_proc_id[i]) {
+			cpu_set(i, cpu_core_map[cpu]);
+			cpu_set(cpu, cpu_core_map[i]);
+		}
+	}
+}
+
 /*
  * Activate a secondary processor.
  */
@@ -371,6 +424,12 @@ void __init start_secondary(void)
 
 
 	enable_APIC_timer(); 
+
+	/*
+	 * The sibling maps must be set before turing the online map on for
+	 * this cpu
+	 */
+	set_cpu_sibling_map(smp_processor_id());
 
 	/*
 	 * low-memory mappings have been cleared, flush them from
@@ -703,6 +762,17 @@ static void smp_tune_scheduling (void)
 		(cache_decay_ticks + 1) * 1000 / HZ);
 }
 
+/* maps the cpu to the sched domain representing multi-core */
+cpumask_t cpu_coregroup_map(int cpu)
+{
+	/*
+	 * For perf, we return last level cache shared map.
+	 * TBD: when power saving sched policy is added, we will return
+	 *      cpu_core_map when power saving policy is enabled
+	 */
+	return cpu_llc_shared_map[cpu];
+}
+
 /*
  * Cycle through the processors sending APIC IPIs to boot each.
  */
@@ -737,7 +807,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		printk(KERN_NOTICE "SMP motherboard not detected.\n");
 		io_apic_irqs = 0;
 		cpu_online_map = cpumask_of_cpu(0);
-		phys_cpu_present_map = physid_mask_of_physid(0);
+		phys_cpu_present_map = physid_mask_of_physid(boot_cpu_id);
 		if (APIC_init_uniprocessor())
 			printk(KERN_NOTICE "Local APIC not detected."
 					   " Using dummy APIC emulation.\n");
@@ -763,7 +833,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		printk(KERN_ERR "... forcing use of dummy APIC emulation. (tell your hw vendor)\n");
 		io_apic_irqs = 0;
 		cpu_online_map = cpumask_of_cpu(0);
-		phys_cpu_present_map = physid_mask_of_physid(0);
+		phys_cpu_present_map = physid_mask_of_physid(boot_cpu_id);
 		disable_apic = 1;
 		return;
 	}
@@ -778,7 +848,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		printk(KERN_INFO "SMP mode deactivated, forcing use of dummy APIC emulation.\n");
 		io_apic_irqs = 0;
 		cpu_online_map = cpumask_of_cpu(0);
-		phys_cpu_present_map = physid_mask_of_physid(0);
+		phys_cpu_present_map = physid_mask_of_physid(boot_cpu_id);
 		disable_apic = 1;
 		return;
 	}
@@ -851,41 +921,6 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		Dprintk("Before bogocount - setting activated=1.\n");
 	}
 
-	/*
-	 * Construct cpu_sibling_map[], so that we can tell the
-	 * sibling CPU efficiently.
-	 */
-	for (cpu = 0; cpu < NR_CPUS; cpu++)
-		cpus_clear(cpu_sibling_map[cpu]);
-
-	for (cpu = 0; cpu < NR_CPUS; cpu++) {
-		int siblings = 0;
-		int i;
-		if (!cpu_isset(cpu, cpu_callout_map))
-			continue;
-
-		if (smp_num_siblings > 1) {
-			for (i = 0; i < NR_CPUS; i++) {
-				if (!cpu_isset(i, cpu_callout_map))
-					continue;
-				if (cpu_core_id[cpu] == cpu_core_id[i]) {
-					siblings++;
-					cpu_set(i, cpu_sibling_map[cpu]);
-				}
-			}
-		} else { 
-			siblings++;
-			cpu_set(cpu, cpu_sibling_map[cpu]);
-		}
-
-		if (siblings != smp_num_siblings) {
-			printk(KERN_WARNING 
-	       "WARNING: %d siblings found for CPU%d, should be %d\n", 
-			       siblings, cpu, smp_num_siblings);
-			smp_num_siblings = siblings;
-		}       
-	}
-
 	Dprintk("Boot done.\n");
 
 	/*
@@ -910,6 +945,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
    who understands all this stuff should rewrite it properly. --RR 15/Jul/02 */
 void __init smp_prepare_cpus(unsigned int max_cpus)
 {
+        set_cpu_sibling_map(0);
 	smp_boot_cpus(max_cpus);
 }
 

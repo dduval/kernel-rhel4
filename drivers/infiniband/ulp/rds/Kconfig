@@ -1,0 +1,15 @@
+config INFINIBAND_RDS
+	tristate "Reliable Datagram Sockets"
+	depends on INFINIBAND && INFINIBAND_IPOIB
+	---help---
+	  Support for Reliable Datagram Sockets (RDS).  This provides
+          sockets semantics over InfiniBand via address family
+          AF_INET_RDS (address family 30). 
+
+config INFINIBAND_RDS_DEBUG
+	bool "Reliable Datagram Sockets debugging"
+	depends on INFINIBAND_RDS
+	---help---
+	  This option causes debugging code to be compiled into the
+	  RDS driver.  The output can be controlled via the debug_level
+	  module parameter.

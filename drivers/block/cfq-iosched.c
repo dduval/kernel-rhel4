@@ -381,7 +381,7 @@ static int cfq_dispatch_requests(request_queue_t *q, struct cfq_data *cfqd)
 restart:
 	good_queues = 0;
 	list_for_each_safe(entry, tmp, &cfqd->rr_list) {
-		cfqq = list_entry_cfqq(cfqd->rr_list.next);
+		cfqq = list_entry_cfqq(entry);
 
 		BUG_ON(RB_EMPTY(&cfqq->sort_list));
 

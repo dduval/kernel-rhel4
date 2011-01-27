@@ -298,7 +298,12 @@ static int bus_reset(struct scsi_cmnd *srb)
 		result = -EBUSY;
 		US_DEBUGP("Refusing to reset a multi-interface device\n");
 	} else {
-		result = usb_reset_device(us->pusb_dev);
+		/*
+		 * The lock can be taken when khubd is executing scsi_scan()
+		 * at the very tail of our ->probe routine.
+		 * If a device fails there, it has to be replugged.
+		 */
+		result = usb_reset_device_trylock(us->pusb_dev);
 		US_DEBUGP("usb_reset_device returns %d\n", result);
 	}
 	up(&(us->dev_semaphore));
@@ -306,7 +311,13 @@ static int bus_reset(struct scsi_cmnd *srb)
 	/* lock access to the state and clear it */
 	scsi_lock(srb->device->host);
 	us->sm_state = US_STATE_IDLE;
-	return result < 0 ? FAILED : SUCCESS;
+
+	/* We must return succes, or else the device is offlined forever */
+	if (result < 0) {
+		printk(KERN_NOTICE USB_STORAGE "Bus reset ended with %d\n",
+			result);
+	}
+	return SUCCESS;
 }
 
 /* Report a driver-initiated device reset to the SCSI layer.
@@ -467,7 +478,7 @@ struct scsi_host_template usb_stor_host_template = {
 	.sg_tablesize =			SG_ALL,
 
 	/* limit the total size of a transfer to 120 KB */
-	.max_sectors =                  256,
+	.max_sectors =                  240,
 
 	/* merge commands... this seems to help performance, but
 	 * periodically someone should test to see which setting is more

@@ -30,11 +30,13 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: mthca_profile.c 3946 2005-11-02 15:23:43Z roland $
+ * $Id: mthca_profile.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/string.h>
+#include <linux/slab.h>
 
 #include "mthca_profile.h"
 
@@ -150,7 +152,7 @@ u64 mthca_make_profile(struct mthca_dev *dev,
 		}
 		if (total_size > mem_avail) {
 			mthca_err(dev, "Profile requires 0x%llx bytes; "
-				  "won't in 0x%llx bytes of context memory.\n",
+				  "won't fit in 0x%llx bytes of context memory.\n",
 				  (unsigned long long) total_size,
 				  (unsigned long long) mem_avail);
 			kfree(profile);
@@ -259,6 +261,14 @@ u64 mthca_make_profile(struct mthca_dev *dev,
 	 * of the HCA profile anyway.
 	 */
 	dev->limits.num_pds = MTHCA_NUM_PDS;
+
+	if (dev->mthca_flags & MTHCA_FLAG_SINAI_OPT &&
+	    init_hca->log_mpt_sz > 23) {
+		mthca_warn(dev, "MPT table too large (requested size 2^%d >= 2^24)\n",
+			   init_hca->log_mpt_sz);
+		mthca_warn(dev, "Disabling memory key throughput optimization.\n");
+		dev->mthca_flags &= ~MTHCA_FLAG_SINAI_OPT;
+	}
 
 	/*
 	 * For Tavor, FMRs use ioremapped PCI memory. For 32 bit

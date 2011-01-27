@@ -14,6 +14,7 @@
 #include <linux/syscalls.h>
 #include <linux/tty.h>
 #include <linux/ioctl32.h>
+#include <linux/lapic_status.h>
 
 #include <asm/semaphore.h>
 #include <asm/processor.h>
@@ -222,3 +223,4 @@ EXPORT_SYMBOL_GPL(flush_tlb_all);
 #endif
 
 EXPORT_SYMBOL(cpu_khz);
+EXPORT_SYMBOL(mp_lapic_status_info);

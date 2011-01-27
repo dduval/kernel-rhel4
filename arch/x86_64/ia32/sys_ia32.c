@@ -1284,6 +1284,11 @@ long sys32_io_setup(unsigned nr_reqs, u32 __user *ctx32p)
 	long ret; 
 	aio_context_t ctx64;
 	mm_segment_t oldfs = get_fs(); 	
+
+	ret = get_user(ctx64, ctx32p);
+	if (unlikely(ret))
+		return ret;
+
 	set_fs(KERNEL_DS); 
 	ret = sys_io_setup(nr_reqs, &ctx64); 
 	set_fs(oldfs); 

@@ -31,7 +31,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: uverbs_mem.c 2783 2005-07-05 02:21:08Z roland $
+ * $Id: uverbs_mem.c 2743 2005-06-28 22:27:59Z roland $
  */
 
 #include <linux/mm.h>
@@ -211,8 +211,10 @@ void ib_umem_release_on_close(struct ib_device *dev, struct ib_umem *umem)
 	 */
 
 	work = kmalloc(sizeof *work, GFP_KERNEL);
-	if (!work)
+	if (!work) {
+		mmput(mm);
 		return;
+	}
 
 	INIT_WORK(&work->work, ib_umem_account, work);
 	work->mm   = mm;

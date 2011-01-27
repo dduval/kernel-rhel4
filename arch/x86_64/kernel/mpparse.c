@@ -23,6 +23,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/mc146818rtc.h>
 #include <linux/acpi.h>
+#include <linux/lapic_status.h>
 
 #include <asm/smp.h>
 #include <asm/mtrr.h>
@@ -104,13 +105,24 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 	return sum & 0xFF;
 }
 
+struct _mp_lapic_status_info mp_lapic_status_info[MAX_APICS] =
+					      { [ 0 ... MAX_APICS-1] = {-1,0} };
+
 static void __init MP_processor_info (struct mpc_config_processor *m)
 {
 	int ver;
 	extern int sibling_ht_mask;
 
-	if (!(m->mpc_cpuflag & CPU_ENABLED))
+	if ((m->mpc_cpuflag & CPU_ENABLED) &&
+	    (m->mpc_apicid <= MAX_APICS)){
+		if (test_bit(9, &m->mpc_featureflag)) /* has an APIC? */
+			mp_lapic_status_info[m->mpc_apicid].status = 1;
+		else
+			mp_lapic_status_info[m->mpc_apicid].status = 0;
+	} else {
+		mp_lapic_status_info[m->mpc_apicid].status = 0;
 		return;
+	}
 
 	printk(KERN_INFO "Processor #%d %d:%d APIC version %d\n",
 		m->mpc_apicid,
@@ -148,6 +160,7 @@ static void __init MP_processor_info (struct mpc_config_processor *m)
 			m->mpc_apicid, MAX_APICS);
 		return;
 	}
+	mp_lapic_status_info[m->mpc_apicid].processor_id = num_processors - 1;
 	ver = m->mpc_apicver;
 
 	physid_set(m->mpc_apicid, phys_cpu_present_map);
@@ -218,7 +231,7 @@ static void __init MP_intsrc_info (struct mpc_config_intsrc *m)
 			m->mpc_irqtype, m->mpc_irqflag & 3,
 			(m->mpc_irqflag >> 2) & 3, m->mpc_srcbus,
 			m->mpc_srcbusirq, m->mpc_dstapic, m->mpc_dstirq);
-	if (++mp_irq_entries == MAX_IRQ_SOURCES)
+	if (++mp_irq_entries >= MAX_IRQ_SOURCES)
 		panic("Max # of irq sources exceeded!!\n");
 }
 
@@ -969,7 +982,18 @@ int mp_register_gsi (u32 gsi, int edge_level, int active_high_low)
 		 */
 		int irq = gsi;
 		if (gsi < MAX_GSI_NUM) {
-			if (gsi > 15)
+			extern int timer_uses_ioapic_pin_0;
+			/*
+			 * Retain the VIA chipset work-around (gsi > 15), but
+			 * avoid a problem where the 8254 timer (IRQ0) is setup
+			 * via an override (so it's not on pin 0 of the ioapic),
+			 * and at the same time, the pin 0 interrupt is a PCI
+			 * type.  The gsi > 15 test could cause these two pins
+			 * to be shared as IRQ0, and they are not shareable.
+			 * So test for this condition, and if necessary, avoid
+			 * the pin collision.
+			 */
+			if (gsi > 15 || (gsi == 0 && !timer_uses_ioapic_pin_0))
 				gsi = pci_irq++;
 			/*
 			 * Don't assign IRQ used by ACPI SCI

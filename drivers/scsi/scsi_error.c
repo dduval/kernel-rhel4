@@ -618,7 +618,7 @@ static int scsi_request_sense(struct scsi_cmnd *scmd)
  *    keep a list of pending commands for final completion, and once we
  *    are ready to leave error handling we handle completion for real.
  **/
-static void scsi_eh_finish_cmd(struct scsi_cmnd *scmd,
+void scsi_eh_finish_cmd(struct scsi_cmnd *scmd,
 			       struct list_head *done_q)
 {
 	scmd->device->host->host_failed--;
@@ -633,6 +633,7 @@ static void scsi_eh_finish_cmd(struct scsi_cmnd *scmd,
 	scsi_setup_cmd_retry(scmd);
 	list_move_tail(&scmd->eh_entry, done_q);
 }
+EXPORT_SYMBOL(scsi_eh_finish_cmd);
 
 /**
  * scsi_eh_get_sense - Get device sense data.
@@ -1519,7 +1520,7 @@ static void scsi_eh_ready_devs(struct Scsi_Host *shost,
  * @done_q:	list_head of processed commands.
  *
  **/
-static void scsi_eh_flush_done_q(struct list_head *done_q)
+void scsi_eh_flush_done_q(struct list_head *done_q)
 {
 	struct list_head *lh, *lh_sf;
 	struct scsi_cmnd *scmd;
@@ -1545,6 +1546,7 @@ static void scsi_eh_flush_done_q(struct list_head *done_q)
 		}
 	}
 }
+EXPORT_SYMBOL(scsi_eh_flush_done_q);
 
 /**
  * scsi_unjam_host - Attempt to fix a host which has a cmd that failed.

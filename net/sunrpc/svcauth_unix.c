@@ -107,11 +107,22 @@ void ip_map_put(struct cache_head *item, struct cache_detail *cd)
 		kfree(im);
 	}
 }
+#if IP_HASHBITS == 8
+/* hash_long on a 64 bit machine is currently REALLY BAD for
+ * IP addresses in reverse-endian (i.e. on a little-endian machine).
+ * So use a trivial but reliable hash instead
+ */
+static inline int hash_ip(unsigned long ip)
+{
+	int hash = ip ^ (ip>>16);
+	return (hash ^ (hash>>8)) & 0xff;
+}
+#endif
 
 static inline int ip_map_hash(struct ip_map *item)
 {
 	return hash_str(item->m_class, IP_HASHBITS) ^ 
-		hash_long((unsigned long)item->m_addr.s_addr, IP_HASHBITS);
+		hash_ip((unsigned long)item->m_addr.s_addr);
 }
 static inline int ip_map_match(struct ip_map *item, struct ip_map *tmp)
 {
@@ -367,7 +378,6 @@ svcauth_null_accept(struct svc_rqst *rqstp, u32 *authp)
 {
 	struct kvec	*argv = &rqstp->rq_arg.head[0];
 	struct kvec	*resv = &rqstp->rq_res.head[0];
-	int		rv=0;
 
 	if (argv->iov_len < 3*4)
 		return SVC_GARBAGE;
@@ -390,20 +400,11 @@ svcauth_null_accept(struct svc_rqst *rqstp, u32 *authp)
 	if (rqstp->rq_cred.cr_group_info == NULL)
 		return SVC_DROP; /* kmalloc failure - client must retry */
 
-	rv = svcauth_unix_set_client(rqstp);
-	if (rv == SVC_DENIED)
-		goto badcred;
-
 	/* Put NULL verifier */
 	svc_putu32(resv, RPC_AUTH_NULL);
 	svc_putu32(resv, 0);
 
-	return rv;
-
-badcred:
-	dprintk("svc: null_auth: badcred\n");
-	*authp = rpc_autherr_badcred;
-	return SVC_DENIED;
+	return SVC_OK;
 }
 
 static int

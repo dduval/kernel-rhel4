@@ -37,7 +37,6 @@ struct vm_area_struct;
 #define __GFP_NORETRY	0x1000	/* Do not retry.  Might fail */
 #define __GFP_NO_GROW	0x2000	/* Slab internal usage */
 #define __GFP_COMP	0x4000	/* Add compound page metadata */
-#define __GFP_WIRED	0x8000	/* Wired allocation */
 
 #define __GFP_BITS_SHIFT 16	/* Room for 16 __GFP_FOO bits */
 #define __GFP_BITS_MASK ((1 << __GFP_BITS_SHIFT) - 1)
@@ -131,6 +130,6 @@ extern void FASTCALL(free_cold_page(struct page *page));
 
 void page_alloc_init(void);
 
-typedef int gfp_t;
+typedef unsigned int gfp_t;
 
 #endif /* __LINUX_GFP_H */

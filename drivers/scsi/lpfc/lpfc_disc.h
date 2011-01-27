@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_disc.h 1.51.1.2 2005/06/13 17:16:12EDT sf_support Exp  $
+ * $Id: lpfc_disc.h 2757 2005-12-09 18:21:44Z sf_support $
  */
 
 #ifndef  _H_LPFC_DISC
@@ -118,7 +118,6 @@ struct lpfc_nodelist {
 
 	struct lpfc_bindlist *nlp_listp_bind;	/* Linked list bounded remote
 						   ports */
-	struct lpfc_nodelist *nlp_rpi_hash_next;
 	struct lpfc_hba      *nlp_phba;
 	LPFC_DISC_EVT_t nodev_timeout_evt;
 	LPFC_DISC_EVT_t els_retry_evt;

@@ -290,6 +290,10 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 		MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
+	{ disable_pci_mmconf_seg, "HP xw9400 Workstation", {
+		MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
 	{ disable_pci_mmconf, "ASUS A8N-SLI Premium", {
 		MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
 		MATCH(DMI_BOARD_NAME, "A8N-SLI Premium"),

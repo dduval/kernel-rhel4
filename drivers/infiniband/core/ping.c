@@ -34,7 +34,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ping.c 3861 2005-10-25 15:40:27Z sean.hefty $
+ * $Id: ping.c 6274 2006-04-06 11:14:21Z halr $
  */
 
 #include <linux/dma-mapping.h>
@@ -247,7 +247,10 @@ static void ib_ping_init_device(struct ib_device *device)
 {
 	int num_ports, cur_port, i;
 
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (rdma_node_get_transport(device->node_type) != RDMA_TRANSPORT_IB)
+		return;
+
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		num_ports = 1;
 		cur_port = 0;
 	} else {
@@ -256,10 +259,11 @@ static void ib_ping_init_device(struct ib_device *device)
 	}
 
 	for (i = 0; i < num_ports; i++, cur_port++) {
-		if (ib_ping_port_open(device, cur_port))
+		if (ib_ping_port_open(device, cur_port)) {
 			printk(KERN_ERR SPFX "Couldn't open %s port %d\n",
 			       device->name, cur_port);
 			goto error_device_open;
+		}
 	}
 	return;
 
@@ -278,7 +282,7 @@ static void ib_ping_remove_device(struct ib_device *device)
 {
 	int i, num_ports, cur_port;
 
-	if (device->node_type == IB_NODE_SWITCH) {
+	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		num_ports = 1;
 		cur_port = 0;
 	} else {

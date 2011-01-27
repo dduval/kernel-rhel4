@@ -54,6 +54,17 @@ static acpi_status acpi_serial_port(struct serial_struct *req,
 	return AE_OK;
 }
 
+static acpi_status acpi_serial_fixed_port(struct serial_struct *req,
+					  struct acpi_resource_fixed_io *fixed_io)
+{
+	if (fixed_io->range_length) {
+		req->port = fixed_io->base_address;
+		req->io_type = SERIAL_IO_PORT;
+	} else
+		printk(KERN_ERR "%s: zero-length Fixed-IO port range?\n", __FUNCTION__);
+	return AE_OK;
+}
+
 static acpi_status acpi_serial_ext_irq(struct serial_struct *req,
 				       struct acpi_resource_ext_irq *ext_irq)
 {
@@ -83,6 +94,8 @@ static acpi_status acpi_serial_resource(struct acpi_resource *res, void *data)
 		return acpi_serial_mmio(serial_req, &addr);
 	else if (res->id == ACPI_RSTYPE_IO)
 		return acpi_serial_port(serial_req, &res->data.io);
+	else if (res->id == ACPI_RSTYPE_FIXED_IO)
+		return acpi_serial_fixed_port(serial_req, &res->data.fixed_io);
 	else if (res->id == ACPI_RSTYPE_EXT_IRQ)
 		return acpi_serial_ext_irq(serial_req, &res->data.extended_irq);
 	else if (res->id == ACPI_RSTYPE_IRQ)

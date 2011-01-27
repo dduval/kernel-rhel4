@@ -36,7 +36,6 @@
 #include <linux/kallsyms.h>
 #include <linux/interrupt.h>
 #include <linux/version.h>
-#include <linux/kprobes.h>
 
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
@@ -281,12 +280,6 @@ EXPORT_SYMBOL_GPL(show_regs);
 
 void exit_thread(void)
 {
-	/*
-	 * Remove function-return probe instances associated with this task
-	 * and put them back on the free list. Do not insert an exit probe for
-	 * this function, it will be disabled by kprobe_flush_task if you do.
-	 */
-	kprobe_flush_task(current);
 
 #ifndef CONFIG_SMP
 	if (last_task_used_math == current)

@@ -39,11 +39,11 @@
 
 #ifdef	CONFIG_X86_64
 
-static inline void  acpi_madt_oem_check(char *oem_id, char *oem_table_id) { }
 extern void __init clustered_apic_check(void);
-static inline int ioapic_setup_disabled(void) { return 0; }
+extern int gsi_irq_sharing(int gsi);
 #include <asm/proto.h>
 
+static inline int acpi_madt_oem_check(char *oem_id, char *oem_table_id) { return 0; }
 #else	/* X86 */
 
 #ifdef	CONFIG_X86_LOCAL_APIC
@@ -51,6 +51,7 @@ static inline int ioapic_setup_disabled(void) { return 0; }
 #include <mach_mpparse.h>
 #endif	/* CONFIG_X86_LOCAL_APIC */
 
+static inline int gsi_irq_sharing(int gsi) { return gsi; }
 #endif	/* X86 */
 
 #define BAD_MADT_ENTRY(entry, end) (					    \
@@ -159,9 +160,15 @@ char *__acpi_map_table(unsigned long phys, unsigned long size)
 #endif
 
 #ifdef CONFIG_PCI_MMCONFIG
-static int __init acpi_parse_mcfg(unsigned long phys_addr, unsigned long size)
+/* The physical address of the MMCONFIG aperture.  Set from ACPI tables. */
+struct acpi_table_mcfg_config *pci_mmcfg_config;
+int pci_mmcfg_config_num;
+
+int __init acpi_parse_mcfg(unsigned long phys_addr, unsigned long size)
 {
 	struct acpi_table_mcfg *mcfg;
+	unsigned long i;
+	int config_size;
 
 	if (!phys_addr || !size)
 		return -EINVAL;
@@ -172,18 +179,38 @@ static int __init acpi_parse_mcfg(unsigned long phys_addr, unsigned long size)
 		return -ENODEV;
 	}
 
-	if (mcfg->base_reserved) {
-		printk(KERN_ERR PREFIX "MMCONFIG not in low 4GB of memory\n");
+	/* how many config structures do we have */
+	pci_mmcfg_config_num = 0;
+	i = size - sizeof(struct acpi_table_mcfg);
+	while (i >= sizeof(struct acpi_table_mcfg_config)) {
+		++pci_mmcfg_config_num;
+		i -= sizeof(struct acpi_table_mcfg_config);
+	};
+	if (pci_mmcfg_config_num == 0) {
+		printk(KERN_ERR PREFIX "MMCONFIG has no entries\n");
 		return -ENODEV;
 	}
 
-	pci_mmcfg_base_addr = mcfg->base_address;
+	config_size = pci_mmcfg_config_num * sizeof(*pci_mmcfg_config);
+	pci_mmcfg_config = kmalloc(config_size, GFP_KERNEL);
+	if (!pci_mmcfg_config) {
+		printk(KERN_WARNING PREFIX
+		       "No memory for MCFG config tables\n");
+		return -ENOMEM;
+	}
+
+	memcpy(pci_mmcfg_config, &mcfg->config, config_size);
+	for (i = 0; i < pci_mmcfg_config_num; ++i) {
+		if (mcfg->config[i].base_reserved) {
+			printk(KERN_ERR PREFIX
+			       "MMCONFIG not in low 4GB of memory\n");
+			return -ENODEV;
+		}
+	}
 
 	return 0;
 }
-#else
-#define	acpi_parse_mcfg NULL
-#endif /* !CONFIG_PCI_MMCONFIG */
+#endif /* CONFIG_PCI_MMCONFIG */
 
 #ifdef CONFIG_X86_LOCAL_APIC
 static int __init
@@ -306,7 +333,7 @@ acpi_parse_ioapic (
  * Parse Interrupt Source Override for the ACPI SCI
  */
 static void
-acpi_sci_ioapic_setup(u32 gsi, u16 polarity, u16 trigger)
+acpi_sci_ioapic_setup(u32 busirq, u32 gsi, u16 polarity, u16 trigger)
 {
 	if (trigger == 0)	/* compatible SCI trigger is level */
 		trigger = 3;
@@ -326,13 +353,13 @@ acpi_sci_ioapic_setup(u32 gsi, u16 polarity, u16 trigger)
 	 * If GSI is < 16, this will update its flags,
 	 * else it will create a new mp_irqs[] entry.
 	 */
-	mp_override_legacy_irq(gsi, polarity, trigger, gsi);
+	mp_override_legacy_irq(busirq, polarity, trigger, gsi);
 
 	/*
 	 * stash over-ride to indicate we've been here
 	 * and for later update of acpi_fadt
 	 */
-	acpi_sci_override_gsi = gsi;
+        acpi_sci_override_gsi = busirq;
 	return;
 }
 
@@ -350,7 +377,7 @@ acpi_parse_int_src_ovr (
 	acpi_table_print_madt_entry(header);
 
 	if (intsrc->bus_irq == acpi_fadt.sci_int) {
-		acpi_sci_ioapic_setup(intsrc->global_irq,
+		acpi_sci_ioapic_setup(intsrc->bus_irq, intsrc->global_irq,
 			intsrc->flags.polarity, intsrc->flags.trigger);
 		return 0;
 	}
@@ -444,7 +471,7 @@ int acpi_gsi_to_irq(u32 gsi, unsigned int *irq)
  		*irq = IO_APIC_VECTOR(gsi);
 	else
 #endif
-		*irq = gsi;
+		*irq = gsi_irq_sharing(gsi);
 	return 0;
 }
 
@@ -726,7 +753,7 @@ acpi_parse_madt_ioapic_entries(void)
 	 * pretend we got one so we can set the SCI flags.
 	 */
 	if (!acpi_sci_override_gsi)
-		acpi_sci_ioapic_setup(acpi_fadt.sci_int, 0, 0);
+		acpi_sci_ioapic_setup(acpi_fadt.sci_int, acpi_fadt.sci_int, 0, 0);
 
 	/* Fill in identity legacy mapings where no override */
 	mp_config_acpi_legacy_irqs();
@@ -882,7 +909,6 @@ int __init acpi_boot_init(void)
 	acpi_process_madt();
 
 	acpi_table_parse(ACPI_HPET, acpi_parse_hpet);
-	acpi_table_parse(ACPI_MCFG, acpi_parse_mcfg);
 
 	return 0;
 }

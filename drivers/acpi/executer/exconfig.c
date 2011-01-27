@@ -105,6 +105,14 @@ acpi_ex_add_table (
 		goto cleanup;
 	}
 
+	if (ACPI_FAILURE(status)) {
+		if (status == AE_ALREADY_EXISTS) {
+			/* Table already exists, just return the handle */
+			return_ACPI_STATUS(AE_OK);
+		}
+		goto cleanup;
+	}
+
 	/* Add the table to the namespace */
 
 	status = acpi_ns_load_table (table_info.installed_desc, parent_node);

@@ -506,7 +506,7 @@ do_load_quiesce_psw(void * __unused)
 	/* Wait for all other cpus to enter stopped state */
 	i = 1;
 	while (i < NR_CPUS) {
-		if (!cpu_online(i)) {
+		if (i == smp_processor_id() || !cpu_online(i)) {
 			i++;
 			continue;
 		}

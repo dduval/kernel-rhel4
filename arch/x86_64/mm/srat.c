@@ -96,12 +96,6 @@ acpi_numa_processor_affinity_init(struct acpi_table_processor_affinity *pa)
 		bad_srat();
 		return;
 	}
-	if (pa->apic_id >= NR_CPUS) {
-		printk(KERN_ERR "SRAT: lapic %u too large.\n",
-		       pa->apic_id);
-		bad_srat();
-		return;
-	}
 	apicid_to_node[pa->apic_id] = node;
 	acpi_numa = 1;
 	printk(KERN_INFO "SRAT: PXM %u -> APIC %u -> Node %u\n",

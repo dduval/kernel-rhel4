@@ -476,6 +476,7 @@ void error_interrupt(void);
 void reschedule_interrupt(void);
 void call_function_interrupt(void);
 void invalidate_interrupt(void);
+void threshold_interrupt(void);
 
 static void setup_timer(void)
 {
@@ -550,6 +551,8 @@ void __init init_IRQ(void)
 	/* IPI for generic function call */
 	set_intr_gate(CALL_FUNCTION_VECTOR, call_function_interrupt);
 #endif	
+
+        set_intr_gate(THRESHOLD_APIC_VECTOR, threshold_interrupt);
 
 #ifdef CONFIG_X86_LOCAL_APIC
 	/* self generated IPI for local APIC timer */

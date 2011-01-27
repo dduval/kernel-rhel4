@@ -12,10 +12,14 @@ deps_config := \
 	fs/Kconfig \
 	drivers/firmware/Kconfig \
 	drivers/edac/Kconfig \
+	drivers/infiniband/ulp/rds/Kconfig \
+	drivers/infiniband/ulp/iser/Kconfig \
 	drivers/infiniband/ulp/srp/Kconfig \
 	drivers/infiniband/ulp/sdp/Kconfig \
 	drivers/infiniband/ulp/ipoib/Kconfig \
+	drivers/infiniband/hw/ehca/Kconfig \
 	drivers/infiniband/hw/mthca/Kconfig \
+	drivers/infiniband/hw/ipath/Kconfig \
 	drivers/infiniband/Kconfig \
 	drivers/usb/gadget/Kconfig \
 	drivers/usb/atm/Kconfig \
@@ -60,6 +64,7 @@ deps_config := \
 	drivers/media/Kconfig \
 	drivers/misc/Kconfig \
 	drivers/w1/Kconfig \
+	drivers/hwmon/Kconfig \
 	drivers/i2c/chips/Kconfig \
 	drivers/i2c/busses/Kconfig \
 	drivers/i2c/algos/Kconfig \
@@ -147,9 +152,8 @@ deps_config := \
 	drivers/scsi/iscsi_sfnet/Kconfig \
 	drivers/scsi/megaraid/Kconfig.megaraid \
 	drivers/scsi/aic7xxx/Kconfig.aic79xx \
-	drivers/scsi/aic94xx/Kconfig \
+	drivers/scsi/adp94xx/Kconfig \
 	drivers/scsi/aic7xxx/Kconfig.aic7xxx \
-	drivers/scsi/sas/Kconfig \
 	drivers/scsi/Kconfig \
 	drivers/ide/Kconfig \
 	drivers/s390/block/Kconfig \

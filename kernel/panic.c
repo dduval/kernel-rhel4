@@ -22,6 +22,7 @@
 
 int panic_timeout;
 int panic_on_oops = 1;
+int panic_on_unrecovered_nmi;
 int tainted;
 
 EXPORT_SYMBOL(panic_timeout);

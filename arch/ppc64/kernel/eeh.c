@@ -1046,6 +1046,16 @@ void eeh_add_device_early(struct device_node *dn)
 }
 EXPORT_SYMBOL(eeh_add_device_early);
 
+void eeh_add_tree_early(struct device_node *dn)
+{
+	struct device_node *sib;
+
+	for (sib = dn->child; sib; sib = sib->sibling)
+		eeh_add_tree_early(sib);
+	eeh_add_device_early(dn);
+}
+EXPORT_SYMBOL(eeh_add_tree_early);
+
 /**
  * eeh_add_device_late - perform EEH initialization for the indicated pci device
  * @dev: pci device for which to set up EEH

@@ -27,6 +27,7 @@ typedef void ia64_mv_irq_init_t (void);
 typedef void ia64_mv_send_ipi_t (int, int, int, int);
 typedef void ia64_mv_timer_interrupt_t (int, void *, struct pt_regs *);
 typedef void ia64_mv_global_tlb_purge_t (unsigned long, unsigned long, unsigned long);
+typedef void ia64_mv_global_tlb_purge_new_t (struct mm_struct *, unsigned long, unsigned long, unsigned long);
 typedef void ia64_mv_tlb_migrate_finish_t (struct mm_struct *);
 typedef struct irq_desc *ia64_mv_irq_desc (unsigned int);
 typedef u8 ia64_mv_irq_to_vector (unsigned int);
@@ -107,6 +108,7 @@ extern void machvec_tlb_migrate_finish (struct mm_struct *);
 #  define platform_irq_init	ia64_mv.irq_init
 #  define platform_send_ipi	ia64_mv.send_ipi
 #  define platform_timer_interrupt	ia64_mv.timer_interrupt
+#  define platform_global_tlb_purge_new	ia64_mv.global_tlb_purge_new
 #  define platform_global_tlb_purge	ia64_mv.global_tlb_purge
 #  define platform_tlb_migrate_finish	ia64_mv.tlb_migrate_finish
 #  define platform_dma_init		ia64_mv.dma_init
@@ -188,6 +190,7 @@ struct ia64_machine_vector {
 	ia64_mv_readq_relaxed_t *readq_relaxed;
 #ifndef __GENKSYMS__
 	ia64_mv_mmiowb_t *mmiowb;
+	ia64_mv_global_tlb_purge_new_t *global_tlb_purge_new;
 #endif
 } __attribute__((__aligned__(16))); /* align attrib? see above comment */
 
@@ -232,6 +235,7 @@ struct ia64_machine_vector {
 	platform_readl_relaxed,			\
 	platform_readq_relaxed,			\
 	platform_mmiowb,			\
+	platform_global_tlb_purge_new,		\
 }
 
 extern struct ia64_machine_vector ia64_mv;
@@ -376,6 +380,9 @@ extern ia64_mv_dma_supported		swiotlb_dma_supported;
 #endif
 #ifndef platform_mmiowb
 # define platform_mmiowb	__ia64_mmiowb
+#endif
+#ifndef platform_global_tlb_purge_new
+# define platform_global_tlb_purge_new	ia64_global_tlb_purge_new /* default to architected version */
 #endif
 
 #endif /* _ASM_IA64_MACHVEC_H */

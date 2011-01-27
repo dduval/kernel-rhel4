@@ -1028,10 +1028,10 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 	fw = (struct qla24xx_fw_dump *) ha->fw_dump24;
 
 	rval = QLA_SUCCESS;
-	fw->hccr = RD_REG_DWORD(&reg->hccr);
+	fw->host_status = RD_REG_DWORD(&reg->host_status);
 
 	/* Pause RISC. */
-	if ((fw->hccr & HCCRX_RISC_PAUSE) == 0) {
+	if ((RD_REG_DWORD(&reg->hccr) & HCCRX_RISC_PAUSE) == 0) {
 		WRT_REG_DWORD(&reg->hccr, HCCRX_SET_RISC_RESET |
 		    HCCRX_CLR_HOST_INT);
 		RD_REG_DWORD(&reg->hccr);		/* PCI Posting. */
@@ -1046,15 +1046,53 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 		}
 	}
 
-	/* Disable interrupts. */
-	WRT_REG_DWORD(&reg->ictrl, 0);
-	RD_REG_DWORD(&reg->ictrl);
-
 	if (rval == QLA_SUCCESS) {
 		/* Host interface registers. */
 		dmp_reg = (uint32_t __iomem *)(reg + 0);
 		for (cnt = 0; cnt < sizeof(fw->host_reg) / 4; cnt++)
 			fw->host_reg[cnt] = RD_REG_DWORD(dmp_reg++);
+
+		/* Disable interrupts. */
+		WRT_REG_DWORD(&reg->ictrl, 0);
+		RD_REG_DWORD(&reg->ictrl);
+
+		/* Shadow registers. */
+		WRT_REG_DWORD(&reg->iobase_addr, 0x0F70);
+		RD_REG_DWORD(&reg->iobase_addr);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0000000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[0] = RD_REG_DWORD(dmp_reg);
+
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0100000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[1] = RD_REG_DWORD(dmp_reg);
+
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0200000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[2] = RD_REG_DWORD(dmp_reg);
+
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0300000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[3] = RD_REG_DWORD(dmp_reg);
+
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0400000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[4] = RD_REG_DWORD(dmp_reg);
+
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0500000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[5] = RD_REG_DWORD(dmp_reg);
+
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
+		WRT_REG_DWORD(dmp_reg, 0xB0600000);
+		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
+		fw->shadow_reg[6] = RD_REG_DWORD(dmp_reg);
 
 		/* Mailbox registers. */
 		mbx_reg = (uint16_t __iomem *)((uint8_t __iomem *)reg + 0x80);
@@ -1332,43 +1370,6 @@ qla24xx_fw_dump(scsi_qla_host_t *ha, int hardware_locked)
 		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xC0);
 		for (cnt = 0; cnt < 16; cnt++)
 			*iter_reg++ = RD_REG_DWORD(dmp_reg++);
-
-		WRT_REG_DWORD(&reg->iobase_addr, 0x0F70);
-		RD_REG_DWORD(&reg->iobase_addr);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0000000);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
-		fw->shadow_reg[0] = RD_REG_DWORD(dmp_reg);
-
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0100000);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
-		fw->shadow_reg[1] = RD_REG_DWORD(dmp_reg);
-
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0200000);
-		dmp_reg = (uint32_t *)((uint8_t *)reg + 0xFC);
-		fw->shadow_reg[2] = RD_REG_DWORD(dmp_reg);
-
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0300000);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
-		fw->shadow_reg[3] = RD_REG_DWORD(dmp_reg);
-
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0400000);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
-		fw->shadow_reg[4] = RD_REG_DWORD(dmp_reg);
-
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0500000);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
-		fw->shadow_reg[5] = RD_REG_DWORD(dmp_reg);
-
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xF0);
-		WRT_REG_DWORD(dmp_reg, 0xB0600000);
-		dmp_reg = (uint32_t __iomem *)((uint8_t __iomem *)reg + 0xFC);
-		fw->shadow_reg[6] = RD_REG_DWORD(dmp_reg);
 
 		/* Local memory controller registers. */
 		iter_reg = fw->lmc_reg;
@@ -1702,7 +1703,7 @@ qla24xx_ascii_fw_dump(scsi_qla_host_t *ha)
 	    ha->fw_major_version, ha->fw_minor_version,
 	    ha->fw_subminor_version, ha->fw_attributes);
 
-	qla_uprintf(&uiter, "\nHCCR Register\n%04x\n", fw->hccr);
+	qla_uprintf(&uiter, "\nR2H Status Register\n%04x\n", fw->host_status);
 
 	qla_uprintf(&uiter, "\nHost Interface Registers");
 	for (cnt = 0; cnt < sizeof(fw->host_reg) / 4; cnt++) {
@@ -1710,6 +1711,14 @@ qla24xx_ascii_fw_dump(scsi_qla_host_t *ha)
 			qla_uprintf(&uiter, "\n");
 
 		qla_uprintf(&uiter, "%08x ", fw->host_reg[cnt]);
+	}
+
+	qla_uprintf(&uiter, "\n\nShadow Registers");
+	for (cnt = 0; cnt < sizeof(fw->shadow_reg) / 4; cnt++) {
+		if (cnt % 8 == 0)
+			qla_uprintf(&uiter, "\n");
+
+		qla_uprintf(&uiter, "%08x ", fw->shadow_reg[cnt]);
 	}
 
 	qla_uprintf(&uiter, "\n\nMailbox Registers");
@@ -1880,14 +1889,6 @@ qla24xx_ascii_fw_dump(scsi_qla_host_t *ha)
 		qla_uprintf(&uiter, "%08x ", fw->risc_gp_reg[cnt]);
 	}
 
-	qla_uprintf(&uiter, "\n\nShadow Registers");
-	for (cnt = 0; cnt < sizeof(fw->shadow_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			qla_uprintf(&uiter, "\n");
-
-		qla_uprintf(&uiter, "%08x ", fw->shadow_reg[cnt]);
-	}
-
 	qla_uprintf(&uiter, "\n\nLMC Registers");
 	for (cnt = 0; cnt < sizeof(fw->lmc_reg) / 4; cnt++) {
 		if (cnt % 8 == 0)
@@ -1947,7 +1948,7 @@ qla24xx_console_fw_dump(scsi_qla_host_t *ha)
 	    ha->fw_major_version, ha->fw_minor_version,
 	    ha->fw_subminor_version, ha->fw_attributes);
 
-	printk("\nHCCR Register\n%04x\n", fw->hccr);
+	printk("\nR2H Status Register\n%04x\n", fw->host_status);
 
 	printk("\nHost Interface Registers");
 	for (cnt = 0; cnt < sizeof(fw->host_reg) / 4; cnt++) {
@@ -1955,6 +1956,14 @@ qla24xx_console_fw_dump(scsi_qla_host_t *ha)
 			printk("\n");
 
 		printk("%08x ", fw->host_reg[cnt]);
+	}
+
+	printk("\n\nShadow Registers");
+	for (cnt = 0; cnt < sizeof(fw->shadow_reg) / 4; cnt++) {
+		if (cnt % 8 == 0)
+			printk("\n");
+
+		printk("%08x ", fw->shadow_reg[cnt]);
 	}
 
 	printk("\n\nMailbox Registers");
@@ -2123,14 +2132,6 @@ qla24xx_console_fw_dump(scsi_qla_host_t *ha)
 			printk("\n");
 
 		printk("%08x ", fw->risc_gp_reg[cnt]);
-	}
-
-	printk("\n\nShadow Registers");
-	for (cnt = 0; cnt < sizeof(fw->shadow_reg) / 4; cnt++) {
-		if (cnt % 8 == 0)
-			printk("\n");
-
-		printk("%08x ", fw->shadow_reg[cnt]);
 	}
 
 	printk("\n\nLMC Registers");

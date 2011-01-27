@@ -891,7 +891,7 @@ static int free_below_min(struct zone **zones)
 		min += zone->pages_min;
 	}
 	
-	return (min > free);
+	return (min >= free);
 }
  
 /*

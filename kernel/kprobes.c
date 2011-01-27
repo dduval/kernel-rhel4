@@ -35,6 +35,7 @@
 #include <linux/hash.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/moduleloader.h>
 #include <asm/cacheflush.h>
 #include <asm/errno.h>
 #include <asm/kdebug.h>
@@ -45,9 +46,111 @@
 static struct hlist_head kprobe_table[KPROBE_TABLE_SIZE];
 static struct hlist_head kretprobe_inst_table[KPROBE_TABLE_SIZE];
 
-static spinlock_t kprobe_lock = SPIN_LOCK_UNLOCKED; /* Protects kprobe_table */
+DECLARE_MUTEX(kprobe_mutex);            /* Protects kprobe_table */
 spinlock_t kretprobe_lock = SPIN_LOCK_UNLOCKED; /* Protects kretprobe_inst_table */
 static DEFINE_PER_CPU(struct kprobe *, kprobe_instance) = NULL;
+
+#ifdef __ARCH_WANT_KPROBES_INSN_SLOT
+/*
+ * kprobe->ainsn.insn points to the copy of the instruction to be
+ * single-stepped. x86_64, POWER4 and above have no-exec support and
+ * stepping on the instruction on a vmalloced/kmalloced/data page
+ * is a recipe for disaster
+ */
+#define INSNS_PER_PAGE	(PAGE_SIZE/(MAX_INSN_SIZE * sizeof(kprobe_opcode_t)))
+
+struct kprobe_insn_page {
+	struct hlist_node hlist;
+	kprobe_opcode_t *insns;		/* Page of instruction slots */
+	char slot_used[INSNS_PER_PAGE];
+	int nused;
+};
+
+static struct hlist_head kprobe_insn_pages;
+
+/**
+ * get_insn_slot() - Find a slot on an executable page for an instruction.
+ * We allocate an executable page if there's no room on existing ones.
+ */
+kprobe_opcode_t *get_insn_slot(void)
+{
+	struct kprobe_insn_page *kip;
+	struct hlist_node *pos;
+
+	hlist_for_each(pos, &kprobe_insn_pages) {
+		kip = hlist_entry(pos, struct kprobe_insn_page, hlist);
+		if (kip->nused < INSNS_PER_PAGE) {
+			int i;
+			for (i = 0; i < INSNS_PER_PAGE; i++) {
+				if (!kip->slot_used[i]) {
+					kip->slot_used[i] = 1;
+					kip->nused++;
+					return kip->insns + (i * MAX_INSN_SIZE);
+				}
+			}
+			/* Surprise!  No unused slots.  Fix kip->nused. */
+			kip->nused = INSNS_PER_PAGE;
+		}
+	}
+
+	/* All out of space.  Need to allocate a new page. Use slot 0.*/
+	kip = kmalloc(sizeof(struct kprobe_insn_page), GFP_KERNEL);
+	if (!kip) {
+		return NULL;
+	}
+
+	/*
+	 * Use module_alloc so this page is within +/- 2GB of where the
+	 * kernel image and loaded module images reside. This is required
+	 * so x86_64 can correctly handle the %rip-relative fixups.
+	 */
+	kip->insns = module_alloc(PAGE_SIZE);
+	if (!kip->insns) {
+		kfree(kip);
+		return NULL;
+	}
+	INIT_HLIST_NODE(&kip->hlist);
+	hlist_add_head(&kip->hlist, &kprobe_insn_pages);
+	memset(kip->slot_used, 0, INSNS_PER_PAGE);
+	kip->slot_used[0] = 1;
+	kip->nused = 1;
+	return kip->insns;
+}
+
+void free_insn_slot(kprobe_opcode_t *slot)
+{
+	struct kprobe_insn_page *kip;
+	struct hlist_node *pos;
+
+	hlist_for_each(pos, &kprobe_insn_pages) {
+		kip = hlist_entry(pos, struct kprobe_insn_page, hlist);
+		if (kip->insns <= slot &&
+		    slot < kip->insns + (INSNS_PER_PAGE * MAX_INSN_SIZE)) {
+			int i = (slot - kip->insns) / MAX_INSN_SIZE;
+			kip->slot_used[i] = 0;
+			kip->nused--;
+			if (kip->nused == 0) {
+				/*
+				 * Page is no longer in use.  Free it unless
+				 * it's the last one.  We keep the last one
+				 * so as not to have to set it up again the
+				 * next time somebody inserts a probe.
+				 */
+				hlist_del(&kip->hlist);
+				if (hlist_empty(&kprobe_insn_pages)) {
+					INIT_HLIST_NODE(&kip->hlist);
+					hlist_add_head(&kip->hlist,
+						&kprobe_insn_pages);
+				} else {
+					module_free(NULL, kip->insns);
+					kfree(kip);
+				}
+			}
+			return;
+		}
+	}
+}
+#endif
 
 /* We have preemption disabled.. so it is safe to use __ versions */
 static inline void set_kprobe_instance(struct kprobe *kp)
@@ -62,7 +165,7 @@ static inline void reset_kprobe_instance(void)
 
 /*
  * This routine is called either:
- * 	- under the kprobe_lock spinlock - during kprobe_[un]register()
+ * 	- under the kprobe_mutex - during kprobe_[un]register()
  * 				OR
  * 	- with preemption disabled - from arch/xxx/kernel/kprobes.c
  */
@@ -143,6 +246,19 @@ static int aggr_break_handler(struct kprobe *p, struct pt_regs *regs)
 	return ret;
 }
 
+/* Walks the list and increments nmissed count for multiprobe case */
+void kprobes_inc_nmissed_count(struct kprobe *p)
+{
+	struct kprobe *kp;
+	if (p->pre_handler != aggr_pre_handler) {
+		p->nmissed++;
+	} else {
+		list_for_each_entry_rcu(kp, &p->list, list)
+			kp->nmissed++;
+	}
+	return;
+}
+
 /* Called with kretprobe_lock held */
 struct kretprobe_instance *get_free_rp_inst(struct kretprobe *rp)
 {
@@ -204,10 +320,10 @@ struct hlist_head *kretprobe_inst_table_head(struct task_struct *tsk)
 }
 
 /*
- * This function is called from exit_thread or flush_thread when task tk's
- * stack is being recycled so that we can recycle any function-return probe
- * instances associated with this task. These left over instances represent
- * probed functions that have been called but will never return.
+ * This function is called from finish_task_switch when task tk becomes dead,
+ * so that we can recycle any function-return probe instances associated
+ * with this task. These left over instances represent probed functions
+ * that have been called but will never return.
  */
 void kprobe_flush_task(struct task_struct *tk)
 {
@@ -217,7 +333,7 @@ void kprobe_flush_task(struct task_struct *tk)
 	unsigned long flags = 0;
 
 	spin_lock_irqsave(&kretprobe_lock, flags);
-	head = kretprobe_inst_table_head(current);
+	head = kretprobe_inst_table_head(tk);
 	hlist_for_each_entry_safe(ri, node, tmp, head, hlist) {
 		if (ri->task == tk)
 			recycle_rp_inst(ri);
@@ -285,6 +401,7 @@ static int add_new_kprobe(struct kprobe *old_p, struct kprobe *p)
 static inline void add_aggr_kprobe(struct kprobe *ap, struct kprobe *p)
 {
 	copy_kprobe(p, ap);
+	flush_insn_slot(ap);
 	ap->addr = p->addr;
 
 	ap->pre_handler = aggr_pre_handler;
@@ -295,16 +412,12 @@ static inline void add_aggr_kprobe(struct kprobe *ap, struct kprobe *p)
 	INIT_LIST_HEAD(&ap->list);
 	list_add_rcu(&p->list, &ap->list);
 
-	INIT_HLIST_NODE(&ap->hlist);
-	hlist_del_rcu(&p->hlist);
-	hlist_add_head_rcu(&ap->hlist,
-		&kprobe_table[hash_ptr(ap->addr, KPROBE_HASH_BITS)]);
+	hlist_replace_rcu(&p->hlist, &ap->hlist);
 }
 
 /*
  * This is the second or subsequent kprobe at the address - handle
  * the intricacies
- * TODO: Move kcalloc outside the spinlock
  */
 static int register_aggr_kprobe(struct kprobe *old_p, struct kprobe *p)
 {
@@ -315,7 +428,7 @@ static int register_aggr_kprobe(struct kprobe *old_p, struct kprobe *p)
 		copy_kprobe(old_p, p);
 		ret = add_new_kprobe(old_p, p);
 	} else {
-		ap = kcalloc(1, sizeof(struct kprobe), GFP_ATOMIC);
+		ap = kzalloc(sizeof(struct kprobe), GFP_KERNEL);
 		if (!ap)
 			return -ENOMEM;
 		add_aggr_kprobe(ap, old_p);
@@ -325,81 +438,111 @@ static int register_aggr_kprobe(struct kprobe *old_p, struct kprobe *p)
 	return ret;
 }
 
-/* kprobe removal house-keeping routines */
-static inline void cleanup_kprobe(struct kprobe *p, unsigned long flags)
-{
-	arch_disarm_kprobe(p);
-	hlist_del_rcu(&p->hlist);
-	spin_unlock_irqrestore(&kprobe_lock, flags);
-	arch_remove_kprobe(p);
-}
-
-static inline void cleanup_aggr_kprobe(struct kprobe *old_p,
-		struct kprobe *p, unsigned long flags)
-{
-	list_del_rcu(&p->list);
-	if (list_empty(&old_p->list))
-		cleanup_kprobe(old_p, flags);
-	else
-		spin_unlock_irqrestore(&kprobe_lock, flags);
-}
-
-int register_kprobe(struct kprobe *p)
+static int __register_kprobe(struct kprobe *p, unsigned long called_from)
 {
 	int ret = 0;
-	unsigned long flags = 0;
 	struct kprobe *old_p;
+	struct module *probed_mod;
 
-	if ((ret = arch_prepare_kprobe(p)) != 0)
-		goto rm_kprobe;
+ 	if (!kernel_text_address((unsigned long) p->addr))
+ 		return -EINVAL;
+
+	p->mod_refcounted = 0;
+	/* Check are we probing a module */
+	if ((probed_mod = module_text_address((unsigned long) p->addr))) {
+ 		struct module *calling_mod = module_text_address(called_from);
+ 		/* We must allow modules to probe themself and
+ 		 * in this case avoid incrementing the module refcount,
+		 * so as to allow unloading of self probing modules.
+		 */
+ 		 if (calling_mod && (calling_mod != probed_mod)) {
+ 			 if (unlikely(!try_module_get(probed_mod)))
+ 				 return -EINVAL;
+ 			 p->mod_refcounted = 1;
+ 		 } else
+ 		 probed_mod = NULL;
+ 	 }
 
 	p->nmissed = 0;
-	spin_lock_irqsave(&kprobe_lock, flags);
+ 	down(&kprobe_mutex);
 	old_p = get_kprobe(p->addr);
 	if (old_p) {
 		ret = register_aggr_kprobe(old_p, p);
 		goto out;
 	}
 
-	arch_copy_kprobe(p);
+ 	if ((ret = arch_prepare_kprobe(p)) != 0)
+ 		goto out;
+
 	INIT_HLIST_NODE(&p->hlist);
 	hlist_add_head_rcu(&p->hlist,
 		       &kprobe_table[hash_ptr(p->addr, KPROBE_HASH_BITS)]);
 
 	arch_arm_kprobe(p);
-
 out:
-	spin_unlock_irqrestore(&kprobe_lock, flags);
-rm_kprobe:
-	if (ret == -EEXIST)
-		arch_remove_kprobe(p);
+ 	up(&kprobe_mutex);
+
+	if (ret && probed_mod)
+		module_put(probed_mod);
+
 	return ret;
+}
+
+int register_kprobe(struct kprobe *p)
+{
+ 	return __register_kprobe(p,(unsigned long)__builtin_return_address(0));
 }
 
 void unregister_kprobe(struct kprobe *p)
 {
-	unsigned long flags;
-	struct kprobe *old_p;
+ 	struct module *mod;
+ 	struct kprobe *old_p, *list_p;
+ 	int cleanup_p;
 
-	spin_lock_irqsave(&kprobe_lock, flags);
+ 	down(&kprobe_mutex);
 	old_p = get_kprobe(p->addr);
-	if (old_p) {
-		/* cleanup_*_kprobe() does the spin_unlock_irqrestore */
-		if (old_p->pre_handler == aggr_pre_handler)
-			cleanup_aggr_kprobe(old_p, p, flags);
-		else
-			cleanup_kprobe(p, flags);
+ 	if (unlikely(!old_p)) {
+ 		up(&kprobe_mutex);
+ 		return;
+ 	}
+ 	if (p != old_p) {
+  		list_for_each_entry_rcu(list_p, &old_p->list, list)
+  			if (list_p == p)
+  			/* kprobe p is a valid probe */
+  				goto valid_p;
+  		up(&kprobe_mutex);
+  		return;
+ 	}
+valid_p:
+  	if ((old_p == p) || ((old_p->pre_handler == aggr_pre_handler) &&
+ 		(p->list.next == &old_p->list) &&
+  		(p->list.prev == &old_p->list))) {
+  		/* Only probe on the hash list */
+ 		arch_disarm_kprobe(p);
+ 		hlist_del_rcu(&old_p->hlist);
+  		cleanup_p = 1;
+ 	} else {
+ 		list_del_rcu(&p->list);
+  		cleanup_p = 0;
+ 	}
+ 	up(&kprobe_mutex);
+ 	/*
+ 	 * We don't have synchronize_sched() in 2.6.9 - use
+ 	 * the equivalent - synchronize_kernel() instead
+ 	 */
+ 	synchronize_kernel();
 
-		/*
-		 * We don't have synchronize_sched() in 2.6.9 - use
-		 * the equivalent - synchronize_kernel() instead
-		 */
-		synchronize_kernel();
-		if (old_p->pre_handler == aggr_pre_handler &&
-				list_empty(&old_p->list))
+	if (p->mod_refcounted &&
+  		(mod = module_text_address((unsigned long)p->addr)))
+ 		module_put(mod);
+
+ 	if (cleanup_p) {
+ 		if (p != old_p) {
+ 			list_del_rcu(&p->list);
 			kfree(old_p);
-	} else
-		spin_unlock_irqrestore(&kprobe_lock, flags);
+ 		}
+		arch_remove_kprobe(p);
+ 	}
 }
 
 static struct notifier_block kprobe_exceptions_nb = {
@@ -413,7 +556,8 @@ int register_jprobe(struct jprobe *jp)
 	jp->kp.pre_handler = setjmp_pre_handler;
 	jp->kp.break_handler = longjmp_break_handler;
 
-	return register_kprobe(&jp->kp);
+	return __register_kprobe(&jp->kp, (unsigned long)__builtin_return_address(0));
+
 }
 
 void unregister_jprobe(struct jprobe *jp)
@@ -430,6 +574,9 @@ int register_kretprobe(struct kretprobe *rp)
 	int i;
 
 	rp->kp.pre_handler = pre_handler_kretprobe;
+	rp->kp.post_handler = NULL;
+	rp->kp.fault_handler = NULL;
+	rp->kp.break_handler = NULL;
 
 	/* Pre-allocate memory for max kretprobe instances */
 	if (rp->maxactive <= 0) {
@@ -453,7 +600,8 @@ int register_kretprobe(struct kretprobe *rp)
 
 	rp->nmissed = 0;
 	/* Establish function entry probe point */
-	if ((ret = register_kprobe(&rp->kp)) != 0)
+	if ((ret = __register_kprobe(&rp->kp,
+		(unsigned long)__builtin_return_address(0))) != 0)
 		free_rp_inst(rp);
 	return ret;
 }
@@ -475,12 +623,12 @@ void unregister_kretprobe(struct kretprobe *rp)
 	unregister_kprobe(&rp->kp);
 	/* No race here */
 	spin_lock_irqsave(&kretprobe_lock, flags);
-	free_rp_inst(rp);
 	while ((ri = get_used_rp_inst(rp)) != NULL) {
 		ri->rp = NULL;
 		hlist_del(&ri->uflist);
 	}
 	spin_unlock_irqrestore(&kretprobe_lock, flags);
+	free_rp_inst(rp);
 }
 
 static int __init init_kprobes(void)

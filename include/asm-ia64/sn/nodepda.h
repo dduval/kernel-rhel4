@@ -55,7 +55,6 @@ struct nodepda_s {
 	 */
 	struct phys_cpuid	phys_cpuid[NR_CPUS];
 	spinlock_t		ptc_lock ____cacheline_aligned_in_smp;
-	spinlock_t		bist_lock;
 };
 
 typedef struct nodepda_s nodepda_t;
@@ -71,8 +70,8 @@ typedef struct nodepda_s nodepda_t;
  *	NODEPDA(cnodeid)   - to access node PDA for cnodeid
  */
 
-DECLARE_PER_CPU(long, __sn_nodepda);
-#define sn_nodepda		((struct nodepda_s *)__get_cpu_var(__sn_nodepda))
+DECLARE_PER_CPU(struct nodepda_s *, __sn_nodepda);
+#define sn_nodepda		(__get_cpu_var(__sn_nodepda))
 #define	NODEPDA(cnodeid)	(sn_nodepda->pernode_pdaindr[cnodeid])
 
 /*

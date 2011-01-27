@@ -27,8 +27,9 @@
 #include <linux/ptrace.h>
 #include <linux/percpu.h>
 
+#define  __ARCH_WANT_KPROBES_INSN_SLOT
 struct pt_regs;
-
+struct kprobe;
 typedef u8 kprobe_opcode_t;
 #define BREAKPOINT_INSTRUCTION	0xcc
 #define MAX_INSN_SIZE 15
@@ -40,9 +41,10 @@ typedef u8 kprobe_opcode_t;
 
 #define JPROBE_ENTRY(pentry)	(kprobe_opcode_t *)pentry
 #define ARCH_SUPPORTS_KRETPROBES
+#define flush_insn_slot(p)	do { } while (0)
 
 void kretprobe_trampoline(void);
-
+extern void arch_remove_kprobe(struct kprobe *p);
 /* Architecture specific copy of original instruction*/
 struct arch_specific_insn {
 	/* copy of the original instruction */
@@ -75,7 +77,6 @@ static inline void restore_interrupts(struct pt_regs *regs)
 	if (regs->eflags & IF_MASK)
 		local_irq_enable();
 }
-
 extern int post_kprobe_handler(struct pt_regs *regs);
 extern int kprobe_fault_handler(struct pt_regs *regs, int trapnr);
 extern int kprobe_handler(struct pt_regs *regs);

@@ -239,6 +239,14 @@ struct class_interface {
 extern int class_interface_register(struct class_interface *);
 extern void class_interface_unregister(struct class_interface *);
 
+extern struct class *class_create(struct module *owner, char *name);
+extern void class_destroy(struct class *cls);
+extern struct class_device *class_device_create(struct class *cls,
+						dev_t devt,
+						struct device *device,
+						char *fmt, ...)
+					__attribute__((format(printf,4,5)));
+
 /* interface for class simple stuff */
 extern struct class_simple *class_simple_create(struct module *owner, char *name);
 extern void class_simple_destroy(struct class_simple *cs);
@@ -314,6 +322,7 @@ dev_set_drvdata (struct device *dev, void *data)
 extern int device_register(struct device * dev);
 extern void device_unregister(struct device * dev);
 extern void device_initialize(struct device * dev);
+extern void device_fini(struct device * dev);
 extern int device_add(struct device * dev);
 extern void device_del(struct device * dev);
 extern int device_for_each_child(struct device *, void *,

@@ -1,0 +1,135 @@
+IPOIB FAQ
+
+ping doesn't work between IPoIB nodes. What should I do ?
+
+First, verify that the ports are active.
+
+This can be done via:
+
+cat /sys/class/infiniband/mthca0/ports/1/state
+
+This should indicate 4: ACTIVE
+
+assuming the HCA is mthca0 and port 1 is the one plugged into the subnet
+(switch, etc.). 
+
+If the port is not active, there could be several reasons:
+
+1. You need an SM in your subnet to bring the ports to active. Do you
+have an SM ? This can be embedded in a switch or some other IB hardware
+or run on an end node (HCA). Check out opensm under
+https://openib.org/svn/gen2/trunk/src/userspace/management/
+
+2. If you have an SM in your subnet, there might be a cabling problem 
+where the SM cannot "reach" your end node.
+
+If the port is active, indicate the subnet configuration and which SM is
+being utilized.
+
+Do /sys/class/net/ib0/statistics/rx_packets and/or "tcpdump -i ib0"
+show anything on the other nodes when you try to ping or something?
+
+There are 2 levels of IPoIB debug which can be enabled when building:
+IP-over-InfiniBand debugging and IP-over-InfiniBand data path debugging.
+The latter has performance implications and should only be enabled when
+all else fails. Enable the first level of IPoIB debug and then:
+
+mount -t ipoib_debugfs none /ipoib_debufs/
+cat /ipoib_debugfs/ib0_mcg
+
+There are 3 module parameters for IPoIB debug:
+debug_level, mcast_debug_level, and data_debug_level.
+If both CONFIG options have been enabled, debugging is
+turned on by setting the ib_ipoib module parameters to 1.
+(This can also be changed with the module loaded through
+/sys/module/ib_ipoib).
+
+Other things to verify and supply to help isolate the problem:
+
+1. Verify the firmware version via
+
+cat /sys/class/infiniband/mthca0/fw_ver
+
+For PCI-X HCAs, version 3.2.0 or later is recommended. For PCIe HCAs,
+version 4.5.3 or later is recommended.
+
+Note that there is an issue with Tavor 3.3.1 and Arbel (in Tavor
+compatibility mode) 4.6.1 where there is an issue with CQ handling.
+A patch to workaround this has been posted at 
+http://openib.org/pipermail/openib-general/2004-December/007247.html
+This issue is corrected in subsequent versions of Tavor and Arbel
+(in Tavor compatibility mode) firmware.
+
+2. Make sure the IB modules are loaded:
+/sbin/lsmod | grep ib_
+should show ib_mthca (HCA driver) as well as ib_ipoib. There are others
+but those are the two which need to be loaded and any others will
+follow. 
+
+3. Make sure there are no errors in /var/log/messages pertaining to ib_.
+
+4. Indicate the IP configuration via
+/sbin/ifconfig -a
+and
+ip addr show dev ib0 
+(assuming ib0 is the network interface being configured)
+
+This is because ifconfig can only show the first 16 octets of the HW
+address (and the last two bytes are actually wrong, because the
+SIOGIFHWADDR ioctl that it uses can only return 14 bytes).  IPoIB has
+a 20 byte HW address; the four (or six?) bytes that get cut off are
+the low-order bytes of the port GID, which is probably where the
+difference between port GIDs is.
+
+To see the real IB hardware address, you need to do something like "ip
+addr show dev ib0".  For example, 
+    # ifconfig ib0
+    ib0       Link encap:UNSPEC  HWaddr
+00-00-04-04-FE-80-00-00-00-00-00-00-00-00-00-00
+              BROADCAST MULTICAST  MTU:2044  Metric:1
+              RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+              TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+              collisions:0 txqueuelen:128
+              RX bytes:0 (0.0 b)  TX bytes:0 (0.0 b)
+
+    # ip addr show dev ib0
+    5: ib0: <BROADCAST,MULTICAST> mtu 2044 qdisc noop qlen 128
+        link/[32]
+00:00:04:04:fe:80:00:00:00:00:00:00:00:02:c9:01:07:8c:e4:61 brd
+00:ff:ff:ff:ff:12:40:1b:ff:ff:00:00:00:00:00:00:ff:ff:ff:ff
+
+5. Use
+ip neigh show dev ib0
+to display ARP table for IB interface ib0
+
+
+IPoIB Performance Tuning
+
+On certain machines, enabling MSI-X will improve performance.
+To use it, set CONFIG_PCI_MSI=y when you build
+your kernel and either "modprobe ib_mthca msi_x=1" or add "options
+ib_mthca msi_x=1" to a file in /etc/modprobe.d.  If MSI-X is enabled,
+your /proc/interrupts will have mthca lines like
+
+    217:          0          0   26860275          0       PCI-MSI-X  ib_mthca
+(comp)
+    225:          0          0         10          0       PCI-MSI-X  ib_mthca
+(async)
+    233:          0          0      11572          0       PCI-MSI-X  ib_mthca
+(cmd)
+
+instead of
+
+    193:    3954254 2655769514 1116770165 1544790344   IO-APIC-level  ib_mthca
+
+In order to use MSI-X, firmware version must be at least 3.3.2 for Tavor or
+4.6.2 for Arbel (in Tavor compatibility mode).
+
+Also, the following may be helpful for obtaining the highest IPoIB
+performance: bind the HCA's interrupt handlers to one CPU and use 
+taskset to bind the netperf/netserver processes to a different CPU.
+For example, use 1 for the irq's smp_affinity mask and then use 4
+for the taskset mask (on a dual Xeon system with hyperthreading,
+so logical CPUs 0 and 1 are the same physical core -- so the mask 4
+uses the second physical CPU).
+

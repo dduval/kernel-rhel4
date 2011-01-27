@@ -36,6 +36,8 @@ extern int pic_mode;
 extern int smp_num_siblings;
 extern int smp_num_cores;
 extern cpumask_t cpu_sibling_map[];
+extern cpumask_t cpu_core_map[];
+extern int cpu_llc_id[NR_CPUS];
 
 extern void smp_flush_tlb(void);
 extern void smp_message_irq(int cpl, void *dev_id, struct pt_regs *regs);
@@ -45,6 +47,8 @@ extern void zap_low_mappings (void);
 
 #define MAX_APICID 256
 extern u8 x86_cpu_to_apicid[];
+
+#define cpu_physical_id(cpu)	x86_cpu_to_apicid[cpu]
 
 /*
  * This function is needed by all SMP systems. It must _always_ be valid
@@ -87,7 +91,13 @@ static __inline int logical_smp_processor_id(void)
 #endif
 #endif /* !__ASSEMBLY__ */
 
+#else /* CONFIG_SMP */
+
+#define cpu_physical_id(cpu)		boot_cpu_physical_apicid
+
 #define NO_PROC_ID		0xFF		/* No processor magic marker */
 
+#define smp_processor_id()			0
+#define hard_smp_processor_id()			(boot_cpu_physical_apicid)
 #endif
 #endif

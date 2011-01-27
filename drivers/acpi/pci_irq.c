@@ -259,10 +259,6 @@ acpi_pci_irq_lookup (
 			return_VALUE(-1);
 		}
 	} else {
-		if (!entry->link.index) {
-			ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Invalid static routing entry (IRQ 0)\n"));
-			return_VALUE(-1);
-		}
 		irq = entry->link.index;
 		*edge_level = ACPI_LEVEL_SENSITIVE;
 		*active_high_low = ACPI_ACTIVE_LOW;

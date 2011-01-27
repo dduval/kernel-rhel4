@@ -60,7 +60,7 @@ static int notsc __initdata = 0;
 
 
 unsigned int cpu_khz;					/* TSC clocks / usec, not used here */
-unsigned long hpet_period;				/* fsecs / HPET clock */
+unsigned long hpet_period = 0;		/* fsecs / HPET clock */
 unsigned long hpet_tick;				/* HPET clocks / interrupt */
 static int hpet_use_timer;
 unsigned long vxtime_hz = PIT_TICK_RATE;
@@ -758,7 +758,8 @@ static int hpet_init(void)
 	if (!(id & HPET_ID_VENDOR) || !(id & HPET_ID_NUMBER))
 		return -1;
 
-	hpet_period = hpet_readl(HPET_PERIOD);
+	if (!hpet_period)
+		hpet_period = hpet_readl(HPET_PERIOD);
 	if (hpet_period < 100000 || hpet_period > 100000000)
 		return -1;
 
@@ -856,7 +857,7 @@ void __init time_init(void)
 		cpu_khz = hpet_calibrate_tsc();
 		timename = "HPET";
 #ifdef CONFIG_X86_PM_TIMER
-       } else if (pmtmr_ioport) {
+       } else if (pmtmr_ioport && !vxtime.hpet_address) {
                vxtime_hz = PM_TIMER_FREQUENCY;
                timename = "PM";
                pit_init();
@@ -1233,3 +1234,9 @@ static int __init notsc_setup(char *s)
 __setup("notsc", notsc_setup);
 
 
+static int __init hpet_period_setup(char *str)
+{ 
+	hpet_period = simple_strtol(str,NULL,0);
+        return 0;
+}
+__setup("hpet_period=", hpet_period_setup);

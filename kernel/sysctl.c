@@ -68,6 +68,8 @@ extern int sysctl_lower_zone_protection;
 extern int min_free_kbytes;
 extern int printk_ratelimit_jiffies;
 extern int printk_ratelimit_burst;
+extern int percpu_pagelist_fraction;
+extern int wake_balance;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 int unknown_nmi_panic;
@@ -101,6 +103,7 @@ __setup("exec-shield-randomize=", setup_exec_shield_randomize);
 /* this is needed for the proc_dointvec_minmax for [fs_]overflow UID and GID */
 static int maxolduid = 65535;
 static int minolduid;
+static int min_percpu_pagelist_fract = 8;
 
 static int ngroups_max = NGROUPS_MAX;
 
@@ -697,6 +700,22 @@ static ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec,
 	},
+	{
+		.ctl_name	= KERN_WAKE_BALANCE,
+		.procname	= "wake_balance",
+		.data		= &wake_balance,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+	{
+		.ctl_name	= KERN_PANIC_ON_NMI,
+		.procname	= "panic_on_unrecovered_nmi",
+		.data		= &panic_on_unrecovered_nmi,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
 	{ .ctl_name = 0 }
 };
 
@@ -887,6 +906,27 @@ static ctl_table vm_table[] = {
 		.proc_handler	= &proc_dointvec,
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
+	},
+	{
+		.ctl_name       = VM_MAX_QUEUE_DEPTH,
+		.procname       = "max_queue_depth",
+		.data           = &vm_max_queue_depth,
+		.maxlen         = sizeof(vm_max_queue_depth),
+		.mode           = 0644,
+		.proc_handler   = &proc_dointvec_minmax,
+		.strategy       = &sysctl_intvec,
+		.extra1         = &zero,
+		.extra2         = &one_hundred,
+	},
+ 	{
+		.ctl_name	= VM_PERCPU_PAGELIST_FRACTION,
+		.procname	= "percpu_pagelist_fraction",
+		.data		= &percpu_pagelist_fraction,
+		.maxlen		= sizeof(percpu_pagelist_fraction),
+		.mode		= 0644,
+		.proc_handler	= &percpu_pagelist_fraction_sysctl_handler,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &min_percpu_pagelist_fract,
 	},
 	{ .ctl_name = 0 }
 };

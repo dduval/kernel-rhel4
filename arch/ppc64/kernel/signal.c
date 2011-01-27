@@ -207,6 +207,8 @@ static long restore_sigcontext(struct pt_regs *regs, sigset_t *set, int sig,
 	err |= __get_user(v_regs, &sc->v_regs);
 	if (err)
 		return err;
+	if (v_regs != 0 && !access_ok(VERIFY_READ, v_regs, 34 * sizeof(*v_regs)))
+		return -EFAULT;
 	/* Copy 33 vec registers (vr0..31 and vscr) from the stack */
 	if (v_regs != 0 && (regs->msr & MSR_VEC) != 0)
 		err |= __copy_from_user(current->thread.vr, v_regs, 33 * sizeof(vector128));
@@ -340,7 +342,7 @@ int sys_swapcontext(struct ucontext __user *old_ctx,
  * Do a signal return; undo the signal stack.
  */
 
-int sys_rt_sigreturn(unsigned long r3, unsigned long r4, unsigned long r5,
+long sys_rt_sigreturn(unsigned long r3, unsigned long r4, unsigned long r5,
 		     unsigned long r6, unsigned long r7, unsigned long r8,
 		     struct pt_regs *regs)
 {

@@ -356,6 +356,20 @@ config LBD
 	  your machine, or if you want to have a raid or loopback device
 	  bigger than 2TB.  Otherwise say N.
 
+config CCISS_DUMP
+       bool "driver-side part of cciss diskdump"
+       depends on DISKDUMP
+       default y
+       ---help---
+	 Support for diskdump routines in the cciss driver
+
+config CCISS_DUMP_GLUE
+	tristate "Disk dump support for cciss"
+	depends on CCISS_DUMP
+	default m
+	---help---
+	  Disk dump support for cciss
+
 config DISKDUMP
 	tristate "Disk dump support"
 	---help---

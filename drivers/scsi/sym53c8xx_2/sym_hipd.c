@@ -1550,7 +1550,8 @@ static int sym_prepare_nego(hcb_p np, ccb_p cp, int nego, u_char *msgptr)
 	/*
 	 *  negotiate using PPR ?
 	 */
-	if (np->scsi_mode == SMODE_LVD && scsi_device_dt(sdev)) {
+	if ((tp->tinfo.goal.options & PPR_OPT_MASK) ||
+		(tp->tinfo.goal.period < 0xa)) {	
 		nego = NS_PPR;
 	} else {
 		/*
@@ -3736,7 +3737,7 @@ static int sym_evaluate_dp(hcb_p np, ccb_p cp, u32 scr, int *ofs)
 
 	if (pm) {
 		dp_scr  = scr_to_cpu(pm->ret);
-		dp_ofs -= scr_to_cpu(pm->sg.size);
+		dp_ofs -= scr_to_cpu(pm->sg.size) & 0x00ffffff;
 	}
 
 	/*

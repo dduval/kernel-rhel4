@@ -30,8 +30,10 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ucm.c 3946 2005-11-02 15:23:43Z roland $
+ * $Id: ucm.c 2594 2005-06-13 19:46:02Z libor $
  */
+
+#include <linux/completion.h>
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/module.h>
@@ -42,6 +44,7 @@
 #include <linux/mount.h>
 #include <linux/cdev.h>
 #include <linux/idr.h>
+#include <linux/mutex.h>
 
 #include <asm/uaccess.h>
 
@@ -71,7 +74,7 @@ struct ib_ucm_file {
 
 struct ib_ucm_context {
 	int                 id;
-	wait_queue_head_t   wait;
+	struct completion   comp;
 	atomic_t            ref;
 	int		    events_reported;
 
@@ -113,7 +116,7 @@ static struct ib_client ucm_client = {
 	.remove = ib_ucm_remove_one
 };
 
-static DECLARE_MUTEX(ctx_id_mutex);
+static DEFINE_MUTEX(ctx_id_mutex);
 static DEFINE_IDR(ctx_id_table);
 static DECLARE_BITMAP(dev_map, IB_UCM_MAX_DEVICES);
 
@@ -121,7 +124,7 @@ static struct ib_ucm_context *ib_ucm_ctx_get(struct ib_ucm_file *file, int id)
 {
 	struct ib_ucm_context *ctx;
 
-	down(&ctx_id_mutex);
+	mutex_lock(&ctx_id_mutex);
 	ctx = idr_find(&ctx_id_table, id);
 	if (!ctx)
 		ctx = ERR_PTR(-ENOENT);
@@ -129,7 +132,7 @@ static struct ib_ucm_context *ib_ucm_ctx_get(struct ib_ucm_file *file, int id)
 		ctx = ERR_PTR(-EINVAL);
 	else
 		atomic_inc(&ctx->ref);
-	up(&ctx_id_mutex);
+	mutex_unlock(&ctx_id_mutex);
 
 	return ctx;
 }
@@ -137,7 +140,7 @@ static struct ib_ucm_context *ib_ucm_ctx_get(struct ib_ucm_file *file, int id)
 static void ib_ucm_ctx_put(struct ib_ucm_context *ctx)
 {
 	if (atomic_dec_and_test(&ctx->ref))
-		wake_up(&ctx->wait);
+		complete(&ctx->comp);
 }
 
 static inline int ib_ucm_new_cm_id(int event)
@@ -177,7 +180,7 @@ static struct ib_ucm_context *ib_ucm_ctx_alloc(struct ib_ucm_file *file)
 		return NULL;
 
 	atomic_set(&ctx->ref, 1);
-	init_waitqueue_head(&ctx->wait);
+	init_completion(&ctx->comp);
 	ctx->file = file;
 	INIT_LIST_HEAD(&ctx->events);
 
@@ -186,9 +189,9 @@ static struct ib_ucm_context *ib_ucm_ctx_alloc(struct ib_ucm_file *file)
 		if (!result)
 			goto error;
 
-		down(&ctx_id_mutex);
+		mutex_lock(&ctx_id_mutex);
 		result = idr_get_new(&ctx_id_table, ctx, &ctx->id);
-		up(&ctx_id_mutex);
+		mutex_unlock(&ctx_id_mutex);
 	} while (result == -EAGAIN);
 
 	if (result)
@@ -550,9 +553,9 @@ static ssize_t ib_ucm_create_id(struct ib_ucm_file *file,
 err2:
 	ib_destroy_cm_id(ctx->cm_id);
 err1:
-	down(&ctx_id_mutex);
+	mutex_lock(&ctx_id_mutex);
 	idr_remove(&ctx_id_table, ctx->id);
-	up(&ctx_id_mutex);
+	mutex_unlock(&ctx_id_mutex);
 	kfree(ctx);
 	return result;
 }
@@ -572,7 +575,7 @@ static ssize_t ib_ucm_destroy_id(struct ib_ucm_file *file,
 	if (copy_from_user(&cmd, inbuf, sizeof(cmd)))
 		return -EFAULT;
 
-	down(&ctx_id_mutex);
+	mutex_lock(&ctx_id_mutex);
 	ctx = idr_find(&ctx_id_table, cmd.id);
 	if (!ctx)
 		ctx = ERR_PTR(-ENOENT);
@@ -580,13 +583,13 @@ static ssize_t ib_ucm_destroy_id(struct ib_ucm_file *file,
 		ctx = ERR_PTR(-EINVAL);
 	else
 		idr_remove(&ctx_id_table, ctx->id);
-	up(&ctx_id_mutex);
+	mutex_unlock(&ctx_id_mutex);
 
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
 
-	atomic_dec(&ctx->ref);
-	wait_event(ctx->wait, !atomic_read(&ctx->ref));
+	ib_ucm_ctx_put(ctx);
+	wait_for_completion(&ctx->comp);
 
 	/* No new events will be generated after destroying the cm_id. */
 	ib_destroy_cm_id(ctx->cm_id);
@@ -741,7 +744,8 @@ static ssize_t ib_ucm_listen(struct ib_ucm_file *file,
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
 
-	result = ib_cm_listen(ctx->cm_id, cmd.service_id, cmd.service_mask);
+	result = ib_cm_listen(ctx->cm_id, cmd.service_id, cmd.service_mask,
+			      NULL);
 	ib_ucm_ctx_put(ctx);
 	return result;
 }
@@ -1280,9 +1284,9 @@ static int ib_ucm_close(struct inode *inode, struct file *filp)
 				 struct ib_ucm_context, file_list);
 		up(&file->mutex);
 
-		down(&ctx_id_mutex);
+		mutex_lock(&ctx_id_mutex);
 		idr_remove(&ctx_id_table, ctx->id);
-		up(&ctx_id_mutex);
+		mutex_unlock(&ctx_id_mutex);
 
 		ib_destroy_cm_id(ctx->cm_id);
 		ib_ucm_cleanup_events(ctx);
@@ -1317,15 +1321,6 @@ static struct class ucm_class = {
 	.name    = "infiniband_cm",
 	.release = ib_ucm_release_class_dev
 };
-
-static ssize_t show_dev(struct class_device *class_dev, char *buf)
-{
-	struct ib_ucm_device *dev;
-	
-	dev = container_of(class_dev, struct ib_ucm_device, class_dev);
-	return print_dev_t(buf, dev->dev.dev);
-}
-static CLASS_DEVICE_ATTR(dev, S_IRUGO, show_dev, NULL);
 
 static ssize_t show_ibdev(struct class_device *class_dev, char *buf)
 {
@@ -1363,14 +1358,12 @@ static void ib_ucm_add_one(struct ib_device *device)
 
 	ucm_dev->class_dev.class = &ucm_class;
 	ucm_dev->class_dev.dev = device->dma_device;
+	/* ucm_dev->class_dev.devt = ucm_dev->dev.dev; */
 	snprintf(ucm_dev->class_dev.class_id, BUS_ID_SIZE, "ucm%d",
 		 ucm_dev->devnum);
 	if (class_device_register(&ucm_dev->class_dev))
 		goto err_cdev;
 
-	if (class_device_create_file(&ucm_dev->class_dev,
-				     &class_device_attr_dev))
-		goto err_class;
 	if (class_device_create_file(&ucm_dev->class_dev,
 				     &class_device_attr_ibdev))
 		goto err_class;
@@ -1447,6 +1440,7 @@ static void __exit ib_ucm_cleanup(void)
 	ib_unregister_client(&ucm_client);
 	class_unregister(&ucm_class);
 	unregister_chrdev_region(IB_UCM_BASE_DEV, IB_UCM_MAX_DEVICES);
+	idr_destroy(&ctx_id_table);
 }
 
 module_init(ib_ucm_init);

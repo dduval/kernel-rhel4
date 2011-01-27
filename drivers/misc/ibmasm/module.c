@@ -56,17 +56,26 @@
 #include "lowlevel.h"
 #include "remote.h"
 
+int ibmasm_debug = 0;
+module_param(ibmasm_debug, int , S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(ibmasm_debug, " Set debug mode on or off");
 
-static int __init ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+
+static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	int result = -ENOMEM;
+	int result;
 	struct service_processor *sp;
 
-	if (pci_enable_device(pdev)) {
-		printk(KERN_ERR "%s: can't enable PCI device at %s\n",
-			DRIVER_NAME, pci_name(pdev));
-		return -ENODEV;
+	if ((result = pci_enable_device(pdev))) {
+		dev_err(&pdev->dev, "Failed to enable PCI device\n");
+		return result;
 	}
+	if ((result = pci_request_regions(pdev, DRIVER_NAME))) {
+		dev_err(&pdev->dev, "Failed to allocate PCI resources\n");
+		goto error_resources;
+	}
+	/* vnc client won't work without bus-mastering */
+	pci_set_master(pdev);
 
 	sp = kmalloc(sizeof(struct service_processor), GFP_KERNEL);
 	if (sp == NULL) {
@@ -75,6 +84,9 @@ static int __init ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_
 		goto error_kmalloc;
 	}
 	memset(sp, 0, sizeof(struct service_processor));
+
+	sp->lock = SPIN_LOCK_UNLOCKED;
+	INIT_LIST_HEAD(&sp->command_queue);
 
 	pci_set_drvdata(pdev, (void *)sp);
 	sp->dev = &pdev->dev;
@@ -101,15 +113,6 @@ static int __init ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_
 		goto error_ioremap;
 	}
 
-	result = ibmasm_init_remote_queue(sp);
-	if (result) {
-		dev_err(sp->dev, "Failed to initialize remote queue\n");
-		goto error_remote_queue;
-	}
-
-	sp->lock = SPIN_LOCK_UNLOCKED;
-	INIT_LIST_HEAD(&sp->command_queue);
-
 	result = request_irq(sp->irq, ibmasm_interrupt_handler, SA_SHIRQ, sp->devname, (void*)sp);
 	if (result) {
 		dev_err(sp->dev, "Failed to register interrupt handler\n");
@@ -117,7 +120,12 @@ static int __init ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_
 	}
 
 	enable_sp_interrupts(sp->base_address);
-	disable_mouse_interrupts(sp);
+
+	result = ibmasm_init_remote_input_dev(sp);
+	if (result) {
+		dev_err(sp->dev, "Failed to initialize remote queue\n");
+		goto error_send_message;
+	}
 
 	result = ibmasm_send_driver_vpd(sp);
 	if (result) {
@@ -133,48 +141,51 @@ static int __init ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_
 
 	ibmasm_register_uart(sp);
 
-	dev_printk(KERN_DEBUG, &pdev->dev, "WARNING: This software may not be supported or function\n");
-	dev_printk(KERN_DEBUG, &pdev->dev, "correctly on your IBM server. Please consult the IBM\n");
-	dev_printk(KERN_DEBUG, &pdev->dev, "ServerProven website\n");
-	dev_printk(KERN_DEBUG, &pdev->dev, "http://www.pc.ibm.com/ww/eserver/xseries/serverproven\n");
-	dev_printk(KERN_DEBUG, &pdev->dev, "for information on the specific driver level and support\n");
-	dev_printk(KERN_DEBUG, &pdev->dev, "statement for your IBM server.\n");
-
 	return 0;
 
 error_send_message:
 	disable_sp_interrupts(sp->base_address);
+	ibmasm_free_remote_input_dev(sp);
 	free_irq(sp->irq, (void *)sp);
 error_request_irq:
-	ibmasm_free_remote_queue(sp);
-error_remote_queue:
 	iounmap(sp->base_address);
 error_ioremap:
 	ibmasm_heartbeat_exit(sp);
 error_heartbeat:
 	ibmasm_event_buffer_exit(sp);
 error_eventbuffer:
+	pci_set_drvdata(pdev, NULL);
 	kfree(sp);
 error_kmalloc:
-	pci_disable_device(pdev);
+        pci_release_regions(pdev);
+error_resources:
+        pci_disable_device(pdev);
 
 	return result;
 }
 
-static void __exit ibmasm_remove_one(struct pci_dev *pdev)
+static void __devexit ibmasm_remove_one(struct pci_dev *pdev)
 {
 	struct service_processor *sp = (struct service_processor *)pci_get_drvdata(pdev);
 
+	dbg("Unregistering UART\n");
 	ibmasm_unregister_uart(sp);
-	ibmasm_send_os_state(sp, SYSTEM_STATE_OS_DOWN);
-	disable_sp_interrupts(sp->base_address);
-	disable_mouse_interrupts(sp);
-	free_irq(sp->irq, (void *)sp);
+	dbg("Sending OS down message\n");
+	if (ibmasm_send_os_state(sp, SYSTEM_STATE_OS_DOWN))
+		err("failed to get repsonse to 'Send OS State' command\n");
+	dbg("Disabling heartbeats\n");
 	ibmasm_heartbeat_exit(sp);
-	ibmasm_free_remote_queue(sp);
+	dbg("Disabling interrupts\n");
+	disable_sp_interrupts(sp->base_address);
+	dbg("Freeing SP irq\n");
+	free_irq(sp->irq, (void *)sp);
+	dbg("Cleaning up\n");
+	ibmasm_free_remote_input_dev(sp);
 	iounmap(sp->base_address);
 	ibmasm_event_buffer_exit(sp);
+	pci_set_drvdata(pdev, NULL);
 	kfree(sp);
+	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 }
 
@@ -209,10 +220,9 @@ static int __init ibmasm_init(void)
 		return result;
 	}
 	result = pci_register_driver(&ibmasm_driver);
-	if (result <= 0) {
-		pci_unregister_driver(&ibmasm_driver);
+	if (result < 0) {
 		ibmasmfs_unregister();
-		return -ENODEV;
+		return result;
 	}
 	ibmasm_register_panic_notifier();
 	info(DRIVER_DESC " version " DRIVER_VERSION " loaded");
@@ -225,3 +235,5 @@ module_exit(ibmasm_exit);
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
+MODULE_DEVICE_TABLE(pci, ibmasm_pci_table);
+

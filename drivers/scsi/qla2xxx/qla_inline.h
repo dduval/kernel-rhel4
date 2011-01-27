@@ -137,7 +137,7 @@ qla2x00_enable_intrs(scsi_qla_host_t *ha)
 	struct device_reg_24xx __iomem *reg24;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
 		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
 		WRT_REG_DWORD(&reg24->ictrl, ICRX_EN_RISC_INT);
 		RD_REG_DWORD(&reg24->ictrl);
@@ -159,7 +159,7 @@ qla2x00_disable_intrs(scsi_qla_host_t *ha)
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	ha->interrupts_on = 0;
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha)) {
 		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
 		WRT_REG_DWORD(&reg24->ictrl, 0);
 		RD_REG_DWORD(&reg24->ictrl);
@@ -331,7 +331,7 @@ static inline int qla2x00_is_reserved_id(scsi_qla_host_t *, uint16_t);
 static inline int
 qla2x00_is_reserved_id(scsi_qla_host_t *ha, uint16_t loop_id)
 {
-	if (IS_QLA24XX(ha) || IS_QLA25XX(ha))
+	if (IS_QLA24XX(ha) || IS_QLA54XX(ha))
 		return (loop_id > NPH_LAST_HANDLE);
 
 	return ((loop_id > ha->last_loop_id && loop_id < SNS_FIRST_LOOP_ID) ||

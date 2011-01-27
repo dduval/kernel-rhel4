@@ -648,11 +648,21 @@ running once the system is up.
 	maxcpus=	[SMP] Maximum number of processors that	an SMP kernel
 			should make use of
 
-	max_scsi_luns=	[SCSI]
+	max_luns=	[SCSI] System wide maximun lun number to probe on
+			devices that don't support REPORT_LUNS SCSI command.
+			Individual SCSI host drivers may set the limit on
+			hosts they handle to something less than this limit,
+			the lower of the two limits will be used.
+			Default: 512
 
-	max_scsi_report_luns=
-			[SCSI] Maximum number of LUNs received
-			Should be between 1 and 16384.
+	max_report_luns=
+			[SCSI] Maximum number of LUNs received when using
+			the REPORT_LUNS SCSI command.  The REPORT_LUNS
+			command lists the actual, present luns on the device
+			allowing the SCSI subsystem to skip all non-existing
+			luns.  As such, no scan time is wasted even if this
+			number is high.  Should be between 1 and 16384
+			Default: 511
 
 	mca-pentium	[BUGS=IA-32]
 

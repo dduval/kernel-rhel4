@@ -38,4 +38,6 @@ static inline cpumask_t __pcibus_to_cpumask(int bus)
 
 #include <asm-generic/topology.h>
 
+extern cpumask_t cpu_coregroup_map(int cpu);
+
 #endif

@@ -103,7 +103,7 @@ static void ftp_execute_command (tux_req_t *req, int cachemiss);
 static void ftp_lookup_vhost (tux_req_t *req, int cachemiss)
 {
 	struct dentry *dentry;
-	struct nameidata base;
+	struct nameidata base = {};
 	struct vfsmount *mnt = NULL;
 	unsigned int flag = cachemiss ? 0 : LOOKUP_ATOMIC;
 	char ip[3+1+3+1+3+1+3 + 2];

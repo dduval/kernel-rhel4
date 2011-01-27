@@ -31,7 +31,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: user_mad.c 3956 2005-11-03 08:27:46Z mst $
+ * $Id: user_mad.c 5596 2006-03-03 01:00:07Z sean.hefty $
  */
 
 #include <linux/module.h>
@@ -110,17 +110,18 @@ struct ib_umad_device {
 };
 
 struct ib_umad_file {
-	struct ib_umad_port *port;
-	struct list_head     recv_list;
-	struct list_head     port_list;
-	spinlock_t           recv_lock;
-	wait_queue_head_t    recv_wait;
-	struct ib_mad_agent *agent[IB_UMAD_MAX_AGENTS];
-	struct ib_mr        *mr[IB_UMAD_MAX_AGENTS];
+	struct ib_umad_port    *port;
+	struct list_head	recv_list;
+	struct list_head	port_list;
+	spinlock_t		recv_lock;
+	wait_queue_head_t	recv_wait;
+	struct ib_mad_agent    *agent[IB_UMAD_MAX_AGENTS];
+	int			agents_dead;
 };
 
 struct ib_umad_packet {
 	struct ib_mad_send_buf *msg;
+	struct ib_mad_recv_wc  *recv_wc;
 	struct list_head   list;
 	int		   length;
 	struct ib_user_mad mad;
@@ -130,7 +131,7 @@ static struct class *umad_class;
 
 static const dev_t base_dev = MKDEV(IB_UMAD_MAJOR, IB_UMAD_MINOR_BASE);
 
-static spinlock_t port_lock = SPIN_LOCK_UNLOCKED;
+static DEFINE_SPINLOCK(port_lock);
 static struct ib_umad_port *umad_port[IB_UMAD_MAX_PORTS];
 static DECLARE_BITMAP(dev_map, IB_UMAD_MAX_PORTS * 2);
 
@@ -145,6 +146,12 @@ static void ib_umad_release_dev(struct kref *ref)
 	kfree(dev);
 }
 
+/* caller must hold port->mutex at least for reading */
+static struct ib_mad_agent *__get_agent(struct ib_umad_file *file, int id)
+{
+	return file->agents_dead ? NULL : file->agent[id];
+}
+
 static int queue_packet(struct ib_umad_file *file,
 			struct ib_mad_agent *agent,
 			struct ib_umad_packet *packet)
@@ -152,10 +159,11 @@ static int queue_packet(struct ib_umad_file *file,
 	int ret = 1;
 
 	down_read(&file->port->mutex);
+
 	for (packet->mad.hdr.id = 0;
 	     packet->mad.hdr.id < IB_UMAD_MAX_AGENTS;
 	     packet->mad.hdr.id++)
-		if (agent == file->agent[packet->mad.hdr.id]) {
+		if (agent == __get_agent(file, packet->mad.hdr.id)) {
 			spin_lock_irq(&file->recv_lock);
 			list_add_tail(&packet->list, &file->recv_list);
 			spin_unlock_irq(&file->recv_lock);
@@ -173,27 +181,17 @@ static void send_handler(struct ib_mad_agent *agent,
 			 struct ib_mad_send_wc *send_wc)
 {
 	struct ib_umad_file *file = agent->context;
-	struct ib_umad_packet *timeout;
 	struct ib_umad_packet *packet = send_wc->send_buf->context[0];
 
 	ib_destroy_ah(packet->msg->ah);
 	ib_free_send_mad(packet->msg);
 
 	if (send_wc->status == IB_WC_RESP_TIMEOUT_ERR) {
-		timeout = kzalloc(sizeof *timeout + IB_MGMT_MAD_HDR, GFP_KERNEL);
-		if (!timeout)
-			goto out;
-
-		timeout->length 	= IB_MGMT_MAD_HDR;
-		timeout->mad.hdr.id 	= packet->mad.hdr.id;
-		timeout->mad.hdr.status = ETIMEDOUT;
-		memcpy(timeout->mad.data, packet->mad.data,
-		       sizeof (struct ib_mad_hdr));
-
-		if (!queue_packet(file, agent, timeout))
-				return;
+		packet->length = IB_MGMT_MAD_HDR;
+		packet->mad.hdr.status = ETIMEDOUT;
+		if (!queue_packet(file, agent, packet))
+			return;
 	}
-out:
 	kfree(packet);
 }
 
@@ -202,22 +200,20 @@ static void recv_handler(struct ib_mad_agent *agent,
 {
 	struct ib_umad_file *file = agent->context;
 	struct ib_umad_packet *packet;
-	int length;
 
 	if (mad_recv_wc->wc->status != IB_WC_SUCCESS)
-		goto out;
+		goto err1;
 
-	length = mad_recv_wc->mad_len;
-	packet = kzalloc(sizeof *packet + length, GFP_KERNEL);
+	packet = kzalloc(sizeof *packet, GFP_KERNEL);
 	if (!packet)
-		goto out;
+		goto err1;
 
-	packet->length = length;
-
-	ib_coalesce_recv_mad(mad_recv_wc, packet->mad.data);
+	packet->length = mad_recv_wc->mad_len;
+	packet->recv_wc = mad_recv_wc;
 
 	packet->mad.hdr.status    = 0;
-	packet->mad.hdr.length    = length + sizeof (struct ib_user_mad);
+	packet->mad.hdr.length    = sizeof (struct ib_user_mad) +
+				    mad_recv_wc->mad_len;
 	packet->mad.hdr.qpn 	  = cpu_to_be32(mad_recv_wc->wc->src_qp);
 	packet->mad.hdr.lid 	  = cpu_to_be16(mad_recv_wc->wc->slid);
 	packet->mad.hdr.sl  	  = mad_recv_wc->wc->sl;
@@ -233,10 +229,77 @@ static void recv_handler(struct ib_mad_agent *agent,
 	}
 
 	if (queue_packet(file, agent, packet))
-		kfree(packet);
+		goto err2;
+	return;
 
-out:
+err2:
+	kfree(packet);
+err1:
 	ib_free_recv_mad(mad_recv_wc);
+}
+
+static ssize_t copy_recv_mad(char __user *buf, struct ib_umad_packet *packet,
+			     size_t count)
+{
+	struct ib_mad_recv_buf *recv_buf;
+	int left, seg_payload, offset, max_seg_payload;
+
+	/* We need enough room to copy the first (or only) MAD segment. */
+	recv_buf = &packet->recv_wc->recv_buf;
+	if ((packet->length <= sizeof (*recv_buf->mad) &&
+	     count < sizeof (packet->mad) + packet->length) ||
+	    (packet->length > sizeof (*recv_buf->mad) &&
+	     count < sizeof (packet->mad) + sizeof (*recv_buf->mad)))
+		return -EINVAL;
+
+	if (copy_to_user(buf, &packet->mad, sizeof (packet->mad)))
+		return -EFAULT;
+
+	buf += sizeof (packet->mad);
+	seg_payload = min_t(int, packet->length, sizeof (*recv_buf->mad));
+	if (copy_to_user(buf, recv_buf->mad, seg_payload))
+		return -EFAULT;
+
+	if (seg_payload < packet->length) {
+		/*
+		 * Multipacket RMPP MAD message. Copy remainder of message.
+		 * Note that last segment may have a shorter payload.
+		 */
+		if (count < sizeof (packet->mad) + packet->length) {
+			/*
+			 * The buffer is too small, return the first RMPP segment,
+			 * which includes the RMPP message length.
+			 */
+			return -ENOSPC;
+		}
+		offset = ib_get_mad_data_offset(recv_buf->mad->mad_hdr.mgmt_class);
+		max_seg_payload = sizeof (struct ib_mad) - offset;
+
+		for (left = packet->length - seg_payload, buf += seg_payload;
+		     left; left -= seg_payload, buf += seg_payload) {
+			recv_buf = container_of(recv_buf->list.next,
+						struct ib_mad_recv_buf, list);
+			seg_payload = min(left, max_seg_payload);
+			if (copy_to_user(buf, ((void *) recv_buf->mad) + offset,
+					 seg_payload))
+				return -EFAULT;
+		}
+	}
+	return sizeof (packet->mad) + packet->length;
+}
+
+static ssize_t copy_send_mad(char __user *buf, struct ib_umad_packet *packet,
+			     size_t count)
+{
+	ssize_t size = sizeof (packet->mad) + packet->length;
+
+	if (count < size)
+		return -EINVAL;
+
+	if (copy_to_user(buf, &packet->mad, size))
+		return -EFAULT;
+
+	return size;
 }
 
 static ssize_t ib_umad_read(struct file *filp, char __user *buf,
@@ -246,7 +309,7 @@ static ssize_t ib_umad_read(struct file *filp, char __user *buf,
 	struct ib_umad_packet *packet;
 	ssize_t ret;
 
-	if (count < sizeof (struct ib_user_mad) + sizeof (struct ib_mad))
+	if (count < sizeof (struct ib_user_mad))
 		return -EINVAL;
 
 	spin_lock_irq(&file->recv_lock);
@@ -269,26 +332,42 @@ static ssize_t ib_umad_read(struct file *filp, char __user *buf,
 
 	spin_unlock_irq(&file->recv_lock);
 
-	if (count < packet->length + sizeof (struct ib_user_mad)) {
-		/* Return length needed (and first RMPP segment) if too small */
-		if (copy_to_user(buf, &packet->mad,
-				 sizeof (struct ib_user_mad) + sizeof (struct ib_mad)))
-			ret = -EFAULT;
-		else
-			ret = -ENOSPC;
-	} else if (copy_to_user(buf, &packet->mad,
-				packet->length + sizeof (struct ib_user_mad)))
-		ret = -EFAULT;
+	if (packet->recv_wc)
+		ret = copy_recv_mad(buf, packet, count);
 	else
-		ret = packet->length + sizeof (struct ib_user_mad);
+		ret = copy_send_mad(buf, packet, count);
+
 	if (ret < 0) {
 		/* Requeue packet */
 		spin_lock_irq(&file->recv_lock);
 		list_add(&packet->list, &file->recv_list);
 		spin_unlock_irq(&file->recv_lock);
-	} else
+	} else {
+		if (packet->recv_wc)
+			ib_free_recv_mad(packet->recv_wc);
 		kfree(packet);
+	}
 	return ret;
+}
+
+static int copy_rmpp_mad(struct ib_mad_send_buf *msg, const char __user *buf)
+{
+	int left, seg;
+
+	/* Copy class specific header */
+	if ((msg->hdr_len > IB_MGMT_RMPP_HDR) &&
+	    copy_from_user(msg->mad + IB_MGMT_RMPP_HDR, buf + IB_MGMT_RMPP_HDR,
+			   msg->hdr_len - IB_MGMT_RMPP_HDR))
+		return -EFAULT;
+
+	/* All headers are in place.  Copy data segments. */
+	for (seg = 1, left = msg->data_len, buf += msg->hdr_len; left > 0;
+	     seg++, left -= msg->seg_size, buf += msg->seg_size) {
+		if (copy_from_user(ib_get_rmpp_segment(msg, seg), buf,
+				   min(left, msg->seg_size)))
+			return -EFAULT;
+	}
+	return 0;
 }
 
 static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
@@ -302,14 +381,12 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 	struct ib_rmpp_mad *rmpp_mad;
 	u8 method;
 	__be64 *tid;
-	int ret, length, hdr_len, copy_offset;
-	int rmpp_active = 0;
+	int ret, data_len, hdr_len, copy_offset, rmpp_active;
 
-	if (count < sizeof (struct ib_user_mad))
+	if (count < sizeof (struct ib_user_mad) + IB_MGMT_RMPP_HDR)
 		return -EINVAL;
 
-	length = count - sizeof (struct ib_user_mad);
-	packet = kmalloc(sizeof *packet + IB_MGMT_RMPP_HDR, GFP_KERNEL);
+	packet = kzalloc(sizeof *packet + IB_MGMT_RMPP_HDR, GFP_KERNEL);
 	if (!packet)
 		return -ENOMEM;
 
@@ -327,7 +404,7 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 
 	down_read(&file->port->mutex);
 
-	agent = file->agent[packet->mad.hdr.id];
+	agent = __get_agent(file, packet->mad.hdr.id);
 	if (!agent) {
 		ret = -EINVAL;
 		goto err_up;
@@ -353,35 +430,21 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 	}
 
 	rmpp_mad = (struct ib_rmpp_mad *) packet->mad.data;
-	if (ib_get_rmpp_flags(&rmpp_mad->rmpp_hdr) & IB_MGMT_RMPP_FLAG_ACTIVE) {
-		/* RMPP active */
-		if (!agent->rmpp_version) {
-			ret = -EINVAL;
-			goto err_ah;
-		}
-
-		/* Validate that the management class can support RMPP */
-		if (rmpp_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_ADM) {
-			hdr_len = IB_MGMT_SA_HDR;
-		} else if ((rmpp_mad->mad_hdr.mgmt_class >= IB_MGMT_CLASS_VENDOR_RANGE2_START) &&
-			    (rmpp_mad->mad_hdr.mgmt_class <= IB_MGMT_CLASS_VENDOR_RANGE2_END)) {
-				hdr_len = IB_MGMT_VENDOR_HDR;
-		} else {
-			ret = -EINVAL;
-			goto err_ah;
-		}
-		rmpp_active = 1;
-		copy_offset = IB_MGMT_RMPP_HDR;
-	} else {
-		hdr_len = IB_MGMT_MAD_HDR;
+	hdr_len = ib_get_mad_data_offset(rmpp_mad->mad_hdr.mgmt_class);
+	if (!ib_is_mad_class_rmpp(rmpp_mad->mad_hdr.mgmt_class)) {
 		copy_offset = IB_MGMT_MAD_HDR;
+		rmpp_active = 0;
+	} else {
+		copy_offset = IB_MGMT_RMPP_HDR;
+		rmpp_active = ib_get_rmpp_flags(&rmpp_mad->rmpp_hdr) &
+			      IB_MGMT_RMPP_FLAG_ACTIVE;
 	}
 
+	data_len = count - sizeof (struct ib_user_mad) - hdr_len;
 	packet->msg = ib_create_send_mad(agent,
 					 be32_to_cpu(packet->mad.hdr.qpn),
-					 0, rmpp_active,
-					 hdr_len, length - hdr_len,
-					 GFP_KERNEL);
+					 0, rmpp_active, hdr_len,
+					 data_len, GFP_KERNEL);
 	if (IS_ERR(packet->msg)) {
 		ret = PTR_ERR(packet->msg);
 		goto err_ah;
@@ -392,14 +455,21 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 	packet->msg->retries 	= packet->mad.hdr.retries;
 	packet->msg->context[0] = packet;
 
-	/* Copy MAD headers (RMPP header in place) */
+	/* Copy MAD header.  Any RMPP header is already in place. */
 	memcpy(packet->msg->mad, packet->mad.data, IB_MGMT_MAD_HDR);
-	/* Now, copy rest of message from user into send buffer */
-	if (copy_from_user(packet->msg->mad + copy_offset,
-			   buf + sizeof (struct ib_user_mad) + copy_offset,
-			   length - copy_offset)) {
-		ret = -EFAULT;
-		goto err_msg;
+	buf += sizeof (struct ib_user_mad);
+
+	if (!rmpp_active) {
+		if (copy_from_user(packet->msg->mad + copy_offset,
+				   buf + copy_offset,
+				   hdr_len + data_len - copy_offset)) {
+			ret = -EFAULT;
+			goto err_msg;
+		}
+	} else {
+		ret = copy_rmpp_mad(packet->msg, buf);
+		if (ret)
+			goto err_msg;
 	}
 
 	/*
@@ -423,18 +493,14 @@ static ssize_t ib_umad_write(struct file *filp, const char __user *buf,
 		goto err_msg;
 
 	up_read(&file->port->mutex);
-
 	return count;
 
 err_msg:
 	ib_free_send_mad(packet->msg);
-
 err_ah:
 	ib_destroy_ah(ah);
-
 err_up:
 	up_read(&file->port->mutex);
-
 err:
 	kfree(packet);
 	return ret;
@@ -481,7 +547,7 @@ static int ib_umad_reg_agent(struct ib_umad_file *file, unsigned long arg)
 	}
 
 	for (agent_id = 0; agent_id < IB_UMAD_MAX_AGENTS; ++agent_id)
-		if (!file->agent[agent_id])
+		if (!__get_agent(file, agent_id))
 			goto found;
 
 	ret = -ENOMEM;
@@ -505,29 +571,15 @@ found:
 		goto out;
 	}
 
-	file->agent[agent_id] = agent;
-
-	file->mr[agent_id] = ib_get_dma_mr(agent->qp->pd, IB_ACCESS_LOCAL_WRITE);
-	if (IS_ERR(file->mr[agent_id])) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
 	if (put_user(agent_id,
 		     (u32 __user *) (arg + offsetof(struct ib_user_mad_reg_req, id)))) {
 		ret = -EFAULT;
-		goto err_mr;
+		ib_unregister_mad_agent(agent);
+		goto out;
 	}
 
+	file->agent[agent_id] = agent;
 	ret = 0;
-	goto out;
-
-err_mr:
-	ib_dereg_mr(file->mr[agent_id]);
-
-err:
-	file->agent[agent_id] = NULL;
-	ib_unregister_mad_agent(agent);
 
 out:
 	up_write(&file->port->mutex);
@@ -536,27 +588,29 @@ out:
 
 static int ib_umad_unreg_agent(struct ib_umad_file *file, unsigned long arg)
 {
+	struct ib_mad_agent *agent = NULL;
 	u32 id;
 	int ret = 0;
 
+	if (get_user(id, (u32 __user *) arg))
+		return -EFAULT;
+
 	down_write(&file->port->mutex);
 
-	if (get_user(id, (u32 __user *) arg)) {
-		ret = -EFAULT;
-		goto out;
-	}
-
-	if (id < 0 || id >= IB_UMAD_MAX_AGENTS || !file->agent[id]) {
+	if (id < 0 || id >= IB_UMAD_MAX_AGENTS || !__get_agent(file, id)) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	ib_dereg_mr(file->mr[id]);
-	ib_unregister_mad_agent(file->agent[id]);
+	agent = file->agent[id];
 	file->agent[id] = NULL;
 
 out:
 	up_write(&file->port->mutex);
+
+	if (agent)
+		ib_unregister_mad_agent(agent);
+
 	return ret;
 }
 
@@ -621,23 +675,32 @@ static int ib_umad_close(struct inode *inode, struct file *filp)
 	struct ib_umad_file *file = filp->private_data;
 	struct ib_umad_device *dev = file->port->umad_dev;
 	struct ib_umad_packet *packet, *tmp;
+	int already_dead;
 	int i;
 
 	down_write(&file->port->mutex);
-	for (i = 0; i < IB_UMAD_MAX_AGENTS; ++i)
-		if (file->agent[i]) {
-			ib_dereg_mr(file->mr[i]);
-			ib_unregister_mad_agent(file->agent[i]);
-		}
 
-	list_for_each_entry_safe(packet, tmp, &file->recv_list, list)
+	already_dead = file->agents_dead;
+	file->agents_dead = 1;
+
+	list_for_each_entry_safe(packet, tmp, &file->recv_list, list) {
+		if (packet->recv_wc)
+			ib_free_recv_mad(packet->recv_wc);
 		kfree(packet);
+	}
 
 	list_del(&file->port_list);
-	up_write(&file->port->mutex);
+
+	downgrade_write(&file->port->mutex);
+
+	if (!already_dead)
+		for (i = 0; i < IB_UMAD_MAX_AGENTS; ++i)
+			if (file->agent[i])
+				ib_unregister_mad_agent(file->agent[i]);
+
+	up_read(&file->port->mutex);
 
 	kfree(file);
-
 	kref_put(&dev->ref, ib_umad_release_dev);
 
 	return 0;
@@ -729,143 +792,17 @@ static struct ib_client umad_client = {
 	.remove = ib_umad_remove_one
 };
 
-/**
- * The following 5 static functions were added in kernel 2.6.13.
- * They are added here as static functions, with one change --
- * in function create_class(), there is no owner field in
- * struct class in this kernel release, so the "owner" parameter
- * in the function is unused.
- * Also, in function class_device_create, struct class_device has
- * no devt field, so this also has been commented out.
- * Finally, in kernel 2.6.13, there is also a function
- * class_device_destroy().  This function is not used here, since
- * it depends entirely on the presence of the devt field in the
- * struct class_device.  Instead, class_device_unregister is
- * called directly.
- */
-
-static void class_create_release(struct class *cls)
-{
-	kfree(cls);
-}
-
-static void class_device_create_release(struct class_device *class_dev)
-{
-	kfree(class_dev);
-}
-
-/**
- * class_create - create a struct class structure
- * @owner: pointer to the module that is to "own" this struct class
- * @name: pointer to a string for the name of this class.
- *
- * This is used to create a struct class pointer that can then be used
- * in calls to class_device_create().
- *
- * Note, the pointer created here is to be destroyed when finished by
- * making a call to class_destroy().
- */
-static struct class *class_create(struct module *owner, char *name)
-{
-	struct class *cls;
-	int retval;
-
-	cls = kzalloc(sizeof(*cls), GFP_KERNEL);
-	if (!cls) {
-		retval = -ENOMEM;
-		goto error;
-	}
-
-	cls->name = name;
-	/* cls->owner = owner; */
-	cls->class_release = class_create_release;
-	cls->release = class_device_create_release;
-
-	retval = class_register(cls);
-	if (retval)
-		goto error;
-
-	return cls;
-
-error:
-	kfree(cls);
-	return ERR_PTR(retval);
-}
-
-/**
- * class_destroy - destroys a struct class structure
- * @cs: pointer to the struct class that is to be destroyed
- *
- * Note, the pointer to be destroyed must have been created with a call
- * to class_create().
- */
-static void class_destroy(struct class *cls)
-{
-	if ((cls == NULL) || (IS_ERR(cls)))
-		return;
-
-	class_unregister(cls);
-}
-
-/**
- * class_device_create - creates a class device and registers it with sysfs
- * @cs: pointer to the struct class that this device should be registered to.
- * @dev: the dev_t for the char device to be added.
- * @device: a pointer to a struct device that is assiociated with this class device.
- * @fmt: string for the class device's name
- *
- * This function can be used by char device classes.  A struct
- * class_device will be created in sysfs, registered to the specified
- * class.  A "dev" file will be created, showing the dev_t for the
- * device.  The pointer to the struct class_device will be returned from
- * the call.  Any further sysfs files that might be required can be
- * created using this pointer.
- *
- * Note: the struct class passed to this function must have previously
- * been created with a call to class_create().
- */
-static struct class_device *class_device_create(struct class *cls, dev_t devt,
-					 struct device *device, char *fmt, ...)
-{
-	va_list args;
-	struct class_device *class_dev = NULL;
-	int retval = -ENODEV;
-
-	if (cls == NULL || IS_ERR(cls))
-		goto error;
-
-	class_dev = kzalloc(sizeof(*class_dev), GFP_KERNEL);
-	if (!class_dev) {
-		retval = -ENOMEM;
-		goto error;
-	}
-
-	/* class_dev->devt = devt; */
-	class_dev->dev = device;
-	class_dev->class = cls;
-
-	va_start(args, fmt);
-	vsnprintf(class_dev->class_id, BUS_ID_SIZE, fmt, args);
-	va_end(args);
-	retval = class_device_register(class_dev);
-	if (retval)
-		goto error;
-
-	return class_dev;
-
-error:
-	kfree(class_dev);
-	return ERR_PTR(retval);
-}
-
 static ssize_t show_dev(struct class_device *class_dev, char *buf)
 {
-       struct ib_umad_port *port = class_get_devdata(class_dev);
+	struct ib_umad_port *port = class_get_devdata(class_dev);
 
-       if (class_dev == port->class_dev)
-               return print_dev_t(buf, port->dev->dev);
-       else
-               return print_dev_t(buf, port->sm_dev->dev);
+	if (!port)
+		return -ENODEV;
+
+	if (class_dev == port->class_dev)
+		return print_dev_t(buf, port->dev->dev);
+	else
+		return print_dev_t(buf, port->sm_dev->dev);
 }
 static CLASS_DEVICE_ATTR(dev, S_IRUGO, show_dev, NULL);
 
@@ -942,7 +879,7 @@ static int ib_umad_init_port(struct ib_device *device, int port_num,
 		goto err_class;
 	port->sm_dev->owner = THIS_MODULE;
 	port->sm_dev->ops   = &umad_sm_fops;
-	kobject_set_name(&port->dev->kobj, "issm%d", port->dev_num);
+	kobject_set_name(&port->sm_dev->kobj, "issm%d", port->dev_num);
 	if (cdev_add(port->sm_dev, base_dev + port->dev_num + IB_UMAD_MAX_PORTS, 1))
 		goto err_sm_cdev;
 
@@ -1006,14 +943,36 @@ static void ib_umad_kill_port(struct ib_umad_port *port)
 
 	port->ib_dev = NULL;
 
-	list_for_each_entry(file, &port->file_list, port_list)
-		for (id = 0; id < IB_UMAD_MAX_AGENTS; ++id) {
-			if (!file->agent[id])
-				continue;
-			ib_dereg_mr(file->mr[id]);
-			ib_unregister_mad_agent(file->agent[id]);
-			file->agent[id] = NULL;
-		}
+	/*
+	 * Now go through the list of files attached to this port and
+	 * unregister all of their MAD agents.  We need to hold
+	 * port->mutex while doing this to avoid racing with
+	 * ib_umad_close(), but we can't hold the mutex for writing
+	 * while calling ib_unregister_mad_agent(), since that might
+	 * deadlock by calling back into queue_packet().  So we
+	 * downgrade our lock to a read lock, and then drop and
+	 * reacquire the write lock for the next iteration.
+	 *
+	 * We do list_del_init() on the file's list_head so that the
+	 * list_del in ib_umad_close() is still OK, even after the
+	 * file is removed from the list.
+	 */
+	while (!list_empty(&port->file_list)) {
+		file = list_entry(port->file_list.next, struct ib_umad_file,
+				  port_list);
+
+		file->agents_dead = 1;
+		list_del_init(&file->port_list);
+
+		downgrade_write(&port->mutex);
+
+		for (id = 0; id < IB_UMAD_MAX_AGENTS; ++id)
+			if (file->agent[id])
+				ib_unregister_mad_agent(file->agent[id]);
+
+		up_read(&port->mutex);
+		down_write(&port->mutex);
+	}
 
 	up_write(&port->mutex);
 
@@ -1056,7 +1015,7 @@ static void ib_umad_add_one(struct ib_device *device)
 
 err:
 	while (--i >= s)
-		ib_umad_kill_port(&umad_dev->port[i]);
+		ib_umad_kill_port(&umad_dev->port[i - s]);
 
 	kref_put(&umad_dev->ref, ib_umad_release_dev);
 }

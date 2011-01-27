@@ -48,7 +48,6 @@
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
 #include <linux/if_arcnet.h>
-#include <linux/if_infiniband.h>
 #include <linux/route.h>
 #include <linux/inetdevice.h>
 #include <linux/init.h>
@@ -57,6 +56,7 @@
 #endif
 #include <linux/delay.h>
 #include <linux/notifier.h>
+#include <linux/times.h>
 
 #include <net/sock.h>
 #include <net/snmp.h>
@@ -533,12 +533,17 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr, int pfxlen,
 	      int scope, unsigned flags)
 {
 	struct inet6_ifaddr *ifa = NULL;
-	struct rt6_info *rt = NULL;
+	struct rt6_info *rt;
 	int hash;
-	static spinlock_t lock = SPIN_LOCK_UNLOCKED;
 	int err = 0;
 
-	spin_lock_bh(&lock);
+	read_lock_bh(&addrconf_lock);
+	if (idev->dead) {
+		err = -ENODEV;			/*XXX*/
+		goto out2;
+	}
+
+	write_lock(&addrconf_hash_lock);
 
 	/* Ignore adding duplicate addresses on an interface */
 	if (ipv6_chk_same_addr(addr, idev->dev)) {
@@ -558,7 +563,6 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr, int pfxlen,
 	rt = addrconf_dst_alloc(idev, addr, 0);
 	if (IS_ERR(rt)) {
 		err = PTR_ERR(rt);
-		rt = NULL;
 		goto out;
 	}
 
@@ -573,13 +577,6 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr, int pfxlen,
 	ifa->flags = flags | IFA_F_TENTATIVE;
 	ifa->cstamp = ifa->tstamp = jiffies;
 
-	read_lock(&addrconf_lock);
-	if (idev->dead) {
-		read_unlock(&addrconf_lock);
-		err = -ENODEV;	/*XXX*/
-		goto out;
-	}
-
 	inet6_ifa_count++;
 	ifa->idev = idev;
 	in6_dev_hold(idev);
@@ -589,48 +586,42 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr, int pfxlen,
 	/* Add to big hash table */
 	hash = ipv6_addr_hash(addr);
 
-	write_lock_bh(&addrconf_hash_lock);
 	ifa->lst_next = inet6_addr_lst[hash];
 	inet6_addr_lst[hash] = ifa;
 	in6_ifa_hold(ifa);
-	write_unlock_bh(&addrconf_hash_lock);
+	write_unlock(&addrconf_hash_lock);
 
-	write_lock_bh(&idev->lock);
+	write_lock(&idev->lock);
 	/* Add to inet6_dev unicast addr list. */
 	ifa->if_next = idev->addr_list;
 	idev->addr_list = ifa;
 
 #ifdef CONFIG_IPV6_PRIVACY
-	ifa->regen_count = 0;
 	if (ifa->flags&IFA_F_TEMPORARY) {
 		ifa->tmp_next = idev->tempaddr_list;
 		idev->tempaddr_list = ifa;
 		in6_ifa_hold(ifa);
-	} else {
-		ifa->tmp_next = NULL;
 	}
 #endif
 
 	ifa->rt = rt;
 
 	in6_ifa_hold(ifa);
-	write_unlock_bh(&idev->lock);
-	read_unlock(&addrconf_lock);
-out:
-	spin_unlock_bh(&lock);
+	write_unlock(&idev->lock);
+out2:
+	read_unlock_bh(&addrconf_lock);
 
-	if (unlikely(err == 0))
+	if (likely(err == 0))
 		notifier_call_chain(&inet6addr_chain, NETDEV_UP, ifa);
 	else {
-		if (rt) {
-			dst_release(&rt->u.dst);
-			dst_free(&rt->u.dst);
-		}
 		kfree(ifa);
 		ifa = ERR_PTR(err);
 	}
 
 	return ifa;
+out:
+	write_unlock(&addrconf_hash_lock);
+	goto out2;
 }
 
 /* This function wants to get referenced ifp and releases it before return */
@@ -1005,14 +996,13 @@ int ipv6_chk_same_addr(const struct in6_addr *addr, struct net_device *dev)
 	struct inet6_ifaddr * ifp;
 	u8 hash = ipv6_addr_hash(addr);
 
-	read_lock_bh(&addrconf_hash_lock);
 	for(ifp = inet6_addr_lst[hash]; ifp; ifp=ifp->lst_next) {
 		if (ipv6_addr_cmp(&ifp->addr, addr) == 0) {
 			if (dev == NULL || ifp->idev->dev == dev)
 				break;
 		}
 	}
-	read_unlock_bh(&addrconf_hash_lock);
+
 	return ifp != NULL;
 }
 
@@ -1173,12 +1163,6 @@ static int ipv6_generate_eui64(u8 *eui, struct net_device *dev)
 			return -1;
 		memset(eui, 0, 7);
 		eui[7] = *(u8*)dev->dev_addr;
-		return 0;
-	case ARPHRD_INFINIBAND:
-		if (dev->addr_len != INFINIBAND_ALEN)
-			return -1;
-		memcpy(eui, dev->dev_addr + 12, 8);
-		eui[0] |= 2;
 		return 0;
 	}
 	return -1;
@@ -1447,9 +1431,17 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len)
 	   not good.
 	 */
 	if (valid_lft >= 0x7FFFFFFF/HZ)
-		rt_expires = 0;
+		rt_expires = 0x7FFFFFFF - (0x7FFFFFFF % HZ);
 	else
-		rt_expires = jiffies + valid_lft * HZ;
+		rt_expires = valid_lft * HZ;
+
+	/*
+	 * We convert this (in jiffies) to clock_t later.
+	 * Avoid arithmetic overflow there as well.
+	 * Overflow can happen only if HZ < USER_HZ.
+	 */
+	if (HZ < USER_HZ && rt_expires > 0x7FFFFFFF / USER_HZ)
+		rt_expires = 0x7FFFFFFF / USER_HZ;
 
 	if (pinfo->onlink) {
 		struct rt6_info *rt;
@@ -1461,12 +1453,12 @@ void addrconf_prefix_rcv(struct net_device *dev, u8 *opt, int len)
 					ip6_del_rt(rt, NULL, NULL);
 					rt = NULL;
 				} else {
-					rt->rt6i_expires = rt_expires;
+					rt->rt6i_expires = jiffies + rt_expires;
 				}
 			}
 		} else if (valid_lft) {
 			addrconf_prefix_route(&pinfo->prefix, pinfo->prefix_len,
-					      dev, rt_expires, RTF_ADDRCONF|RTF_EXPIRES|RTF_PREFIX_RT);
+					      dev, jiffies_to_clock_t(rt_expires), RTF_ADDRCONF|RTF_EXPIRES|RTF_PREFIX_RT);
 		}
 		if (rt)
 			dst_release(&rt->u.dst);
@@ -1879,8 +1871,7 @@ static void addrconf_dev_config(struct net_device *dev)
 	if ((dev->type != ARPHRD_ETHER) && 
 	    (dev->type != ARPHRD_FDDI) &&
 	    (dev->type != ARPHRD_IEEE802_TR) &&
-	    (dev->type != ARPHRD_ARCNET) &&
-	    (dev->type != ARPHRD_INFINIBAND)) {
+	    (dev->type != ARPHRD_ARCNET)) {
 		/* Alas, we support only Ethernet autoconfiguration. */
 		return;
 	}

@@ -820,7 +820,8 @@ static int inode_doinit_with_dentry(struct inode *inode, struct dentry *opt_dent
 			sid = sbsec->def_sid;
 			rc = 0;
 		} else {
-			rc = security_context_to_sid(context, rc, &sid);
+			rc = security_context_to_sid_mlscompat(context,
+							       rc, &sid);
 			if (rc) {
 				printk(KERN_WARNING "%s:  context_to_sid(%s) "
 				       "returned %d for dev=%s ino=%ld\n",
@@ -1361,7 +1362,7 @@ static int selinux_ptrace(struct task_struct *parent, struct task_struct *child)
 
 	rc = task_has_perm(parent, child, PROCESS__PTRACE);
 	/* Save the SID of the tracing process for later use in apply_creds. */
-	if (!rc)
+	if (!(child->ptrace & PT_PTRACED) && !rc)
 		csec->ptrace_sid = psec->sid;
 	return rc;
 }
@@ -1581,7 +1582,7 @@ static int selinux_vm_enough_memory(long pages)
 		* sysctl_overcommit_ratio / 100;
 	allowed += total_swap_pages;
 
-	if (atomic_read(&vm_committed_space) < allowed)
+	if (atomic_read(&vm_committed_space) < (long)allowed)
 		return 0;
 
 	vm_unacct_memory(pages);

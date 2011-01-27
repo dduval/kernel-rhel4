@@ -272,6 +272,64 @@ int sys_ptrace(long request, long pid, long addr, long data)
 		break;
 	}
 
+#ifdef CONFIG_ALTIVEC
+/*
+ * Get/set all the altivec registers vr0..vr31, vscr, vrsave, in one go.
+ * The transfer totals 34 quadword.  Quadwords 0-31 contain the
+ * corresponding vector registers.  Quadword 32 contains the vscr as the
+ * last word (offset 12) within that quadword.  Quadword 33 contains the
+ * vrsave as the first word (offset 0) within the quadword.
+ *
+ * This definition of the VMX state is compatible with the current PPC32
+ * ptrace interface.  This allows signal handling and ptrace to use the
+ * same structures.  This also simplifies the implementation of a bi-arch
+ * (combined (32- and 64-bit) gdb.
+ */
+	case PTRACE_GETVRREGS: {
+		flush_altivec_to_thread(child);
+
+		/* copy AltiVec registers VR[0] .. VR[31] */
+		unsigned long regsize;
+		regsize = 32 * sizeof(vector128);
+		if (copy_to_user((void *)data, &child->thread.vr, regsize))
+			return -EFAULT;
+		data += (regsize / sizeof(unsigned long));
+
+		/* copy VSCR */
+		regsize = 1 * sizeof(vector128);
+		if (copy_to_user((void *)data, &child->thread.vscr, regsize))
+			return -EFAULT;
+		data += (regsize / sizeof(unsigned long));
+
+		/* copy VRSAVE */
+		if (put_user(child->thread.vrsave, (u32 __user *)data))
+			return -EFAULT;
+		break;
+	}
+
+	case PTRACE_SETVRREGS: {
+		flush_altivec_to_thread(child);
+
+		/* copy AltiVec registers VR[0] .. VR[31] */
+		unsigned long regsize;
+		regsize = 32 * sizeof(vector128);
+		if (copy_from_user(&child->thread.vr, (void *)data, regsize))
+			return -EFAULT;
+		data += (regsize / sizeof(unsigned long));
+
+		/* copy VSCR */
+		regsize = 1 * sizeof(vector128);
+		if (copy_from_user(&child->thread.vscr, (void *)data, regsize))
+			return -EFAULT;
+		data += (regsize / sizeof(unsigned long));
+
+		/* copy VRSAVE */
+		if (get_user(child->thread.vrsave, (u32 __user *)data))
+			return -EFAULT;
+		break;
+	}
+#endif
+
 	default:
 		ret = ptrace_request(child, request, addr, data);
 		break;

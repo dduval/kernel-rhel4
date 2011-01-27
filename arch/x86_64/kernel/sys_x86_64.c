@@ -21,6 +21,8 @@
 #include <asm/ipc.h>
 #include <asm/ia32.h>
 
+extern int sysctl_legacy_va_layout;
+
 /*
  * sys_pipe() is the normal C calling standard for creating
  * a pipe. It's not the way Unix traditionally does this, though.
@@ -112,7 +114,11 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		    (!vma || addr + len <= vma->vm_start))
 			return addr;
 	}
-	addr = mm->free_area_cache;
+	/* free_area_cache is not really optimized for 32 bit apps */
+	if (sysctl_legacy_va_layout && (flags & MAP_32BIT) || test_thread_flag(TIF_IA32))
+		addr = mm->mmap_base;
+	else
+		addr = mm->free_area_cache;
 	if (addr < begin) 
 		addr = begin; 
 	start_addr = addr;
@@ -171,6 +177,9 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 		    (!vma || addr + len <= vma->vm_start))
 			return addr;
 	}
+	/* free_area_cache is not really optimized for 32 bit apps */
+	if (sysctl_legacy_va_layout && (flags & MAP_32BIT) || test_thread_flag(TIF_IA32))
+		goto fail;
 
 try_again:
 	/* make sure it can fit in the remaining address space */

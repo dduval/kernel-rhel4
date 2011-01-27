@@ -10,8 +10,6 @@
 #include <asm/smp.h>
 
 #define LAST_DEVICE_VECTOR		232
-#define MSI_DEST_MODE			MSI_LOGICAL_MODE
 #define MSI_TARGET_CPU_SHIFT		12
-#define MSI_TARGET_CPU			logical_smp_processor_id()
 
 #endif /* ASM_MSI_H */

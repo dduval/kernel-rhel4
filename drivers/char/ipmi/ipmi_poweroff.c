@@ -43,7 +43,7 @@
 #include <asm/uaccess.h>
 
 #define PFX "IPMI poweroff: "
-#define IPMI_POWEROFF_VERSION	"33.11"
+#define IPMI_POWEROFF_VERSION	"33.13"
 
 /* Where to we insert our poweroff function? */
 extern void (*pm_power_off)(void);

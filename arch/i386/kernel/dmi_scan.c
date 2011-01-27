@@ -261,6 +261,14 @@ static __init int disable_pci_mmconf_seg(struct dmi_blacklist *d)
 
 #endif
 
+#ifdef CONFIG_X86_UP_IOAPIC
+static __init int disable_ioapic_on_up(struct dmi_blacklist *d)
+{
+	printk(KERN_NOTICE "%s detected, forcing noapic\n", 
+		d->ident);
+	disable_ioapic_setup();	
+}
+#endif
 /*
  *	Process the DMI blacklists
  */
@@ -453,8 +461,24 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 		MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
-#endif
 
+	{ disable_pci_mmconf_seg, "HP xw9400 Workstation", {
+		MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
+#endif
+#ifdef CONFIG_X86_UP_IOAPIC
+	/*
+	 *	Boxes that need IO APIC initialization on Uni-Processor kernel
+	 *	disabled.
+	 */
+
+	{ disable_ioapic_on_up, "UNISYS ES7000-ONE", {
+ 			MATCH(DMI_SYS_VENDOR, "UNISYS"),
+ 			MATCH(DMI_PRODUCT_NAME, "ES7000-ONE"),
+		 	NO_MATCH, NO_MATCH
+		} },
+#endif
 	{ NULL, }
 };
 

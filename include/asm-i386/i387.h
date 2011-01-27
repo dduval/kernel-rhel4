@@ -34,8 +34,12 @@ extern void kernel_fpu_begin(void);
 static inline void __save_init_fpu( struct task_struct *tsk )
 {
 	if ( cpu_has_fxsr ) {
-		asm volatile( "fxsave %0 ; fnclex"
+		asm volatile( "fxsave %0"
 			      : "=m" (tsk->thread.i387.fxsave) );
+		if (tsk->thread.i387.fxsave.swd & (1<<7))
+			asm volatile("fnclex");
+		/* AMD CPUs leak F?P.  Clear it here */
+		asm volatile("ffree %%st(7) ; fildl %0" :: "m" (tsk->flags));
 	} else {
 		asm volatile( "fnsave %0 ; fwait"
 			      : "=m" (tsk->thread.i387.fsave) );

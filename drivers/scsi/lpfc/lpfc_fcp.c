@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_fcp.c 1.466.1.3 2005/06/21 15:48:55EDT sf_support Exp  $
+ * $Id: lpfc_fcp.c 2905 2006-04-13 17:11:39Z sf_support $
  */
 
 #include <linux/version.h>
@@ -60,8 +60,7 @@ static char *lpfc_drvr_name = LPFC_DRIVER_NAME;
 
 static struct scsi_transport_template *lpfc_transport_template = NULL;
 
-struct list_head lpfc_hba_list = LIST_HEAD_INIT(lpfc_hba_list);
-EXPORT_SYMBOL(lpfc_hba_list);
+static struct list_head lpfc_hba_list = LIST_HEAD_INIT(lpfc_hba_list);
 
 static const char *
 lpfc_info(struct Scsi_Host *host)
@@ -200,6 +199,8 @@ lpfc_state_show(struct class_device *cdev, char *buf)
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
 	int len = 0;
 	switch (phba->hba_state) {
+	case LPFC_STATE_UNKNOWN:
+	case LPFC_WARM_START:
 	case LPFC_INIT_START:
 	case LPFC_INIT_MBX_CMDS:
 	case LPFC_LINK_DOWN:
@@ -265,7 +266,10 @@ lpfc_speed_show(struct class_device *cdev, char *buf)
 	if (phba->fc_linkspeed == LA_2GHZ_LINK)
 		len += snprintf(buf + len, PAGE_SIZE-len, "2 Gigabit\n");
 	else
+	if (phba->fc_linkspeed == LA_1GHZ_LINK)
 		len += snprintf(buf + len, PAGE_SIZE-len, "1 Gigabit\n");
+	else
+		len += snprintf(buf + len, PAGE_SIZE-len, "Unknown\n");
 	return len;
 }
 
@@ -490,6 +494,7 @@ lpfc_board_online_store(struct class_device *cdev, const char *buf,
 	}
 	else if (!val && !(phba->fc_flag & FC_OFFLINE_MODE)) {
 		lpfc_offline(phba);
+		lpfc_sli_brdrestart(phba);
 	}
 
 	return strlen(buf);
@@ -940,7 +945,7 @@ lpfc_outfcpio_show(struct class_device *cdev, char *buf)
 			ndlp = targetp->pnode;
 			if(ndlp == NULL) {
 				len += snprintf(buf+len, PAGE_SIZE-len,
-					"DISAPPERED\n");
+					"DISAPPEARED\n");
 			}
 			else {
 				if(ndlp->nlp_state == NLP_STE_MAPPED_NODE) {
@@ -984,6 +989,22 @@ lpfc_##attr##_show(struct class_device *cdev, char *buf) \
  	return -EPERM;\
 }
 
+#define lpfc_param_init(attr, default, minval, maxval)	\
+static int \
+lpfc_##attr##_init(struct lpfc_hba *phba, int val) \
+{ \
+ 	if (val >= minval && val <= maxval) {\
+ 		phba->cfg_##attr = val;\
+ 		return 0;\
+ 	}\
+	lpfc_printf_log(phba, KERN_ERR, LOG_INIT, \
+			"%d:0449 lpfc_"#attr" attribute cannot be set to %d, "\
+			"allowed range is ["#minval", "#maxval"]\n", \
+			phba->brd_no, val); \
+ 	phba->cfg_##attr = default;\
+ 	return -EINVAL;\
+}
+
 #define lpfc_param_set(attr, default, minval, maxval)	\
 static int \
 lpfc_##attr##_set(struct lpfc_hba *phba, int val) \
@@ -992,7 +1013,10 @@ lpfc_##attr##_set(struct lpfc_hba *phba, int val) \
  		phba->cfg_##attr = val;\
  		return 0;\
  	}\
- 	phba->cfg_##attr = default;\
+	lpfc_printf_log(phba, KERN_ERR, LOG_INIT, \
+			"%d:0450 lpfc_"#attr" attribute cannot be set to %d, "\
+			"allowed range is ["#minval", "#maxval"]\n", \
+			phba->brd_no, val); \
  	return -EINVAL;\
 }
 
@@ -1016,7 +1040,7 @@ lpfc_##attr##_store(struct class_device *cdev, const char *buf, size_t count) \
 static int lpfc_##name = defval;\
 module_param(lpfc_##name, int, 0);\
 MODULE_PARM_DESC(lpfc_##name, desc);\
-lpfc_param_set(name, defval, minval, maxval)\
+lpfc_param_init(name, defval, minval, maxval)\
 
 
 #define LPFC_ATTR_R(name, defval, minval, maxval, desc) \
@@ -1024,7 +1048,7 @@ static int lpfc_##name = defval;\
 module_param(lpfc_##name, int, 0);\
 MODULE_PARM_DESC(lpfc_##name, desc);\
 lpfc_param_show(name)\
-lpfc_param_set(name, defval, minval, maxval)\
+lpfc_param_init(name, defval, minval, maxval)\
 static CLASS_DEVICE_ATTR(lpfc_##name, S_IRUGO , lpfc_##name##_show, NULL)
 
 #define LPFC_ATTR_RW(name, defval, minval, maxval, desc) \
@@ -1032,6 +1056,7 @@ static int lpfc_##name = defval;\
 module_param(lpfc_##name, int, 0);\
 MODULE_PARM_DESC(lpfc_##name, desc);\
 lpfc_param_show(name)\
+lpfc_param_init(name, defval, minval, maxval)\
 lpfc_param_set(name, defval, minval, maxval)\
 lpfc_param_store(name)\
 static CLASS_DEVICE_ATTR(lpfc_##name, S_IRUGO | S_IWUSR,\
@@ -1103,6 +1128,17 @@ LPFC_ATTR_RW(log_verbose, 0x0, 0x0, 0xffff, "Verbose logging bit-mask");
 */
 LPFC_ATTR_R(lun_queue_depth, 30, 1, 128,
 	    "Max number of FCP commands we can queue to a specific LUN");
+
+/*
+# hba_queue_depth:  This parameter is used to limit the number of outstanding
+# commands per lpfc HBA. Value range is [32,8192]. If this parameter
+# value is greater than the maximum number of exchanges supported by the HBA,
+# then maximum number of exchanges supported by the HBA is used to determine
+# the hba_queue_depth.
+*/
+LPFC_ATTR_R(hba_queue_depth, 8192, 32, 8192,
+	    "Max number of FCP commands we can queue to a lpfc HBA");
+
 
 /*
 # Some disk devices have a "select ID" or "select Target" capability.
@@ -1194,11 +1230,20 @@ LPFC_ATTR_R(fcp_bind_method, 2, 0, 4,
 # is 0. Default value of cr_count is 1. The cr_count feature is disabled if
 # cr_delay is set to 0.
 */
-LPFC_ATTR(cr_delay, 0, 0, 63, "A count of milliseconds after which an"
+LPFC_ATTR(cr_delay, 0, 0, 63, "A count of milliseconds after which an "
 		"interrupt response is generated");
 
-LPFC_ATTR(cr_count, 1, 1, 255, "A count of I/O completions after which an"
+LPFC_ATTR(cr_count, 1, 1, 255, "A count of I/O completions after which an "
 		"interrupt response is generated");
+
+/*
+# lpfc_multi_ring_support:  Determines how many rings to spread available
+# cmd /rsp IOCB entries across.
+# Value range is [1,2]. Default value is 1.
+*/
+LPFC_ATTR(multi_ring_support, LPFC_1_PRIMARY_RING, LPFC_1_PRIMARY_RING,
+	     LPFC_2_PRIMARY_RING, "Determines number of primary SLI rings to "
+	     "spread IOCB entries across");
 
 /*
 # lpfc_fdmi_on: controls FDMI support.
@@ -1213,7 +1258,7 @@ LPFC_ATTR_RW(fdmi_on, 0, 0, 2, "Enable FDMI support");
 # Specifies the maximum number of ELS cmds we can have outstanding (for
 # discovery). Value range is [1,64]. Default value = 32.
 */
-LPFC_ATTR(discovery_threads, 32, 1, 64, "Maximum number of ELS commands"
+LPFC_ATTR(discovery_threads, 32, 1, 64, "Maximum number of ELS commands "
 		 "during discovery");
 
 /*
@@ -1224,6 +1269,38 @@ LPFC_ATTR(discovery_threads, 32, 1, 64, "Maximum number of ELS commands"
 LPFC_ATTR_R(max_luns, 256, 1, 32768,
 	     "Maximum number of LUNs per target driver will support");
 
+/*
+# lpfc_linkup_wait_limit: The number of seconds driver waits for link
+# to be brought up.
+# Value range is [0,60]. Default value is 15.
+*/
+LPFC_ATTR_RW(linkup_wait_limit, 15, 0, 60,
+	     "The number of seconds driver waits for link to be brought up");
+
+/*
+# lpfc_discovery_min_wait: The minimum number of seconds driver waits
+# for the discovery of the remote ports during the HBA initialization.
+# Value range is [0, 60]. Default value is 3.
+# NOTE: In some configurations, link comes up for a first time without
+# targets.  The minimum wait time allows to driver to ignore results of
+# the initial discovery.
+*/
+LPFC_ATTR_RW(discovery_min_wait, 3, 0, 60,
+	     "The minimum number of seconds driver waits for the discovery "
+	     "to complete");
+/*
+# lpfc_discovery_wait_limit: The maximum number of seconds driver
+# waits for the discovery of the remote ports to stop during the HBA
+# initialization.
+# Value range is [0,CFG_DISC_INFINITE_WAIT]. Default value is
+# CFG_DISC_INFINITE_WAIT.
+# NOTE: Setting parameter to a maximum value of CFG_DISC_INFINITE_WAIT
+# seconds removes the limit. 
+*/
+LPFC_ATTR_RW(discovery_wait_limit, CFG_DISC_INFINITE_WAIT, 0,
+	     CFG_DISC_INFINITE_WAIT,
+	     "The maximum number of seconds driver waits for the discovery "
+	     "to complete");
 
 static ssize_t
 sysfs_ctlreg_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
@@ -1341,7 +1418,7 @@ sysfs_mbox_write(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		mbox = mempool_alloc(phba->mbox_mem_pool, GFP_KERNEL);
 		if (!mbox)
 			return -ENOMEM;
-
+		memset(mbox, 0, sizeof (LPFC_MBOXQ_t));
 	}
 
 	spin_lock_irqsave(host->host_lock, iflag);
@@ -1528,7 +1605,7 @@ lpfc_get_starget_port_id(struct scsi_target *starget)
 	struct lpfc_nodelist *ndlp = NULL;
 	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
 	struct lpfc_hba *phba = (struct lpfc_hba *) shost->hostdata[0];
-	uint16_t did = 0;
+	uint32_t did = -1;
 
 	spin_lock_irq(shost->host_lock);
 	/* Search the mapped list for this target ID */
@@ -1538,7 +1615,7 @@ lpfc_get_starget_port_id(struct scsi_target *starget)
 			break;
 		}
 	}
-	spin_unlock_irq(shost->host_lock);
+	spin_unlock_irq_dump(shost->host_lock);
 
 	fc_starget_port_id(starget) = did;
 }
@@ -1560,7 +1637,7 @@ lpfc_get_starget_node_name(struct scsi_target *starget)
 			break;
 		}
 	}
-	spin_unlock_irq(shost->host_lock);
+	spin_unlock_irq_dump(shost->host_lock);
 
 	fc_starget_node_name(starget) = be64_to_cpu(node_name);
 }
@@ -1582,7 +1659,7 @@ lpfc_get_starget_port_name(struct scsi_target *starget)
 			break;
 		}
 	}
-	spin_unlock_irq(shost->host_lock);
+	spin_unlock_irq_dump(shost->host_lock);
 
 	fc_starget_port_name(starget) = be64_to_cpu(port_name);
 }
@@ -1704,6 +1781,7 @@ lpfc_proc_info(struct Scsi_Host *host,
 	if (rw)
 		return -EINVAL;
 
+	spin_lock_irq(phba->host->host_lock);
 	list_for_each_entry(ndlp, &phba->fc_nlpmap_list, nlp_listp) {
 		if (ndlp->nlp_state == NLP_STE_MAPPED_NODE){
 			len += snprintf(buf + len, PAGE_SIZE -len,
@@ -1735,6 +1813,7 @@ lpfc_proc_info(struct Scsi_Host *host,
 	if (&ndlp->nlp_listp != &phba->fc_nlpmap_list)
 		len += snprintf(buf+len, PAGE_SIZE-len, "...\n");
 
+	spin_unlock_irq_dump(phba->host->host_lock);
 	return (len);
 }
 
@@ -1787,7 +1866,7 @@ lpfc_slave_configure(struct scsi_device *sdev)
 {
 	struct lpfc_hba *phba = (struct lpfc_hba *) sdev->host->hostdata[0];
 
-#if defined(RHEL_FC)
+#ifdef RHEL_FC
 	struct lpfc_target *target = (struct lpfc_target *) sdev->hostdata;
 #endif
 
@@ -1825,7 +1904,7 @@ lpfc_slave_destroy(struct scsi_device *sdev)
 		target->slavecnt--;
 
 		/* Double check for valid lpfc_target */
-		for (i = 0; i < MAX_FCP_TARGET; i++) {
+		for (i = 0; i < LPFC_MAX_TARGET; i++) {
 			if(target == phba->device_queue_hash[i]) {
 				if ((!target->slavecnt) && !(target->pnode)) {
 					kfree(target);
@@ -1874,6 +1953,7 @@ static struct class_device_attribute *lpfc_host_attrs[] = {
 	&class_device_attr_lpfc_drvr_version,
 	&class_device_attr_lpfc_log_verbose,
 	&class_device_attr_lpfc_lun_queue_depth,
+	&class_device_attr_lpfc_hba_queue_depth,
 	&class_device_attr_lpfc_nodev_tmo,
 	&class_device_attr_lpfc_fcp_class,
 	&class_device_attr_lpfc_use_adisc,
@@ -1897,8 +1977,62 @@ static struct class_device_attribute *lpfc_host_attrs[] = {
 	&class_device_attr_disc_plogi,
 	&class_device_attr_disc_unused,
 	&class_device_attr_outfcpio,
+	&class_device_attr_lpfc_linkup_wait_limit,
+	&class_device_attr_lpfc_discovery_min_wait,
+	&class_device_attr_lpfc_discovery_wait_limit,
 	NULL,
 };
+
+#if defined(RHEL_FC) && defined(DISKDUMP_FC)
+static int
+lpfc_scsih_sanity_check(struct scsi_device *sdev)
+{
+	struct lpfc_hba *phba;
+	uint32_t id;
+
+	phba = (struct lpfc_hba *) sdev->host->hostdata[0];
+	if (!phba)
+		return -ENXIO;
+
+	/*
+	 * message frame freeQ is busy
+	 */
+	if (spin_is_locked(phba->host->host_lock))
+		return -EBUSY;
+
+	/*
+	 * We should never get an IOCB if we are in a LINK_DOWN state
+	 */
+	if (phba->hba_state < LPFC_LINK_UP)
+		return -ENXIO;
+
+	/* Check for Verndor ID */
+	pci_read_config_dword(phba->pcidev, PCI_VENDOR_ID, &id);
+	if(id == 0xffffffff) {
+		printk(KERN_WARNING "lpfc sanity check for diskdump: HBA is not available!\n");
+		return -ENXIO;
+	}
+
+	return 0;
+}
+
+static void
+lpfc_scsih_poll(struct scsi_device *sdev)
+{
+	struct lpfc_hba *phba;
+
+	phba = (struct lpfc_hba *) sdev->host->hostdata[0];
+	if (!phba)
+		return;
+
+	/* Call SLI to handle the interrupt event. */
+	lpfc_sli_intr(phba);
+
+	spin_lock(phba->host->host_lock);
+	lpfc_disc_done_entrance(phba);
+	spin_unlock(phba->host->host_lock);
+}
+#endif
 
 static struct scsi_host_template driver_template = {
 	.module			= THIS_MODULE,
@@ -1915,11 +2049,46 @@ static struct scsi_host_template driver_template = {
 	.proc_name		= LPFC_DRIVER_NAME,
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
-	.cmd_per_lun		= 30,
+	.cmd_per_lun		= 3,
 	.max_sectors		= 0xFFFF,
 	.shost_attrs		= lpfc_host_attrs,
 	.use_clustering		= ENABLE_CLUSTERING,
+#if defined(RHEL_FC) && defined(DISKDUMP_FC)
+	.dump_sanity_check	= lpfc_scsih_sanity_check,
+	.dump_poll		= lpfc_scsih_poll,
+#endif
 };
+
+static int
+lpfc_extra_ring_setup( struct lpfc_hba *phba)
+{
+	struct lpfc_sli *psli;
+	LPFC_RING_INIT_t *pring;
+
+	psli = &phba->sli;
+
+	/* Adjust cmd/rsp ring iocb entries more evenly */
+	pring = &psli->sliinit.ringinit[psli->fcp_ring];
+	pring->numCiocb -= SLI2_IOCB_CMD_R1XTRA_ENTRIES;
+	pring->numRiocb -= SLI2_IOCB_RSP_R1XTRA_ENTRIES;
+	pring->numCiocb -= SLI2_IOCB_CMD_R3XTRA_ENTRIES;
+	pring->numRiocb -= SLI2_IOCB_RSP_R3XTRA_ENTRIES;
+
+	pring = &psli->sliinit.ringinit[1];
+	pring->numCiocb += SLI2_IOCB_CMD_R1XTRA_ENTRIES;
+	pring->numRiocb += SLI2_IOCB_RSP_R1XTRA_ENTRIES;
+	pring->numCiocb += SLI2_IOCB_CMD_R3XTRA_ENTRIES;
+	pring->numRiocb += SLI2_IOCB_RSP_R3XTRA_ENTRIES;
+
+	/* Setup default profile for this ring */
+	pring->iotag_max = 4096;
+	pring->num_mask = 1;
+	pring->prt[0].profile = 0;	/* Mask 0 */
+	pring->prt[0].rctl = FC_UNSOL_DATA;
+	pring->prt[0].type = 5;
+	pring->prt[0].lpfc_sli_rcv_unsol_event = NULL;
+	return 0;
+}
 
 static int
 lpfc_sli_setup(struct lpfc_hba * phba)
@@ -1963,7 +2132,7 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 			pring->fast_iotag = 0;
 			pring->iotag_ctr = 0;
 			pring->iotag_max = 4096;
-			pring->num_mask = 4;
+			pring->num_mask = 5;
 			pring->prt[0].profile = 0;	/* Mask 0 */
 			pring->prt[0].rctl = FC_ELS_REQ;
 			pring->prt[0].type = FC_ELS_DATA;
@@ -1988,6 +2157,11 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 			pring->prt[3].type = FC_COMMON_TRANSPORT_ULP;
 			pring->prt[3].lpfc_sli_rcv_unsol_event =
 			    lpfc_ct_unsol_event;
+			pring->prt[4].profile = 0;	/* Mask 4 */
+			pring->prt[4].rctl = FC_UNSOL_DATA;
+			pring->prt[4].type = FC_VENDOR_SPECIFIC;
+			pring->prt[4].lpfc_sli_rcv_unsol_event =
+			    lpfc_loopback_event;
 			break;
 		}
 		totiocb += (pring->numCiocb + pring->numRiocb);
@@ -2000,12 +2174,10 @@ lpfc_sli_setup(struct lpfc_hba * phba)
 				phba->brd_no, totiocb, MAX_SLI2_IOCB);
 	}
 
-#ifdef USE_HGP_HOST_SLIM
-	psli->sliinit.sli_flag = LPFC_HGP_HOSTSLIM;
-#else
-	psli->sliinit.sli_flag = 0;
-#endif
+	if (lpfc_multi_ring_support == LPFC_2_PRIMARY_RING)
+		lpfc_extra_ring_setup(phba);
 
+	psli->sliinit.sli_flag = 0;
 	return (0);
 }
 
@@ -2041,21 +2213,25 @@ lpfc_set_bind_type(struct lpfc_hba * phba)
 static void
 lpfc_get_cfgparam(struct lpfc_hba *phba)
 {
-	lpfc_log_verbose_set(phba, lpfc_log_verbose);
-	lpfc_fcp_bind_method_set(phba, lpfc_fcp_bind_method);
-	lpfc_cr_delay_set(phba, lpfc_cr_delay);
-	lpfc_cr_count_set(phba, lpfc_cr_count);
-	lpfc_lun_queue_depth_set(phba, lpfc_lun_queue_depth);
-	lpfc_fcp_class_set(phba, lpfc_fcp_class);
-	lpfc_use_adisc_set(phba, lpfc_use_adisc);
-	lpfc_ack0_set(phba, lpfc_ack0);
-	lpfc_topology_set(phba, lpfc_topology);
-	lpfc_scan_down_set(phba, lpfc_scan_down);
-	lpfc_nodev_tmo_set(phba, lpfc_nodev_tmo);
-	lpfc_link_speed_set(phba, lpfc_link_speed);
-	lpfc_fdmi_on_set(phba, lpfc_fdmi_on);
-	lpfc_discovery_threads_set(phba, lpfc_discovery_threads);
-	lpfc_max_luns_set(phba, lpfc_max_luns);
+	lpfc_log_verbose_init(phba, lpfc_log_verbose);
+	lpfc_fcp_bind_method_init(phba, lpfc_fcp_bind_method);
+	lpfc_cr_delay_init(phba, lpfc_cr_delay);
+	lpfc_cr_count_init(phba, lpfc_cr_count);
+	lpfc_multi_ring_support_init(phba, lpfc_multi_ring_support);
+	lpfc_lun_queue_depth_init(phba, lpfc_lun_queue_depth);
+	lpfc_fcp_class_init(phba, lpfc_fcp_class);
+	lpfc_use_adisc_init(phba, lpfc_use_adisc);
+	lpfc_ack0_init(phba, lpfc_ack0);
+	lpfc_topology_init(phba, lpfc_topology);
+	lpfc_scan_down_init(phba, lpfc_scan_down);
+	lpfc_nodev_tmo_init(phba, lpfc_nodev_tmo);
+	lpfc_link_speed_init(phba, lpfc_link_speed);
+	lpfc_fdmi_on_init(phba, lpfc_fdmi_on);
+	lpfc_discovery_threads_init(phba, lpfc_discovery_threads);
+	lpfc_max_luns_init(phba, lpfc_max_luns);
+	lpfc_linkup_wait_limit_init(phba, lpfc_linkup_wait_limit);
+	lpfc_discovery_min_wait_init(phba, lpfc_discovery_min_wait);
+	lpfc_discovery_wait_limit_init(phba, lpfc_discovery_wait_limit);
 	phba->cfg_scsi_hotplug = 0;
 
 	switch (phba->pcidev->device) {
@@ -2073,6 +2249,10 @@ lpfc_get_cfgparam(struct lpfc_hba *phba)
 		break;
 	default:
 		phba->cfg_hba_queue_depth = LPFC_DFT_HBA_Q_DEPTH;
+	}
+
+	if (phba->cfg_hba_queue_depth > lpfc_hba_queue_depth) {
+		lpfc_hba_queue_depth_init(phba, lpfc_hba_queue_depth);
 	}
 	return;
 }
@@ -2140,6 +2320,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	phba->pcidev = pdev;
 	phba->host = host;
 
+	init_MUTEX(&phba->hba_can_block);
 	INIT_LIST_HEAD(&phba->ctrspbuflist);
 	INIT_LIST_HEAD(&phba->rnidrspbuflist);
 	INIT_LIST_HEAD(&phba->freebufList);
@@ -2203,6 +2384,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	init_waitqueue_head(&phba->linkevtwq);
 	init_waitqueue_head(&phba->rscnevtwq);
 	init_waitqueue_head(&phba->ctevtwq);
+	init_waitqueue_head(&phba->dumpevtwq);
 
 	pci_set_master(pdev);
 	retval = pci_set_mwi(pdev);
@@ -2227,7 +2409,20 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 
 	/* Map HBA SLIM and Control Registers to a kernel virtual address. */
 	phba->slim_memmap_p      = ioremap(phba->pci_bar0_map, bar0map_len);
+	if (!phba->slim_memmap_p) {
+		dev_printk(KERN_ERR, &pdev->dev,
+			   "%s ioremap failed for SLIM memory.\n",
+			   lpfc_drvr_name);
+		goto out_list_del;
+	}
+
 	phba->ctrl_regs_memmap_p = ioremap(phba->pci_bar2_map, bar2map_len);
+	if (!phba->ctrl_regs_memmap_p) {
+		dev_printk(KERN_ERR, &pdev->dev,
+			   "%s ioremap failed for HBA control registers.\n",
+			   lpfc_drvr_name);
+		goto out_iounmap_slim;
+	}
 
 	/*
 	 * Allocate memory for SLI-2 structures
@@ -2237,6 +2432,7 @@ lpfc_pci_probe_one(struct pci_dev *pdev, const struct pci_device_id *pid)
 	if (!phba->slim2p)
 		goto out_iounmap;
 
+	memset((char *)phba->slim2p, 0, SLI2_SLIM_SIZE);
 
 	lpfc_sli_setup(phba);	/* Setup SLI Layer to run over lpfc HBAs */
 	lpfc_sli_queue_setup(phba);	/* Initialize the SLI Layer */
@@ -2303,7 +2499,10 @@ out_hba_down:
 	/* Stop any timers that were started during this attach. */
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_sli_hba_down(phba);
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	lpfc_sli_brdrestart(phba);
 	lpfc_stop_timer(phba);
+	spin_lock_irqsave(phba->host->host_lock, iflag);
 	phba->work_hba_events = 0;
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
@@ -2322,6 +2521,7 @@ out_dec_nhbas:
 			  phba->slim2p, phba->slim2p_mapping);
 out_iounmap:
 	iounmap(phba->ctrl_regs_memmap_p);
+out_iounmap_slim:
 	iounmap(phba->slim_memmap_p);
 out_list_del:
 	list_del_init(&phba->hba_list);
@@ -2348,20 +2548,26 @@ lpfc_pci_remove_one(struct pci_dev *pdev)
 	sysfs_remove_bin_file(&host->shost_classdev.kobj, &sysfs_mbox_attr);
 	sysfs_remove_bin_file(&host->shost_classdev.kobj, &sysfs_ctlreg_attr);
 
+	if (phba->fc_flag & FC_OFFLINE_MODE)
+		scsi_unblock_requests(phba->host);
+
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 
 	/* Since we are going to scsi_remove_host(), disassociate scsi_dev
 	 * from lpfc_target, and make sure its unblocked.
 	 */
-	for (i = 0; i < MAX_FCP_TARGET; i++) {
+	for (i = 0; i < LPFC_MAX_TARGET; i++) {
 		targetp = phba->device_queue_hash[i];
 		if (!targetp)
 			continue;
-#if defined(RHEL_FC) || defined(SLES_FC)
+
 		if(targetp->pnode) {
 			if(targetp->blocked) {
 				/* If we are blocked, force a nodev_tmo */
+				spin_unlock_irqrestore(phba->host->host_lock,
+									iflag);
 				del_timer_sync(&targetp->pnode->nlp_tmofunc);
+				spin_lock_irqsave(phba->host->host_lock, iflag);
 				if (!list_empty(&targetp->pnode->
 						nodev_timeout_evt.evt_listp))
 					list_del_init(&targetp->pnode->
@@ -2377,10 +2583,10 @@ lpfc_pci_remove_one(struct pci_dev *pdev)
 				lpfc_target_remove(phba, targetp);
 			}
 		}
-#endif /* RHEL_FC or SLES_FC */
-#if defined(RHEL_FC)
+
+#ifdef RHEL_FC
 		targetp->starget = NULL;
-#endif /* RHEL_FC */
+#endif
 	}
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 
@@ -2405,13 +2611,16 @@ lpfc_pci_remove_one(struct pci_dev *pdev)
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_sli_hba_down(phba);
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
+	lpfc_sli_brdrestart(phba);
 
 	/* Release the irq reservation */
 	free_irq(phba->pcidev->irq, phba);
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	lpfc_cleanup(phba, 0);
+	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	lpfc_stop_timer(phba);
+	spin_lock_irqsave(phba->host->host_lock, iflag);
 	phba->work_hba_events = 0;
 	spin_unlock_irqrestore(phba->host->host_lock, iflag);
 	lpfc_scsi_free(phba);
@@ -2529,3 +2738,4 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION(LPFC_MODULE_DESC);
 MODULE_AUTHOR("Emulex Corporation - tech.support@emulex.com");
 MODULE_VERSION("0:" LPFC_DRIVER_VERSION);
+EXPORT_SYMBOL(lpfc_hba_list);

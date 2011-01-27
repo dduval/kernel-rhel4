@@ -400,6 +400,7 @@ __establish_session(struct iscsi_session *session)
 	 * logged in ok, get the new session ready
 	 */
 	session->window_closed = 0;
+	session->has_logged_in = 1;
 	session->session_established_time = jiffies;
 	session->session_drop_time = 0;
 	clear_bit(SESSION_WINDOW_CLOSED, &session->control_bits);
@@ -1302,18 +1303,21 @@ establish_session(struct iscsi_session *session, unsigned int login_delay)
 		if (rc > 0)
 			/* established or redirected */
 			login_failures = 0;
-		else if (rc < 0) {
+		else if ((iscsi_max_initial_login_retries > 0 &&
+			 login_failures + 1 > iscsi_max_initial_login_retries &&
+			 !session->has_logged_in) || (rc == 0)) {
+			/* failed, give up */
+			iscsi_host_err(session, "Session giving up after %u "
+				      "retries\n", login_failures);
+			set_bit(SESSION_TERMINATING, &session->control_bits);
+			return 0;
+		} else {
 			/* failed, retry */
 			spin_lock(&session->portal_lock);
 			iscsi_set_portal(session);
 			spin_unlock(&session->portal_lock);
 			login_failures++;
-		 } else {
-			/* failed, give up */
-			iscsi_host_err(session, "Session giving up\n");
-			set_bit(SESSION_TERMINATING, &session->control_bits);
-			return 0;
-		}
+		 }
 
 		/* slowly back off the frequency of login attempts */
 		if (login_failures == 0)

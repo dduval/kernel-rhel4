@@ -96,7 +96,7 @@ pci_read_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 
 	if ((off & 1) && size) {
 		u8 val;
-		pci_read_config_byte(dev, off, &val);
+		pci_user_read_config_byte(dev, off, &val);
 		data[off - init_off] = val;
 		off++;
 		size--;
@@ -104,7 +104,7 @@ pci_read_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 
 	if ((off & 3) && size > 2) {
 		u16 val;
-		pci_read_config_word(dev, off, &val);
+		pci_user_read_config_word(dev, off, &val);
 		data[off - init_off] = val & 0xff;
 		data[off - init_off + 1] = (val >> 8) & 0xff;
 		off += 2;
@@ -113,7 +113,7 @@ pci_read_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 
 	while (size > 3) {
 		u32 val;
-		pci_read_config_dword(dev, off, &val);
+		pci_user_read_config_dword(dev, off, &val);
 		data[off - init_off] = val & 0xff;
 		data[off - init_off + 1] = (val >> 8) & 0xff;
 		data[off - init_off + 2] = (val >> 16) & 0xff;
@@ -124,7 +124,7 @@ pci_read_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 
 	if (size >= 2) {
 		u16 val;
-		pci_read_config_word(dev, off, &val);
+		pci_user_read_config_word(dev, off, &val);
 		data[off - init_off] = val & 0xff;
 		data[off - init_off + 1] = (val >> 8) & 0xff;
 		off += 2;
@@ -133,7 +133,7 @@ pci_read_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 
 	if (size > 0) {
 		u8 val;
-		pci_read_config_byte(dev, off, &val);
+		pci_user_read_config_byte(dev, off, &val);
 		data[off - init_off] = val;
 		off++;
 		--size;
@@ -158,7 +158,7 @@ pci_write_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	}
 	
 	if ((off & 1) && size) {
-		pci_write_config_byte(dev, off, data[off - init_off]);
+		pci_user_write_config_byte(dev, off, buf[off - init_off]);
 		off++;
 		size--;
 	}
@@ -166,7 +166,7 @@ pci_write_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	if ((off & 3) && size > 2) {
 		u16 val = data[off - init_off];
 		val |= (unsigned int) data[off - init_off +1] << 8;
-		pci_write_config_word(dev, off, val);
+		pci_user_write_config_word(dev, off, val);
 		off += 2;
 		size -= 2;
         }
@@ -176,7 +176,7 @@ pci_write_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 		val |= (unsigned int) data[off - init_off + 1] << 8;
 		val |= (unsigned int) data[off - init_off + 2] << 16;
 		val |= (unsigned int) data[off - init_off + 3] << 24;
-		pci_write_config_dword(dev, off, val);
+		pci_user_write_config_dword(dev, off, val);
 		off += 4;
 		size -= 4;
 	}
@@ -184,13 +184,13 @@ pci_write_config(struct kobject *kobj, char *buf, loff_t off, size_t count)
 	if (size >= 2) {
 		u16 val = data[off - init_off];
 		val |= (unsigned int) data[off - init_off +1] << 8;
-		pci_write_config_word(dev, off, val);
+		pci_user_write_config_word(dev, off, val);
 		off +=2;
 		size -= 2;
 	}
 
 	if (size) {
-		pci_write_config_byte(dev, off, data[off - init_off]);
+		pci_user_write_config_byte(dev, off, data[off - init_off]);
 		off++;
 		--size;
 	}

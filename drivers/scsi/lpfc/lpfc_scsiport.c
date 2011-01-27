@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsiport.c 1.231.2.8 2005/07/25 12:56:08EDT sf_support Exp  $
+ * $Id: lpfc_scsiport.c 2905 2006-04-13 17:11:39Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/spinlock.h>
@@ -29,6 +29,7 @@
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
+#include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport_fc.h>
 
 #include "lpfc_hw.h"
@@ -40,6 +41,22 @@
 #include "lpfc_logmsg.h"
 #include "lpfc_fcp.h"
 #include "lpfc_crtn.h"
+
+#define RAMP_UP_INTERVAL 120
+
+void
+lpfc_block_requests(struct lpfc_hba * phba)
+{
+	down(&phba->hba_can_block);
+	scsi_block_requests(phba->host);
+}
+
+void
+lpfc_unblock_requests(struct lpfc_hba * phba)
+{
+	scsi_unblock_requests(phba->host);
+	up(&phba->hba_can_block);
+}
 
 /* This routine allocates a scsi buffer, which contains all the necessary
  * information needed to initiate a SCSI I/O. The non-DMAable region of
@@ -522,12 +539,13 @@ void
 lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 			struct lpfc_iocbq *pIocbOut)
 {
-	int depth, pend_cnt;
+	int depth = 0;
 	struct lpfc_scsi_buf *lpfc_cmd =
 		(struct lpfc_scsi_buf *) pIocbIn->context1;
 	struct lpfc_target *target = lpfc_cmd->target;
 	struct scsi_cmnd *cmd = lpfc_cmd->pCmd;
 	struct scsi_device *sdev;
+	struct scsi_device *tmp_sdev;
 	int result;
 
 	lpfc_cmd->result = pIocbOut->iocb.un.ulpWord[4];
@@ -603,25 +621,60 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 	cmd->host_scribble = NULL;
 	cmd->scsi_done(cmd);
 
+	spin_unlock_irq_dump(phba->host->host_lock);
+	if (!result &&
+	   ((jiffies - target->last_ramp_up_time) > RAMP_UP_INTERVAL * HZ) &&
+	   ((jiffies - target->last_q_full_time) > RAMP_UP_INTERVAL * HZ) &&
+	   (phba->cfg_lun_queue_depth > sdev->queue_depth)) {
+		shost_for_each_device(tmp_sdev, sdev->host) {
+			if (phba->cfg_lun_queue_depth > tmp_sdev->queue_depth) {
+				if (tmp_sdev->id != sdev->id)
+					continue;
+				if (tmp_sdev->ordered_tags)
+					scsi_adjust_queue_depth(tmp_sdev,
+						MSG_ORDERED_TAG,
+						tmp_sdev->queue_depth+1);
+				else
+					scsi_adjust_queue_depth(tmp_sdev,
+						MSG_SIMPLE_TAG,
+						tmp_sdev->queue_depth+1);
+
+				target->last_ramp_up_time = jiffies;
+			}
+		}
+	}
+
 	/*
 	 * Check for queue full.  If the lun is reporting queue full, then
 	 * back off the lun queue depth to prevent target overloads.
 	 */
 	if (result == SAM_STAT_TASK_SET_FULL) {
-		pend_cnt = lpfc_sli_sum_iocb_lun(phba,
-				&phba->sli.ring[phba->sli.fcp_ring],
-				sdev->id, sdev->lun);
+		target->last_q_full_time = jiffies;
 
-		spin_unlock_irq(phba->host->host_lock);
-		depth = scsi_track_queue_full(sdev, pend_cnt);
-		spin_lock_irq(phba->host->host_lock);
-	
+		shost_for_each_device(tmp_sdev, sdev->host) {
+			if (tmp_sdev->id != sdev->id)
+				continue;
+			depth = scsi_track_queue_full(tmp_sdev, 
+							tmp_sdev->queue_depth - 1);
+		}
+
 		if (depth) {
+			if (depth == -1) {
+				/*
+				 * The queue depth cannot be lowered any more.
+				 * Modify the returned error code to store
+				 * the final depth value set by
+				 * scsi_track_queue_full.
+				 */
+				depth = phba->host->cmd_per_lun;
+			}
+
 			lpfc_printf_log(phba, KERN_WARNING, LOG_FCP,
 				"%d:0711 detected queue full - lun queue depth "
 				" adjusted to %d.\n", phba->brd_no, depth);
 		}			
 	}
+	spin_lock_irq(phba->host->host_lock);
 }
 
 static int
@@ -801,12 +854,16 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 	struct lpfc_target *target;
 	int cnt, loopcnt;
 
+	spin_unlock_irq_dump(phba->host->host_lock);
+	lpfc_block_requests(phba);
+	spin_lock_irq(phba->host->host_lock);
+
 	/*
 	 * Since the driver manages a single bus device, reset all
 	 * targets known to the driver.  Should any target reset
 	 * fail, this routine returns failure to the midlayer.
 	 */
-	for (i = 0; i < MAX_FCP_TARGET; i++) {
+	for (i = 0; i < LPFC_MAX_TARGET; i++) {
 		target = phba->device_queue_hash[i];
 		if (!target)
 			continue;
@@ -823,9 +880,14 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 	loopcnt = 0;
 	while((cnt = lpfc_sli_sum_iocb_host(phba,
 				&phba->sli.ring[phba->sli.fcp_ring]))) {
-		spin_unlock_irq(phba->host->host_lock);
+		spin_unlock_irq_dump(phba->host->host_lock);
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout(LPFC_RESET_WAIT*HZ);
+#if defined(RHEL_FC) && defined(DISKDUMP_FC)
+		/* Call SLI to handle the interrupt event. */
+		if(crashdump_mode())
+			lpfc_sli_intr(phba);
+#endif
 		spin_lock_irq(phba->host->host_lock);
 
 		if (++loopcnt
@@ -842,6 +904,15 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 		lpfc_printf_log(phba, KERN_INFO, LOG_FCP,
 		   "%d:0715 Bus Reset I/O flush failure: cnt x%x left x%x\n",
 		   phba->brd_no, cnt, i);
+
+#if defined(RHEL_FC) && defined(DISKDUMP_FC)
+		/* Call SLI to handle the interrupt event. */
+		if(crashdump_mode()) {
+			spin_unlock(phba->host->host_lock);
+			lpfc_sli_intr(phba);
+			spin_lock(phba->host->host_lock);
+		}
+#endif
 	}
 
 	if (!err_count)
@@ -854,6 +925,10 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 			LOG_FCP,
 			"%d:0714 SCSI layer issued Bus Reset Data: x%x\n",
 			phba->brd_no, ret);
+
+	spin_unlock_irq_dump(phba->host->host_lock);
+	lpfc_unblock_requests(phba);
+	spin_lock_irq(phba->host->host_lock);
 
 	return ret;
 }
@@ -974,6 +1049,10 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	int ret, retval = FAILED;
 	int cnt, loopcnt;
 
+	spin_unlock_irq_dump(phba->host->host_lock);
+	lpfc_block_requests(phba);
+	spin_lock_irq(phba->host->host_lock);
+
 	/*
 	 * If target is not in a MAPPED state, delay the reset till
 	 * target is rediscovered or nodev timeout is fired.
@@ -983,7 +1062,7 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 			break;
 
 		if (target->pnode->nlp_state != NLP_STE_MAPPED_NODE) {
-			spin_unlock_irq(phba->host->host_lock);
+			spin_unlock_irq_dump(phba->host->host_lock);
 			set_current_state(TASK_UNINTERRUPTIBLE);
 			schedule_timeout( HZ/2);
 			spin_lock_irq(phba->host->host_lock);
@@ -1052,7 +1131,7 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 				&phba->sli.ring[phba->sli.fcp_ring],
 				cmnd->device->id,
 				cmnd->device->lun))) {
-		spin_unlock_irq(phba->host->host_lock);
+		spin_unlock_irq_dump(phba->host->host_lock);
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout(LPFC_RESET_WAIT*HZ);
 		spin_lock_irq(phba->host->host_lock);
@@ -1083,6 +1162,11 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 out_free_scsi_buf:
 	lpfc_free_scsi_buf(lpfc_cmd);
 out:
+
+	spin_unlock_irq_dump(phba->host->host_lock);
+	lpfc_unblock_requests(phba);
+	spin_lock_irq(phba->host->host_lock);
+
 	return retval;
 }
 
@@ -1092,9 +1176,7 @@ lpfc_scsi_cmd_iocb_cleanup (struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 {
         struct lpfc_scsi_buf *lpfc_cmd =
                 (struct lpfc_scsi_buf *) pIocbIn->context1;
-	struct scsi_cmnd *ml_cmd =
-		((struct lpfc_scsi_buf *) pIocbIn->context1)->pCmd;
-	struct lpfc_target *targetp = ml_cmd->device->hostdata;
+	struct lpfc_target *targetp = lpfc_cmd->target;
 
 	if (targetp) {
 		targetp->iodonecnt++;
@@ -1115,7 +1197,6 @@ lpfc_scsi_cmd_iocb_cmpl_aborted (struct lpfc_hba *phba,
 	ml_cmd->host_scribble = NULL;
 }
 
-#define LPFC_ABORT_WAIT  2
 int
 lpfc_abort_handler(struct scsi_cmnd *cmnd)
 {
@@ -1127,7 +1208,7 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 	IOCB_t *cmd, *icmd;
 	unsigned long snum;
 	unsigned int id, lun;
-	unsigned int loop_count = 0;
+	unsigned long timeout, wait;
 	int ret = IOCB_SUCCESS;
 
 	/*
@@ -1138,6 +1219,10 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 	lpfc_cmd = (struct lpfc_scsi_buf *)cmnd->host_scribble;
 	if (!lpfc_cmd)
        		return SUCCESS;
+
+	spin_unlock_irq_dump(phba->host->host_lock);
+	lpfc_block_requests(phba);
+	spin_lock_irq(phba->host->host_lock);
 
 	/* save these now since lpfc_cmd can be freed */
 	id   = lpfc_cmd->target->scsi_id;
@@ -1198,16 +1283,20 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 			break;
 		}
 
-		/* Wait for abort to complete */
-		while (cmnd->host_scribble)
-		{
-			spin_unlock_irq(phba->host->host_lock);
+		/*
+		 * Wait for abort to complete.  Empirically, the abort seems to
+		 * complete in less than a millisecond.  The delay is set to
+		 * 5 milliseconds initially and doubles each pass through the
+		 * loop to reduce load if the abort takes longer to complete.
+		 */
+		timeout = jiffies + (2 * phba->cfg_nodev_tmo * HZ);
+		wait = 5;
+		while (cmnd->host_scribble && time_before(jiffies, timeout)) {
+			spin_unlock_irq_dump(phba->host->host_lock);
 			set_current_state(TASK_UNINTERRUPTIBLE);
-			schedule_timeout(LPFC_ABORT_WAIT*HZ);
+			schedule_timeout(wait);
+			wait *= 2;
 			spin_lock_irq(phba->host->host_lock);
-			if (++loop_count
-			    > (2 * phba->cfg_nodev_tmo)/LPFC_ABORT_WAIT)
-				break;
 		}
 
 		if (cmnd->host_scribble) {
@@ -1227,41 +1316,36 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 
  out:
 	lpfc_printf_log(phba, KERN_WARNING, LOG_FCP,
-			"%d:0749 SCSI layer issued abort device "
-			"Data: x%x x%x x%x x%lx\n",
+			"%d:0749 SCSI Layer I/O Abort Request "
+			"Status x%x Data: x%x x%x x%lx\n",
 			phba->brd_no, ret, id, lun, snum);
+
+	spin_unlock_irq_dump(phba->host->host_lock);
+	lpfc_unblock_requests(phba);
+	spin_lock_irq(phba->host->host_lock);	
 
 	return (ret == IOCB_SUCCESS ? SUCCESS : FAILED);
 }
 
-#if defined(RHEL_FC) || defined(SLES_FC)
 void
 lpfc_target_unblock(struct lpfc_hba *phba, struct lpfc_target *targetp)
 {
-#if defined(RHEL_FC)
-	/*
-	 * This code to be removed once block/unblock and the new
-	 * dicovery state machine are fully debugged.
-	 */
-	if (!targetp || !targetp->starget) {
-#else /* not RHEL_FC -> is SLES_FC */
-	if (!targetp) {
-#endif
-		lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY | LOG_FCP,
+#ifdef RHEL_FC
+	if (!targetp->starget) {
+		lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY | LOG_FCP,
 			"%d:0262 Cannot unblock scsi target\n", phba->brd_no);
-
 		return;
 	}
-
+#endif
 	/* Unblock IO to target scsi id <sid> to NPort <nlp_DID> */
 	lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY | LOG_FCP,
 			"%d:0258 Unblocking IO to Target scsi id x%x  "
 			"NPort pointer x%p\n",
 			phba->brd_no, targetp->scsi_id, targetp->pnode);
 
-	spin_unlock_irq(phba->host->host_lock);
+	spin_unlock_irq_dump(phba->host->host_lock);
 
-#if defined(RHEL_FC)
+#ifdef RHEL_FC
 	fc_target_unblock(targetp->starget);
 #else /* not RHEL_FC -> is SLES_FC */
 	fc_target_unblock(phba->host, targetp->scsi_id,
@@ -1274,32 +1358,25 @@ lpfc_target_unblock(struct lpfc_hba *phba, struct lpfc_target *targetp)
 void
 lpfc_target_block(struct lpfc_hba *phba, struct lpfc_target *targetp)
 {
-#if defined(RHEL_FC)
-	/*
-	 * This code to be removed once block/unblock and the new
-	 * dicovery state machine are fully debugged.
-	 */
-	if (!targetp || !targetp->starget) {
-#else /* not RHEL_FC -> is SLES_FC */
-	if (!targetp) {
-#endif
-		lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY | LOG_FCP,
+#ifdef RHEL_FC
+	if (!targetp->starget) {
+		lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY | LOG_FCP,
 				"%d:0263 Cannot block scsi target."
 				" target ptr x%p\n",
 				phba->brd_no, targetp);
 		return;
 	}
-
+#endif
 	/* Block all IO to target scsi id <sid> to NPort <nlp_DID> */
 	lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY | LOG_FCP,
 			"%d:0259 Blocking IO to Target scsi id x%x"
 			" NPort pointer x%p\n",
 			phba->brd_no, targetp->scsi_id, targetp->pnode);
 
-	spin_unlock_irq(phba->host->host_lock);
-#if defined(RHEL_FC)
+	spin_unlock_irq_dump(phba->host->host_lock);
+#ifdef RHEL_FC
 	fc_target_block(targetp->starget);
-#else /* not RHEL_FC -> is SLES_FC */
+#else
 	fc_target_block(phba->host, targetp->scsi_id, &targetp->dev_loss_timer,
 			phba->cfg_nodev_tmo);
 
@@ -1334,7 +1411,7 @@ top:
 		list_for_each_entry(sdev, &shost->__devices, siblings) {
 			if (sdev->channel == 0
 			    && sdev->id == targetp->scsi_id) {
-				spin_unlock_irq(shost->host_lock);
+				spin_unlock_irq_dump(shost->host_lock);
 				scsi_device_get(sdev);
 				scsi_remove_device(sdev);
 				scsi_device_put(sdev);
@@ -1371,4 +1448,3 @@ lpfc_target_add(struct lpfc_hba *phba, struct lpfc_target *targetp)
 	phba->fc_flag |= FC_SCSI_SCAN_TMO;
 	return 0;
 }
-#endif  /* RHEL_FC or SLES_FC */

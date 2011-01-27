@@ -69,6 +69,16 @@ module_param_named(max_sectors, iscsi_max_sectors, ushort, S_IRUGO);
 static unsigned int iscsi_can_queue = 512;
 module_param_named(can_queue, iscsi_can_queue, uint, S_IRUGO);
 
+unsigned int iscsi_cmds_per_lun = ISCSI_CMDS_PER_LUN;
+module_param_named(cmds_per_lun, iscsi_cmds_per_lun, uint, S_IRUGO);
+
+int iscsi_max_initial_login_retries = 3;
+module_param_named(max_initial_login_retries, iscsi_max_initial_login_retries,
+		   int, S_IRUGO);
+MODULE_PARM_DESC(max_initial_login_retries, "Max number of times to retry "
+		 "logging into a target for the first time before giving up. "
+		 "The default is 3. Set to -1 for no limit");
+
 /* Serial Number Arithmetic, 32 bits, less than, RFC1982 */
 #define SNA32_CHECK 2147483648UL
 
@@ -132,8 +142,8 @@ iscsi_slave_configure(struct scsi_device *sdev)
 	 * away when the outstanding one completes.
          */
 	if (sdev->tagged_supported) {
-		scsi_activate_tcq(sdev, ISCSI_CMDS_PER_LUN);
-		depth = ISCSI_CMDS_PER_LUN;
+		scsi_activate_tcq(sdev, iscsi_cmds_per_lun);
+		depth = iscsi_cmds_per_lun;
 		tag = MSG_ORDERED_TAG;
 	}
 
@@ -434,6 +444,12 @@ iscsi_create_host(struct iscsi_session_ioctl *ioctld)
 		iscsi_err("Invalid can_queue of %d using %d\n",
 			  shost->can_queue, ISCSI_MAX_CAN_QUEUE);
 		shost->can_queue = ISCSI_MAX_CAN_QUEUE;
+	}
+
+	if (!iscsi_cmds_per_lun || iscsi_cmds_per_lun > shost->can_queue) {
+		iscsi_err("Invalid iscsi_cmds_per_lun of %d using %d\n",
+			  iscsi_cmds_per_lun, shost->can_queue);
+		iscsi_cmds_per_lun = shost->can_queue;
 	}
 
 	session = (struct iscsi_session *)shost->hostdata;

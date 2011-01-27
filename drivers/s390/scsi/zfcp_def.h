@@ -154,8 +154,10 @@ typedef u32 scsi_lun_t;
 #define FSF_QTCB_UNSOLICITED_STATUS		0x6305
 #define ZFCP_STATUS_READ_FAILED_THRESHOLD	3
 #define ZFCP_STATUS_READS_RECOM		        FSF_STATUS_READS_RECOM
-#define ZFCP_EXCHANGE_CONFIG_DATA_RETRIES	6
-#define ZFCP_EXCHANGE_CONFIG_DATA_SLEEP		50
+
+/* Do 1st retry in 1 second, then double the timeout for each following retry */
+#define ZFCP_EXCHANGE_CONFIG_DATA_FIRST_SLEEP	100
+#define ZFCP_EXCHANGE_CONFIG_DATA_RETRIES	7
 
 /* timeout value for "default timer" for fsf requests */
 #define ZFCP_FSF_REQUEST_TIMEOUT (60*HZ);
@@ -929,7 +931,7 @@ struct zfcp_adapter {
 	u32			ports;	           /* number of remote ports */
         struct timer_list       scsi_er_timer;     /* SCSI err recovery watch */
 	struct list_head	fsf_req_list_head; /* head of FSF req list */
-	rwlock_t		fsf_req_list_lock; /* lock for ops on list of
+	spinlock_t		fsf_req_list_lock; /* lock for ops on list of
 						      FSF requests */
         atomic_t       		fsf_reqs_active;   /* # active FSF reqs */
 	struct zfcp_qdio_queue	request_queue;	   /* request queue */

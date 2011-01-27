@@ -41,6 +41,8 @@
 struct divert_blk;
 struct vlan_group;
 struct ethtool_ops;
+struct netpoll;
+struct netpoll_info;
 
 					/* source back-compat hooks */
 #define SET_ETHTOOL_OPS(netdev,ops) \
@@ -343,6 +345,10 @@ struct net_device
 	unsigned char		broadcast[MAX_ADDR_LEN];	/* hw bcast add	*/
 	unsigned char		dev_addr[MAX_ADDR_LEN];	/* hw address	*/
 	unsigned char		addr_len;	/* hardware address length	*/
+#ifndef __GENKSYMS__
+	unsigned char		reserved;
+	unsigned short		priv_len;
+#endif
 
 	struct dev_mc_list	*mc_list;	/* Multicast mac addresses	*/
 	int			mc_count;	/* Number of installed mcasts	*/
@@ -488,6 +494,16 @@ struct net_device
 	int padded;
 };
 
+/*
+ *  Structure used to maintain kABI.
+ */
+struct net_device_wrapper {
+	void (*netpoll_setup)(struct net_device *dev, struct netpoll_info *npinfo);
+	int (*netpoll_start_xmit)(struct netpoll *np, struct sk_buff *skb,
+				  struct net_device *dev);
+	struct netpoll_info *npinfo;
+};
+
 #define	NETDEV_ALIGN		32
 #define	NETDEV_ALIGN_CONST	(NETDEV_ALIGN - 1)
 
@@ -496,6 +512,15 @@ static inline void *netdev_priv(struct net_device *dev)
 	return (char *)dev + ((sizeof(struct net_device)
 					+ NETDEV_ALIGN_CONST)
 				& ~NETDEV_ALIGN_CONST);
+}
+
+static inline struct net_device_wrapper *dev_wrapper(struct net_device *dev)
+{
+	if (!(dev->priv_flags & IFF_EXTENDED))
+		return NULL;
+
+	return (struct net_device_wrapper *) ((char *) netdev_priv(dev) +
+		((dev->priv_len + NETDEV_ALIGN_CONST) & ~NETDEV_ALIGN_CONST));
 }
 
 #define SET_MODULE_OWNER(dev) do { } while (0)

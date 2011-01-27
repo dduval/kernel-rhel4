@@ -29,8 +29,10 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: mthca_uar.c 2643 2005-06-16 22:48:17Z roland $
+ * $Id$
  */
+
+#include <asm/page.h>		/* PAGE_SHIFT */
 
 #include "mthca_dev.h"
 #include "mthca_memfree.h"

@@ -34,8 +34,11 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: agent.c 3946 2005-11-02 15:23:43Z roland $
+ * $Id: agent.c 1389 2004-12-27 22:56:47Z roland $
  */
+
+#include <linux/slab.h>
+#include <linux/string.h>
 
 #include "agent.h"
 #include "smi.h"
@@ -73,25 +76,6 @@ ib_get_agent_port(struct ib_device *device, int port_num)
 	entry = __ib_get_agent_port(device, port_num);
 	spin_unlock_irqrestore(&ib_agent_port_list_lock, flags);
 	return entry;
-}
-
-int smi_check_local_dr_smp(struct ib_smp *smp,
-			   struct ib_device *device,
-			   int port_num)
-{
-	struct ib_agent_port_private *port_priv;
-
-	if (smp->mgmt_class != IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE)
-		return 1;
-
-	port_priv = ib_get_agent_port(device, port_num);
-	if (!port_priv) {
-		printk(KERN_DEBUG SPFX "smi_check_local_dr_smp %s port %d "
-		       "not open\n", device->name, port_num);
-		return 1;
-	}
-
-	return smi_check_local_smp(port_priv->agent[0], smp);
 }
 
 int agent_send_response(struct ib_mad *mad, struct ib_grh *grh,

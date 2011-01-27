@@ -203,7 +203,7 @@ static int init_netconsole(void)
 		return -EINVAL;
 
 	register_console(&netconsole);
-	printk(KERN_INFO "netconsole: network logging started\n");
+	printk(KERN_EMERG "[...network console startup...]\n");
 	return 0;
 }
 

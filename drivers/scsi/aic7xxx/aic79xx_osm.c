@@ -2108,6 +2108,7 @@ ahd_linux_register_host(struct ahd_softc *ahd, Scsi_Host_Template *template)
 	host->max_id = (ahd->features & AHD_WIDE) ? 16 : 8;
 	host->max_lun = AHD_NUM_LUNS;
 	host->max_channel = 0;
+	host->max_cmd_len = 16;
 	host->sg_tablesize = AHD_NSEG;
 	ahd_set_unit(ahd, ahd_linux_next_unit());
 	sprintf(buf, "scsi%d", host->host_no);

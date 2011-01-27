@@ -142,11 +142,18 @@ void scsi_proc_host_rm(struct Scsi_Host *shost)
 	remove_proc_entry(name, shost->hostt->proc_dir);
 }
 
-static int proc_print_scsidevice(struct device *dev, void *data)
+static int proc_scsi_show(struct seq_file *s, void *data)
 {
-	struct scsi_device *sdev = to_scsi_device(dev);
-	struct seq_file *s = data;
+	struct list_head *head = data;
+	struct device *dev;
+	struct scsi_device *sdev;
 	int i;
+
+	if(head == &scsi_bus_type.devices.list)
+		return 0;
+
+	dev  = get_device(list_entry(head, struct device, bus_list));
+	sdev = to_scsi_device(dev);
 
 	seq_printf(s,
 		"Host: scsi%d Channel: %02d Id: %02d Lun: %02d\n  Vendor: ",
@@ -187,6 +194,7 @@ static int proc_print_scsidevice(struct device *dev, void *data)
 	else
 		seq_printf(s, "\n");
 
+	put_device(dev);
 	return 0;
 }
 
@@ -284,12 +292,50 @@ static ssize_t proc_scsi_write(struct file *file, const char __user *buf,
 	return err;
 }
 
-static int proc_scsi_show(struct seq_file *s, void *p)
+static void *proc_scsi_start(struct seq_file *s, loff_t *pos)
 {
-	seq_printf(s, "Attached devices:\n");
-	bus_for_each_dev(&scsi_bus_type, NULL, s, proc_print_scsidevice);
-	return 0;
+	loff_t n;
+	struct list_head *head;
+
+	if(*pos == 0)
+		seq_puts(s, "Attached devices:\n");
+
+	down_read(&scsi_bus_type.subsys.rwsem);
+
+	for(n = *pos, head = scsi_bus_type.devices.list.next;
+	    n != 0 && head != &scsi_bus_type.devices.list;
+	    n--, head = head->next)
+		/* empty */;
+
+	if (n)
+		return NULL;
+
+	return head;
 }
+
+static void *proc_scsi_next(struct seq_file *s, void *p, loff_t *pos)
+{
+	struct list_head *head = p;
+	++*pos;
+
+	if (head == &scsi_bus_type.devices.list)
+		return NULL;
+
+	return head->next;
+}
+
+static void proc_scsi_stop(struct seq_file *s, void *p)
+{
+	up_read(&scsi_bus_type.subsys.rwsem);
+}
+
+
+static struct seq_operations proc_scsi_op = {
+	.start  = proc_scsi_start,
+	.next   = proc_scsi_next,
+	.stop   = proc_scsi_stop,
+	.show   = proc_scsi_show,
+};
 
 static int proc_scsi_open(struct inode *inode, struct file *file)
 {
@@ -297,7 +343,7 @@ static int proc_scsi_open(struct inode *inode, struct file *file)
 	 * We don't really needs this for the write case but it doesn't
 	 * harm either.
 	 */
-	return single_open(file, proc_scsi_show, NULL);
+	return seq_open(file, &proc_scsi_op);
 }
 
 static struct file_operations proc_scsi_operations = {
@@ -305,7 +351,7 @@ static struct file_operations proc_scsi_operations = {
 	.read		= seq_read,
 	.write		= proc_scsi_write,
 	.llseek		= seq_lseek,
-	.release	= single_release,
+	.release	= seq_release,
 };
 
 int __init scsi_init_procfs(void)

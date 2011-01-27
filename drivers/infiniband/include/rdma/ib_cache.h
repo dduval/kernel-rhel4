@@ -31,7 +31,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ib_cache.h 3202 2005-08-26 17:11:34Z roland $
+ * $Id: ib_cache.h 1349 2004-12-16 21:09:43Z roland $
  */
 
 #ifndef _IB_CACHE_H
@@ -101,5 +101,18 @@ int ib_find_cached_pkey(struct ib_device    *device,
 			u8                   port_num,
 			u16                  pkey,
 			u16                 *index);
+
+/**
+ * ib_get_cached_lmc - Returns a cached lmc table entry
+ * @device: The device to query.
+ * @port_num: The port number of the device to query.
+ * @lmc: The lmc value for the specified port for that device.
+ *
+ * ib_get_cached_lmc() fetches the specified lmc table entry stored in
+ * the local software cache.
+ */
+int ib_get_cached_lmc(struct ib_device *device,
+		      u8                port_num,
+		      u8                *lmc);
 
 #endif /* _IB_CACHE_H */

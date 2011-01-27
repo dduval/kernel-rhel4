@@ -44,4 +44,5 @@ obj-$(CONFIG_VIODASD)		+= viodasd.o
 obj-$(CONFIG_BLK_DEV_SX8)	+= sx8.o
 obj-$(CONFIG_BLK_DEV_UB)	+= ub.o
 
-obj-$(CONFIG_DISKDUMP)		+= diskdump.o
+obj-$(CONFIG_DISKDUMP)         += diskdump.o
+obj-$(CONFIG_CCISS_DUMP_GLUE)	+= cciss_dump.o

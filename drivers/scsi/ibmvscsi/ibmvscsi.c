@@ -87,7 +87,7 @@ static int init_timeout = 5;
 static int max_requests = 50;
 static int max_sectors = 32 * 8; /* default max I/O 32 pages */
 
-#define IBMVSCSI_VERSION "1.5.5"
+#define IBMVSCSI_VERSION "1.5.6"
 
 MODULE_DESCRIPTION("IBM Virtual SCSI");
 MODULE_AUTHOR("Dave Boutcher");
@@ -677,8 +677,6 @@ static void send_mad_adapter_info(struct ibmvscsi_host_data *hostdata)
 	struct viosrp_adapter_info *req;
 	struct srp_event_struct *evt_struct;
 	
-	memset(&hostdata->madapter_info, 0x00, sizeof(hostdata->madapter_info));
-	
 	evt_struct = get_event_struct(&hostdata->pool);
 	if (!evt_struct) {
 		printk(KERN_ERR "ibmvscsi: couldn't allocate an event "
@@ -787,6 +785,7 @@ static int send_srp_login(struct ibmvscsi_host_data *hostdata)
 			  init_timeout * HZ);
 
 	login = &evt_struct->iu.srp.login_req;
+	memset(login, 0x00, sizeof(struct srp_login_req));
 	login->type = SRP_LOGIN_REQ_TYPE;
 	login->max_requested_initiator_to_target_iulen = sizeof(union srp_iu);
 	login->required_buffer_formats = 0x0006;

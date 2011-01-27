@@ -159,6 +159,7 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/bitops.h>
+#include <linux/diskdump.h>
 
 
 /* default maximum number of failures */
@@ -189,6 +190,30 @@ int noautodma = 1;
 #endif
 
 EXPORT_SYMBOL(noautodma);
+
+/*
+ * IDE sysfs interface routines
+ */
+static DEVICE_ATTR(dump, S_IRUGO | S_IWUSR, diskdump_sysfs_show,
+		   diskdump_sysfs_store);
+
+/* device attributes */
+static struct device_attribute *ide_sysfs_attrs[] = {
+	&dev_attr_dump,
+	NULL
+};
+
+static int ide_attr_add(ide_drive_t *drive)
+{
+	int i, error = 0;
+
+	for (i = 0; ide_sysfs_attrs[i]; i++) {
+		error = device_create_file(&drive->gendev, ide_sysfs_attrs[i]);
+		if (error)
+			break;
+	}
+	return error;
+}
 
 /*
  * This is declared extern in ide.h, for access by other IDE modules:
@@ -721,11 +746,24 @@ void ide_hwif_release_regions(ide_hwif_t *hwif)
 		release_region(hwif->io_ports[IDE_CONTROL_OFFSET], 1);
 	if (hwif->straight8) {
 		release_region(hwif->io_ports[IDE_DATA_OFFSET], 8);
-		return;
+		goto release_dma;
 	}
 	for (i = IDE_DATA_OFFSET; i <= IDE_STATUS_OFFSET; i++)
 		if (hwif->io_ports[i])
 			release_region(hwif->io_ports[i], 1);
+
+release_dma:
+	if (hwif->dma_base) {
+		(void) ide_release_dma(hwif);
+
+		hwif->dma_base = 0;
+		hwif->dma_master = 0;
+		hwif->dma_command = 0;
+		hwif->dma_vendor1 = 0;
+		hwif->dma_status = 0;
+		hwif->dma_vendor3 = 0;
+		hwif->dma_prdtable = 0;
+	}
 }
 
 /**
@@ -2619,8 +2657,10 @@ int ide_register_driver(ide_driver_t *driver)
 	list_for_each_safe(list_loop, tmp_storage, &list) {
 		ide_drive_t *drive = container_of(list_loop, ide_drive_t, list);
 		list_del_init(&drive->list);
-		if (drive->present)
+		if (drive->present) {
 			ata_attach(drive);
+			ide_attr_add(drive);
+		}
 	}
 	driver->gen_driver.name = (char *) driver->name;
 	driver->gen_driver.bus = &ide_bus_type;

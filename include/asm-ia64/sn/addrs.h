@@ -54,21 +54,16 @@
  * NASID bit indicates if the reference is to the SHUB or TIO MMRs.
  */
 
-/*
- * Temp macros for compatibility with latest community kernels
- */
-
 #define for_each_online_node(nid)	for (nid=0; nid < numnodes; nid++)
 #define for_each_node(nid)		for (nid=0; nid < MAX_NUMNODES; nid++)
 #define node_possible(nid)		((nid) >= 0 && (nid) < MAX_NUMNODES)
 
-#define RGN_KERNEL      7       /* Identity mapped region */
-#define RGN_UNCACHED    6       /* Identity mapped I/O region */
-#define RGN_GATE        5       /* Gate page, Kernel text, etc */
-#define RGN_HPAGE       4       /* For Huge TLB pages */
-#define RGN_SHIFT       (61)
-#define RGN_BASE(r)     (__IA64_UL_CONST(r)<<RGN_SHIFT)
-#define RGN_BITS        (RGN_BASE(-1))
+#define first_node(src) __first_node(&(src))
+#define next_node(n, src) __next_node((n), &(src))
+#define for_each_node_mask(node, mask)			\
+	for ((node) = first_node(mask);			\
+		(node) < MAX_NUMNODES;			\
+		(node) = next_node((node), (mask)))
 
 #define nodes_clear(m)	memset(&m, 0, sizeof(m))
 #define node_set(i, n)	__set_bit((i), &(n))

@@ -197,6 +197,22 @@ void device_initialize(struct device *dev)
 }
 
 /**
+ *	device_fini - Undo the device_initialize.
+ *
+ * 	This happens in case we change our minds before device_add.
+ *	Unfortunately, we have to open-code parts of kobject_cleanup().
+ *	DO NOT USE - device_fini is a workaround for usb_alloc_dev().
+ */
+void device_fini(struct device *dev)
+{
+	struct kobject * kobj = &dev->kobj;
+	struct kset * s = kobj->kset;
+
+	if (s)
+		kset_put(s);
+}
+
+/**
  *	device_add - add device to device hierarchy.
  *	@dev:	device.
  *
@@ -406,6 +422,7 @@ EXPORT_SYMBOL_GPL(device_for_each_child);
 EXPORT_SYMBOL_GPL(device_initialize);
 EXPORT_SYMBOL_GPL(device_add);
 EXPORT_SYMBOL_GPL(device_register);
+EXPORT_SYMBOL_GPL(device_fini);
 
 EXPORT_SYMBOL_GPL(device_del);
 EXPORT_SYMBOL_GPL(device_unregister);

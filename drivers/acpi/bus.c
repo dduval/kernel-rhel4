@@ -596,25 +596,9 @@ acpi_machine_reset(void)
 	acpi_status status;
 	FADT_DESCRIPTOR *f = &acpi_fadt;
 
-	if (f->reset_register.register_bit_width != 8) {
-		printk(KERN_WARNING PREFIX "invalid reset register bit width: 0x%x\n", f->reset_register.register_bit_width);
-		return_VOID;
-	}
-
-	if (f->reset_register.register_bit_offset != 0) {
-		printk(KERN_WARNING PREFIX "invalid reset register bit offset: 0x%x\n", f->reset_register.register_bit_offset);
-		return_VOID;
-	}
-
-	if ((f->reset_register.address_space_id != ACPI_ADR_SPACE_SYSTEM_IO) &&
-		(f->reset_register.address_space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY) &&
-		(f->reset_register.address_space_id != ACPI_ADR_SPACE_PCI_CONFIG)) {
-		printk(KERN_WARNING PREFIX "invalid reset register address space id: 0x%x\n", f->reset_register.address_space_id);
-		return_VOID;
-	}
-
 	status = acpi_hw_low_level_write(f->reset_register.register_bit_width, f->reset_value, &f->reset_register);
 
+	/* This printk is lost on SMP systems because the CPUs are offline. */
 	if (status != AE_OK)
 		printk(KERN_WARNING "ACPI system reset failed 0x%x\n", status);
 }
@@ -624,6 +608,7 @@ acpi_early_init (void)
 {
 	acpi_status		status = AE_OK;
 	struct acpi_buffer	buffer = {sizeof(acpi_fadt), &acpi_fadt};
+	int			use_acpi_reset = 1;
 
 	ACPI_FUNCTION_TRACE("acpi_early_init");
 
@@ -661,9 +646,26 @@ acpi_early_init (void)
 	 */
 	if (acpi_fadt.revision >= 2) {
 		if (acpi_fadt.reset_reg_sup) {
+			if (acpi_fadt.reset_register.register_bit_width != 8) {
+				printk(KERN_WARNING PREFIX "invalid reset register bit width: 0x%x\n", acpi_fadt.reset_register.register_bit_width);
+				use_acpi_reset = 0;
+			}
+
+			if (acpi_fadt.reset_register.register_bit_offset != 0) {
+				printk(KERN_WARNING PREFIX "invalid reset register bit offset: 0x%x\n", acpi_fadt.reset_register.register_bit_offset);
+				use_acpi_reset = 0;
+			}
+
+			if ((acpi_fadt.reset_register.address_space_id != ACPI_ADR_SPACE_SYSTEM_IO) &&
+				(acpi_fadt.reset_register.address_space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY) &&
+				(acpi_fadt.reset_register.address_space_id != ACPI_ADR_SPACE_PCI_CONFIG)) {
+				printk(KERN_WARNING PREFIX "invalid reset register address space id: 0x%x\n", acpi_fadt.reset_register.address_space_id);
+				use_acpi_reset = 0;
+			}
+
 			printk(KERN_INFO PREFIX "System reset via FADT Reset Register is supported\n");
 			/* if no 8042 KBD controller exists, use ACPI reset */
-			if (!(acpi_fadt.iapc_boot_arch & BAF_8042_KEYBOARD_CONTROLLER)) {
+			if ((!(acpi_fadt.iapc_boot_arch & BAF_8042_KEYBOARD_CONTROLLER)) && use_acpi_reset) {
 				machine_reset = acpi_machine_reset;
 #ifdef CONFIG_X86_64
 				if (!reboot_override)

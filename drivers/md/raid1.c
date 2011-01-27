@@ -522,6 +522,11 @@ static int make_request(request_queue_t *q, struct bio * bio)
 	int i, disks;
 	mdk_rdev_t *rdev;
 
+	if (unlikely(bio_barrier(bio))) {
+		bio_endio(bio, bio->bi_size, -EOPNOTSUPP);
+		return 0;
+	}
+
 	/*
 	 * Register the new request and wait if the reconstruction
 	 * thread has put up a bar for new requests.
@@ -1334,6 +1339,7 @@ static int raid1_resize(mddev_t *mddev, sector_t sectors)
 		set_bit(MD_RECOVERY_NEEDED, &mddev->recovery);
 	}
 	mddev->size = mddev->array_size;
+	mddev->resync_max_sectors = sectors;
 	return 0;
 }
 

@@ -137,6 +137,14 @@ static __inline__ int bad_mask(u32 mask, u32 addr)
 
 #define endfor_ifa(in_dev) }
 
+static inline struct in_device *__in_dev_get_rcu(const struct net_device *dev)
+{
+	struct in_device *in_dev = dev->ip_ptr;
+	if (in_dev)
+		in_dev = rcu_dereference(in_dev);
+	return in_dev;
+}
+
 static __inline__ struct in_device *
 in_dev_get(const struct net_device *dev)
 {

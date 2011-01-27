@@ -132,5 +132,8 @@ extern void identify_siblings (struct cpuinfo_ia64_topology *);
 
 #define cpu_logical_id(cpuid)		0
 
+#define smp_processor_id()			0
+#define hard_smp_processor_id()			0
+
 #endif /* CONFIG_SMP */
 #endif /* _ASM_IA64_SMP_H */

@@ -15,6 +15,9 @@
 #include <linux/module.h>
 #include <linux/smp_lock.h>
 #include <linux/devfs_fs_kernel.h>
+#ifndef __GENKSYMS__
+#include <linux/seq_file.h>
+#endif
 
 #include <linux/kobject.h>
 #include <linux/kobj_map.h>
@@ -38,13 +41,29 @@ static struct char_device_struct {
 	const char *name;
 	struct file_operations *fops;
 	struct cdev *cdev;		/* will die */
-} *chrdevs[MAX_PROBE_HASH];
+} *chrdevs[CHRDEV_MAJOR_HASH_SIZE];
 
 /* index in the above */
 static inline int major_to_index(int major)
 {
-	return major % MAX_PROBE_HASH;
+	return major % CHRDEV_MAJOR_HASH_SIZE;
 }
+
+#ifdef CONFIG_PROC_FS
+
+void chrdev_show(struct seq_file *f, off_t offset)
+{
+	struct char_device_struct *cd;
+
+	if (offset < CHRDEV_MAJOR_HASH_SIZE) {
+		read_lock(&chrdevs_lock);
+		for (cd = chrdevs[offset]; cd; cd = cd->next)
+			seq_printf(f, "%3d %s\n", cd->major, cd->name);
+		read_unlock(&chrdevs_lock);
+	}
+}
+
+#endif /* CONFIG_PROC_FS */
 
 /* get char device names in somewhat random order */
 int get_chrdev_list(char *page)

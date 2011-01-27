@@ -10,7 +10,9 @@
  * 2 of the License, or (at your option) any later version.
  */
 
-void udbg_init_uart(void *comport);
+/* Set speed and/or clock to 0 to use default values. */
+void udbg_init_uart(void *comport, unsigned int speed, unsigned int clock);
+unsigned int udbg_probe_uart_speed(void *comport, unsigned int clock);
 void udbg_putc(unsigned char c);
 unsigned char udbg_getc(void);
 int udbg_getc_poll(void);

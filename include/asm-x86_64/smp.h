@@ -48,8 +48,10 @@ extern void (*mtrr_hook) (void);
 extern void zap_low_mappings(void);
 void smp_stop_cpu(void);
 extern cpumask_t cpu_sibling_map[NR_CPUS];
+extern cpumask_t cpu_core_map[NR_CPUS];
 extern u8 phys_proc_id[NR_CPUS];
 extern u8 cpu_core_id[NR_CPUS];
+extern int cpu_llc_id[NR_CPUS];
 
 #define SMP_TRAMPOLINE_BASE 0x6000
 
@@ -122,6 +124,10 @@ static inline int cpu_present_to_apicid(int mps_cpu)
 #define stack_smp_processor_id() 0
 #define safe_smp_processor_id() 0
 #define cpu_logical_map(x) (x)
+
+#define smp_processor_id()			0
+#define hard_smp_processor_id()			(boot_cpu_id)
+
 #else
 #include <asm/thread_info.h>
 #define stack_smp_processor_id() \
@@ -138,6 +144,12 @@ static __inline int logical_smp_processor_id(void)
 	/* we don't want to mark this access volatile - bad code generation */
 	return GET_APIC_LOGICAL_ID(*(unsigned long *)(APIC_BASE+APIC_LDR));
 }
+#endif
+
+#ifdef CONFIG_SMP
+#define cpu_physical_id(cpu)		x86_cpu_to_apicid[cpu]
+#else
+#define cpu_physical_id(cpu)		boot_cpu_id
 #endif
 
 #endif

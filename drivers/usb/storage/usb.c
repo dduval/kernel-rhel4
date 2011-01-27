@@ -97,6 +97,7 @@ MODULE_AUTHOR("Matthew Dharm <mdharm-usb@one-eyed-alien.net>");
 MODULE_DESCRIPTION("USB Mass Storage driver for Linux");
 MODULE_LICENSE("GPL");
 
+static void clear_cc_ua(struct us_data *us);
 static int storage_probe(struct usb_interface *iface,
 			 const struct usb_device_id *id);
 
@@ -374,6 +375,8 @@ static int usb_stor_control_thread(void * __us)
 		/* lock access to the state */
 		scsi_lock(host);
 
+		clear_cc_ua(us);
+
 		/* indicate that the command is done */
 		if (us->srb->result != DID_ABORT << 16) {
 			US_DEBUGP("scsi cmd done, result=0x%x\n", 
@@ -418,6 +421,27 @@ SkipForDisconnect:
 	 */
 	complete_and_exit(&(us->notify), 0);
 }	
+
+/*
+ * This is a workaround for devices which forget to post sense after resets.
+ * See bz#178288.
+ *
+ * We do not do it in generic SCSI because a) this cannot be possibly
+ * safe on any devices with the queue size other than 1, b) we would
+ * like to limit any possible breakage to USB-attached devices.
+ */
+static void clear_cc_ua(struct us_data *us)
+{
+	struct scsi_cmnd *cmd = us->srb;
+
+	if (cmd->cmnd[0] == READ_10 && cmd->result == SAM_STAT_GOOD) {
+		/*
+		 * Normal commands have completed?
+		 * Do not expect any CC or UA anymore.
+		 */
+		cmd->device->expecting_cc_ua = 0;
+	}
+}
 
 /***********************************************************************
  * Device probing and disconnecting

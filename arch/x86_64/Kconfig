@@ -124,6 +124,16 @@ config GENERIC_CPU
 
 endchoice
 
+config MEM_MIRROR
+	bool "Enable dirty page tracking"
+	default n
+	help
+	  Turning this on allows third party modules to use a
+	  kernel interface that can track dirty page generation
+	  in the system.  This can be used to copy/mirror live
+	  memory to another system, or perhaps even a replacement
+	  DIMM.  Most users will say n here.
+
 #
 # Define implied options from the CPU selection here
 #
@@ -202,6 +212,13 @@ config X86_LOCAL_APIC
 	bool
 	default y
 
+config X86_LOCAL_APIC_INFO_MOD
+	tristate
+	depends on X86_LOCAL_APIC && !SMP
+	default m
+	help
+	 Output all known local apic information to /proc/lapic.  Module only.
+
 config MTRR
 	bool "MTRR (Memory Type Range Register) support"
 	---help---
@@ -267,6 +284,15 @@ config SCHED_SMT
 	  when dealing with Intel Pentium 4 chips with HyperThreading at a
 	  cost of slightly increased overhead in some places. If unsure say
 	  N here.
+
+config SCHED_MC
+	bool "Multi-core scheduler support"
+	depends on SMP
+	help
+	  Multi-core scheduler support improves the CPU scheduler's decision
+	  making when dealing with multi-core CPU chips at a cost of slightly
+	  increased overhead in some places. If unsure say N here.
+
 
 config K8_NUMA
        bool "K8 NUMA support"
@@ -339,6 +365,14 @@ config X86_MCE
 	   This version will require the mcelog utility to decode some
 	   machine check error logs. See
 	   ftp://ftp.x86-64.org/pub/linux/tools/mcelog
+
+config X86_MCE_AMD
+	bool "AMD MCE features"
+	depends on X86_MCE && X86_LOCAL_APIC
+	default y
+	help
+ 	   Additional support for AMD specific MCE features such as
+ 	   the DRAM Error Threshold.
 
 endmenu
 

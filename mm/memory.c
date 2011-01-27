@@ -231,6 +231,17 @@ int copy_page_range(struct mm_struct *dst, struct mm_struct *src,
 	unsigned long end = vma->vm_end;
 	unsigned long cow;
 
+	/*
+	 * Don't copy ptes where a page fault will fill them correctly.
+	 * Fork becomes much lighter when there are big shared or private
+	 * readonly mappings. The tradeoff is that copy_page_range is more
+	 * efficient than faulting.
+	 */
+	if (!(vma->vm_flags & (VM_HUGETLB|VM_NONLINEAR|VM_RESERVED))) {
+		if (!vma->anon_vma)
+			return 0;
+	}
+
 	if (is_vm_hugetlb_page(vma))
 		return copy_hugetlb_page_range(dst, src, vma);
 
@@ -1105,6 +1116,11 @@ static inline void break_cow(struct vm_area_struct * vma, struct page * new_page
 	pte_t entry;
 
 	flush_cache_page(vma, address);
+#ifdef CONFIG_IA64
+	if (vma->vm_flags & VM_EXEC) {
+		flush_icache_user_range(vma, new_page, 0, PAGE_SIZE);
+	}
+#endif
 	entry = maybe_mkwrite(pte_mkdirty(mk_pte(new_page, vma->vm_page_prot)),
 			      vma);
 	ptep_establish(vma, address, page_table, entry);
@@ -1158,6 +1174,11 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct * vma,
 		unlock_page(old_page);
 		if (reuse) {
 			flush_cache_page(vma, address);
+#ifdef CONFIG_IA64
+			if (vma->vm_flags & VM_EXEC) {
+				flush_icache_user_range(vma, old_page, 0, PAGE_SIZE);
+			}
+#endif
 			entry = maybe_mkwrite(pte_mkyoung(pte_mkdirty(pte)),
 					      vma);
 			ptep_set_access_flags(vma, address, page_table, entry, 1);
@@ -1481,11 +1502,11 @@ static int do_swap_page(struct mm_struct * mm,
 		pte = maybe_mkwrite(pte_mkdirty(pte), vma);
 		write_access = 0;
 	}
-	unlock_page(page);
 
 	flush_icache_page(vma, page);
 	set_pte(page_table, pte);
 	page_add_anon_rmap(page, vma, address);
+	unlock_page(page);
 
 	if (write_access) {
 		if (do_wp_page(mm, vma, address,
@@ -1789,7 +1810,7 @@ int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct * vma,
 	inc_page_state(pgfault);
 
 	if (is_vm_hugetlb_page(vma))
-		return VM_FAULT_SIGBUS;	/* mapping truncation does this. */
+		return hugetlb_fault(mm, vma, address, write_access);
 
 	/*
 	 * We need the page table lock to synchronize with kswapd

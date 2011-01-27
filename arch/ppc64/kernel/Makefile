@@ -32,7 +32,8 @@ obj-$(CONFIG_PPC_MULTIPLATFORM) += nvram.o open_pic.o i8259.o prom_init.o prom.o
 
 obj-$(CONFIG_PPC_PSERIES) += pSeries_pci.o pSeries_lpar.o pSeries_hvCall.o \
 			     eeh.o pSeries_nvram.o rtasd.o ras.o \
-			     xics.o rtas.o pSeries_setup.o pSeries_iommu.o
+			     xics.o rtas.o pSeries_setup.o pSeries_iommu.o \
+			     legacy_serial.o
 
 obj-$(CONFIG_PROC_FS)		+= proc_ppc64.o
 obj-$(CONFIG_RTAS_FLASH)	+= rtas_flash.o

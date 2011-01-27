@@ -48,7 +48,9 @@ static int sendcmd(
 	unsigned int log_unit,
 	__u8	page_code,
 	unsigned char *scsi3addr,
-	int cmd_type);
+	int cmd_type,
+	int block_nr,
+	int diskdump);
 
 
 const char *cciss_scsi_info(struct Scsi_Host *sa);
@@ -711,7 +713,7 @@ cciss_scsi_detect(int ctlr)
 	((struct cciss_scsi_adapter_data_t *) 
 		hba[ctlr]->scsi_ctlr)->scsi_host = (void *) sh;
 	sh->hostdata[0] = (unsigned long) hba[ctlr];
-	sh->irq = hba[ctlr]->intr;
+	sh->irq = hba[ctlr]->intr[SIMPLE_MODE_INT];
 	sh->unique_id = sh->irq;
 	error = scsi_add_host(sh, &hba[ctlr]->pdev->dev);
 	if (error)

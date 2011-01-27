@@ -5,7 +5,7 @@
 
 #define skb_header_cloned(skb) 0
 
-#define netif_rx_schedule_test(dev) netif_rx_schedule_prep(dev)
+#define __netif_rx_schedule_prep(dev) netif_rx_schedule_prep(dev)
 
 typedef u32 pm_message_t;
 

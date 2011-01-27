@@ -31,7 +31,7 @@
 #include <linux/percpu.h>
 
 struct pt_regs;
-
+struct kprobe;
 typedef unsigned int kprobe_opcode_t;
 #define BREAKPOINT_INSTRUCTION	0x7fe00008	/* trap */
 #define MAX_INSN_SIZE 1
@@ -47,8 +47,9 @@ typedef unsigned int kprobe_opcode_t;
 			IS_TWI(instr) || IS_TDI(instr))
 
 #define ARCH_SUPPORTS_KRETPROBES
+#define flush_insn_slot(p)	do { } while (0)
 void kretprobe_trampoline(void);
-
+extern void arch_remove_kprobe(struct kprobe *p);
 /* Architecture specific copy of original instruction */
 struct arch_specific_insn {
 	/* copy of original instruction */
@@ -69,14 +70,6 @@ struct kprobe_ctlblk {
 	struct prev_kprobe prev_kprobe;
 };
 
-#ifdef CONFIG_KPROBES
 extern int kprobe_exceptions_notify(struct notifier_block *self,
 				    unsigned long val, void *data);
-#else				/* !CONFIG_KPROBES */
-static inline int kprobe_exceptions_notify(struct notifier_block *self,
-					   unsigned long val, void *data)
-{
-	return 0;
-}
-#endif
 #endif				/* _ASM_KPROBES_H */

@@ -154,19 +154,32 @@ int is_aligned_hugepage_range(unsigned long addr, unsigned long len)
 	return 0;
 }
 
+struct slb_flush_info {
+	struct mm_struct *mm;
+	u16 segs;
+};
+
 static void flush_segments(void *parm)
 {
-	u16 segs = (unsigned long) parm;
+	struct slb_flush_info *fi = parm;
 	unsigned long i;
+
+	if (current->active_mm != fi->mm)
+		return;
+
+	/* Only need to do anything if this CPU is working in the same
+	 * mm as the one which has changed */
+
+	/* update the paca copy of the context struct */
+	get_paca()->context = current->active_mm->context;
 
 	asm volatile("isync" : : : "memory");
 
 	for (i = 0; i < 16; i++) {
-		if (! (segs & (1U << i)))
+		if (! (fi->segs & (1U << i)))
 			continue;
 		asm volatile("slbie %0" : : "r" (i << SID_SHIFT));
 	}
-
 	asm volatile("isync" : : : "memory");
 }
 
@@ -225,6 +238,7 @@ static int prepare_low_seg_for_htlb(struct mm_struct *mm, unsigned long seg)
 static int open_low_hpage_segs(struct mm_struct *mm, u16 newsegs)
 {
 	unsigned long i;
+	struct slb_flush_info fi;
 
 	newsegs &= ~(mm->context.htlb_segs);
 	if (! newsegs)
@@ -239,7 +253,10 @@ static int open_low_hpage_segs(struct mm_struct *mm, u16 newsegs)
 	/* the context change must make it to memory before the flush,
 	 * so that further SLB misses do the right thing. */
 	mb();
-	on_each_cpu(flush_segments, (void *)(unsigned long)newsegs, 0, 1);
+
+	fi.mm = mm;
+	fi.segs = newsegs;
+	on_each_cpu(flush_segments, &fi, 0, 1);
 
 	return 0;
 }

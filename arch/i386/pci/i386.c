@@ -173,8 +173,9 @@ static int __init pcibios_assign_resources(void)
 	while ((dev = pci_find_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
 		int class = dev->class >> 8;
 
-		/* Don't touch classless devices and host bridges */
-		if (!class || class == PCI_CLASS_BRIDGE_HOST)
+		/* Don't touch classless devices or host bridges or ioapics */
+		if (!class || class == PCI_CLASS_BRIDGE_HOST ||
+			class == PCI_CLASS_SYSTEM_PIC)
 			continue;
 
 		for(idx=0; idx<6; idx++) {

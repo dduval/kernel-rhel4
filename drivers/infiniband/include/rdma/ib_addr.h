@@ -30,24 +30,28 @@
 #if !defined(IB_ADDR_H)
 #define IB_ADDR_H
 
+#include <linux/in.h>
+#include <linux/in6.h>
+#include <linux/netdevice.h>
 #include <linux/socket.h>
 #include <rdma/ib_verbs.h>
 
-struct ib_addr {
-	union ib_gid	sgid;
-	union ib_gid	dgid;
-	u16		pkey;
+struct rdma_dev_addr {
+	unsigned char src_dev_addr[MAX_ADDR_LEN];
+	unsigned char dst_dev_addr[MAX_ADDR_LEN];
+	unsigned char broadcast[MAX_ADDR_LEN];
+	enum rdma_node_type dev_type;
 };
 
 /**
- * ib_translate_addr - Translate a local IP address to an Infiniband GID and
- *   PKey.
+ * rdma_translate_ip - Translate a local IP address to an RDMA hardware
+ *   address.
  */
-int ib_translate_addr(struct sockaddr *addr, union ib_gid *gid, u16 *pkey);
+int rdma_translate_ip(struct sockaddr *addr, struct rdma_dev_addr *dev_addr);
 
 /**
- * ib_resolve_addr - Resolve source and destination IP addresses to
- *   Infiniband network addresses.
+ * rdma_resolve_ip - Resolve source and destination IP addresses to
+ *   RDMA hardware addresses.
  * @src_addr: An optional source address to use in the resolution.  If a
  *   source address is not provided, a usable address will be returned via
  *   the callback.
@@ -60,13 +64,52 @@ int ib_translate_addr(struct sockaddr *addr, union ib_gid *gid, u16 *pkey);
  *   or been canceled.  A status of 0 indicates success.
  * @context: User-specified context associated with the call.
  */
-int ib_resolve_addr(struct sockaddr *src_addr, struct sockaddr *dst_addr,
-		    struct ib_addr *addr, int timeout_ms,
+int rdma_resolve_ip(struct sockaddr *src_addr, struct sockaddr *dst_addr,
+		    struct rdma_dev_addr *addr, int timeout_ms,
 		    void (*callback)(int status, struct sockaddr *src_addr,
-				     struct ib_addr *addr, void *context),
+				     struct rdma_dev_addr *addr, void *context),
 		    void *context);
 
-void ib_addr_cancel(struct ib_addr *addr);
+void rdma_addr_cancel(struct rdma_dev_addr *addr);
+void rdma_addr_flush(void);
+
+static inline int ip_addr_size(struct sockaddr *addr)
+{
+	return addr->sa_family == AF_INET6 ?
+	       sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+}
+
+static inline u16 ib_addr_get_pkey(struct rdma_dev_addr *dev_addr)
+{
+	return ((u16)dev_addr->broadcast[8] << 8) | (u16)dev_addr->broadcast[9];
+}
+
+static inline void ib_addr_set_pkey(struct rdma_dev_addr *dev_addr, u16 pkey)
+{
+	dev_addr->broadcast[8] = pkey >> 8;
+	dev_addr->broadcast[9] = (unsigned char) pkey;
+}
+
+static inline union ib_gid *ib_addr_get_sgid(struct rdma_dev_addr *dev_addr)
+{
+	return 	(union ib_gid *) (dev_addr->src_dev_addr + 4);
+}
+
+static inline void ib_addr_set_sgid(struct rdma_dev_addr *dev_addr,
+				    union ib_gid *gid)
+{
+	memcpy(dev_addr->src_dev_addr + 4, gid, sizeof *gid);
+}
+
+static inline union ib_gid *ib_addr_get_dgid(struct rdma_dev_addr *dev_addr)
+{
+	return 	(union ib_gid *) (dev_addr->dst_dev_addr + 4);
+}
+
+static inline void ib_addr_set_dgid(struct rdma_dev_addr *dev_addr,
+				    union ib_gid *gid)
+{
+	memcpy(dev_addr->dst_dev_addr + 4, gid, sizeof *gid);
+}
 
 #endif /* IB_ADDR_H */
-

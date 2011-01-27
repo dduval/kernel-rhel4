@@ -38,7 +38,6 @@
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 #include <linux/random.h>
-#include <linux/kprobes.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -306,13 +305,6 @@ void exit_thread(void)
 {
 	struct task_struct *tsk = current;
 	struct thread_struct *t = &tsk->thread;
-
-	/*
-	 * Remove function-return probe instances associated with this task
-	 * and put them back on the free list. Do not insert an exit probe for
-	 * this function, it will be disabled by kprobe_flush_task if you do.
-	 */
-	kprobe_flush_task(tsk);
 
 	/* The process may have allocated an io port bitmap... nuke it. */
 	if (unlikely(NULL != t->io_bitmap_ptr)) {
@@ -586,7 +578,6 @@ struct task_struct fastcall * __switch_to(struct task_struct *prev_p, struct tas
 
 	/* never put a printk in __switch_to... printk() calls wake_up*() indirectly */
 
-	__unlazy_fpu(prev_p);
 	if (next_p->mm)
 		load_user_cs_desc(cpu, next_p->mm);
 
@@ -631,6 +622,12 @@ struct task_struct fastcall * __switch_to(struct task_struct *prev_p, struct tas
 	 * Load the per-thread Thread-Local Storage descriptor.
 	 */
 	load_TLS(next, cpu);
+
+	/*
+	 * Must be after reload for AMD workaround
+	 */
+
+	__unlazy_fpu(prev_p);
 
 	/*
 	 * Save away %fs and %gs. No need to save %es and %ds, as

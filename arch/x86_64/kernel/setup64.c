@@ -25,8 +25,9 @@
 #include <asm/proto.h>
 #include <asm/mman.h>
 #include <asm/numa.h>
+#include <asm/setup.h>
 
-char x86_boot_params[2048] __initdata = {0,};
+char x86_boot_params[COMMAND_LINE_SIZE] __initdata = {0,};
 
 unsigned long cpu_initialized __initdata = 0;
 

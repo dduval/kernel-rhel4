@@ -38,7 +38,7 @@ extern int qla2x00_loop_resync(scsi_qla_host_t *);
 
 extern int qla2x00_find_new_loop_id(scsi_qla_host_t *, fc_port_t *);
 extern int qla2x00_fabric_login(scsi_qla_host_t *, fc_port_t *, uint16_t *);
-extern int qla2x00_local_device_login(scsi_qla_host_t *, uint16_t);
+extern int qla2x00_local_device_login(scsi_qla_host_t *, fc_port_t *);
 
 extern void qla2x00_restart_queues(scsi_qla_host_t *, uint8_t);
 
@@ -186,7 +186,7 @@ qla2x00_login_fabric(scsi_qla_host_t *, uint16_t, uint8_t, uint8_t, uint8_t,
     uint16_t *, uint8_t);
 
 extern int
-qla2x00_login_local_device(scsi_qla_host_t *, uint16_t, uint16_t *, uint8_t);
+qla2x00_login_local_device(scsi_qla_host_t *, fc_port_t *, uint16_t *, uint8_t);
 
 extern int
 qla2x00_fabric_logout(scsi_qla_host_t *, uint16_t, uint8_t, uint8_t, uint8_t);
@@ -224,6 +224,7 @@ extern irqreturn_t qla2100_intr_handler(int, void *, struct pt_regs *);
 extern irqreturn_t qla2300_intr_handler(int, void *, struct pt_regs *);
 extern irqreturn_t qla24xx_intr_handler(int, void *, struct pt_regs *);
 extern void qla2x00_process_response_queue(struct scsi_qla_host *);
+extern void qla24xx_process_response_queue(struct scsi_qla_host *);
 
 /*
  * Global Function Prototypes in qla_sup.c source file.

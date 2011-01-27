@@ -226,6 +226,20 @@ static inline int scsi_device_online(struct scsi_device *sdev)
 	return sdev->sdev_state != SDEV_OFFLINE;
 }
 
+static inline unsigned int sdev_channel(struct scsi_device *sdev)
+{
+	return sdev->channel;
+}
+
+static inline unsigned int sdev_id(struct scsi_device *sdev)
+{
+	return sdev->id;
+}
+
+#define scmd_id(scmd) sdev_id((scmd)->device)
+#define scmd_channel(scmd) sdev_channel((scmd)->device)
+
+
 /* accessor functions for the SCSI parameters */
 static inline int scsi_device_sync(struct scsi_device *sdev)
 {

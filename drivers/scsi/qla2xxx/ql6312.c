@@ -13,18 +13,49 @@
 
 static char qla_driver_name[] = "qla6312";
 
-extern unsigned char  fw2300flx_version[];
-extern unsigned char  fw2300flx_version_str[];
-extern unsigned short fw2300flx_addr01;
-extern unsigned short fw2300flx_code01[];
-extern unsigned short fw2300flx_length01;
+extern unsigned char  fw2300ipx_version[];
+extern unsigned char  fw2300ipx_version_str[];
+extern unsigned short fw2300ipx_addr01;
+extern unsigned short fw2300ipx_code01[];
+extern unsigned short fw2300ipx_length01;
+extern unsigned char  fw2322ipx_version[];
+extern unsigned char  fw2322ipx_version_str[];
+extern unsigned short fw2322ipx_addr01;
+extern unsigned short fw2322ipx_code01[];
+extern unsigned short fw2322ipx_length01;
+extern unsigned long rseqipx_code_addr01;
+extern unsigned short rseqipx_code01[];
+extern unsigned short rseqipx_code_length01;
+extern unsigned long xseqipx_code_addr01;
+extern unsigned short xseqipx_code01[];
+extern unsigned short xseqipx_code_length01;
 
 static struct qla_fw_info qla_fw_tbl[] = {
 	{
 		.addressing	= FW_INFO_ADDR_NORMAL,
-		.fwcode		= &fw2300flx_code01[0],
-		.fwlen		= &fw2300flx_length01,
-		.fwstart	= &fw2300flx_addr01,
+		.fwcode		= &fw2300ipx_code01[0],
+		.fwlen		= &fw2300ipx_length01,
+		.fwstart	= &fw2300ipx_addr01,
+	},
+	{ FW_INFO_ADDR_NOMORE, },
+
+	{
+		.addressing	= FW_INFO_ADDR_NORMAL,
+		.fwcode		= &fw2322ipx_code01[0],
+		.fwlen		= &fw2322ipx_length01,
+		.fwstart	= &fw2322ipx_addr01,
+	},
+	{
+		.addressing	= FW_INFO_ADDR_EXTENDED,
+		.fwcode		= &rseqipx_code01[0],
+		.fwlen		= &rseqipx_code_length01,
+		.lfwstart	= &rseqipx_code_addr01,
+	},
+	{
+		.addressing	= FW_INFO_ADDR_EXTENDED,
+		.fwcode		= &xseqipx_code01[0],
+		.fwlen		= &xseqipx_code_length01,
+		.lfwstart	= &xseqipx_code_addr01,
 	},
 	{ FW_INFO_ADDR_NOMORE, },
 };
@@ -38,7 +69,7 @@ static struct qla_board_info qla_board_tbl[] = {
 	{
 		.drv_name	= qla_driver_name,
 		.isp_name	= "ISP6322",
-		.fw_info	= qla_fw_tbl,
+		.fw_info	= &qla_fw_tbl[2],
 	},
 };
 

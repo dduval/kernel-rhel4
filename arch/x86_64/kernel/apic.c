@@ -823,6 +823,16 @@ int setup_profiling_timer(unsigned int multiplier)
 	return 0;
 }
 
+#ifdef CONFIG_X86_MCE_AMD
+void setup_threshold_lvt(unsigned long lvt_off)
+{
+       unsigned int v = 0;
+       unsigned long reg = (lvt_off << 4) + 0x500;
+       v |= THRESHOLD_APIC_VECTOR;
+       apic_write(reg, v);
+}
+#endif /* CONFIG_X86_MCE_AMD */
+
 #undef APIC_DIVISOR
 
 /*
@@ -920,7 +930,7 @@ __init int oem_force_hpet_timer(void)
 	unsigned id;
 	DECLARE_BITMAP(clustermap, NUM_APIC_CLUSTERS);
 
-	bitmap_empty(clustermap, NUM_APIC_CLUSTERS);
+	bitmap_zero(clustermap, NUM_APIC_CLUSTERS);
 
 	for (i = 0; i < NR_CPUS; i++) {
 		id = bios_cpu_apicid[i];
@@ -1039,7 +1049,7 @@ int __init APIC_init_uniprocessor (void)
 
 	connect_bsp_APIC();
 
-	phys_cpu_present_map = physid_mask_of_physid(0);
+	phys_cpu_present_map = physid_mask_of_physid(boot_cpu_id);
 	apic_write_around(APIC_ID, boot_cpu_id);
 
 	setup_local_APIC();

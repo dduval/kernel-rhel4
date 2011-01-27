@@ -441,6 +441,13 @@ config NO_IDLE_HZ_INIT
 	  The HZ timer is switched off in idle by default. That means the
 	  HZ timer is already disabled at boot time.
 
+config S390_HYPFS_FS
+        bool "s390 hypervisor file system support"
+        default y
+        help
+          This is a virtual file system intended to provide accounting
+          information in a s390 hypervisor environment.
+
 endmenu
 
 config PCMCIA

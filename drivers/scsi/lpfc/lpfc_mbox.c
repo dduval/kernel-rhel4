@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_mbox.c 1.77.2.2 2005/06/13 17:16:32EDT sf_support Exp  $
+ * $Id: lpfc_mbox.c 2791 2005-12-30 18:37:05Z sf_support $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -549,6 +549,7 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	size_t offset;
 	HGP hgp;
 	void *to_slim;
+	int i;
 
 	memset(pmb, 0, sizeof(LPFC_MBOXQ_t));
 	mb->mbxCommand = MBX_CONFIG_PORT;
@@ -604,7 +605,10 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	/* write HGP data to SLIM at the required longword offset */
 	memset(&hgp, 0, sizeof(HGP));
 	to_slim = (uint8_t *)phba->MBslimaddr + (SLIMOFF*sizeof (uint32_t));
-	lpfc_memcpy_to_slim(to_slim, &hgp, sizeof (HGP));
+	for (i=0; i < phba->sli.sliinit.num_rings; i++) {
+		lpfc_memcpy_to_slim(to_slim, &hgp, sizeof (HGP));
+		to_slim += sizeof (HGP);
+	}
 
 	/* Setup Port Group ring pointer */
 	offset = (uint8_t *)&phba->slim2p->mbx.us.s2.port -
@@ -633,6 +637,18 @@ lpfc_config_port(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	lpfc_printf_log(phba, KERN_INFO, LOG_INIT,
 		        "%d:0405 Service Level Interface (SLI) 2 selected\n",
 		        phba->brd_no);
+}
+
+void
+lpfc_kill_board(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
+{
+	MAILBOX_t *mb = &pmb->mb;
+
+	memset(pmb, 0, sizeof(LPFC_MBOXQ_t));
+
+	mb->mbxCommand = MBX_KILL_BOARD;
+	mb->mbxOwner = OWN_HOST;
+	return;
 }
 
 void

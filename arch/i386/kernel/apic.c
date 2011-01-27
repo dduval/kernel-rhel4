@@ -39,6 +39,18 @@
 
 #include "io_ports.h"
 
+int modern_apic(void)
+{
+	unsigned int lvr, version;
+	/* AMD systems use old APIC versions, so check the CPU */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+		boot_cpu_data.x86 >= 0xf)
+		return 1;
+	lvr = apic_read(APIC_LVR);
+	version = GET_APIC_VERSION(lvr);
+	return version >= 0x14;
+}
+
 /*
  * Debug level
  */
@@ -88,10 +100,7 @@ void enable_NMI_through_LVT0 (void * dummy)
 
 int get_physical_broadcast(void)
 {
-	unsigned int lvr, version;
-	lvr = apic_read(APIC_LVR);
-	version = GET_APIC_VERSION(lvr);
-	if (!APIC_INTEGRATED(version) || version >= 0x14)
+	if (modern_apic())
 		return 0xff;
 	else
 		return 0xf;
@@ -282,6 +291,11 @@ int __init verify_local_APIC(void)
 
 void __init sync_Arb_IDs(void)
 {
+	/* Unsupported on P4 - see Intel Dev. Manual Vol. 3 Ch. 8.6.1
+	   And not needed on AMD */
+
+	if (modern_apic())
+		return;
 	/*
 	 * Wait for idle.
 	 */
@@ -632,21 +646,6 @@ static void apic_pm_activate(void) { }
  */
 int enable_local_apic __initdata = 0; /* -1=force-disable, +1=force-enable */
 
-static int __init lapic_disable(char *str)
-{
-	enable_local_apic = -1;
-	clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
-	return 0;
-}
-__setup("nolapic", lapic_disable);
-
-static int __init lapic_enable(char *str)
-{
-	enable_local_apic = 1;
-	return 0;
-}
-__setup("lapic", lapic_enable);
-
 static int __init apic_set_verbosity(char *str)
 {
 	if (strcmp("debug", str) == 0)
@@ -667,7 +666,7 @@ static int __init detect_init_APIC (void)
 	u32 h, l, features;
 	extern void get_cpu_vendor(struct cpuinfo_x86*);
 
-	/* Disabled by DMI scan or kernel option? */
+	/* Disabled by kernel option? */
 	if (enable_local_apic < 0)
 		return -1;
 
@@ -681,8 +680,7 @@ static int __init detect_init_APIC (void)
 			break;
 		goto no_apic;
 	case X86_VENDOR_INTEL:
-		if (boot_cpu_data.x86 == 6 ||
-		    (boot_cpu_data.x86 == 15 && (cpu_has_apic || enable_local_apic > 0)) ||
+		if (boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15 ||
 		    (boot_cpu_data.x86 == 5 && cpu_has_apic))
 			break;
 		goto no_apic;
@@ -692,20 +690,23 @@ static int __init detect_init_APIC (void)
 
 	if (!cpu_has_apic) {
 		/*
-		 * Over-ride BIOS and try to enable LAPIC
-		 * only if "lapic" specified
+		 * Over-ride BIOS and try to enable the local
+		 * APIC only if "lapic" specified.
 		 */
-		if (enable_local_apic != 1)
-			goto no_apic;
+		if (enable_local_apic <= 0) {
+			printk("Local APIC disabled by BIOS -- "
+			       "you can enable it with \"lapic\"\n");
+			return -1;
+		}
 		/*
 		 * Some BIOSes disable the local APIC in the
 		 * APIC_BASE MSR. This can only be done in
-		 * software for Intel P6 and AMD K7 (Model > 1).
+		 * software for Intel P6 or later and AMD K7
+		 * (Model > 1) or later.
 		 */
 		rdmsr(MSR_IA32_APICBASE, l, h);
 		if (!(l & MSR_IA32_APICBASE_ENABLE)) {
-			apic_printk(APIC_VERBOSE, "Local APIC disabled "
-					"by BIOS -- reenabling.\n");
+			printk("Local APIC disabled by BIOS -- reenabling.\n");
 			l &= ~MSR_IA32_APICBASE_BASE;
 			l |= MSR_IA32_APICBASE_ENABLE | APIC_DEFAULT_PHYS_BASE;
 			wrmsr(MSR_IA32_APICBASE, l, h);
@@ -732,7 +733,7 @@ static int __init detect_init_APIC (void)
 	if (nmi_watchdog != NMI_NONE)
 		nmi_watchdog = NMI_LOCAL_APIC;
 
-	apic_printk(APIC_VERBOSE, "Found and enabled local APIC!\n");
+	printk("Found and enabled local APIC!\n");
 
 	apic_pm_activate();
 
@@ -759,8 +760,8 @@ void __init init_apic_mappings(void)
 		apic_phys = mp_lapic_addr;
 
 	set_fixmap_nocache(FIX_APIC_BASE, apic_phys);
-	apic_printk(APIC_DEBUG, "mapped APIC to %08lx (%08lx)\n", APIC_BASE,
-			apic_phys);
+	printk(KERN_DEBUG "mapped APIC to %08lx (%08lx)\n", APIC_BASE,
+	       apic_phys);
 
 	/*
 	 * Fetch the APIC ID of the BSP in case we have a
@@ -1133,8 +1134,10 @@ asmlinkage void smp_local_timer_interrupt(struct pt_regs * regs)
 
 void smp_apic_timer_interrupt(struct pt_regs regs)
 {
+#ifdef CONFIG_4KSTACKS
 	union irq_ctx	*curctx;
 	union irq_ctx	*irqctx;
+#endif
 	int		cpu;
 	u32		*isp;
 
@@ -1155,11 +1158,11 @@ void smp_apic_timer_interrupt(struct pt_regs regs)
 	 * interrupt lock, which is the WrongThing (tm) to do.
 	 */
 	irq_enter();
+
+#ifdef CONFIG_4KSTACKS
 	curctx = (union irq_ctx *) current_thread_info();
 	irqctx = hardirq_ctx[cpu];
-	if (curctx == irqctx) {
-		smp_local_timer_interrupt(&regs);
-	} else {
+	if (curctx != irqctx) {
 		/* build the stack frame on the IRQ stack */
 		isp = (u32*) ((char*)irqctx + sizeof(*irqctx));
 		irqctx->tinfo.task = curctx->tinfo.task;
@@ -1175,7 +1178,10 @@ void smp_apic_timer_interrupt(struct pt_regs regs)
 			: : "b"(isp)
 			: "memory", "cc", "edx", "ecx"
 		);
-	}
+	} else
+#endif
+		smp_local_timer_interrupt(&regs);
+
 	irq_exit();
 }
 

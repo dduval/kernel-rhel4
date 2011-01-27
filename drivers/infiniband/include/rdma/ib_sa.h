@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ib_sa.h 3925 2005-10-31 23:03:17Z roland $
+ * $Id: ib_sa.h 2811 2005-07-06 18:11:43Z halr $
  */
 
 #ifndef IB_SA_H
@@ -90,34 +90,6 @@ enum ib_sa_selector {
 	 */
 	IB_SA_BEST = 3
 };
-
-enum ib_sa_rate {
-	IB_SA_RATE_2_5_GBPS = 2,
-	IB_SA_RATE_5_GBPS   = 5,
-	IB_SA_RATE_10_GBPS  = 3,
-	IB_SA_RATE_20_GBPS  = 6,
-	IB_SA_RATE_30_GBPS  = 4,
-	IB_SA_RATE_40_GBPS  = 7,
-	IB_SA_RATE_60_GBPS  = 8,
-	IB_SA_RATE_80_GBPS  = 9,
-	IB_SA_RATE_120_GBPS = 10
-};
-
-static inline int ib_sa_rate_enum_to_int(enum ib_sa_rate rate)
-{
-	switch (rate) {
-	case IB_SA_RATE_2_5_GBPS: return  1;
-	case IB_SA_RATE_5_GBPS:   return  2;
-	case IB_SA_RATE_10_GBPS:  return  4;
-	case IB_SA_RATE_20_GBPS:  return  8;
-	case IB_SA_RATE_30_GBPS:  return 12;
-	case IB_SA_RATE_40_GBPS:  return 16;
-	case IB_SA_RATE_60_GBPS:  return 24;
-	case IB_SA_RATE_80_GBPS:  return 32;
-	case IB_SA_RATE_120_GBPS: return 48;
-	default: 	          return -1;
-	}
-}
 
 /*
  * Structures for SA records are named "struct ib_sa_xxx_rec."  No
@@ -281,6 +253,7 @@ struct ib_sa_service_rec {
 struct ib_sa_query;
 
 void ib_sa_cancel_query(int id, struct ib_sa_query *query);
+void ib_sa_flush(struct ib_device *device);
 
 int ib_sa_path_rec_get(struct ib_device *device, u8 port_num,
 		       struct ib_sa_path_rec *rec,
@@ -398,5 +371,22 @@ ib_sa_mcmember_rec_delete(struct ib_device *device, u8 port_num,
 					context, query);
 }
 
+/**
+ * ib_sa_pack_attr - Copy an SA attribute from a host defined structure to
+ *   a network packed structure.
+ * dst: Destination buffer.
+ * src: Source buffer.
+ * attr_id: Identifer of SA attribute: IB_SA_ATTR_*.
+ */
+int ib_sa_pack_attr(void *dst, void *src, int attr_id);
+
+/**
+ * ib_sa_unpack_attr - Copy an SA attribute from a packed network structure
+ *   to a host defined structure.
+ * dst: Destination buffer.
+ * src: Source buffer.
+ * attr_id: Identifer of SA attribute: IB_SA_ATTR_*.
+ */
+int ib_sa_unpack_attr(void *dst, void *src, int attr_id);
 
 #endif /* IB_SA_H */

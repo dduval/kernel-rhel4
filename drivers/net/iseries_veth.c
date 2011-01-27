@@ -170,6 +170,8 @@ struct veth_port {
 	int promiscuous;
 	int num_mcast;
 	u64 mcast_addr[VETH_MAX_MCAST];
+
+	struct kobject kobject;
 };
 
 static HvLpIndex this_lp;
@@ -184,10 +186,6 @@ static void veth_receive(struct veth_lpar_connection *, struct VethLpEvent *);
 static void veth_release_connection(struct kobject *kobject);
 static void veth_timed_ack(unsigned long ptr);
 static void veth_timed_reset(unsigned long ptr);
-
-static struct kobj_type veth_lpar_connection_ktype = {
-	.release	= veth_release_connection
-};
 
 /*
  * Utility functions
@@ -281,6 +279,137 @@ static int veth_allocate_events(HvLpIndex rlp, int number)
 
 	return vc.num;
 }
+
+/*
+ * sysfs support
+ */
+
+struct veth_cnx_attribute {
+	struct attribute attr;
+	ssize_t (*show)(struct veth_lpar_connection *, char *buf);
+	ssize_t (*store)(struct veth_lpar_connection *, const char *buf);
+};
+
+static ssize_t veth_cnx_attribute_show(struct kobject *kobj,
+		struct attribute *attr, char *buf)
+{
+	struct veth_cnx_attribute *cnx_attr;
+	struct veth_lpar_connection *cnx;
+
+	cnx_attr = container_of(attr, struct veth_cnx_attribute, attr);
+	cnx = container_of(kobj, struct veth_lpar_connection, kobject);
+
+	if (!cnx_attr->show)
+		return -EIO;
+
+	return cnx_attr->show(cnx, buf);
+}
+
+#define CUSTOM_CNX_ATTR(_name, _format, _expression)			\
+static ssize_t _name##_show(struct veth_lpar_connection *cnx, char *buf)\
+{									\
+	return sprintf(buf, _format, _expression);			\
+}									\
+struct veth_cnx_attribute veth_cnx_attr_##_name = __ATTR_RO(_name)
+
+#define SIMPLE_CNX_ATTR(_name)	\
+	CUSTOM_CNX_ATTR(_name, "%lu\n", (unsigned long)cnx->_name)
+
+SIMPLE_CNX_ATTR(outstanding_tx);
+SIMPLE_CNX_ATTR(remote_lp);
+SIMPLE_CNX_ATTR(num_events);
+SIMPLE_CNX_ATTR(src_inst);
+SIMPLE_CNX_ATTR(dst_inst);
+SIMPLE_CNX_ATTR(num_pending_acks);
+SIMPLE_CNX_ATTR(num_ack_events);
+CUSTOM_CNX_ATTR(ack_timeout, "%d\n", jiffies_to_msecs(cnx->ack_timeout));
+CUSTOM_CNX_ATTR(reset_timeout, "%d\n", jiffies_to_msecs(cnx->reset_timeout));
+CUSTOM_CNX_ATTR(state, "0x%.4lX\n", cnx->state);
+CUSTOM_CNX_ATTR(last_contact, "%d\n", cnx->last_contact ?
+		jiffies_to_msecs(jiffies - cnx->last_contact) : 0);
+
+#define GET_CNX_ATTR(_name)	(&veth_cnx_attr_##_name.attr)
+
+static struct attribute *veth_cnx_default_attrs[] = {
+	GET_CNX_ATTR(outstanding_tx),
+	GET_CNX_ATTR(remote_lp),
+	GET_CNX_ATTR(num_events),
+	GET_CNX_ATTR(reset_timeout),
+	GET_CNX_ATTR(last_contact),
+	GET_CNX_ATTR(state),
+	GET_CNX_ATTR(src_inst),
+	GET_CNX_ATTR(dst_inst),
+	GET_CNX_ATTR(num_pending_acks),
+	GET_CNX_ATTR(num_ack_events),
+	GET_CNX_ATTR(ack_timeout),
+	NULL
+};
+
+static struct sysfs_ops veth_cnx_sysfs_ops = {
+		.show = veth_cnx_attribute_show
+};
+
+static struct kobj_type veth_lpar_connection_ktype = {
+	.release	= veth_release_connection,
+	.sysfs_ops	= &veth_cnx_sysfs_ops,
+	.default_attrs	= veth_cnx_default_attrs
+};
+
+struct veth_port_attribute {
+	struct attribute attr;
+	ssize_t (*show)(struct veth_port *, char *buf);
+	ssize_t (*store)(struct veth_port *, const char *buf);
+};
+
+static ssize_t veth_port_attribute_show(struct kobject *kobj,
+		struct attribute *attr, char *buf)
+{
+	struct veth_port_attribute *port_attr;
+	struct veth_port *port;
+
+	port_attr = container_of(attr, struct veth_port_attribute, attr);
+	port = container_of(kobj, struct veth_port, kobject);
+
+	if (!port_attr->show)
+		return -EIO;
+
+	return port_attr->show(port, buf);
+}
+
+#define CUSTOM_PORT_ATTR(_name, _format, _expression)			\
+static ssize_t _name##_show(struct veth_port *port, char *buf)		\
+{									\
+	return sprintf(buf, _format, _expression);			\
+}									\
+struct veth_port_attribute veth_port_attr_##_name = __ATTR_RO(_name)
+
+#define SIMPLE_PORT_ATTR(_name)	\
+	CUSTOM_PORT_ATTR(_name, "%lu\n", (unsigned long)port->_name)
+
+SIMPLE_PORT_ATTR(promiscuous);
+SIMPLE_PORT_ATTR(num_mcast);
+CUSTOM_PORT_ATTR(lpar_map, "0x%X\n", port->lpar_map);
+CUSTOM_PORT_ATTR(stopped_map, "0x%X\n", port->stopped_map);
+CUSTOM_PORT_ATTR(mac_addr, "0x%lX\n", port->mac_addr);
+
+#define GET_PORT_ATTR(_name)	(&veth_port_attr_##_name.attr)
+static struct attribute *veth_port_default_attrs[] = {
+	GET_PORT_ATTR(mac_addr),
+	GET_PORT_ATTR(lpar_map),
+	GET_PORT_ATTR(stopped_map),
+	GET_PORT_ATTR(promiscuous),
+	GET_PORT_ATTR(num_mcast),
+	NULL
+};
+
+static struct sysfs_ops veth_port_sysfs_ops = {
+	.show = veth_port_attribute_show
+};
+
+static struct kobj_type veth_port_ktype = {
+	.sysfs_ops	= &veth_port_sysfs_ops,
+	.default_attrs	= veth_port_default_attrs
+};
 
 /*
  * LPAR connection code
@@ -923,6 +1052,13 @@ static struct net_device * __init veth_probe_one(int vlan, struct device *vdev)
 		return NULL;
 	}
 
+	kobject_init(&port->kobject);
+	port->kobject.parent = &dev->class_dev.kobj;
+	port->kobject.ktype  = &veth_port_ktype;
+	kobject_set_name(&port->kobject, "veth_port");
+	if (0 != kobject_add(&port->kobject))
+		veth_error("Failed adding port for %s to sysfs.\n", dev->name);
+
 	veth_info("%s attached to iSeries vlan %d (LPAR map = 0x%.4X)\n",
 			dev->name, vlan, port->lpar_map);
 
@@ -940,31 +1076,25 @@ static int veth_transmit_to_one(struct sk_buff *skb, HvLpIndex rlp,
 	struct veth_port *port = (struct veth_port *) dev->priv;
 	HvLpEvent_Rc rc;
 	struct veth_msg *msg = NULL;
-	int err = 0;
 	unsigned long flags;
 
-	if (! cnx) {
-		port->stats.tx_errors++;
-		dev_kfree_skb(skb);
+	if (! cnx)
 		return 0;
-	}
 
 	spin_lock_irqsave(&cnx->lock, flags);
 
 	if (! (cnx->state & VETH_STATE_READY))
-		goto drop;
+		goto no_error;
 
-	if ((skb->len - 14) > VETH_MAX_MTU)
+	if ((skb->len - ETH_HLEN) > VETH_MAX_MTU)
 		goto drop;
 
 	msg = veth_stack_pop(cnx);
-
-	if (! msg) {
-		err = 1;
+	if (! msg)
 		goto drop;
-	}
 
 	msg->in_use = 1;
+	msg->skb = skb_get(skb);
 
 	msg->data.addr[0] = dma_map_single(port->dev, skb->data,
 				skb->len, DMA_TO_DEVICE);
@@ -972,9 +1102,6 @@ static int veth_transmit_to_one(struct sk_buff *skb, HvLpIndex rlp,
 	if (dma_mapping_error(msg->data.addr[0]))
 		goto recycle_and_drop;
 
-	/* Is it really necessary to check the length and address
-	 * fields of the first entry here? */
-	msg->skb = skb;
 	msg->dev = port->dev;
 	msg->data.len[0] = skb->len;
 	msg->data.eofmask = 1 << VETH_EOF_SHIFT;
@@ -994,43 +1121,43 @@ static int veth_transmit_to_one(struct sk_buff *skb, HvLpIndex rlp,
 	if (veth_stack_is_empty(cnx))
 		veth_stop_queues(cnx);
 
+ no_error:
 	spin_unlock_irqrestore(&cnx->lock, flags);
 	return 0;
 
  recycle_and_drop:
-	/* we free the skb below, so tell veth_recycle_msg() not to. */
-	msg->skb = NULL;
 	veth_recycle_msg(cnx, msg);
  drop:
-	port->stats.tx_errors++;
-	dev_kfree_skb(skb);
 	spin_unlock_irqrestore(&cnx->lock, flags);
-	return err;
+	return 1;
 }
 
-static HvLpIndexMap veth_transmit_to_many(struct sk_buff *skb,
+static void veth_transmit_to_many(struct sk_buff *skb,
 					  HvLpIndexMap lpmask,
 					  struct net_device *dev)
 {
 	struct veth_port *port = (struct veth_port *) dev->priv;
-	int i;
-	int rc;
+	int i, success, error;
+
+	success = error = 0;
 
 	for (i = 0; i < HVMAXARCHITECTEDLPS; i++) {
 		if ((lpmask & (1 << i)) == 0)
 			continue;
 
-		rc = veth_transmit_to_one(skb_get(skb), i, dev);
-		if (! rc)
-			lpmask &= ~(1<<i);
+		if (veth_transmit_to_one(skb, i, dev))
+			error = 1;
+		else
+			success = 1;
 	}
 
-	if (! lpmask) {
+	if (error)
+		port->stats.tx_errors++;
+
+	if (success) {
 		port->stats.tx_packets++;
 		port->stats.tx_bytes += skb->len;
 	}
-
-	return lpmask;
 }
 
 static int veth_start_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -1426,6 +1553,8 @@ static int veth_remove(struct vio_dev *vdev)
 	}
 
 	veth_dev[vdev->unit_address] = NULL;
+	kobject_del(&port->kobject);
+	kobject_put(&port->kobject);
 	unregister_netdev(dev);
 	free_netdev(dev);
 
@@ -1504,6 +1633,8 @@ void __exit veth_module_cleanup(void)
 		if (!cnx)
 			continue;
 
+		/* Remove the connection from sysfs */
+		kobject_del(&cnx->kobject);
 		/* Drop the driver's reference to the connection */
 		kobject_put(&cnx->kobject);
 	}
@@ -1533,6 +1664,19 @@ int __init veth_module_init(void)
 	rc = vio_register_driver(&veth_driver);
 	if (rc != 0)
 		goto error;
+
+	for (i = 0; i < HVMAXARCHITECTEDLPS; ++i) {
+		struct kobject *kobj;
+
+		if (!veth_cnx[i])
+			continue;
+
+		kobj = &veth_cnx[i]->kobject;
+		kobj->parent = &veth_driver.driver.kobj;
+		/* If the add failes, complain but otherwise continue */
+		if (0 != kobject_add(kobj))
+			veth_error("cnx %d: Failed adding to sysfs.\n", i);
+	}
 
 	return 0;
 

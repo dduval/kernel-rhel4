@@ -19,6 +19,7 @@
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/pmac_feature.h>
+#include <asm/udbg.h>
 
 struct NS16550 {
 	/* this struct must be packed */
@@ -49,20 +50,79 @@ struct NS16550 {
 
 static volatile struct NS16550 *udbg_comport;
 
-void udbg_init_uart(void *comport)
+void udbg_init_uart(void *comport, unsigned int speed, unsigned int clock)
 {
+	unsigned int dll;
+
+	/* Default to 9600 */
+	if (clock == 0)
+		clock = 1843200;
+
+	if (speed == 0)
+		speed = 9600;
+
+	dll = (clock / 16) / speed;
+
 	if (comport) {
 		udbg_comport = (struct NS16550 *)comport;
-		udbg_comport->lcr = 0x00; eieio();
-		udbg_comport->ier = 0xFF; eieio();
-		udbg_comport->ier = 0x00; eieio();
-		udbg_comport->lcr = 0x80; eieio();	/* Access baud rate */
-		udbg_comport->dll = 12;   eieio();	/* 1 = 115200,  2 = 57600, 3 = 38400, 12 = 9600 baud */
-		udbg_comport->dlm = 0;    eieio();	/* dll >> 8 which should be zero for fast rates; */
-		udbg_comport->lcr = 0x03; eieio();	/* 8 data, 1 stop, no parity */
-		udbg_comport->mcr = 0x03; eieio();	/* RTS/DTR */
-		udbg_comport->fcr = 0x07; eieio();	/* Clear & enable FIFOs */
+
+		out_8(&udbg_comport->lcr, 0x00);
+		out_8(&udbg_comport->ier, 0xff);
+		out_8(&udbg_comport->ier, 0x00);
+
+		/* Access baud rate */
+		out_8(&udbg_comport->lcr, 0x80);
+		out_8(&udbg_comport->dll, dll & 0xff);
+		out_8(&udbg_comport->dlm, dll >> 8);
+
+		/* 8 data, 1 stop, no parity */
+		out_8(&udbg_comport->lcr, 0x03);
+
+		/* RTS/DTR */
+		out_8(&udbg_comport->mcr, 0x03);
+
+		/* Clear & enable FIFOs */
+		out_8(&udbg_comport->fcr ,0x07);
+
+		ppc_md.udbg_putc = udbg_putc;
+		ppc_md.udbg_getc = udbg_getc;
+		ppc_md.udbg_getc_poll = udbg_getc_poll;
 	}
+}
+
+unsigned int udbg_probe_uart_speed(void *comport, unsigned int clock)
+{
+	unsigned int dll, dlm, divisor, prescaler, speed;
+	u8 old_lcr;
+	volatile struct NS16550 *port = comport;
+
+	old_lcr = in_8(&port->lcr);
+
+	/* select divisor latch registers.  */
+	out_8(&port->lcr, 0x80);
+
+	/* now, read the divisor */
+	dll = in_8(&port->dll);
+	dlm = in_8(&port->dlm);
+	divisor = dlm << 8 | dll;
+
+	/* check prescaling */
+	if (in_8(&port->mcr) & 0x80)
+		prescaler = 4;
+	else
+		prescaler = 1;
+
+	/* restore the LCR */
+	out_8(&port->lcr, old_lcr);
+
+	/* calculate speed */
+	speed = (clock / prescaler) / (divisor * 16);
+
+	/* sanity check */
+	if (speed < 9600 || speed > 115200)
+		speed = 9600;
+
+	return speed;
 }
 
 #ifdef CONFIG_PPC_PMAC

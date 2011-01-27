@@ -10,7 +10,6 @@
  */
 
 #include <linux/config.h>
-#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -20,7 +19,6 @@
 
 #include "ieee80211.h"
 
-
 #include <linux/crypto.h>
 #include <asm/scatterlist.h>
 #include <linux/crc32.h>
@@ -28,7 +26,6 @@
 MODULE_AUTHOR("Jouni Malinen");
 MODULE_DESCRIPTION("Host AP crypt: WEP");
 MODULE_LICENSE("GPL");
-
 
 struct prism2_wep_data {
 	u32 iv;
@@ -39,8 +36,7 @@ struct prism2_wep_data {
 	struct crypto_tfm *tfm;
 };
 
-
-static void * prism2_wep_init(int keyidx)
+static void *prism2_wep_init(int keyidx)
 {
 	struct prism2_wep_data *priv;
 
@@ -62,7 +58,7 @@ static void * prism2_wep_init(int keyidx)
 
 	return priv;
 
-fail:
+      fail:
 	if (priv) {
 		if (priv->tfm)
 			crypto_free_tfm(priv->tfm);
@@ -70,7 +66,6 @@ fail:
 	}
 	return NULL;
 }
-
 
 static void prism2_wep_deinit(void *priv)
 {
@@ -80,23 +75,15 @@ static void prism2_wep_deinit(void *priv)
 	kfree(priv);
 }
 
-
-/* Perform WEP encryption on given skb that has at least 4 bytes of headroom
- * for IV and 4 bytes of tailroom for ICV. Both IV and ICV will be transmitted,
- * so the payload length increases with 8 bytes.
- *
- * WEP frame payload: IV + TX key idx, RC4(data), ICV = RC4(CRC32(data))
- */
-static int prism2_wep_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
+/* Add WEP IV/key info to a frame that has at least 4 bytes of headroom */
+static int prism2_wep_build_iv(struct sk_buff *skb, int hdr_len,
+			       u8 *key, int keylen, void *priv)
 {
 	struct prism2_wep_data *wep = priv;
-	u32 crc, klen, len;
-	u8 key[WEP_KEY_LEN + 3];
-	u8 *pos, *icv;
-	struct scatterlist sg;
-
-	if (skb_headroom(skb) < 4 || skb_tailroom(skb) < 4 ||
-	    skb->len < hdr_len)
+	u32 klen, len;
+	u8 *pos;
+	
+	if (skb_headroom(skb) < 4 || skb->len < hdr_len)
 		return -1;
 
 	len = skb->len - hdr_len;
@@ -118,15 +105,47 @@ static int prism2_wep_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	}
 
 	/* Prepend 24-bit IV to RC4 key and TX frame */
-	*pos++ = key[0] = (wep->iv >> 16) & 0xff;
-	*pos++ = key[1] = (wep->iv >> 8) & 0xff;
-	*pos++ = key[2] = wep->iv & 0xff;
+	*pos++ = (wep->iv >> 16) & 0xff;
+	*pos++ = (wep->iv >> 8) & 0xff;
+	*pos++ = wep->iv & 0xff;
 	*pos++ = wep->key_idx << 6;
+
+	return 0;
+}
+
+/* Perform WEP encryption on given skb that has at least 4 bytes of headroom
+ * for IV and 4 bytes of tailroom for ICV. Both IV and ICV will be transmitted,
+ * so the payload length increases with 8 bytes.
+ *
+ * WEP frame payload: IV + TX key idx, RC4(data), ICV = RC4(CRC32(data))
+ */
+static int prism2_wep_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
+{
+	struct prism2_wep_data *wep = priv;
+	u32 crc, klen, len;
+	u8 *pos, *icv;
+	struct scatterlist sg;
+	u8 key[WEP_KEY_LEN + 3];
+
+	/* other checks are in prism2_wep_build_iv */
+	if (skb_tailroom(skb) < 4)
+		return -1;
+	
+	/* add the IV to the frame */
+	if (prism2_wep_build_iv(skb, hdr_len, NULL, 0, priv))
+		return -1;
+	
+	/* Copy the IV into the first 3 bytes of the key */
+	memcpy(key, skb->data + hdr_len, 3);
 
 	/* Copy rest of the WEP key (the secret part) */
 	memcpy(key + 3, wep->key, wep->key_len);
+	
+	len = skb->len - hdr_len - 4;
+	pos = skb->data + hdr_len + 4;
+	klen = 3 + wep->key_len;
 
-	/* Append little-endian CRC32 and encrypt it to produce ICV */
+	/* Append little-endian CRC32 over only the data and encrypt it to produce ICV */
 	crc = ~crc32_le(~0, pos, len);
 	icv = skb_put(skb, 4);
 	icv[0] = crc;
@@ -142,7 +161,6 @@ static int prism2_wep_encrypt(struct sk_buff *skb, int hdr_len, void *priv)
 
 	return 0;
 }
-
 
 /* Perform WEP decryption on given buffer. Buffer includes whole WEP part of
  * the frame: IV (4 bytes), encrypted payload (including SNAP header),
@@ -202,8 +220,7 @@ static int prism2_wep_decrypt(struct sk_buff *skb, int hdr_len, void *priv)
 	return 0;
 }
 
-
-static int prism2_wep_set_key(void *key, int len, u8 *seq, void *priv)
+static int prism2_wep_set_key(void *key, int len, u8 * seq, void *priv)
 {
 	struct prism2_wep_data *wep = priv;
 
@@ -216,8 +233,7 @@ static int prism2_wep_set_key(void *key, int len, u8 *seq, void *priv)
 	return 0;
 }
 
-
-static int prism2_wep_get_key(void *key, int len, u8 *seq, void *priv)
+static int prism2_wep_get_key(void *key, int len, u8 * seq, void *priv)
 {
 	struct prism2_wep_data *wep = priv;
 
@@ -229,47 +245,39 @@ static int prism2_wep_get_key(void *key, int len, u8 *seq, void *priv)
 	return wep->key_len;
 }
 
-
-static char * prism2_wep_print_stats(char *p, void *priv)
+static char *prism2_wep_print_stats(char *p, void *priv)
 {
 	struct prism2_wep_data *wep = priv;
-	p += sprintf(p, "key[%d] alg=WEP len=%d\n",
-		     wep->key_idx, wep->key_len);
+	p += sprintf(p, "key[%d] alg=WEP len=%d\n", wep->key_idx, wep->key_len);
 	return p;
 }
 
-
 static struct ieee80211_crypto_ops ieee80211_crypt_wep = {
-	.name			= "WEP",
-	.init			= prism2_wep_init,
-	.deinit			= prism2_wep_deinit,
-	.encrypt_mpdu		= prism2_wep_encrypt,
-	.decrypt_mpdu		= prism2_wep_decrypt,
-	.encrypt_msdu		= NULL,
-	.decrypt_msdu		= NULL,
-	.set_key		= prism2_wep_set_key,
-	.get_key		= prism2_wep_get_key,
-	.print_stats		= prism2_wep_print_stats,
-	.extra_prefix_len	= 4, /* IV */
-	.extra_postfix_len	= 4, /* ICV */
-	.owner			= THIS_MODULE,
+	.name = "WEP",
+	.init = prism2_wep_init,
+	.deinit = prism2_wep_deinit,
+	.build_iv = prism2_wep_build_iv,
+	.encrypt_mpdu = prism2_wep_encrypt,
+	.decrypt_mpdu = prism2_wep_decrypt,
+	.encrypt_msdu = NULL,
+	.decrypt_msdu = NULL,
+	.set_key = prism2_wep_set_key,
+	.get_key = prism2_wep_get_key,
+	.print_stats = prism2_wep_print_stats,
+	.extra_mpdu_prefix_len = 4,	/* IV */
+	.extra_mpdu_postfix_len = 4,	/* ICV */
+	.owner = THIS_MODULE,
 };
-
 
 static int __init ieee80211_crypto_wep_init(void)
 {
-	if (ieee80211_register_crypto_ops(&ieee80211_crypt_wep) < 0)
-		return -1;
-
-	return 0;
+	return ieee80211_register_crypto_ops(&ieee80211_crypt_wep);
 }
-
 
 static void __exit ieee80211_crypto_wep_exit(void)
 {
 	ieee80211_unregister_crypto_ops(&ieee80211_crypt_wep);
 }
-
 
 module_init(ieee80211_crypto_wep_init);
 module_exit(ieee80211_crypto_wep_exit);

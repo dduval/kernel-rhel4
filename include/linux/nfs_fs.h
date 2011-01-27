@@ -96,6 +96,9 @@ struct nfs_open_context {
 	int error;
 
 	struct list_head list;
+
+	__u64 dir_cookie;
+
 	wait_queue_head_t waitq;
 };
 

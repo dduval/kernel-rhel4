@@ -885,6 +885,13 @@ static int do_replace(void __user *user, unsigned int len)
 	if ((SMP_ALIGN(tmp.size) >> PAGE_SHIFT) + 2 > num_physpages)
 		return -ENOMEM;
 
+	/* overflow check */
+	if (tmp.size >= (INT_MAX - sizeof(struct arpt_table_info)) / NR_CPUS -
+			SMP_CACHE_BYTES)
+		return -ENOMEM;
+	if (tmp.num_counters >= INT_MAX / sizeof(struct arpt_counters))
+		return -ENOMEM;
+
 	newinfo = vmalloc(sizeof(struct arpt_table_info)
 			  + SMP_ALIGN(tmp.size) * NR_CPUS);
 	if (!newinfo)

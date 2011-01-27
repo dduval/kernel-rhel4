@@ -29,7 +29,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ib_pack.h 3202 2005-08-26 17:11:34Z roland $
+ * $Id: ib_pack.h 1349 2004-12-16 21:09:43Z roland $
  */
 
 #ifndef IB_PACK_H

@@ -18,6 +18,8 @@
  *	the chip setting when fixing the bug but they also tweaked some
  *	performance at the same time..
  */
+
+extern int smp_num_cores;
  
 extern void vide(void);
 __asm__(".align 4\nvide: ret");
@@ -188,6 +190,41 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	}
 
 	display_cacheinfo(c);
+
+#ifdef CONFIG_SMP
+	if (cpuid_eax(0x80000000) >= 0x80000008) {
+		smp_num_cores = (cpuid_ecx(0x80000008) & 0xff) + 1;
+		if (smp_num_cores & (smp_num_cores - 1))
+			smp_num_cores = 1;
+	}
+#endif
+
+#ifdef CONFIG_X86_HT
+	/*
+	 * On a AMD dual core setup the lower bits of the APIC id
+	 * distingush the cores.  Assumes number of cores is a power
+	 * of two.
+	 */
+	if (smp_num_cores > 1) {
+		int cpu = smp_processor_id();
+		unsigned bits = 0;
+		int initial_apic_id;
+
+		while ((1 << bits) < smp_num_cores)
+			bits++;
+		cpu_core_id[cpu] = phys_proc_id[cpu] & ((1<<bits)-1);
+		phys_proc_id[cpu] >>= bits;
+		initial_apic_id = hard_smp_processor_id();
+		printk(KERN_INFO  "CPU%d: Physical Processor ID: %d\n",
+		       cpu, phys_proc_id[cpu]);
+		printk(KERN_INFO  "CPU%d: Processor Core ID: %d\n",
+		       cpu, cpu_core_id[cpu]);
+		printk(KERN_INFO  "CPU%d: Initial APIC ID: %d\n",
+		       cpu, initial_apic_id);
+                printk(KERN_INFO "CPU %d(%d) -> Core %d\n",
+                       cpu, smp_num_cores, cpu_core_id[cpu]);
+	}
+#endif
 }
 
 static unsigned int amd_size_cache(struct cpuinfo_x86 * c, unsigned int size)

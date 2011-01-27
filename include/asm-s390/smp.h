@@ -78,6 +78,9 @@ smp_call_function_on(void (*func) (void *info), void *info,
 }
 #define smp_get_cpu(cpu) ({ 0; })
 #define smp_put_cpu(cpu) ({ 0; })
+
+#define smp_processor_id()			0
+#define hard_smp_processor_id()			0
 #endif
 
 #endif

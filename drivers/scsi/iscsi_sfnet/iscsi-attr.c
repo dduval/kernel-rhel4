@@ -174,9 +174,7 @@ static ssize_t iscsi_store_queue_depth(struct device *dev, const char *buf,
 
 	if (!sdev->tagged_supported)
 		return count;
-
-	if (sscanf(buf, "%10d\n", &qdepth) == 1 &&
-	    qdepth > 0 && qdepth <= ISCSI_MAX_CMDS_PER_LUN)
+	if (sscanf(buf, "%10d\n", &qdepth) == 1 && qdepth > 0)
 		scsi_adjust_queue_depth(sdev, MSG_ORDERED_TAG, qdepth);
 
 	return count;

@@ -93,12 +93,12 @@ void smp_prepare_boot_cpu(void);
 
 #else /* !SMP */
 
+#include <asm/smp.h>
+
 /*
  *	These macros fold the SMP functionality into a single CPU system
  */
  
-#define smp_processor_id()			0
-#define hard_smp_processor_id()			0
 #define smp_threads_ready			1
 #define smp_call_function(func,info,retry,wait)	({ 0; })
 static inline void dump_smp_call_function(void (*func) (void *info), void *info) { }

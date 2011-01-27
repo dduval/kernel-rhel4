@@ -94,9 +94,7 @@ static void set_pmd_pte(pte_t *kpte, unsigned long address, pte_t pte)
  */
 static inline void revert_page(struct page *kpte_page, unsigned long address)
 {
-	pgprot_t ref_prot;
-	
-	ref_prot =
+	pgprot_t ref_prot =
 	((address & LARGE_PAGE_MASK) < (unsigned long)&_etext)
 		? PAGE_KERNEL_LARGE_EXEC : PAGE_KERNEL_LARGE;
 

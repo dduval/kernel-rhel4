@@ -41,6 +41,7 @@
 #include <linux/time.h>
 #include <linux/netlink.h>
 #include <linux/kthread.h>
+#include <linux/binfmts.h>
 #include <asm/unistd.h>
 
 /* 0 = no checking
@@ -112,6 +113,13 @@ struct audit_aux_data_ipcctl {
 	uid_t			uid;
 	gid_t			gid;
 	mode_t			mode;
+};
+
+struct audit_aux_data_execve {
+	struct audit_aux_data	d;
+	int argc;
+	int envc;
+	char mem[0];
 };
 
 struct audit_aux_data_socketcall {
@@ -877,6 +885,17 @@ static void audit_log_exit(struct audit_context *context, unsigned int gfp_mask)
 					 axi->qbytes, axi->uid, axi->gid, axi->mode);
 			break; }
 
+		case AUDIT_EXECVE: {
+			struct audit_aux_data_execve *axi = (void *)aux;
+			int i;
+			const char *p;
+			for (i = 0, p = axi->mem; i < axi->argc; i++) {
+				audit_log_format(ab, "argv[%d]=", i);
+				p = audit_log_untrustedstring(ab, p);
+				audit_log_format(ab, "\n");
+			}
+			break; }
+
 		case AUDIT_SOCKETCALL: {
 			int i;
 			struct audit_aux_data_socketcall *axs = (void *)aux;
@@ -1256,6 +1275,38 @@ int audit_ipc_perms(unsigned long qbytes, uid_t uid, gid_t gid, mode_t mode)
 	ax->mode = mode;
 
 	ax->d.type = AUDIT_IPC;
+	ax->d.next = context->aux;
+	context->aux = (void *)ax;
+	return 0;
+}
+
+int audit_bprm(struct linux_binprm *bprm)
+{
+	struct audit_aux_data_execve *ax;
+	struct audit_context *context = current->audit_context;
+	unsigned long p, next;
+	void *to;
+
+	if (likely(!audit_enabled || !context))
+		return 0;
+
+	ax = kmalloc(sizeof(*ax) + PAGE_SIZE * MAX_ARG_PAGES - bprm->p,
+				GFP_KERNEL);
+	if (!ax)
+		return -ENOMEM;
+
+	ax->argc = bprm->argc;
+	ax->envc = bprm->envc;
+	for (p = bprm->p, to = ax->mem; p < MAX_ARG_PAGES*PAGE_SIZE; p = next) {
+		struct page *page = bprm->page[p / PAGE_SIZE];
+		void *kaddr = kmap(page);
+		next = (p + PAGE_SIZE) & ~(PAGE_SIZE - 1);
+		memcpy(to, kaddr + (p & (PAGE_SIZE - 1)), next - p);
+		to += next - p;
+		kunmap(page);
+	}
+
+	ax->d.type = AUDIT_EXECVE;
 	ax->d.next = context->aux;
 	context->aux = (void *)ax;
 	return 0;

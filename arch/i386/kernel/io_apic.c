@@ -42,7 +42,15 @@
 
 #include "io_ports.h"
 
+#include <asm/pci-direct.h>
+#include <linux/pci_ids.h>
+#include <linux/pci.h>
+
+
 static spinlock_t ioapic_lock = SPIN_LOCK_UNLOCKED;
+
+int disable_timer_pin_1 __initdata;
+int timer_over_8254 __initdata = 1;
 
 /*
  *	Is the SiS APIC rmw bug present ?
@@ -694,6 +702,72 @@ static int __init ioapic_setup(char *str)
 }
 
 __setup("noapic", ioapic_setup);
+
+
+static int __init setup_disable_8254_timer(char *s)
+{
+	timer_over_8254 = -1;
+	return 1;
+}
+static int __init setup_enable_8254_timer(char *s)
+{
+	timer_over_8254 = 2;
+	return 1;
+}
+
+__setup("disable_8254_timer", setup_disable_8254_timer);
+__setup("enable_8254_timer", setup_enable_8254_timer);
+
+
+void __init check_ioapic(void) 
+{ 
+	int num,slot,func; 
+	/* Poor man's PCI discovery */
+	for (num = 0; num < 32; num++) { 
+		for (slot = 0; slot < 32; slot++) { 
+			for (func = 0; func < 8; func++) { 
+				u32 class;
+				u32 vendor;
+				u8 type;
+				class = read_pci_config(num,slot,func,
+							PCI_CLASS_REVISION);
+				if (class == 0xffffffff)
+					break; 
+
+		       		if ((class >> 16) != PCI_CLASS_BRIDGE_PCI)
+					continue; 
+
+				vendor = read_pci_config(num, slot, func, 
+							 PCI_VENDOR_ID);
+				vendor &= 0xffff;
+				switch (vendor) { 
+				case PCI_VENDOR_ID_ATI:
+					if (timer_over_8254 == 1) {	
+						timer_over_8254 = 0;	
+					printk(KERN_INFO
+		"ATI chipset detected. Disabling timer routing over 8254.\n");
+					}
+					return;
+				case PCI_VENDOR_ID_SERVERWORKS:
+					if (timer_over_8254 == 1) {	
+						timer_over_8254 = 0;	
+					printk(KERN_INFO
+		"ServerWorks chipset detected. Disabling timer routing over 8254.\n");
+					}
+					return;
+				} 
+
+
+				/* No multi-function device? */
+				type = read_pci_config_byte(num,slot,func,
+							    PCI_HEADER_TYPE);
+				if (!(type & 0x80))
+					break;
+			} 
+		}
+	}
+} 
+
 
 static int __init ioapic_pirq_setup(char *str)
 {
@@ -2128,6 +2202,8 @@ static inline void unlock_ExtINT_logic(void)
 	spin_unlock_irqrestore(&ioapic_lock, flags);
 }
 
+int timer_uses_ioapic_pin_0;
+
 /*
  * This code may look a bit paranoid, but it's supposed to cooperate with
  * a wide range of boards and BIOS bugs.  Fortunately only the timer IRQ
@@ -2156,10 +2232,14 @@ static inline void check_timer(void)
 	apic_write_around(APIC_LVT0, APIC_LVT_MASKED | APIC_DM_EXTINT);
 	init_8259A(1);
 	timer_ack = 1;
-	enable_8259A_irq(0);
+	if (timer_over_8254 > 0)
+		enable_8259A_irq(0);
 
 	pin1 = find_isa_irq_pin(0, mp_INT);
 	pin2 = find_isa_irq_pin(0, mp_ExtINT);
+
+	if (pin1 == 0)
+		timer_uses_ioapic_pin_0 = 1;
 
 	printk(KERN_INFO "..TIMER: vector=0x%02X pin1=%d pin2=%d\n", vector, pin1, pin2);
 
@@ -2175,6 +2255,8 @@ static inline void check_timer(void)
 				enable_8259A_irq(0);
 				check_nmi_watchdog();
 			}
+			if (disable_timer_pin_1 > 0)
+				clear_IO_APIC_pin(0, pin1);
 			return;
 		}
 		clear_IO_APIC_pin(0, pin1);

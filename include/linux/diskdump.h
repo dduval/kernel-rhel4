@@ -61,6 +61,7 @@ struct disk_dump_type {
 	void *(*probe)(struct device *);
 	int (*add_device)(struct disk_dump_device *);
 	void (*remove_device)(struct disk_dump_device *);
+	void (*compute_cksum)(void);
 	struct module *owner;
 	struct list_head list;
 };
@@ -80,15 +81,28 @@ struct disk_dump_device {
 	void *device;
 	unsigned int max_blocks;
 	struct list_head partitions;
+	int	quiesce_result;
+	int	quiesce_done		: 1;
+	int	need_shutdown		: 1;
 };
 
 /* The data structure for a dump partition */
 struct disk_dump_partition {
 	struct list_head list;
+	struct list_head part_list;
 	struct disk_dump_device *device;
 	struct block_device *bdev;
 	unsigned long start_sect;
 	unsigned long nr_sects;
+};
+
+/* bitmap structure */
+struct disk_dump_bitmap {
+	char *map;
+	int bit;	/* next bit offset to set the bitmap buffer */
+	int byte;	/* next byte offset to set the bitmap buffer */
+	int flushed;
+	unsigned int index;	/* next block to write bitmap */
 };
 
 int register_disk_dump_type(struct disk_dump_type *);
@@ -100,6 +114,8 @@ int unregister_disk_dump_type(struct disk_dump_type *);
  */
 ssize_t diskdump_sysfs_store(struct device *dev, const char *buf, size_t count);
 ssize_t diskdump_sysfs_show(struct device *dev, char *buf);
+ssize_t diskdump_sysfs_store_disk(struct gendisk *disk, struct device *dev, const char *buf, size_t count);
+ssize_t diskdump_sysfs_show_disk(struct gendisk *disk, char *buf);
 
 
 void diskdump_update(void);
@@ -109,12 +125,34 @@ void diskdump_setup_timestamp(void);
 #define diskdump_mdelay(n) 						\
 ({									\
 	unsigned long __ms=(n); 					\
-	while (__ms--) {						\
-		udelay(1000);						\
-		touch_nmi_watchdog();					\
-	}								\
+ 	if (crashdump_mode())					\
+		while (__ms--) {					\
+			udelay(1000);					\
+			touch_nmi_watchdog();				\
+		}							\
+ 	else								\
+ 		mdelay(n);						\
 })
 
+#define diskdump_msleep(n) 						\
+({									\
+	unsigned long __ms=(n); 					\
+ 	if (crashdump_mode())						\
+		while (__ms--) {					\
+			udelay(1000);					\
+			touch_nmi_watchdog();				\
+		}							\
+ 	else								\
+ 		msleep(n);						\
+})
+
+#define spin_unlock_irq_dump(host_lock)					\
+	do { 								\
+		if (crashdump_mode())					\
+			spin_unlock(host_lock);				\
+		else							\
+			spin_unlock_irq(host_lock);			\
+	} while (0)
 
 /*
  * Architecture-independent dump header
@@ -126,9 +164,13 @@ void diskdump_setup_timestamp(void);
 
 #define DUMP_PARTITION_SIGNATURE	"diskdump"
 
-#define DUMP_HEADER_COMPLETED	0
-#define DUMP_HEADER_INCOMPLETED	1
-#define DUMP_HEADER_COMPRESSED	8
+#define DUMP_HEADER_COMPLETED	0	/* Dump has completed */
+#define DUMP_HEADER_INCOMPLETED	1	/* Dump has started */
+#define DUMP_HEADER_IN_PROGRESS	2	/* It has been dumped more than at
+					least one block from the main memory. */
+#define DUMP_HEADER_SHORT_AREA	4	/* Dump ended because the area was
+					   short. */
+#define DUMP_HEADER_COMPRESSED	8	/* Dump is compressed */
 
 struct disk_dump_header {
 	char			signature[8];	/* = "DISKDUMP" */

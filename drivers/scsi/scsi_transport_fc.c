@@ -383,30 +383,6 @@ void fc_release_transport(struct scsi_transport_template *t)
 }
 EXPORT_SYMBOL(fc_release_transport);
 
-
-
-/**
- * fc_device_block - called by target functions to block a scsi device
- * @dev:	scsi device
- * @data:	unused
- **/
-static int fc_device_block(struct device *dev, void *data)
-{
-	scsi_internal_device_block(to_scsi_device(dev));
-	return 0;
-}
-
-/**
- * fc_device_unblock - called by target functions to unblock a scsi device
- * @dev:	scsi device
- * @data:	unused
- **/
-static int fc_device_unblock(struct device *dev, void *data)
-{
-	scsi_internal_device_unblock(to_scsi_device(dev));
-	return 0;
-}
-
 /**
  * fc_timeout_blocked_tgt - Timeout handler for blocked scsi targets
  *			 that fail to recover in the alloted time.
@@ -415,6 +391,8 @@ static int fc_device_unblock(struct device *dev, void *data)
 static void fc_timeout_blocked_tgt(void  *data)
 {
 	struct scsi_target *starget = (struct scsi_target *)data;
+	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
+	struct scsi_device *sdev;
 
 	dev_printk(KERN_ERR, &starget->dev, 
 		"blocked target time out: target resuming\n");
@@ -424,7 +402,10 @@ static void fc_timeout_blocked_tgt(void  *data)
 	 * unblock this device, then IO errors will probably
 	 * result if the host still isn't ready.
 	 */
-	device_for_each_child(&starget->dev, NULL, fc_device_unblock);
+	shost_for_each_device(sdev, shost) {
+		if (sdev->id == starget->id)
+			scsi_internal_device_unblock(sdev);
+	}
 }
 
 /**
@@ -446,13 +427,18 @@ static void fc_timeout_blocked_tgt(void  *data)
 int
 fc_target_block(struct scsi_target *starget)
 {
+	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
+	struct scsi_device *sdev;
 	int timeout = fc_starget_dev_loss_tmo(starget);
 	struct work_struct *work = &fc_starget_dev_loss_work(starget);
 
 	if (timeout < 0 || timeout > SCSI_DEVICE_BLOCK_MAX_TIMEOUT)
 		return -EINVAL;
 
-	device_for_each_child(&starget->dev, NULL, fc_device_block);
+	shost_for_each_device(sdev, shost) {
+		if (sdev->id == starget->id)
+		scsi_internal_device_block(sdev);
+	}
 
 	/* The scsi lld blocks this target for the timeout period only. */
 	schedule_delayed_work(work, timeout * HZ);
@@ -475,6 +461,9 @@ EXPORT_SYMBOL(fc_target_block);
 void
 fc_target_unblock(struct scsi_target *starget)
 {
+	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
+	struct scsi_device *sdev;
+
 	/* 
 	 * Stop the target timer first. Take no action on the del_timer
 	 * failure as the state machine state change will validate the
@@ -483,7 +472,10 @@ fc_target_unblock(struct scsi_target *starget)
 	if (cancel_delayed_work(&fc_starget_dev_loss_work(starget)))
 		flush_scheduled_work();
 
-	device_for_each_child(&starget->dev, NULL, fc_device_unblock);
+	shost_for_each_device(sdev, shost) {
+		if (sdev->id == starget->id)
+			scsi_internal_device_unblock(sdev);
+	}
 }
 EXPORT_SYMBOL(fc_target_unblock);
 

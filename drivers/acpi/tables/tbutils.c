@@ -49,6 +49,72 @@
 #define _COMPONENT          ACPI_TABLES
 	 ACPI_MODULE_NAME    ("tbutils")
 
+/*******************************************************************************
+ *
+ * FUNCTION:    acpi_tb_is_table_installed
+ *
+ * PARAMETERS:  new_table_desc      - Descriptor for new table being installed
+ *
+ * RETURN:      Status - AE_ALREADY_EXISTS if the table is already installed
+ *
+ * DESCRIPTION: Determine if an ACPI table is already installed
+ *
+ * MUTEX:       Table data structures should be locked
+ *
+ ******************************************************************************/
+
+acpi_status acpi_tb_is_table_installed(struct acpi_table_desc *new_table_desc)
+{
+	struct acpi_table_desc *table_desc;
+
+	ACPI_FUNCTION_TRACE("tb_is_table_installed");
+
+	/* Get the list descriptor and first table descriptor */
+
+	table_desc = acpi_gbl_table_lists[new_table_desc->type].next;
+
+	/* Examine all installed tables of this type */
+
+	while (table_desc) {
+		/*
+		 * If the table lengths match, perform a full bytewise compare. This
+		 * means that we will allow tables with duplicate oem_table_id(s), as
+		 * long as the tables are different in some way.
+		 *
+		 * Checking if the table has been loaded into the namespace means that
+		 * we don't check for duplicate tables during the initial installation
+		 * of tables within the RSDT/XSDT.
+		 */
+		if ((table_desc->loaded_into_namespace) &&
+		    (table_desc->pointer->length ==
+		     new_table_desc->pointer->length)
+		    &&
+		    (!ACPI_MEMCMP
+		     (table_desc->pointer, new_table_desc->pointer,
+		      new_table_desc->pointer->length))) {
+			/* Match: this table is already installed */
+
+			ACPI_DEBUG_PRINT((ACPI_DB_TABLES,
+					  "Table [%4.4s] already installed: Rev %X oem_table_id [%8.8s]\n",
+					  new_table_desc->pointer->signature,
+					  new_table_desc->pointer->revision,
+					  new_table_desc->pointer->
+					  oem_table_id));
+
+			new_table_desc->table_id = table_desc->table_id;
+			new_table_desc->installed_desc = table_desc;
+
+			return_ACPI_STATUS(AE_ALREADY_EXISTS);
+		}
+
+		/* Get next table on the list */
+
+		table_desc = table_desc->next;
+	}
+
+	return_ACPI_STATUS(AE_OK);
+}
+
 
 /*******************************************************************************
  *

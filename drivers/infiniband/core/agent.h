@@ -33,7 +33,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: agent.h 3925 2005-10-31 23:03:17Z roland $
+ * $Id: agent.h 1389 2004-12-27 22:56:47Z roland $
  */
 
 #ifndef __AGENT_H_

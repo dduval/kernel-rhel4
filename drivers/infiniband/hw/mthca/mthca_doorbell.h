@@ -31,7 +31,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: mthca_doorbell.h 2905 2005-07-25 18:26:52Z roland $
+ * $Id: mthca_doorbell.h 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/types.h>

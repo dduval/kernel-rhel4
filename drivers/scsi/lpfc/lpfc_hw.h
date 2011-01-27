@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * Copyright (C) 2003-2006 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -19,7 +19,7 @@
  *******************************************************************/
 
 /*
- * $Id: lpfc_hw.h 1.34.2.2 2005/06/13 17:16:25EDT sf_support Exp  $
+ * $Id: lpfc_hw.h 2853 2006-02-12 21:48:31Z sf_support $
  */
 
 #ifndef  _H_LPFC_HW
@@ -65,6 +65,9 @@
 #define SLI2_IOCB_RSP_R3_ENTRIES      0
 #define SLI2_IOCB_CMD_R3XTRA_ENTRIES 24
 #define SLI2_IOCB_RSP_R3XTRA_ENTRIES 32
+
+#define LPFC_1_PRIMARY_RING      1      /* Only one primary ring is defined */
+#define LPFC_2_PRIMARY_RING      2      /* Two primary rings are defined */
 
 /* Common Transport structures and definitions */
 
@@ -453,10 +456,14 @@ struct serv_parm {	/* Structure is in Big Endian format */
 #define ELS_CMD_ADISC     0x52000000
 #define ELS_CMD_FARP      0x54000000
 #define ELS_CMD_FARPR     0x55000000
+#define ELS_CMD_RPS       0x56000000
+#define ELS_CMD_RPL       0x57000000
 #define ELS_CMD_FAN       0x60000000
 #define ELS_CMD_RSCN      0x61040000
 #define ELS_CMD_SCR       0x62000000
 #define ELS_CMD_RNID      0x78000000
+#define ELS_CMD_LIRR      0x7A000000
+#define ELS_CMD_SRL       0x7B000000
 #else	/*  __LITTLE_ENDIAN_BITFIELD */
 #define ELS_CMD_MASK      0xffff
 #define ELS_RSP_MASK      0xff
@@ -485,10 +492,14 @@ struct serv_parm {	/* Structure is in Big Endian format */
 #define ELS_CMD_ADISC     0x52
 #define ELS_CMD_FARP      0x54
 #define ELS_CMD_FARPR     0x55
+#define ELS_CMD_RPS       0x56
+#define ELS_CMD_RPL       0x57
 #define ELS_CMD_FAN       0x60
 #define ELS_CMD_RSCN      0x0461
 #define ELS_CMD_SCR       0x62
 #define ELS_CMD_RNID      0x78
+#define ELS_CMD_LIRR      0x7A
+#define ELS_CMD_SRL       0x7B
 #endif
 
 /*
@@ -1010,6 +1021,7 @@ typedef struct {
 #define FC_LLC_SNAP     0x5
 #define FC_FCP_DATA     0x8
 #define FC_COMMON_TRANSPORT_ULP 0x20
+#define FC_VENDOR_SPECIFIC      0xF0
 
 /* defines for rctl field in fc header */
 #define FC_DEV_DATA     0x0
@@ -1199,7 +1211,10 @@ typedef struct {		/* FireFly BIU registers */
 #define MBX_SET_MASK        0x20
 #define MBX_SET_SLIM        0x21
 #define MBX_UNREG_D_ID      0x23
+#define MBX_KILL_BOARD      0x24
 #define MBX_CONFIG_FARP     0x25
+#define MBX_BEACON          0x2A	/* This is not yet part of the SLI spec.
+					   See beaconing spec in CR 12596 */
 
 #define MBX_LOAD_AREA       0x81
 #define MBX_RUN_BIU_DIAG64  0x84
@@ -1675,13 +1690,13 @@ typedef struct {
 	uint32_t rttov;
 	uint32_t altov;
 	uint32_t lmt;
-#define LMT_RESERVED    0x0    /* Not used */
-#define LMT_266_10bit   0x1    /* 265.625 Mbaud 10 bit iface  */
-#define LMT_532_10bit   0x2    /* 531.25  Mbaud 10 bit iface  */
-#define LMT_1063_20bit  0x3    /* 1062.5   Mbaud 20 bit iface */
-#define LMT_1063_10bit  0x4    /* 1062.5   Mbaud 10 bit iface */
-#define LMT_2125_10bit  0x8    /* 2125     Mbaud 10 bit iface */
-#define LMT_4250_10bit  0x40   /* 4250     Mbaud 10 bit iface */
+#define LMT_RESERVED  0x000    /* Not used */
+#define LMT_1Gb       0x004
+#define LMT_2Gb       0x008
+#define LMT_4Gb       0x040
+#define LMT_8Gb       0x080
+#define LMT_10Gb      0x100
+
 
 	uint32_t rsvd2;
 	uint32_t rsvd3;

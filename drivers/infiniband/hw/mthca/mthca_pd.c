@@ -31,7 +31,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: mthca_pd.c 2803 2005-07-05 15:58:55Z roland $
+ * $Id: mthca_pd.c 1349 2004-12-16 21:09:43Z roland $
  */
 
 #include <linux/init.h>
@@ -42,8 +42,6 @@
 int mthca_pd_alloc(struct mthca_dev *dev, int privileged, struct mthca_pd *pd)
 {
 	int err = 0;
-
-	might_sleep();
 
 	pd->privileged = privileged;
 
@@ -66,7 +64,6 @@ int mthca_pd_alloc(struct mthca_dev *dev, int privileged, struct mthca_pd *pd)
 
 void mthca_pd_free(struct mthca_dev *dev, struct mthca_pd *pd)
 {
-	might_sleep();
 	if (pd->privileged)
 		mthca_free_mr(dev, &pd->ntmr);
 	mthca_free(&dev->pd_table.alloc, pd->pd_num);
@@ -80,7 +77,7 @@ int __devinit mthca_init_pd_table(struct mthca_dev *dev)
 				dev->limits.reserved_pds);
 }
 
-void __devexit mthca_cleanup_pd_table(struct mthca_dev *dev)
+void mthca_cleanup_pd_table(struct mthca_dev *dev)
 {
 	/* XXX check if any PDs are still allocated? */
 	mthca_alloc_cleanup(&dev->pd_table.alloc);

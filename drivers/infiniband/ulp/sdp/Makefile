@@ -1,24 +1,6 @@
-EXTRA_CFLAGS += \
-    -Idrivers/infiniband/include \
-    -Idrivers/infiniband/ulp/ipoib
+EXTRA_CFLAGS += -Idrivers/infiniband/include
+EXTRA_CFLAGS += -ggdb
 
 obj-$(CONFIG_INFINIBAND_SDP) += ib_sdp.o
 
-ib_sdp-objs := \
-	sdp_advt.o \
-	sdp_queue.o \
-	sdp_buff.o \
-	sdp_rcvd.o \
-	sdp_sent.o \
-	sdp_read.o \
-	sdp_write.o \
-	sdp_proc.o \
-	sdp_inet.o \
-	sdp_iocb.o \
-	sdp_conn.o \
-	sdp_send.o \
-	sdp_recv.o \
-	sdp_event.o \
-	sdp_pass.o \
-	sdp_actv.o \
-	sdp_link.o
+ib_sdp-objs := sdp_main.o sdp_cma.o sdp_bcopy.o

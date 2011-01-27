@@ -45,7 +45,7 @@
 #include <linux/ipmi_msgdefs.h>		/* for completion codes */
 #include "ipmi_si_sm.h"
 
-#define IPMI_KCS_VERSION "33.11"
+#define IPMI_KCS_VERSION "33.13"
 
 /* kcs_debug is a bit-field
  *	KCS_DEBUG_ENABLE -	turned on for now

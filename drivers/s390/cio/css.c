@@ -24,6 +24,8 @@
 unsigned int highest_subchannel;
 int need_rescan = 0;
 int css_init_done = 0;
+int cm_enabled = 0;
+DECLARE_MUTEX(cm_sem);
 
 struct pgid global_pgid;
 int css_characteristics_avail = 0;
@@ -402,6 +404,32 @@ css_generate_pgid(void)
 	global_pgid.tod_high = (__u32) (get_clock() >> 32);
 }
 
+static ssize_t
+css_cm_enable_show(struct device *dev, char *buf)
+{
+	return sprintf(buf, "%x\n", cm_enabled);
+}
+
+static ssize_t
+css_cm_enable_store(struct device *dev, const char *buf, size_t count)
+{
+	int ret;
+
+	switch (buf[0]) {
+	case '0':
+		ret = cm_enabled ? chsc_secm(0) : 0;
+		break;
+	case '1':
+		ret = cm_enabled ? 0 : chsc_secm(1);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+	return ret < 0 ? ret : count;
+}
+
+static DEVICE_ATTR(cm_enable, 0644, css_cm_enable_show, css_cm_enable_store);
+
 /*
  * Now that the driver core is running, we can setup our channel subsystem.
  * The struct subchannel's are created during probing (except for the
@@ -421,6 +449,8 @@ init_channel_subsystem (void)
 		goto out;
 	if ((ret = device_register (&css_bus_device)))
 		goto out_bus;
+	if (css_characteristics_avail && css_chsc_characteristics.secm)
+		device_create_file(&css_bus_device, &dev_attr_cm_enable);
 
 	css_init_done = 1;
 

@@ -26,7 +26,7 @@
 #include <linux/fs.h>
 #include <linux/sysctl.h>
 #include <linux/proc_fs.h>
-#include <linux/timer.h>
+#include <linux/workqueue.h>
 #include <linux/swap.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -89,7 +89,8 @@ int ip_vs_get_debug_level(void)
 #endif
 
 /*
- *	update_defense_level is called from timer bh and from sysctl.
+ *	update_defense_level is called from keventd and from sysctl,
+ *	so it needs to protect itself from softirqs.
  */
 static void update_defense_level(void)
 {
@@ -108,6 +109,8 @@ static void update_defense_level(void)
 	/* availmem = availmem - (i.totalswap - i.freeswap); */
 
 	nomem = (availmem < sysctl_ip_vs_amemthresh);
+
+	local_bh_disable();
 
 	/* drop_entry */
 	spin_lock(&__ip_vs_dropentry_lock);
@@ -205,24 +208,26 @@ static void update_defense_level(void)
 	if (to_change >= 0)
 		ip_vs_protocol_timeout_change(sysctl_ip_vs_secure_tcp>1);
 	write_unlock(&__ip_vs_securetcp_lock);
+
+	local_bh_enable();
 }
 
 
 /*
  *	Timer for checking the defense
  */
-static struct timer_list defense_timer;
 #define DEFENSE_TIMER_PERIOD	1*HZ
+static void defense_work_handler(void *data);
+static DECLARE_WORK(defense_work, defense_work_handler, NULL);
 
-static void defense_timer_handler(unsigned long data)
+static void defense_work_handler(void *data)
 {
 	update_defense_level();
 	if (atomic_read(&ip_vs_dropentry))
 		ip_vs_random_dropentry();
 
-	mod_timer(&defense_timer, jiffies + DEFENSE_TIMER_PERIOD);
+	schedule_delayed_work(&defense_work, DEFENSE_TIMER_PERIOD);
 }
-
 
 int
 ip_vs_use_count_inc(void)
@@ -1358,11 +1363,8 @@ proc_do_defense_mode(ctl_table *table, int write, struct file * filp,
 		if ((*valp < 0) || (*valp > 3)) {
 			/* Restore the correct value */
 			*valp = val;
-		} else {
-			local_bh_disable();
+		} else
 			update_defense_level();
-			local_bh_enable();
-		}
 	}
 	return rc;
 }
@@ -2361,10 +2363,7 @@ int ip_vs_control_init(void)
 	ip_vs_new_estimator(&ip_vs_stats);
 
 	/* Hook the defense timer */
-	init_timer(&defense_timer);
-	defense_timer.function = defense_timer_handler;
-	defense_timer.expires = jiffies + DEFENSE_TIMER_PERIOD;
-	add_timer(&defense_timer);
+	schedule_delayed_work(&defense_work, DEFENSE_TIMER_PERIOD);
 
 	LeaveFunction(2);
 	return 0;
@@ -2375,7 +2374,8 @@ void ip_vs_control_cleanup(void)
 {
 	EnterFunction(2);
 	ip_vs_trash_cleanup();
-	del_timer_sync(&defense_timer);
+	if (!cancel_delayed_work(&defense_work))
+		flush_scheduled_work();
 	ip_vs_kill_estimator(&ip_vs_stats);
 	unregister_sysctl_table(sysctl_header);
 	proc_net_remove("ip_vs_stats");

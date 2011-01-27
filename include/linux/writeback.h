@@ -91,6 +91,7 @@ void throttle_vm_writeout(void);
 /* These are exported to sysctl. */
 extern int dirty_background_ratio;
 extern int vm_dirty_ratio;
+extern int vm_max_queue_depth;
 extern int dirty_writeback_centisecs;
 extern int dirty_expire_centisecs;
 extern int block_dump;

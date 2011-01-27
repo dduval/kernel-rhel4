@@ -25,6 +25,10 @@
  *
  * 2003/12/01 - Shmulik Hen <shmulik.hen at intel dot com>
  *	- Code cleanup and style changes
+ *
+ * 2005/05/05 - Jason Gabler <jygabler at lbl dot gov>
+ *      - added "xmit_policy" kernel parameter for alternate hashing policy
+ *	  support for mode 2
  */
 
 #ifndef _LINUX_BONDING_H
@@ -33,11 +37,12 @@
 #include <linux/timer.h>
 #include <linux/proc_fs.h>
 #include <linux/if_bonding.h>
+#include <linux/netpoll.h>
 #include "bond_3ad.h"
 #include "bond_alb.h"
 
-#define DRV_VERSION	"2.6.1"
-#define DRV_RELDATE	"October 29, 2004"
+#define DRV_VERSION	"2.6.3"
+#define DRV_RELDATE	"June 8, 2005"
 #define DRV_NAME	"bonding"
 #define DRV_DESCRIPTION	"Ethernet Channel Bonding Driver"
 
@@ -137,6 +142,7 @@
 
 struct bond_params {
 	int mode;
+	int xmit_policy;
 	int miimon;
 	int arp_interval;
 	int use_carrier;
@@ -149,6 +155,7 @@ struct bond_params {
 
 struct vlan_entry {
 	struct list_head vlan_list;
+	u32 vlan_ip;
 	unsigned short vlan_id;
 };
 
@@ -197,12 +204,17 @@ struct bonding {
 #endif /* CONFIG_PROC_FS */
 	struct   list_head bond_list;
 	struct   dev_mc_list *mc_list;
+	int      (*xmit_hash_policy)(struct sk_buff *, struct net_device *, int);
+	u32      master_ip;
 	u16      flags;
 	struct   ad_bond_info ad_info;
 	struct   alb_bond_info alb_info;
 	struct   bond_params params;
 	struct   list_head vlan_list;
 	struct   vlan_group *vlgrp;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	struct   netpoll *netpoll;
+#endif
 };
 
 /**
@@ -235,14 +247,37 @@ extern inline struct bonding *bond_get_bond_by_slave(struct slave *slave)
 
 extern inline void bond_set_slave_inactive_flags(struct slave *slave)
 {
-	slave->state = BOND_STATE_BACKUP;
-	slave->dev->flags |= IFF_NOARP;
+	struct bonding *bond = slave->dev->master->priv;
+	if (bond->params.mode != BOND_MODE_TLB &&
+	    bond->params.mode != BOND_MODE_ALB)
+		slave->state = BOND_STATE_BACKUP;
+	slave->dev->priv_flags |= IFF_SLAVE_INACTIVE;
 }
 
 extern inline void bond_set_slave_active_flags(struct slave *slave)
 {
 	slave->state = BOND_STATE_ACTIVE;
-	slave->dev->flags &= ~IFF_NOARP;
+	slave->dev->priv_flags &= ~IFF_SLAVE_INACTIVE;
+}
+
+extern inline void bond_set_master_3ad_flags(struct bonding *bond)
+{
+	bond->dev->priv_flags |= IFF_MASTER_8023AD;
+}
+
+extern inline void bond_unset_master_3ad_flags(struct bonding *bond)
+{
+	bond->dev->priv_flags &= ~IFF_MASTER_8023AD;
+}
+
+extern inline void bond_set_master_alb_flags(struct bonding *bond)
+{
+	bond->dev->priv_flags |= IFF_MASTER_ALB;
+}
+
+extern inline void bond_unset_master_alb_flags(struct bonding *bond)
+{
+	bond->dev->priv_flags &= ~IFF_MASTER_ALB;
 }
 
 struct vlan_entry *bond_next_vlan(struct bonding *bond, struct vlan_entry *curr);

@@ -30,7 +30,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: fmr_pool.c 3202 2005-08-26 17:11:34Z roland $
+ * $Id: fmr_pool.c 2730 2005-06-28 16:43:03Z sean.hefty $
  */
 
 #include <linux/errno.h>
@@ -278,9 +278,9 @@ struct ib_fmr_pool *ib_create_fmr_pool(struct ib_pd             *pd,
 	{
 		struct ib_pool_fmr *fmr;
 		struct ib_fmr_attr attr = {
-			.max_pages = params->max_pages_per_fmr,
-			.max_maps  = IB_FMR_MAX_REMAPS,
-			.page_size = PAGE_SHIFT
+			.max_pages  = params->max_pages_per_fmr,
+			.max_maps   = IB_FMR_MAX_REMAPS,
+			.page_shift = params->page_shift
 		};
 
 		for (i = 0; i < params->pool_size; ++i) {

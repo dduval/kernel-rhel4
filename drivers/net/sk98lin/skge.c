@@ -5169,7 +5169,18 @@ static struct pci_device_id skge_pci_tbl[] = {
 	{ 0, }
 };
 
-MODULE_DEVICE_TABLE(pci, skge_pci_tbl);
+/*****************************************************************************
+ *
+ * Avoid PCI ID confusion w/ skge by limiting advertised IDs so we don't
+ * needlessly overlap...
+ *
+ */
+static struct pci_device_id advertised_skge_pci_tbl[] = {
+	{ PCI_VENDOR_ID_LINKSYS, 0x1032, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	{ 0, }
+};
+
+MODULE_DEVICE_TABLE(pci, advertised_skge_pci_tbl);
 
 static struct pci_driver skge_driver = {
 	.name		= "skge",

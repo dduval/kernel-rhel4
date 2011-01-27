@@ -17,6 +17,10 @@ unsigned long max_huge_pages;
 static struct list_head hugepage_freelists[MAX_NUMNODES];
 static unsigned int nr_huge_pages_node[MAX_NUMNODES];
 static unsigned int free_huge_pages_node[MAX_NUMNODES];
+
+/*
+ * Protects updates to hugepage_freelists, nr_huge_pages, and free_huge_pages
+ */
 static spinlock_t hugetlb_lock = SPIN_LOCK_UNLOCKED;
 
 static void enqueue_huge_page(struct page *page)
@@ -56,8 +60,10 @@ static struct page *alloc_fresh_huge_page(void)
 					HUGETLB_PAGE_ORDER);
 	nid = (nid + 1) % numnodes;
 	if (page) {
+		spin_lock(&hugetlb_lock);
 		nr_huge_pages++;
 		nr_huge_pages_node[page_zone(page)->zone_pgdat->node_id]++;
+		spin_unlock(&hugetlb_lock);
 	}
 	return page;
 }
@@ -256,4 +262,28 @@ void zap_hugepage_range(struct vm_area_struct *vma,
 	spin_lock(&mm->page_table_lock);
 	unmap_hugepage_range(vma, start, start + length);
 	spin_unlock(&mm->page_table_lock);
+}
+ 
+/*
+ * On ia64 at least, it is possible to receive a hugetlb fault from a
+ * stale zero entry left in the TLB from earlier hardware prefetching.
+ * Low-level arch code should already have flushed the stale entry as
+ * part of its fault handling, but we do need to accept this minor fault
+ * and return successfully.  Whereas the "normal" case is that this is
+ * an access to a hugetlb page which has been truncated off since mmap.
+ */
+int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
+			unsigned long address, int write_access)
+{
+	int ret = VM_FAULT_SIGBUS;
+#if CONFIG_IA64
+	pte_t *pte;
+
+	spin_lock(&mm->page_table_lock);
+	pte = huge_pte_offset(mm, address);
+	if (pte && !pte_none(*pte))
+		ret = VM_FAULT_MINOR;
+	spin_unlock(&mm->page_table_lock);
+#endif
+	return ret;
 }

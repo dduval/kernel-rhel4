@@ -44,6 +44,7 @@
 #include <linux/kthread.h>
 #include <linux/seq_file.h>
 #include <linux/times.h>
+#include <linux/kprobes.h>
 #include <asm/tlb.h>
 
 #include <asm/unistd.h>
@@ -403,6 +404,15 @@ struct sched_domain {
 	.balance_interval	= 1,			\
 	.nr_balance_failed	= 0,			\
 }
+
+#ifdef CONFIG_SCHED_MC
+#ifndef SD_MC_INIT
+/* for now its same as SD_CPU_INIT.
+ * TBD: Tune Domain parameters!
+ */
+#define SD_MC_INIT   SD_CPU_INIT
+#endif
+#endif
 
 /* Arch can override this macro in processor.h */
 #if defined(CONFIG_NUMA) && !defined(SD_NODE_INIT)
@@ -1106,6 +1116,8 @@ static inline int wake_idle(int cpu, task_t *p)
 }
 #endif
 
+int wake_balance=1;
+
 /***
  * try_to_wake_up - wake up a thread
  * @p: the to-be-woken-up thread
@@ -1149,6 +1161,9 @@ static int try_to_wake_up(task_t * p, unsigned int state, int sync)
 		goto out_activate;
 
 	new_cpu = cpu;
+
+	if (!wake_balance)
+		goto out_set_cpu;
 
 	if (cpu == this_cpu || unlikely(!cpu_isset(this_cpu, p->cpus_allowed)))
 		goto out_set_cpu;
@@ -1486,8 +1501,14 @@ static inline void finish_task_switch(task_t *prev)
 	finish_arch_switch(rq, prev);
 	if (mm)
 		mmdrop(mm);
-	if (unlikely(prev_task_flags & PF_DEAD))
+	if (unlikely(prev_task_flags & PF_DEAD)) {
+		/*
+	 	 * Remove function-return probe instances associated with this task
+	 	 * and put them back on the free list.
+	 	 */
+		kprobe_flush_task(prev);
 		put_task_struct(prev);
+	}
 }
 
 /**
@@ -2014,12 +2035,6 @@ nextgroup:
 	return busiest;
 
 out_balanced:
-	if (busiest && (idle == NEWLY_IDLE ||
-			(idle == IDLE && max_load > SCHED_LOAD_SCALE)) ) {
-		*imbalance = 1;
-		return busiest;
-	}
-
 	*imbalance = 0;
 	return NULL;
 }
@@ -2226,59 +2241,40 @@ static inline void idle_balance(int this_cpu, runqueue_t *this_rq)
 static void active_load_balance(runqueue_t *busiest, int busiest_cpu)
 {
 	struct sched_domain *sd;
-	struct sched_group *group, *busy_group;
-	int i;
+	runqueue_t *target_rq;
+	int target_cpu = busiest->push_cpu;
 
 	schedstat_inc(busiest, alb_cnt);
 	if (busiest->nr_running <= 1)
 		return;
 
-	for_each_domain(busiest->push_cpu, sd)
+	target_rq = cpu_rq(target_cpu);
+
+	/*
+	 * This condition is "impossible", but since load
+	 * balancing is inherently a bit racy and statistical,
+	 * it can trigger.. Reported by Bjorn Helgaas on a
+	 * 128-cpu setup.
+	 */
+	BUG_ON(busiest == target_rq);
+
+	double_lock_balance(busiest, target_rq);
+
+	for_each_domain(target_cpu, sd)
 		if (cpu_isset(busiest_cpu, sd->span))
-			break;
-	if (!sd)
-		return;
+				break;
 
-	group = sd->groups;
-	while (!cpu_isset(busiest_cpu, group->cpumask))
-		group = group->next;
-	busy_group = group;
+	if (unlikely(sd == NULL))
+		goto out;
 
-	group = sd->groups;
-	do {
-		runqueue_t *rq;
-		int push_cpu = 0;
-
-		if (group == busy_group)
-			goto next_group;
-
-		for_each_cpu_mask(i, group->cpumask) {
-			if (!idle_cpu(i))
-				goto next_group;
-			push_cpu = i;
-		}
-
-		rq = cpu_rq(push_cpu);
-
-		/*
-		 * This condition is "impossible", but since load
-		 * balancing is inherently a bit racy and statistical,
-		 * it can trigger.. Reported by Bjorn Helgaas on a
-		 * 128-cpu setup.
-		 */
-		if (unlikely(busiest == rq))
-			goto next_group;
-		double_lock_balance(busiest, rq);
-		if (move_tasks(rq, push_cpu, busiest, 1, sd, IDLE, NULL)) {
-			schedstat_inc(busiest, alb_lost);
-			schedstat_inc(rq, alb_gained);
-		} else {
-			schedstat_inc(busiest, alb_failed);
-		}
-		spin_unlock(&rq->lock);
-next_group:
-		group = group->next;
-	} while (group != sd->groups);
+	if (move_tasks(target_rq, target_cpu, busiest, 1, sd, IDLE, NULL)) {
+		schedstat_inc(busiest, alb_lost);
+		schedstat_inc(target_rq, alb_gained);
+	} else {
+		schedstat_inc(busiest, alb_failed);
+	}
+out:
+	spin_unlock(&target_rq->lock);
 }
 
 /*
@@ -4360,6 +4356,21 @@ static void cpu_attach_domain(struct sched_domain *sd, int cpu)
 	unsigned long flags;
 	runqueue_t *rq = cpu_rq(cpu);
 	int local = 1;
+	struct sched_domain *tmp = sd, *tmp1;
+
+	/* Remove the sched domains which has only one group
+	 */
+	while (tmp) {
+		tmp1 = tmp->parent;
+		if (!tmp1)
+			break;
+		if (tmp1->groups == tmp1->groups->next)
+			tmp->parent = tmp1->parent;
+		tmp = tmp->parent;
+	}
+
+	if (sd->parent && sd->groups && sd->groups == sd->groups->next)
+		sd = sd->parent;
 
 	spin_lock_irqsave(&rq->lock, flags);
 
@@ -4470,11 +4481,31 @@ static int __devinit cpu_to_cpu_group(int cpu)
 }
 #endif
 
+#ifdef CONFIG_SCHED_MC
+static DEFINE_PER_CPU(struct sched_domain, core_domains);
+static struct sched_group sched_group_core[NR_CPUS];
+#endif
+
+#if defined(CONFIG_SCHED_MC) && defined(CONFIG_SCHED_SMT)
+static int cpu_to_core_group(int cpu)
+{
+	return first_cpu(cpu_sibling_map[cpu]);
+}
+#elif defined(CONFIG_SCHED_MC)
+static int cpu_to_core_group(int cpu)
+{
+	return cpu;
+}
+#endif
+
 static DEFINE_PER_CPU(struct sched_domain, phys_domains);
 static struct sched_group sched_group_phys[NR_CPUS];
 static int __devinit cpu_to_phys_group(int cpu)
 {
-#ifdef CONFIG_SCHED_SMT
+#if defined(CONFIG_SCHED_MC)
+	cpumask_t mask = cpu_coregroup_map(cpu);
+	return first_cpu(mask);
+#elif defined(CONFIG_SCHED_SMT)
 	return first_cpu(cpu_sibling_map[cpu]);
 #else
 	return cpu;
@@ -4628,6 +4659,17 @@ static void __devinit arch_init_sched_domains(void)
 		sd->parent = p;
 		sd->groups = &sched_group_phys[group];
 
+#ifdef CONFIG_SCHED_MC
+		p = sd;
+		sd = &per_cpu(core_domains, i);
+		group = cpu_to_core_group(i);
+		*sd = SD_MC_INIT;
+		sd->span = cpu_coregroup_map(i);
+		cpus_and(sd->span, sd->span, cpu_default_map);
+		sd->parent = p;
+		sd->groups = &sched_group_core[group];
+#endif
+
 #ifdef CONFIG_SCHED_SMT
 		p = sd;
 		sd = &per_cpu(cpu_domains, i);
@@ -4660,6 +4702,19 @@ static void __devinit arch_init_sched_domains(void)
 						&cpu_to_isolated_group);
 	}
 
+#ifdef CONFIG_SCHED_MC
+	/* Set up multi-core groups */
+	for_each_online_cpu(i) {
+		cpumask_t this_core_map = cpu_coregroup_map(i);
+		cpus_and(this_core_map, this_core_map, cpu_default_map);
+		if (i != first_cpu(this_core_map))
+			continue;
+		init_sched_build_groups(sched_group_core, this_core_map,
+					&cpu_to_core_group);
+	}
+#endif
+
+
 	/* Set up physical groups */
 	for (i = 0; i < MAX_NUMNODES; i++) {
 		cpumask_t nodemask = node_to_cpumask(i);
@@ -4688,10 +4743,32 @@ static void __devinit arch_init_sched_domains(void)
 		sd->groups->cpu_power = power;
 #endif
 
+#ifdef CONFIG_SCHED_MC
+		sd = &per_cpu(core_domains, i);
+		power = SCHED_LOAD_SCALE + (cpus_weight(sd->groups->cpumask)-1)
+					    * SCHED_LOAD_SCALE / 10;
+		sd->groups->cpu_power = power;
+
+		sd = &per_cpu(phys_domains, i);
+
+ 		/*
+ 		 * This has to be < 2 * SCHED_LOAD_SCALE
+ 		 * Lets keep it SCHED_LOAD_SCALE, so that
+ 		 * while calculating NUMA group's cpu_power
+ 		 * we can simply do
+ 		 *  numa_group->cpu_power += phys_group->cpu_power;
+ 		 *
+ 		 * See "only add power once for each physical pkg"
+ 		 * comment below
+ 		 */
+		power = SCHED_LOAD_SCALE;
+ 		sd->groups->cpu_power = power;
+#else
 		sd = &per_cpu(phys_domains, i);
 		power = SCHED_LOAD_SCALE + SCHED_LOAD_SCALE *
 				(cpus_weight(sd->groups->cpumask)-1) / 10;
 		sd->groups->cpu_power = power;
+#endif
 
 #ifdef CONFIG_NUMA
 		if (i == first_cpu(sd->groups->cpumask)) {
@@ -4707,6 +4784,8 @@ static void __devinit arch_init_sched_domains(void)
 		struct sched_domain *sd;
 #ifdef CONFIG_SCHED_SMT
 		sd = &per_cpu(cpu_domains, i);
+#elif defined(CONFIG_SCHED_MC)
+		sd = &per_cpu(core_domains, i);
 #else
 		sd = &per_cpu(phys_domains, i);
 #endif
