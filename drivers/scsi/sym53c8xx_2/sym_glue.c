@@ -1077,16 +1077,15 @@ static int device_queue_depth(struct sym_hcb *np, int target, int lun)
 #define device_queue_depth(np, t, l)	(sym_driver_setup.max_tag)
 #endif	/* SYM_LINUX_BOOT_COMMAND_LINE_SUPPORT */
 
-/*
- * Linux entry point for device queue sizing.
- */
-static int sym53c8xx_slave_configure(struct scsi_device *device)
+static int sym53c8xx_slave_alloc(struct scsi_device *device)
 {
 	struct Scsi_Host *host = device->host;
 	struct sym_hcb *np;
 	struct sym_tcb *tp;
-	struct sym_lcb *lp;
-	int reqtags, depth_to_use;
+
+	if (device->id >= SYM_CONF_MAX_TARGET ||
+	    device->lun >= SYM_CONF_MAX_LUN)
+		return -ENXIO;
 
 	np = ((struct host_data *) host->hostdata)->ncb;
 	tp = &np->target[device->id];
@@ -1096,9 +1095,20 @@ static int sym53c8xx_slave_configure(struct scsi_device *device)
 	 *  Allocate the LCB if not yet.
 	 *  If it fail, we may well be in the sh*t. :)
 	 */
-	lp = sym_alloc_lcb(np, device->id, device->lun);
-	if (!lp)
+	if (!sym_alloc_lcb(np, device->id, device->lun))
 		return -ENOMEM;
+	return 0;
+}
+/*
+ * Linux entry point for device queue sizing.
+ */
+static int sym53c8xx_slave_configure(struct scsi_device *device)
+{
+	struct Scsi_Host *host = device->host;
+	struct sym_hcb *np = ((struct host_data *) host->hostdata)->ncb;
+	struct sym_tcb *tp = &np->target[device->id];
+	struct sym_lcb *lp = sym_lp(np, tp, device->lun);
+	int reqtags, depth_to_use;
 
 	/*
 	 *  Get user flags.
@@ -1134,6 +1144,19 @@ static int sym53c8xx_slave_configure(struct scsi_device *device)
 		spi_dv_device(device);
 
 	return 0;
+}
+
+static void sym53c8xx_slave_destroy(struct scsi_device *sdev)
+{
+	struct Scsi_Host *host = sdev->host;
+	struct sym_hcb *np = ((struct host_data *) host->hostdata)->ncb;
+	struct sym_lcb *lp = sym_lp(np, &np->target[sdev->id], sdev->lun);
+
+	if (lp->itlq_tbl)
+		sym_mfree_dma(lp->itlq_tbl, SYM_CONF_MAX_TASK * 4, "ITLQ_TBL");
+	if (lp->cb_tags)
+		sym_mfree(lp->cb_tags, SYM_CONF_MAX_TASK, "CB_TAGS");
+	sym_mfree_dma(lp, sizeof(*lp), "LCB");
 }
 
 /*
@@ -2262,6 +2285,8 @@ static struct scsi_host_template sym2_template = {
 	.info			= sym53c8xx_info, 
 	.queuecommand		= sym53c8xx_queue_command,
 	.slave_configure	= sym53c8xx_slave_configure,
+	.slave_alloc		= sym53c8xx_slave_alloc,
+	.slave_destroy		= sym53c8xx_slave_destroy,
 	.eh_abort_handler	= sym53c8xx_eh_abort_handler,
 	.eh_device_reset_handler = sym53c8xx_eh_device_reset_handler,
 	.eh_bus_reset_handler	= sym53c8xx_eh_bus_reset_handler,

@@ -874,7 +874,9 @@ mpt_get_msg_frame(int handle, MPT_ADAPTER *ioc)
 
 	/* validate handle and ioc identifier */
 	if (!ioc->active) {
+#ifdef MFCNT
 		printk(KERN_WARNING "IOC Not Active! mpt_get_msg_frame!!\n");
+#endif
 		return NULL;
 	}
 
@@ -5286,11 +5288,13 @@ mptbase_raid_process_event_data(MPT_ADAPTER *ioc,
 		bus	= pRaidEventData->VolumeBus;
 		pMptTarget = ioc->Target_List[bus];
 		pTarget = (VirtDevice *)pMptTarget->Target[id];
-		if ((state == MPI_RAIDVOL0_STATUS_STATE_FAILED) ||
-		    (state == MPI_RAIDVOL0_STATUS_STATE_MISSING)) {
-			pTarget->tflags |= MPT_TARGET_FLAGS_DELETED;
-		} else {
-			pTarget->tflags &= ~MPT_TARGET_FLAGS_DELETED;
+		if (pTarget) {
+			if ((state == MPI_RAIDVOL0_STATUS_STATE_FAILED) ||
+			    (state == MPI_RAIDVOL0_STATUS_STATE_MISSING)) {
+				pTarget->tflags |= MPT_TARGET_FLAGS_DELETED;
+			} else {
+				pTarget->tflags &= ~MPT_TARGET_FLAGS_DELETED;
+			}
 		}
 		printk(MYIOC_s_INFO_FMT "  volume is now %s%s%s%s\n",
 			ioc->name,

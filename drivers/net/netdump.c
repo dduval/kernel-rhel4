@@ -394,13 +394,14 @@ static asmlinkage void netpoll_netdump(struct pt_regs *regs, void *platform_arg)
 	platform_timestamp(t0);
 	netpoll_set_trap(1); /* bypass networking stack */
 
+	local_irq_disable();
+	local_bh_disable();
 	printk("< netdump activated - performing handshake with the server. >\n");
 	netdump_startup_handshake(&np);
 
 	printk("< handshake completed - listening for dump requests. >\n");
 
 	while (netdump_mode) {
-		local_irq_disable();
 		Dprintk("main netdump loop: polling controller ...\n");
 		netpoll_poll(&np);
 

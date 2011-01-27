@@ -1743,6 +1743,7 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 		case PROC_TID_MEM:
 		case PROC_TGID_MEM:
 			inode->i_op = &proc_mem_inode_operations;
+			inode->i_fop = &proc_mem_operations;
 			break;
 		case PROC_TID_MOUNTS:
 		case PROC_TGID_MOUNTS:

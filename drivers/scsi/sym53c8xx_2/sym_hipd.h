@@ -416,19 +416,6 @@ struct sym_tcb {
 	lcb_p	*lunmp;		/* Other LCBs [1..MAX_LUN]	*/
 #endif
 
-	/*
-	 *  Bitmap that tells about LUNs that succeeded at least 
-	 *  1 IO and therefore assumed to be a real device.
-	 *  Avoid useless allocation of the LCB structure.
-	 */
-	u32	lun_map[(SYM_CONF_MAX_LUN+31)/32];
-
-	/*
-	 *  Bitmap that tells about LUNs that haven't yet an LCB 
-	 *  allocated (not discovered or LCB allocation failed).
-	 */
-	u32	busy0_map[(SYM_CONF_MAX_LUN+31)/32];
-
 #ifdef	SYM_HAVE_STCB
 	/*
 	 *  O/S specific data structure.

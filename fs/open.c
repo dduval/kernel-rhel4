@@ -203,6 +203,10 @@ int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs)
 
 	newattrs.ia_size = length;
 	newattrs.ia_valid = ATTR_SIZE | time_attrs;
+
+	/* Remove suid/sgid on truncate too */
+	newattrs.ia_valid |= should_remove_suid(dentry);
+
 	down(&dentry->d_inode->i_sem);
 	err = notify_change(dentry, &newattrs);
 	up(&dentry->d_inode->i_sem);

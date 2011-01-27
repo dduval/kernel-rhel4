@@ -709,7 +709,7 @@ static inline int de_thread(struct task_struct *tsk)
 	if (current->pid != current->tgid) {
 		struct task_struct *leader = current->group_leader, *parent;
 		struct dentry *proc_dentry1, *proc_dentry2;
-		unsigned long exit_state, ptrace;
+		unsigned long ptrace;
 
 		/*
 		 * Wait for the thread group leader to be a zombie.
@@ -768,7 +768,10 @@ static inline int de_thread(struct task_struct *tsk)
 		list_del(&current->tasks);
 		list_add_tail(&current->tasks, &init_task.tasks);
 		current->exit_signal = SIGCHLD;
-		exit_state = leader->exit_state;
+
+		if (leader->exit_state != EXIT_ZOMBIE)
+			BUG();
+		leader->exit_state = EXIT_DEAD;
 
 		write_unlock_irq(&tasklist_lock);
 		spin_unlock(&leader->proc_lock);
@@ -776,8 +779,6 @@ static inline int de_thread(struct task_struct *tsk)
 		proc_pid_flush(proc_dentry1);
 		proc_pid_flush(proc_dentry2);
 
-		if (exit_state != EXIT_ZOMBIE)
-			BUG();
 		release_task(leader);
         }
 

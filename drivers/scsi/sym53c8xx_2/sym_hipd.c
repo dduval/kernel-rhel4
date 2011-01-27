@@ -4765,30 +4765,7 @@ ccb_p sym_get_ccb (hcb_p np, u_char tn, u_char ln, u_char tag_order)
 		goto out;
 	cp = sym_que_entry(qp, struct sym_ccb, link_ccbq);
 
-#ifndef SYM_OPT_HANDLE_DEVICE_QUEUEING
-	/*
-	 *  If the LCB is not yet available and the LUN
-	 *  has been probed ok, try to allocate the LCB.
-	 */
-	if (!lp && sym_is_bit(tp->lun_map, ln)) {
-		lp = sym_alloc_lcb(np, tn, ln);
-		if (!lp)
-			goto out_free;
-	}
-#endif
-
-	/*
-	 *  If the LCB is not available here, then the 
-	 *  logical unit is not yet discovered. For those 
-	 *  ones only accept 1 SCSI IO per logical unit, 
-	 *  since we cannot allow disconnections.
-	 */
-	if (!lp) {
-		if (!sym_is_bit(tp->busy0_map, ln))
-			sym_set_bit(tp->busy0_map, ln);
-		else
-			goto out_free;
-	} else {
+	{
 		/*
 		 *  If we have been asked for a tagged command.
 		 */
@@ -4797,7 +4774,8 @@ ccb_p sym_get_ccb (hcb_p np, u_char tn, u_char ln, u_char tag_order)
 			 *  Debugging purpose.
 			 */
 #ifndef SYM_OPT_HANDLE_DEVICE_QUEUEING
-			assert(lp->busy_itl == 0);
+			if (lp->busy_itl != 0)
+				goto out_free
 #endif
 			/*
 			 *  Allocate resources for tags if not yet.
@@ -4842,7 +4820,8 @@ ccb_p sym_get_ccb (hcb_p np, u_char tn, u_char ln, u_char tag_order)
 			 *  Debugging purpose.
 			 */
 #ifndef SYM_OPT_HANDLE_DEVICE_QUEUEING
-			assert(lp->busy_itl == 0 && lp->busy_itlq == 0);
+			if (lp->busy_itl != 0 || lp->busy_itlq != 0)
+				goto out_free;
 #endif
 			/*
 			 *  Count this nexus for this LUN.
@@ -4945,12 +4924,6 @@ void sym_free_ccb (hcb_p np, ccb_p cp)
 			lp->head.resel_sa =
 				cpu_to_scr(SCRIPTB_BA (np, resel_bad_lun));
 	}
-	/*
-	 *  Otherwise, we only accept 1 IO per LUN.
-	 *  Clear the bit that keeps track of this IO.
-	 */
-	else
-		sym_clr_bit(tp->busy0_map, cp->lun);
 
 	/*
 	 *  We donnot queue more than 1 ccb per target 
@@ -5133,20 +5106,7 @@ static void sym_init_tcb (hcb_p np, u_char tn)
 lcb_p sym_alloc_lcb (hcb_p np, u_char tn, u_char ln)
 {
 	tcb_p tp = &np->target[tn];
-	lcb_p lp = sym_lp(np, tp, ln);
-
-	/*
-	 *  Already done, just return.
-	 */
-	if (lp)
-		return lp;
-
-	/*
-	 *  Donnot allow LUN control block 
-	 *  allocation for not probed LUNs.
-	 */
-	if (!sym_is_bit(tp->lun_map, ln))
-		return NULL;
+	lcb_p lp = NULL;
 
 	/*
 	 *  Initialize the target control block if not yet.
@@ -5218,13 +5178,6 @@ lcb_p sym_alloc_lcb (hcb_p np, u_char tn, u_char ln)
 	lp->started_max   = SYM_CONF_MAX_TASK;
 	lp->started_limit = SYM_CONF_MAX_TASK;
 #endif
-	/*
-	 *  If we are busy, count the IO.
-	 */
-	if (sym_is_bit(tp->busy0_map, ln)) {
-		lp->busy_itl = 1;
-		sym_clr_bit(tp->busy0_map, ln);
-	}
 fail:
 	return lp;
 }
@@ -5666,12 +5619,6 @@ void sym_complete_ok (hcb_p np, ccb_p cp)
 	lp = sym_lp(np, tp, cp->lun);
 
 	/*
-	 *  Assume device discovered on first success.
-	 */
-	if (!lp)
-		sym_set_bit(tp->lun_map, cp->lun);
-
-	/*
 	 *  If all data have been transferred, given than no
 	 *  extended error did occur, there is no residual.
 	 */
@@ -6002,8 +5949,7 @@ void sym_hcb_free(hcb_p np)
 	SYM_QUEHEAD *qp;
 	ccb_p cp;
 	tcb_p tp;
-	lcb_p lp;
-	int target, lun;
+	int target;
 
 	if (np->scriptz0)
 		sym_mfree_dma(np->scriptz0, np->scriptz_sz, "SCRIPTZ0");
@@ -6039,18 +5985,6 @@ void sym_hcb_free(hcb_p np)
 
 	for (target = 0; target < SYM_CONF_MAX_TARGET ; target++) {
 		tp = &np->target[target];
-		for (lun = 0 ; lun < SYM_CONF_MAX_LUN ; lun++) {
-			lp = sym_lp(np, tp, lun);
-			if (!lp)
-				continue;
-			if (lp->itlq_tbl)
-				sym_mfree_dma(lp->itlq_tbl, SYM_CONF_MAX_TASK*4,
-				       "ITLQ_TBL");
-			if (lp->cb_tags)
-				sym_mfree(lp->cb_tags, SYM_CONF_MAX_TASK,
-				       "CB_TAGS");
-			sym_mfree_dma(lp, sizeof(*lp), "LCB");
-		}
 #if SYM_CONF_MAX_LUN > 1
 		if (tp->lunmp)
 			sym_mfree(tp->lunmp, SYM_CONF_MAX_LUN*sizeof(lcb_p),

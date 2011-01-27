@@ -138,7 +138,7 @@ EXPORT_SYMBOL(do_softirq);
 void local_bh_enable(void)
 {
 	__local_bh_enable();
-	WARN_ON(irqs_disabled());
+	WARN_ON(!softirq_count() && irqs_disabled());
 	if (unlikely(!in_interrupt() &&
 		     local_softirq_pending()))
 		invoke_softirq();

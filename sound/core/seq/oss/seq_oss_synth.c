@@ -607,6 +607,9 @@ snd_seq_oss_synth_make_info(seq_oss_devinfo_t *dp, int dev, struct synth_info *i
 {
 	seq_oss_synth_t *rec;
 
+	if (dev < 0 || dev >= dp->max_synthdev)
+		return -ENXIO;
+
 	if (dp->synths[dev].is_midi) {
 		struct midi_info minf;
 		snd_seq_oss_midi_make_info(dp, dp->synths[dev].midi_mapped, &minf);

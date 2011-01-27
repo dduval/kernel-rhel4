@@ -276,7 +276,7 @@ void fill_inquiry_response(struct us_data *us, unsigned char *data,
 static int usb_stor_control_thread(void * __us)
 {
 	struct us_data *us = (struct us_data *)__us;
-	struct Scsi_Host *host = us->host;
+	struct Scsi_Host *host = us_to_host(us);
 
 	lock_kernel();
 
@@ -773,20 +773,6 @@ static int usb_stor_acquire_resources(struct us_data *us)
 
 	up(&us->dev_semaphore);
 
-	/*
-	 * Since this is a new device, we need to register a SCSI
-	 * host definition with the higher SCSI layers.
-	 */
-	us->host = scsi_host_alloc(&usb_stor_host_template, sizeof(us));
-	if (!us->host) {
-		printk(KERN_WARNING USB_STORAGE
-			"Unable to allocate the scsi host\n");
-		return -EBUSY;
-	}
-
-	/* Set the hostdata to prepare for scanning */
-	us->host->hostdata[0] = (unsigned long) us;
-
 	/* Start up our control thread */
 	us->sm_state = US_STATE_IDLE;
 	p = kernel_thread(usb_stor_control_thread, us, CLONE_VM);
@@ -828,9 +814,9 @@ void usb_stor_release_resources(struct us_data *us)
 		 * Enqueue the command, wake up the thread, and wait for 
 		 * notification that it has exited.
 		 */
-		scsi_lock(us->host);
+		scsi_lock(us_to_host(us));
 		us->srb = NULL;
-		scsi_unlock(us->host);
+		scsi_unlock(us_to_host(us));
 		up(&us->dev_semaphore);
 
 		up(&us->sema);
@@ -842,10 +828,6 @@ void usb_stor_release_resources(struct us_data *us)
 		US_DEBUGP("-- calling extra_destructor()\n");
 		us->extra_destructor(us->extra);
 	}
-
-	/* Finish the host removal sequence */
-	if (us->host)
-		scsi_host_put(us->host);
 
 	/* Free the extra data and the URB */
 	if (us->extra)
@@ -870,27 +852,31 @@ static void dissociate_dev(struct us_data *us)
 
 	/* Remove our private data from the interface */
 	usb_set_intfdata(us->pusb_intf, NULL);
-
-	/* Free the structure itself */
-	kfree(us);
 }
 
 /* Probe to see if we can drive a newly-connected USB device */
 static int storage_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
+	struct Scsi_Host *host;
 	struct us_data *us;
 	const int id_index = id - storage_usb_ids; 
 	int result;
 
 	US_DEBUGP("USB Mass Storage device detected\n");
 
-	/* Allocate the us_data structure and initialize the mutexes */
-	us = (struct us_data *) kmalloc(sizeof(*us), GFP_KERNEL);
-	if (!us) {
-		printk(KERN_WARNING USB_STORAGE "Out of memory\n");
+	/*
+	 * Ask the SCSI layer to allocate a host structure, with extra
+	 * space at the end for our private us_data structure.
+	 */
+	host = scsi_host_alloc(&usb_stor_host_template, sizeof(*us));
+	if (!host) {
+		printk(KERN_WARNING USB_STORAGE
+			"Unable to allocate the scsi host\n");
 		return -ENOMEM;
 	}
+
+	us = host_to_us(host);
 	memset(us, 0, sizeof(struct us_data));
 	init_MUTEX(&(us->dev_semaphore));
 	init_MUTEX_LOCKED(&(us->sema));
@@ -950,14 +936,14 @@ static int storage_probe(struct usb_interface *intf,
 		goto BadDevice;
 
 	/* Finally, add the host (this does SCSI device scanning) */
-	result = scsi_add_host(us->host, &intf->dev);
+	result = scsi_add_host(host, &intf->dev);
 	if (result) {
 		printk(KERN_WARNING USB_STORAGE
 			"Unable to add the scsi host\n");
 		goto BadDevice;
 	}
 
-	scsi_scan_host(us->host);
+	scsi_scan_host(host);
 
 	printk(KERN_DEBUG 
 	       "USB Mass Storage device found at %d\n", us->pusb_dev->devnum);
@@ -968,6 +954,7 @@ BadDevice:
 	US_DEBUGP("storage_probe() failed\n");
 	usb_stor_release_resources(us);
 	dissociate_dev(us);
+	scsi_host_put(host);
 	return result;
 }
 
@@ -987,11 +974,15 @@ static void storage_disconnect(struct usb_interface *intf)
 	/* Wait for the current command to finish, then remove the host */
 	down(&us->dev_semaphore);
 	up(&us->dev_semaphore);
-	scsi_remove_host(us->host);
+	scsi_remove_host(us_to_host(us));
 
 	/* Wait for everything to become idle and release all our resources */
 	usb_stor_release_resources(us);
 	dissociate_dev(us);
+
+	/* Drop our reference to the host; the SCSI core will free it
+	 * (and "us" along with it) when the refcount becomes 0. */
+	scsi_host_put(us_to_host(us));
 }
 
 /***********************************************************************

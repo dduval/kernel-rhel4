@@ -48,6 +48,7 @@
 #include <linux/blkdev.h>
 #include <linux/smp_lock.h>
 #include <linux/completion.h>
+#include <scsi/scsi_host.h>
 
 struct us_data;
 struct scsi_cmnd;
@@ -139,7 +140,6 @@ struct us_data {
 	proto_cmnd		proto_handler;	 /* protocol handler	   */
 
 	/* SCSI interfaces */
-	struct Scsi_Host	*host;		 /* our dummy host data */
 	struct scsi_cmnd	*srb;		 /* current srb		*/
 
 	/* thread information */
@@ -164,8 +164,13 @@ struct us_data {
 	extra_data_destructor	extra_destructor;/* extra data destructor   */
 };
 
-/* The structure which defines our driver */
-extern struct usb_driver usb_storage_driver;
+/* Convert between us_data and the corresponding Scsi_Host */
+static inline struct Scsi_Host *us_to_host(struct us_data *us) {
+	return container_of((void *) us, struct Scsi_Host, hostdata);
+}
+static inline struct us_data *host_to_us(struct Scsi_Host *host) {
+	return (struct us_data *) host->hostdata;
+}
 
 /* Function to fill an inquiry response. See usb.c for details */
 extern void fill_inquiry_response(struct us_data *us,
