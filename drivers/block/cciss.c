@@ -413,11 +413,17 @@ static ssize_t cciss_show_model(struct device *dev, char *buf)
 	return -ENOTTY;
 }
 
+static ssize_t cciss_show_bus(struct device *dev, char *buf)
+{
+	return snprintf(buf, 6, "cciss\n");
+}
+
 DEVICE_ATTR(raid_level, S_IRUGO | S_IWUSR, cciss_show_raid_level, NULL);
 DEVICE_ATTR(disk_size, S_IRUGO | S_IWUSR, cciss_show_disk_size, NULL);
 DEVICE_ATTR(usage_count, S_IRUGO | S_IWUSR, cciss_show_usage_count, NULL);
 DEVICE_ATTR(vendor, S_IRUGO | S_IWUSR, cciss_show_vendor, NULL);
 DEVICE_ATTR(model, S_IRUGO | S_IWUSR, cciss_show_model, NULL);
+DEVICE_ATTR(bus, S_IRUGO | S_IWUSR, cciss_show_bus, NULL);
 
 #ifdef CONFIG_CCISS_DUMP
 
@@ -470,6 +476,7 @@ static struct attribute *cciss_sysfs_attrs[] = {
 	&dev_attr_usage_count.attr,
 	&dev_attr_vendor.attr,
 	&dev_attr_model.attr,
+	&dev_attr_bus.attr,
 #ifdef CONFIG_CCISS_DUMP
 	&dev_attr_dump.attr,
 #endif

@@ -258,6 +258,50 @@ static int i8042_aux_write(struct serio *port, unsigned char c)
 	return retval;
 }
 
+
+/*
+ * i8042_aux_close attempts to clear AUX or KBD port state by disabling
+ * and then re-enabling it.
+ */
+
+static void i8042_port_close(struct serio *serio)
+{
+	int irq_bit;
+	int disable_bit;
+	const char *port_name;
+	unsigned char str = i8042_read_status();
+
+	if (str & I8042_STR_AUXDATA) {
+		irq_bit = I8042_CTR_AUXINT;
+		disable_bit = I8042_CTR_AUXDIS;
+		port_name = "AUX";
+	} else {
+		irq_bit = I8042_CTR_KBDINT;
+		disable_bit = I8042_CTR_KBDDIS;
+		port_name = "KBD";
+	}
+
+	i8042_ctr &= ~irq_bit;
+	if (i8042_command(&i8042_ctr, I8042_CMD_CTL_WCTR))
+		printk(KERN_WARNING
+			"i8042.c: Can't write CTR while closing %s port.\n",
+			port_name);
+
+	udelay(50);
+
+	i8042_ctr &= ~disable_bit;
+	i8042_ctr |= irq_bit;
+	if (i8042_command(&i8042_ctr, I8042_CMD_CTL_WCTR))
+		printk(KERN_ERR "i8042.c: Can't reactivate %s port.\n",
+			port_name);
+
+	/*
+	 * See if there is any data appeared while we were messing with
+	 * port state.
+	 */
+	i8042_interrupt(0, NULL, NULL);
+}
+
 /*
  * i8042_activate_port() enables port on a chip.
  */
@@ -828,6 +872,9 @@ void i8042_controller_cleanup(void)
 
 	i8042_flush();
 
+	if (i8042_command(&i8042_initial_ctr, I8042_CMD_CTL_WCTR))
+		printk(KERN_WARNING "i8042.c: Can't write CTR while resetting.\n");
+
 /*
  * Reset anything that is connected to the ports.
  */
@@ -1000,6 +1047,7 @@ static struct serio * __init i8042_allocate_kbd_port(void)
 		memset(serio, 0, sizeof(struct serio));
 		serio->type		= i8042_direct ? SERIO_8042 : SERIO_8042_XL,
 		serio->write		= i8042_dumbkbd ? NULL : i8042_kbd_write,
+		serio->close		= i8042_port_close;
 		serio->port_data	= &i8042_kbd_values,
 		serio->dev.parent	= &i8042_platform_device->dev;
 		strlcpy(serio->name, "i8042 Kbd Port", sizeof(serio->name));
@@ -1018,6 +1066,7 @@ static struct serio * __init i8042_allocate_aux_port(void)
 		memset(serio, 0, sizeof(struct serio));
 		serio->type		= SERIO_8042;
 		serio->write		= i8042_aux_write;
+		serio->close		= i8042_port_close;
 		serio->port_data	= &i8042_aux_values,
 		serio->dev.parent	= &i8042_platform_device->dev;
 		strlcpy(serio->name, "i8042 Aux Port", sizeof(serio->name));

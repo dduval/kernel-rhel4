@@ -748,6 +748,8 @@ int ip_append_data(struct sock *sk,
 			inet->cork.flags |= IPCORK_OPT;
 			inet->cork.addr = ipc->addr;
 		}
+		if (unlikely(!rt))
+			return -EFAULT;
 		dst_hold(&rt->u.dst);
 		inet->cork.fragsize = mtu = dst_pmtu(&rt->u.dst);
 		inet->cork.rt = rt;

@@ -2190,6 +2190,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 	char		*SAS_handshake_reply=NULL;
 	u16		msgSize=0;
 	u8		Function;
+	MPIHeader_t	k_mfHeader;
 
 	bufIn.kptr = bufOut.kptr = NULL;
 
@@ -2226,9 +2227,19 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 		return -EFAULT;
 	}
 
+	/* Copy the request frame Header
+	 */
+	if (copy_from_user(&k_mfHeader, mfPtr, sizeof(MPIHeader_t))) {
+		printk(KERN_ERR "%s@%d: mptctl_do_mpt_command - "
+			"Unable to copy mf Header @ %p\n",
+			__FILE__, __LINE__, mfPtr);
+		rc = -EFAULT;
+		goto done_free_mem;
+	}
+
 	/* Get a free request frame and save the message context.
 	 */
-	if (((MPIHeader_t *)(mfPtr))->MsgContext == 0x02012020) {
+	if (k_mfHeader.MsgContext == 0x02012020) {
 		msgSize = karg.hdr.port >> 16;
 		if ( (mf = (MPT_FRAME_HDR *)kmalloc(msgSize, GFP_KERNEL)) == NULL) {
 			dfailprintk(("%s: mptctl_do_mpt_command, Unable to kmalloc msgSize=%d for SAS_handshake!!\n",

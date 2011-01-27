@@ -410,7 +410,7 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 		}
 	}
 
-	if (usage->hat_min != usage->hat_max) {
+	if (usage->hat_min < usage->hat_max) {
 		int i;
 		for (i = usage->code; i < usage->code + 2 && i <= max; i++) {
 			input->absmax[i] = 1;
@@ -447,7 +447,7 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 		return;
 	}
 
-	if (usage->hat_min != usage->hat_max ) { /* FIXME: hat_max can be 0 and hat_min 1 */
+	if (usage->hat_min < usage->hat_max) {
 		value = (value - usage->hat_min) * 8 / (usage->hat_max - usage->hat_min + 1) + 1;
 		if (value < 0 || value > 8) value = 0;
 		input_event(input, usage->type, usage->code    , hid_hat_to_axis[value].x);

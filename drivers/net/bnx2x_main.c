@@ -9447,7 +9447,7 @@ static inline u32 bnx2x_xmit_type(struct bnx2x *bp, struct sk_buff *skb)
 	/* use this to determine hardware parameters */
 	if ((skb_shinfo(skb)->tso_size) &&
 	    (skb->len > (bp->dev->mtu + ETH_HLEN)))
-		rc |= XMIT_GSO_V4;
+		rc |= (XMIT_GSO_V4 | XMIT_CSUM_V4 | XMIT_CSUM_TCP);
 #endif
 
 	return rc;

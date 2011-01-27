@@ -14,6 +14,7 @@
 #include <linux/sunrpc/svc.h>
 #include <linux/lockd/lockd.h>
 #include <linux/smp_lock.h>
+#include <linux/nfs_mount.h>
 
 #define NLMDBG_FACILITY		NLMDBG_CLIENT
 
@@ -166,6 +167,8 @@ void nlmclnt_mark_reclaim(struct nlm_host *host)
 		inode = fl->fl_file->f_dentry->d_inode;
 		if (inode->i_sb->s_magic != NFS_SUPER_MAGIC)
 			continue;
+		if (NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM)
+			continue;
 		if (fl->fl_u.nfs_fl.owner->host != host)
 			continue;
 		if (!(fl->fl_u.nfs_fl.flags & NFS_LCK_GRANTED))
@@ -236,6 +239,8 @@ restart:
 			continue;
 		inode = fl->fl_file->f_dentry->d_inode;
 		if (inode->i_sb->s_magic != NFS_SUPER_MAGIC)
+			continue;
+		if (NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM)
 			continue;
 		if (fl->fl_u.nfs_fl.owner->host != host)
 			continue;
