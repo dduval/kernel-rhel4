@@ -857,8 +857,10 @@ do_holes:
 				loff_t i_size_aligned;
 
 				/* AKPM: eargh, -ENOTBLK is a hack */
-				if (dio->rw == WRITE)
+				if (dio->rw == WRITE) {
+					page_cache_release(page);
 					return -ENOTBLK;
+				}
 
 				/*
 				 * Be sure to account for a partial block as the

@@ -223,13 +223,17 @@ int80_ret_end_marker:					\
 	.long 222b,555b;\
 .previous
 
-#define __RESTORE_ALL	\
-	__RESTORE_REGS	\
-	__RESTORE_IRET
-
 #define __RESTORE_ALL_USER \
 	__RESTORE_REGS_USER \
 	__RESTORE_IRET
+
+#ifdef CONFIG_X86_HIGH_ENTRY
+#define __RESTORE_ALL	\
+	__RESTORE_REGS	\
+	__RESTORE_IRET
+#else /* !CONFIG_X86_HIGH_ENTRY */
+#define __RESTORE_ALL	__RESTORE_ALL_USER
+#endif
 
 #define __RESTORE_IRET	\
 	addl $4, %esp;	\
