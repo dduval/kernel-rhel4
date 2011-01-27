@@ -1238,7 +1238,7 @@ do_add_counters(void __user *user, unsigned int len)
 		goto free;
 
 	write_lock_bh(&t->lock);
-	if (t->private->number != paddc->num_counters) {
+	if (t->private->number != tmp.num_counters) {
 		ret = -EINVAL;
 		goto unlock_up_free;
 	}

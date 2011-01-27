@@ -129,9 +129,7 @@ static int ipw_send_qos_info_command(struct ipw_priv *priv, struct ieee80211_qos
 				     *qos_param);
 #endif				/* CONFIG_IPW_QOS */
 
-#if 0 /* Not in RHEL4... */
 static struct iw_statistics *ipw_get_wireless_stats(struct net_device *dev);
-#endif
 static void ipw_remove_current_network(struct ipw_priv *priv);
 static void ipw_rx(struct ipw_priv *priv);
 static int ipw_queue_tx_reclaim(struct ipw_priv *priv,
@@ -7424,7 +7422,8 @@ static void ipw_handle_data_packet(struct ipw_priv *priv,
 	/* HW decrypt will not clear the WEP bit, MIC, PN, etc. */
 	hdr = (struct ieee80211_hdr_4addr *)rxb->skb->data;
 	if (priv->ieee->iw_mode != IW_MODE_MONITOR &&
-	    (is_multicast_ether_addr(hdr->addr1) ?
+	    ((is_multicast_ether_addr(hdr->addr1) ||
+	      is_broadcast_ether_addr(hdr->addr1)) ?
 	     !priv->ieee->host_mc_decrypt : !priv->ieee->host_decrypt))
 		ipw_rebuild_decrypted_skb(priv, rxb->skb);
 
@@ -7615,7 +7614,8 @@ static int is_network_packet(struct ipw_priv *priv,
 			return 0;
 
 		/* {broad,multi}cast packets to our BSSID go through */
-		if (is_multicast_ether_addr(header->addr1))
+		if (is_multicast_ether_addr(header->addr1) ||
+		    is_broadcast_ether_addr(header->addr1))
 			return !memcmp(header->addr3, priv->bssid, ETH_ALEN);
 
 		/* packets to our adapter go through */
@@ -7628,7 +7628,8 @@ static int is_network_packet(struct ipw_priv *priv,
 			return 0;
 
 		/* {broad,multi}cast packets to our BSS go through */
-		if (is_multicast_ether_addr(header->addr1))
+		if (is_multicast_ether_addr(header->addr1) ||
+		    is_broadcast_ether_addr(header->addr1))
 			return !memcmp(header->addr2, priv->bssid, ETH_ALEN);
 
 		/* packets to our adapter go through */
@@ -9509,7 +9510,6 @@ static struct iw_handler_def ipw_wx_handler_def = {
 #endif
 };
 
-#if 0 /* Not in RHEL4... */
 /*
  * Get wireless statistics.
  * Called by /proc/net/wireless
@@ -9555,7 +9555,6 @@ static struct iw_statistics *ipw_get_wireless_stats(struct net_device *dev)
 
 	return wstats;
 }
-#endif
 
 /* net device stuff */
 
@@ -9631,7 +9630,8 @@ static int ipw_tx_skb(struct ipw_priv *priv, struct ieee80211_txb *txb,
 	switch (priv->ieee->iw_mode) {
 	case IW_MODE_ADHOC:
 		hdr_len = IEEE80211_3ADDR_LEN;
-		unicast = !is_multicast_ether_addr(hdr->addr1);
+		unicast = !is_multicast_ether_addr(hdr->addr1) &&
+			!is_broadcast_ether_addr(hdr->addr1);
 		id = ipw_find_station(priv, hdr->addr1);
 		if (id == IPW_INVALID_STATION) {
 			id = ipw_add_station(priv, hdr->addr1);
@@ -9646,7 +9646,8 @@ static int ipw_tx_skb(struct ipw_priv *priv, struct ieee80211_txb *txb,
 
 	case IW_MODE_INFRA:
 	default:
-		unicast = !is_multicast_ether_addr(hdr->addr3);
+		unicast = !is_multicast_ether_addr(hdr->addr3) &&
+			!is_broadcast_ether_addr(hdr->addr3);
 		hdr_len = IEEE80211_3ADDR_LEN;
 		id = 0;
 		break;
@@ -11028,6 +11029,7 @@ static int ipw_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	net_dev->get_stats = ipw_net_get_stats;
 	net_dev->set_multicast_list = ipw_net_set_multicast_list;
 	net_dev->set_mac_address = ipw_net_set_mac_address;
+	net_dev->get_wireless_stats = ipw_get_wireless_stats;
 	net_dev->wireless_handlers = &ipw_wx_handler_def;
 	net_dev->ethtool_ops = &ipw_ethtool_ops;
 	net_dev->irq = pdev->irq;

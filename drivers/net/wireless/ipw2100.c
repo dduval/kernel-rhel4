@@ -319,9 +319,7 @@ static void ipw2100_release_firmware(struct ipw2100_priv *priv,
 static int ipw2100_ucode_download(struct ipw2100_priv *priv,
 				  struct ipw2100_fw *fw);
 static void ipw2100_wx_event_work(struct ipw2100_priv *priv);
-#if 0 /* Not in RHEL4... */
 static struct iw_statistics *ipw2100_wx_wireless_stats(struct net_device *dev);
-#endif
 static struct iw_handler_def ipw2100_wx_handler_def;
 
 static inline void read_register(struct net_device *dev, u32 reg, u32 * val)
@@ -5931,6 +5929,7 @@ static struct net_device *ipw2100_alloc_device(struct pci_dev *pci_dev,
 	dev->ethtool_ops = &ipw2100_ethtool_ops;
 	dev->tx_timeout = ipw2100_tx_timeout;
 	dev->wireless_handlers = &ipw2100_wx_handler_def;
+	dev->get_wireless_stats = ipw2100_wx_wireless_stats;
 	dev->set_mac_address = ipw2100_set_address;
 	dev->watchdog_timeo = 3 * HZ;
 	dev->irq = 0;
@@ -8033,7 +8032,6 @@ static iw_handler ipw2100_private_handler[] = {
 #endif				/* CONFIG_IPW2100_MONITOR */
 };
 
-#if 0 /* Not in RHEL4... */
 /*
  * Get wireless statistics.
  * Called by /proc/net/wireless
@@ -8174,7 +8172,6 @@ static struct iw_statistics *ipw2100_wx_wireless_stats(struct net_device *dev)
 
 	return (struct iw_statistics *)NULL;
 }
-#endif
 
 static struct iw_handler_def ipw2100_wx_handler_def = {
 	.standard = ipw2100_wx_handlers,

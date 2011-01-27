@@ -330,7 +330,8 @@ static void dvb_net_ule( struct net_device *dev, const u8 *buf, size_t buf_len )
 				/* printk(KERN_WARNING "ULE D-Bit: %d, SNDU len %u.\n",
 				          priv->ule_dbit, priv->ule_sndu_len); */
 
-				if (priv->ule_sndu_len > 32763) {
+				if (priv->ule_sndu_len > 32763 ||
+					priv->ule_sndu_len < ((priv->ule_dbit) ? 4 : 4 + ETH_ALEN)) {
 					printk(KERN_WARNING "Invalid ULE SNDU length %u. "
 					       "Resyncing.\n", priv->ule_sndu_len);
 					hexdump(ts, TS_SZ);
