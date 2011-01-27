@@ -55,9 +55,6 @@ int task_statm(struct mm_struct *mm, int *shared, int *text,
 
 static int show_map(struct seq_file *m, void *v)
 {
-#ifdef __i386__
-	struct task_struct *task = m->private;
-#endif
 	struct vm_area_struct *map = v;
 	struct file *file = map->vm_file;
 	int flags = map->vm_flags;
@@ -78,8 +75,8 @@ static int show_map(struct seq_file *m, void *v)
 			flags & VM_WRITE ? 'w' : '-',
 			(flags & VM_EXEC
 #ifdef __i386__
-				|| (!nx_enabled &&
-				(map->vm_start < task->mm->context.exec_limit))
+				|| (!nx_enabled && map->vm_mm &&
+				(map->vm_start < map->vm_mm->context.exec_limit))
 #endif
 			)
 				? 'x' : '-',

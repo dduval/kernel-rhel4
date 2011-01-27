@@ -57,6 +57,7 @@
 
 #define NFSDBG_FACILITY		NFSDBG_VFS
 
+static void nfs_free_user_pages(struct page **pages, int npages, int do_dirty);
 static kmem_cache_t *nfs_direct_cachep;
 
 /*
@@ -121,6 +122,15 @@ static inline int nfs_get_user_pages(int rw, unsigned long user_addr, size_t siz
 					page_count, (rw == READ), 0,
 					*pages, NULL);
 		up_read(&current->mm->mmap_sem);
+		/*
+		 * If we got fewer pages than expected from get_user_pages(),
+		 * the user buffer runs off the end of a mapping; return EFAULT.
+		 */
+		if (result >= 0 && result < page_count) {
+			nfs_free_user_pages(*pages, result, 0);
+			*pages = NULL;
+			result = -EFAULT;
+		}
 	}
 	return result;
 }

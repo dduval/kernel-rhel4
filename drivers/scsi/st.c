@@ -4312,7 +4312,7 @@ static int sgl_map_user_pages(struct scatterlist *sgl, const unsigned int max_pa
 	up_read(&current->mm->mmap_sem);
 
 	/* Errors and no page mapped should return here */
-	if (res < nr_pages)
+	if ((res < 0) || (res < nr_pages))
 		goto out_unmap;
 
         for (i=0; i < nr_pages; i++) {

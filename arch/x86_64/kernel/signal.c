@@ -29,6 +29,7 @@
 #include <asm/uaccess.h>
 #include <asm/i387.h>
 #include <asm/proto.h>
+#include <asm/vsyscall.h>
 
 /* #define DEBUG_SIG 1 */
 
@@ -99,8 +100,12 @@ restore_sigcontext(struct pt_regs *regs, struct sigcontext __user *sc, unsigned 
 
 #define COPY(x)		err |= __get_user(regs->x, &sc->x)
 
-	COPY(rdi); COPY(rsi); COPY(rbp); COPY(rsp); COPY(rbx);
-	COPY(rdx); COPY(rcx); COPY(rip);
+	COPY(rdi); COPY(rsi); COPY(rbp); COPY(rsp);
+	if (unlikely(regs->rsp >= TASK_SIZE))
+		regs->rsp = 0UL;
+	COPY(rbx); COPY(rdx); COPY(rcx); COPY(rip);
+	if (unlikely(regs->rip >= TASK_SIZE && regs->rip < VSYSCALL_START))
+		regs->rip = 0UL;
 	COPY(r8);
 	COPY(r9);
 	COPY(r10);
@@ -325,9 +330,11 @@ static void setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	   next argument after the signal number on the stack. */
 	regs->rsi = (unsigned long)&frame->info; 
 	regs->rdx = (unsigned long)&frame->uc; 
-	regs->rip = (unsigned long) ka->sa.sa_handler;
-
 	regs->rsp = (unsigned long)frame;
+	if (unlikely((unsigned long)ka->sa.sa_handler >= TASK_SIZE))
+		regs->rip = 0UL;
+	else
+		regs->rip = (unsigned long)ka->sa.sa_handler;
 
 	set_fs(USER_DS);
 	if (regs->eflags & TF_MASK) {

@@ -1161,8 +1161,10 @@ static int __sock_create(int family, int type, int protocol, struct socket **res
 	if (!try_module_get(net_families[family]->owner))
 		goto out_release;
 
-	if ((i = net_families[family]->create(sock, protocol)) < 0)
+	if ((i = net_families[family]->create(sock, protocol)) < 0) {
+		sock->ops = NULL;
 		goto out_module_put;
+	}
 	/*
 	 * Now to bump the refcnt of the [loadable] module that owns this
 	 * socket at sock_release time we decrement its refcnt.
