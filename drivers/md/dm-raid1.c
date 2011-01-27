@@ -106,12 +106,49 @@ struct region {
 	struct bio_list delayed_bios;
 };
 
+/*-----------------------------------------------------------------
+ * Mirror set structures.
+ *---------------------------------------------------------------*/
+struct mirror {
+	atomic_t error_count;  /* Error counter to flag mirror failure */
+	struct mirror_set *ms;
+	struct dm_dev *dev;
+	sector_t offset;
+};
+
+struct mirror_set {
+	struct dm_target *ti;
+	struct list_head list;
+	struct region_hash rh;
+	struct kcopyd_client *kcopyd_client;
+
+	spinlock_t lock;	/* protects the lists */
+	struct bio_list reads;
+	struct bio_list writes;
+	struct bio_list failures;
+
+	/* recovery */
+	region_t nr_regions;
+	int in_sync;
+	int log_failure;
+	atomic_t suspend;
+
+	unsigned int nr_mirrors;
+	spinlock_t choose_lock;	/* protects select in choose_mirror(). */
+	atomic_t read_count;	/* Read counter for read balancing. */
+	struct mirror *read_mirror;	/* Last mirror read. */
+	struct mirror *default_mirror;	/* Default mirror. */
+	struct workqueue_struct *kmirrord_wq;
+	struct work_struct kmirrord_work;
+ 	struct mirror mirror[0];
+};
+
 /*
  * Conversion fns
  */
 static inline region_t bio_to_region(struct region_hash *rh, struct bio *bio)
 {
-	return bio->bi_sector >> rh->region_shift;
+	return (bio->bi_sector - rh->ms->ti->begin) >> rh->region_shift;
 }
 
 static inline sector_t region_to_sector(struct region_hash *rh, region_t region)
@@ -604,43 +641,6 @@ static void rh_start_recovery(struct region_hash *rh)
 
 	wake(rh->ms);
 }
-
-/*-----------------------------------------------------------------
- * Mirror set structures.
- *---------------------------------------------------------------*/
-struct mirror {
-	atomic_t error_count;  /* Error counter to flag mirror failure */
-	struct mirror_set *ms;
-	struct dm_dev *dev;
-	sector_t offset;
-};
-
-struct mirror_set {
-	struct dm_target *ti;
-	struct list_head list;
-	struct region_hash rh;
-	struct kcopyd_client *kcopyd_client;
-
-	spinlock_t lock;	/* protects the lists */
-	struct bio_list reads;
-	struct bio_list writes;
-	struct bio_list failures;
-
-	/* recovery */
-	region_t nr_regions;
-	int in_sync;
-	int log_failure;
-	atomic_t suspend;
-
-	unsigned int nr_mirrors;
-	spinlock_t choose_lock;	/* protects select in choose_mirror(). */
-	atomic_t read_count;	/* Read counter for read balancing. */
-	struct mirror *read_mirror;	/* Last mirror read. */
-	struct mirror *default_mirror;	/* Default mirror. */
-	struct workqueue_struct *kmirrord_wq;
-	struct work_struct kmirrord_work;
- 	struct mirror mirror[0];
-};
 
 struct bio_map_info {
 	struct mirror *bmi_m;
