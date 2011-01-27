@@ -1567,6 +1567,7 @@ xprt_bind_socket(struct rpc_xprt *xprt, struct socket *sock)
 	xprt->old_data_ready = sk->sk_data_ready;
 	xprt->old_state_change = sk->sk_state_change;
 	xprt->old_write_space = sk->sk_write_space;
+	sk->sk_allocation = GFP_ATOMIC;
 	if (xprt->prot == IPPROTO_UDP) {
 		sk->sk_data_ready = udp_data_ready;
 		sk->sk_no_check = UDP_CSUM_NORCV;

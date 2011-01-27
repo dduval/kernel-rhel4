@@ -618,7 +618,7 @@ hugepage_recheck:
 
 		/* try just below the current vma->vm_start */
 		addr = vma->vm_start-len;
-	} while (len <= vma->vm_start);
+	} while (len < vma->vm_start);
 
 fail:
 	/*
