@@ -1314,10 +1314,8 @@ static int do_mirror(struct mirror_set *ms)
 
 static void do_work(void *data)
 {
-	while (do_mirror(data)) {
-		set_current_state(TASK_INTERRUPTIBLE);
-		schedule_timeout(HZ/5);
-	}
+	while (do_mirror(data))
+		schedule();
 }
 
 /*-----------------------------------------------------------------

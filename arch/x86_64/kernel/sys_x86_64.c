@@ -201,10 +201,14 @@ try_again:
 		 * vma->vm_start, use it:
 		 */
 		if (addr+len <= vma->vm_start &&
-				(!prev_vma || (addr >= prev_vma->vm_end)))
+				(!prev_vma || (addr >= prev_vma->vm_end))) {
+			/* Do not return address zero. */
+			if (unlikely(!addr))
+				goto fail;
 			/* remember the address as a hint for next time */
-			return (mm->free_area_cache = addr);
-		else
+			else
+				return (mm->free_area_cache = addr);
+		} else
 			/* pull free_area_cache down to the first hole */
 			if (mm->free_area_cache == vma->vm_end)
 				mm->free_area_cache = vma->vm_start;

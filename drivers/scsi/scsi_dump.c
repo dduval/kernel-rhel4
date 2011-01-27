@@ -514,8 +514,12 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 	struct Scsi_Host *host = sdev->host;
 	struct scsi_host_template *hostt = host->hostt;
 	int ret, i;
+	char *buf = cmnd_buf;
 
-	init_test_unit_ready_command(sdev, &scsi_dump_cmnd);
+	if (!strncmp(hostt->proc_name, "mptspi", 6)) 
+		init_sense_command(sdev, &scsi_dump_cmnd, buf);
+	else
+		init_test_unit_ready_command(sdev, &scsi_dump_cmnd);
 
 	if (hostt->eh_host_reset_handler) {
 		spin_lock(host->host_lock);
@@ -538,7 +542,7 @@ static int scsi_dump_reset(struct scsi_device *sdev)
 		diskdump_mdelay(1);
 	}
 
-	Dbg("test unit ready");
+	Dbg("request sense/test unit ready");
 	if ((ret = send_command(&scsi_dump_cmnd)) < 0) {
 		Err("sense failed");
 		return -EIO;
