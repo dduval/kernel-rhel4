@@ -1707,20 +1707,23 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 		int chunk;
 		struct sk_buff *skb;
 
+		unix_state_rlock(sk);
 		skb = skb_dequeue(&sk->sk_receive_queue);
 		if (skb==NULL)
 		{
 			if (copied >= target)
-				break;
+				goto unlock;
 
 			/*
 			 *	POSIX 1003.1g mandates this order.
 			 */
 			 
 			if ((err = sock_error(sk)) != 0)
-				break;
+				goto unlock;
 			if (sk->sk_shutdown & RCV_SHUTDOWN)
-				break;
+				goto unlock;
+
+			unix_state_runlock(sk);
 			err = -EAGAIN;
 			if (!timeo)
 				break;
@@ -1734,7 +1737,11 @@ static int unix_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 			}
 			down(&u->readsem);
 			continue;
+unlock:
+			unix_state_runlock(sk);
+			break;
 		}
+		unix_state_runlock(sk);
 
 		if (check_creds) {
 			/* Never glue messages from different writers */

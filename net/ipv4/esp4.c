@@ -151,7 +151,7 @@ static int esp_input(struct xfrm_state *x, struct xfrm_decap_state *decap, struc
 	int nfrags;
 	int encap_len = 0;
 
-	if (!pskb_may_pull(skb, sizeof(struct ip_esp_hdr)))
+	if (!pskb_may_pull(skb, sizeof(struct ip_esp_hdr) + esp->conf.ivlen))
 		goto out;
 
 	if (elen <= 0 || (elen & (blksize-1)))

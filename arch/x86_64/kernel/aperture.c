@@ -203,6 +203,7 @@ void __init iommu_hole_init(void)
 	u32 aper_size, aper_alloc = 0, aper_order;
 	u64 aper_base; 
 	int valid_agp = 0;
+	int gart_enabled = 0;
 
 	if (iommu_aperture_disabled || !fix_aperture)
 		return;
@@ -217,6 +218,7 @@ void __init iommu_hole_init(void)
 
 		iommu_aperture = 1; 
 
+		gart_enabled = read_pci_config(0,num, 3, 0x90) & 0x1;
 		aper_order = (read_pci_config(0, num, 3, 0x90) >> 1) & 7; 
 		aper_size = (32 * 1024 * 1024) << aper_order; 
 		aper_base = read_pci_config(0, num, 3, 0x94) & 0x7fff;
@@ -247,10 +249,12 @@ void __init iommu_hole_init(void)
 		   force_iommu ||
 		   valid_agp ||
 		   fallback_aper_force) { 
-		printk("Your BIOS doesn't leave a aperture memory hole\n");
-		printk("Please enable the IOMMU option in the BIOS setup\n");
-		printk("This costs you %d MB of RAM\n",
-		       32 << fallback_aper_order);
+		if (gart_enabled) {
+			printk("Your BIOS doesn't leave a aperture memory hole\n");
+			printk("Please enable the IOMMU option in the BIOS setup\n");
+			printk("This costs you %d MB of RAM\n",
+					32 << fallback_aper_order);
+		}
 
 		aper_order = fallback_aper_order;
 		aper_alloc = allocate_aperture();

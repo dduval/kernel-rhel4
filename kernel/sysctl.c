@@ -72,6 +72,7 @@ extern int printk_ratelimit_burst;
 extern int percpu_pagelist_fraction;
 extern int wake_balance;
 extern int sysctl_drop_caches;
+extern int write_mapped;
 
 #if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86)
 int unknown_nmi_panic;
@@ -80,6 +81,11 @@ extern int proc_unknown_nmi_panic(ctl_table *, int, struct file *,
 #endif
 
 extern unsigned int vdso_enabled;
+
+#ifdef CONFIG_HIGHMEM
+extern int nfs_writeback_lowmem_only;
+#endif
+
 
 int exec_shield = 1;
 int exec_shield_randomize = 1;
@@ -982,6 +988,28 @@ static ctl_table vm_table[] = {
 		.proc_handler	= drop_caches_sysctl_handler,
 		.strategy	= &sysctl_intvec,
 	},
+	{
+		.ctl_name	= VM_WRITE_MAPPED,
+		.procname	= "write-mapped",
+		.data		= &write_mapped,
+		.maxlen		= sizeof(write_mapped),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
+#ifdef CONFIG_HIGHMEM
+	{
+		.ctl_name	= VM_NFS_WB_LOWMEM,
+		.procname	= "nfs-writeback-lowmem-only",
+		.data		= &nfs_writeback_lowmem_only,
+		.maxlen		= sizeof(&nfs_writeback_lowmem_only),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
+#endif
 	{ .ctl_name = 0 }
 };
 

@@ -200,15 +200,11 @@ try_again:
 		 * new region fits between prev_vma->vm_end and
 		 * vma->vm_start, use it:
 		 */
-		if (addr+len <= vma->vm_start &&
-				(!prev_vma || (addr >= prev_vma->vm_end))) {
-			/* Do not return address zero. */
-			if (unlikely(!addr))
-				goto fail;
+		if (addr && addr+len <= vma->vm_start &&
+				(!prev_vma || (addr >= prev_vma->vm_end)))
 			/* remember the address as a hint for next time */
-			else
-				return (mm->free_area_cache = addr);
-		} else
+			return (mm->free_area_cache = addr);
+		else
 			/* pull free_area_cache down to the first hole */
 			if (mm->free_area_cache == vma->vm_end)
 				mm->free_area_cache = vma->vm_start;

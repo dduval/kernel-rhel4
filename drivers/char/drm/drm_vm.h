@@ -487,6 +487,7 @@ int DRM(mmap_dma)(struct file *filp, struct vm_area_struct *vma)
 #else
 	vma->vm_flags |= VM_RESERVED; /* Don't swap */
 #endif
+	vma->vm_flags |= VM_DONTEXPAND;
 
 	vma->vm_file  =	 filp;	/* Needed for drm_vm_open() */
 	DRM(vm_open)(vma);
@@ -661,6 +662,7 @@ int DRM(mmap)(struct file *filp, struct vm_area_struct *vma)
 	vma->vm_flags |= VM_RESERVED; /* Don't swap */
 #endif
 
+	vma->vm_flags |= VM_DONTEXPAND;
 	vma->vm_file  =	 filp;	/* Needed for drm_vm_open() */
 	DRM(vm_open)(vma);
 	return 0;

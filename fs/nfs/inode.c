@@ -42,6 +42,10 @@
 #include "delegation.h"
 #include "iostat.h"
 
+#ifdef CONFIG_HIGHMEM
+extern int nfs_writeback_lowmem_only;
+#endif
+
 #define NFSDBG_FACILITY		NFSDBG_VFS
 #define NFS_PARANOIA 1
 
@@ -841,7 +845,8 @@ nfs_fhget(struct super_block *sb, struct nfs_fh *fh, struct nfs_fattr *fattr)
 			 * writing large files results in OOM when the
 			 * lowmem is scarce.
 			 */
-			mapping_set_gfp_mask(&inode->i_data, GFP_KERNEL);
+			if (nfs_writeback_lowmem_only)
+				mapping_set_gfp_mask(&inode->i_data, GFP_KERNEL);
 #endif
 		} else if (S_ISDIR(inode->i_mode)) {
 			inode->i_op = NFS_SB(sb)->rpc_ops->dir_inode_ops;

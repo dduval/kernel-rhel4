@@ -55,6 +55,24 @@
 
 #include <asm/tlbflush.h>
 
+#ifdef CONFIG_HIGHMEM
+extern atomic_t nr_mapped_high;
+static inline void inc_mapped_high(struct page *page)
+{
+	if (is_highmem(page_zone(page)))
+		atomic_inc(&nr_mapped_high);
+}
+
+static inline void dec_mapped_high(struct page *page)
+{
+	if (is_highmem(page_zone(page)))
+		atomic_dec(&nr_mapped_high);
+}
+#else
+#define inc_mapped_high(page)
+#define dec_mapped_high(page)
+#endif
+
 //#define RMAP_DEBUG /* can be enabled only for debugging */
 
 kmem_cache_t *anon_vma_cachep;
@@ -445,6 +463,7 @@ void page_add_anon_rmap(struct page *page,
 		page->index = index;
 		page->mapping = (struct address_space *) anon_vma;
 		inc_page_state(nr_mapped);
+		inc_mapped_high(page);
 	}
 	/* else checking page index and mapping is racy */
 }
@@ -461,8 +480,10 @@ void page_add_file_rmap(struct page *page)
 	if (!pfn_valid(page_to_pfn(page)) || PageReserved(page))
 		return;
 
-	if (atomic_inc_and_test(&page->_mapcount))
+	if (atomic_inc_and_test(&page->_mapcount)) {
 		inc_page_state(nr_mapped);
+		inc_mapped_high(page);
+	}
 }
 
 /**
@@ -489,6 +510,7 @@ void page_remove_rmap(struct page *page)
 		if (page_test_and_clear_dirty(page))
 			set_page_dirty(page);
 		dec_page_state(nr_mapped);
+		dec_mapped_high(page);
 
 		/*
 		 * Deactivate the page when the last munmap() occurs.  

@@ -180,6 +180,8 @@ enum
 	VM_PANIC_ON_OOM=32,	/* panic at out-of-memory */
 	VM_INACTIVE_PERCENT=33, /* desired size of inactive list */
 	VM_DROP_PAGECACHE=34,   /* nuke lots of pagecache */
+	VM_WRITE_MAPPED=35,	/* consider mapped pages un dirty_ratio */
+	VM_NFS_WB_LOWMEM=36,    /* limit NFS writes to Lowmem */
 };
 
 

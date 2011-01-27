@@ -607,7 +607,7 @@ hugepage_recheck:
 		 * new region fits between prev_vma->vm_end and
 		 * vma->vm_start, use it:
 		 */
-		if (addr+len <= vma->vm_start &&
+		if (addr && addr+len <= vma->vm_start &&
 				(!prev_vma || (addr >= prev_vma->vm_end)))
 			/* remember the address as a hint for next time */
 			return (mm->free_area_cache = addr);

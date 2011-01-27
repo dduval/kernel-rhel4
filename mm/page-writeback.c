@@ -73,6 +73,8 @@ int vm_dirty_ratio = 40;
 
 int vm_max_queue_depth = 0;
 
+int write_mapped = 1;
+
 /*
  * The interval between `kupdate'-style writebacks, in centiseconds
  * (hundredths of a second)
@@ -96,8 +98,13 @@ int laptop_mode;
 
 EXPORT_SYMBOL(laptop_mode);
 
+int nfs_writeback_lowmem_only = 0;
+
+EXPORT_SYMBOL(nfs_writeback_lowmem_only);
+
 /* End of sysctl-exported parameters */
 
+atomic_t nr_mapped_high = ATOMIC_INIT(0);
 
 static void background_writeout(unsigned long _min_pages);
 
@@ -106,6 +113,7 @@ struct writeback_state
 	unsigned long nr_dirty;
 	unsigned long nr_unstable;
 	unsigned long nr_mapped;
+	unsigned long nr_mapped_high;
 	unsigned long nr_writeback;
 };
 
@@ -114,6 +122,7 @@ static void get_writeback_state(struct writeback_state *wbs)
 	wbs->nr_dirty = read_page_state(nr_dirty);
 	wbs->nr_unstable = read_page_state(nr_unstable);
 	wbs->nr_mapped = read_page_state(nr_mapped);
+	wbs->nr_mapped_high = atomic_read(&nr_mapped_high);
 	wbs->nr_writeback = read_page_state(nr_writeback);
 }
 
@@ -135,18 +144,16 @@ static void get_writeback_state(struct writeback_state *wbs)
  * clamping level.
  */
 static void
-get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty, struct address_space *mapping)
+get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty)
 {
 	int background_ratio;		/* Percentages */
 	int dirty_ratio = vm_dirty_ratio;
 	long background;
 	long dirty;
 	unsigned long available_memory;
+	unsigned long mapped;
 	struct task_struct *tsk;
 	struct zone *zone;
-#ifdef CONFIG_HIGHMEM
-	int no_highmem = 0;
-#endif
 
 	get_writeback_state(wbs);
 
@@ -161,32 +168,27 @@ get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty, s
 
 	for_each_zone(zone) {
 #ifdef CONFIG_HIGHMEM
-		if (is_highmem(zone) && mapping &&
-		    !(mapping_gfp_mask(mapping) & __GFP_HIGHMEM)) {
-			no_highmem++;
+		/*
+	 	 * We always ignore highmem.
+	 	 * Note, upstream has made this change.
+	 	 */
+		if (!write_mapped && is_highmem(zone))
 			continue;
-		}
 #endif
 		available_memory += zone->nr_active;
 		available_memory += zone->nr_inactive;
 		available_memory += zone->free_pages;
 	}
-#ifdef CONFIG_HIGHMEM
-	/*
-	 * Assume the mapped memory ratio is the
-	 * same as the zone size ratio.  Again, later
-	 * kernels track mapped memory on a per zone basis
-	 * which would be very useful here.
-	 */
-	if (no_highmem) {
-		int ratio = 100 - totalhigh_pages * 100 / total_pages;
-		wbs->nr_mapped = wbs->nr_mapped * ratio / 100;
+	if (!write_mapped) {
+		if (wbs->nr_mapped > wbs->nr_mapped_high)
+			mapped = wbs->nr_mapped - wbs->nr_mapped_high;
+		else
+			mapped = 0;
+		if (mapped < available_memory)
+			available_memory -= mapped;
+		else
+			available_memory = 1;
 	}
-#endif
-	if (wbs->nr_mapped < available_memory)
-		available_memory -= wbs->nr_mapped;
-	else
-		available_memory = 1;
 
 	if (dirty_ratio > 100)
 		dirty_ratio = 100;
@@ -241,7 +243,7 @@ static void balance_dirty_pages(struct address_space *mapping)
 
 	for (;;) {
 		get_dirty_limits(&wbs, &background_thresh,
-					&dirty_thresh, mapping);
+					&dirty_thresh);
 		nr_reclaimable = wbs.nr_dirty + wbs.nr_unstable;
 		nr_dirty = nr_reclaimable + wbs.nr_writeback;
 		if (nr_dirty <= dirty_thresh)
@@ -324,7 +326,7 @@ void throttle_vm_writeout(void)
 	long dirty_thresh;
 
         for ( ; ; ) {
-		get_dirty_limits(&wbs, &background_thresh, &dirty_thresh, NULL);
+		get_dirty_limits(&wbs, &background_thresh, &dirty_thresh);
 
                 /*
                  * Boost the allowable dirty threshold a bit for page
@@ -362,7 +364,7 @@ static void background_writeout(unsigned long _min_pages)
 		long background_thresh;
 		long dirty_thresh;
 
-		get_dirty_limits(&wbs, &background_thresh, &dirty_thresh, NULL);
+		get_dirty_limits(&wbs, &background_thresh, &dirty_thresh);
 		if (wbs.nr_dirty + wbs.nr_unstable < background_thresh
 				&& min_pages <= 0 && !dirty_exceeded)
 			break;

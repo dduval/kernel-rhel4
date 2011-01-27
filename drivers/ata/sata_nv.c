@@ -802,22 +802,29 @@ static irqreturn_t nv_adma_interrupt(int irq, void *dev_instance, struct pt_regs
 				ata_port_printk(ap, KERN_ERR, "CPB error, stat=0x%x\n", status);
 				have_global_err = 1;
 			}
-			if ((status & NV_ADMA_STAT_DONE) || have_global_err) {
-				/** Check CPBs for completed commands */
 
-				if(ata_tag_valid(ap->active_tag))
-					/* Non-NCQ command */
-					nv_adma_check_cpb(ap, ap->active_tag, have_global_err ||
-						(notifier_error & (1 << ap->active_tag)));
-				else {
-					int pos;
-					u32 active = ap->sactive;
-					while( (pos = ffs(active)) ) {
-						pos--;
-						nv_adma_check_cpb(ap, pos, have_global_err ||
-							(notifier_error & (1 << pos)) );
-						active &= ~(1 << pos );
-					}
+			if (status & (NV_ADMA_STAT_DONE |
+				      NV_ADMA_STAT_CPBERR |
+				      NV_ADMA_STAT_CMD_COMPLETE)) {
+				u32 check_commands = notifier_clears[i];
+				int pos;
+
+				if (status & NV_ADMA_STAT_CPBERR) {
+					/* Check all active commands */
+					if(ata_tag_valid(ap->active_tag))
+						check_commands = 1 <<
+							ap->active_tag;
+					else
+						check_commands = ap->sactive;
+				}
+
+				/** Check CPBs for completed commands */
+				while (pos = ffs(check_commands)) {
+					pos--;
+					nv_adma_check_cpb(ap, pos,
+							  notifier_error & 
+							  (1 << pos));
+					check_commands &= ~(1 << pos);
 				}
 			}
 

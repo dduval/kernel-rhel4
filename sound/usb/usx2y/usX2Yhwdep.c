@@ -86,7 +86,7 @@ static int snd_us428ctls_mmap(snd_hwdep_t * hw, struct file *filp, struct vm_are
 		us428->us428ctls_sharedmem->CtlSnapShotLast = -2;
 	}
 	area->vm_ops = &us428ctls_vm_ops;
-	area->vm_flags |= VM_RESERVED;
+	area->vm_flags |= VM_RESERVED | VM_DONTEXPAND;
 	area->vm_private_data = hw->private_data;
 	return 0;
 }
