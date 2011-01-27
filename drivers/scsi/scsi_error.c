@@ -1390,7 +1390,7 @@ int scsi_decide_disposition(struct scsi_cmnd *scmd)
 	case CHECK_CONDITION:
 		rtn = scsi_check_sense(scmd);
 		if (rtn == NEEDS_RETRY)
-			goto maybe_retry;
+			goto check_retry_count;
 		/* if rtn == FAILED, we have no sense information;
 		 * returning FAILED will wake the error handler thread
 		 * to collect the sense and redo the decide

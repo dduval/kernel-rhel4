@@ -122,8 +122,14 @@ static inline pte_t ptep_get_and_clear(pte_t *xp)
 	mm_track_pte(xp);
 	return __pte(xchg(&(xp)->pte, 0));
 }
+static inline pte_t huge_ptep_get_and_clear(pte_t *xp)
+{
+	mm_track_pmd(xp);
+	return __pte(xchg(&(xp)->pte, 0));
+}
 #else
 #define ptep_get_and_clear(xp)	__pte(xchg(&(xp)->pte, 0))
+#define huge_ptep_get_and_clear(xp)	__pte(xchg(&(xp)->pte, 0))
 #endif
 #define pte_same(a, b)		((a).pte == (b).pte)
 

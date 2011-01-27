@@ -1632,6 +1632,8 @@ static inline struct request *blk_alloc_request(request_queue_t *q,int gfp_mask)
 	if (!rq)
 		return NULL;
 
+	memset(rq, 0, sizeof(struct request));
+
 	if (!elv_set_request(q, rq, gfp_mask))
 		return rq;
 

@@ -219,7 +219,7 @@ void unmap_hugepage_range(struct vm_area_struct *vma,
 			 * the prefault */
 			continue;
 
-		pte = ptep_get_and_clear(ptep);
+		pte = huge_ptep_get_and_clear(ptep);
 		if (pte_none(pte))
 			continue;
 		page = pte_page(pte);

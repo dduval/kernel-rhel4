@@ -156,21 +156,6 @@ extern int CIFSSMBUnixQPathInfo(const int xid,
 			FILE_UNIX_BASIC_INFO * pFindData,
 			const struct nls_table *nls_codepage, int remap);
 
-extern int CIFSGetDFSRefer(const int xid, struct cifsSesInfo *ses,
-			const unsigned char *searchName,
-			unsigned char **targetUNCs,
-			unsigned int *number_of_UNC_in_array,
-			const struct nls_table *nls_codepage, int remap);
-
-extern int connect_to_dfs_path(int xid, struct cifsSesInfo *pSesInfo,
-			const char *old_path,
-			const struct nls_table *nls_codepage, int remap);
-extern int get_dfs_path(int xid, struct cifsSesInfo *pSesInfo,
-			const char *old_path,
-			const struct nls_table *nls_codepage,
-			unsigned int *pnum_referrals,
-			unsigned char **preferrals,
-			int remap);
 extern void reset_cifs_unix_caps(int xid, struct cifsTconInfo *tcon,
 				 struct super_block *sb, struct smb_vol *vol);
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
@@ -276,15 +261,8 @@ extern int CIFSUnixCreateSymLink(const int xid,
 			const struct nls_table *nls_codepage);
 extern int CIFSSMBUnixQuerySymLink(const int xid,
 			struct cifsTconInfo *tcon,
-			const unsigned char *searchName,
-			char *syminfo, const int buflen,
+			const unsigned char *searchName, char **syminfo,
 			const struct nls_table *nls_codepage);
-extern int CIFSSMBQueryReparseLinkInfo(const int xid,
-			struct cifsTconInfo *tcon,
-			const unsigned char *searchName,
-			char *symlinkinfo, const int buflen, __u16 fid,
-			const struct nls_table *nls_codepage);
-
 extern int CIFSSMBOpen(const int xid, struct cifsTconInfo *tcon,
 			const char *fileName, const int disposition,
 			const int access_flags, const int omode,
@@ -320,8 +298,6 @@ extern int CIFSGetSrvInodeNumber(const int xid, struct cifsTconInfo *tcon,
 			const unsigned char *searchName, __u64 * inode_number,
 			const struct nls_table *nls_codepage,
 			int remap_special_chars);
-extern int cifs_convertUCSpath(char *target, const __le16 *source, int maxlen,
-			const struct nls_table *codepage);
 extern int cifsConvertToUCS(__le16 *target, const char *source, int maxlen,
 			const struct nls_table *cp, int mapChars);
 

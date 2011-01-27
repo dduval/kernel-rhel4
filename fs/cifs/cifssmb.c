@@ -2382,8 +2382,7 @@ winCreateHardLinkRetry:
 
 int
 CIFSSMBUnixQuerySymLink(const int xid, struct cifsTconInfo *tcon,
-			const unsigned char *searchName,
-			char *symlinkinfo, const int buflen,
+			const unsigned char *searchName, char **symlinkinfo,
 			const struct nls_table *nls_codepage)
 {
 /* SMB_QUERY_FILE_UNIX_LINK */
@@ -2393,6 +2392,7 @@ CIFSSMBUnixQuerySymLink(const int xid, struct cifsTconInfo *tcon,
 	int bytes_returned;
 	int name_len;
 	__u16 params, byte_count;
+	char *data_start;
 
 	cFYI(1, ("In QPathSymLinkInfo (Unix) for path %s", searchName));
 
@@ -2447,30 +2447,22 @@ querySymLinkRetry:
 		/* decode response */
 
 		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
-		if (rc || (pSMBr->ByteCount < 2))
 		/* BB also check enough total bytes returned */
-			rc = -EIO;	/* bad smb */
+		if (rc || (pSMBr->ByteCount < 2))
+			rc = -EIO;
 		else {
-			__u16 data_offset = le16_to_cpu(pSMBr->t2.DataOffset);
-			__u16 count = le16_to_cpu(pSMBr->t2.DataCount);
+			u16 count = le16_to_cpu(pSMBr->t2.DataCount);
 
-			if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE) {
-				name_len = UniStrnlen((wchar_t *) ((char *)
-					&pSMBr->hdr.Protocol + data_offset),
-					min_t(const int, buflen, count) / 2);
+			data_start = ((char *) &pSMBr->hdr.Protocol) +
+					   le16_to_cpu(pSMBr->t2.DataOffset);
+
 			/* BB FIXME investigate remapping reserved chars here */
-				cifs_strfromUCS_le(symlinkinfo,
-					(__le16 *) ((char *)&pSMBr->hdr.Protocol
-							+ data_offset),
-					name_len, nls_codepage);
-			} else {
-				strncpy(symlinkinfo,
-					(char *) &pSMBr->hdr.Protocol +
-						data_offset,
-					min_t(const int, buflen, count));
-			}
-			symlinkinfo[buflen] = 0;
-	/* just in case so calling code does not go off the end of buffer */
+			*symlinkinfo = cifs_strndup_from_ucs(data_start, count,
+						    pSMBr->hdr.Flags2 &
+							SMBFLG2_UNICODE,
+						    nls_codepage);
+			if (!*symlinkinfo)
+				rc = -ENOMEM;
 		}
 	}
 	cifs_buf_release(pSMB);
@@ -2564,113 +2556,6 @@ validate_ntransact(char *buf, char **ppparm, char **ppdata,
 	return 0;
 }
 #endif /* CIFS_EXPERIMENTAL */
-
-int
-CIFSSMBQueryReparseLinkInfo(const int xid, struct cifsTconInfo *tcon,
-			const unsigned char *searchName,
-			char *symlinkinfo, const int buflen, __u16 fid,
-			const struct nls_table *nls_codepage)
-{
-	int rc = 0;
-	int bytes_returned;
-	int name_len;
-	struct smb_com_transaction_ioctl_req *pSMB;
-	struct smb_com_transaction_ioctl_rsp *pSMBr;
-
-	cFYI(1, ("In Windows reparse style QueryLink for path %s", searchName));
-	rc = smb_init(SMB_COM_NT_TRANSACT, 23, tcon, (void **) &pSMB,
-		      (void **) &pSMBr);
-	if (rc)
-		return rc;
-
-	pSMB->TotalParameterCount = 0 ;
-	pSMB->TotalDataCount = 0;
-	pSMB->MaxParameterCount = cpu_to_le32(2);
-	/* BB find exact data count max from sess structure BB */
-	pSMB->MaxDataCount = cpu_to_le32((tcon->ses->server->maxBuf -
-					  MAX_CIFS_HDR_SIZE) & 0xFFFFFF00);
-	pSMB->MaxSetupCount = 4;
-	pSMB->Reserved = 0;
-	pSMB->ParameterOffset = 0;
-	pSMB->DataCount = 0;
-	pSMB->DataOffset = 0;
-	pSMB->SetupCount = 4;
-	pSMB->SubCommand = cpu_to_le16(NT_TRANSACT_IOCTL);
-	pSMB->ParameterCount = pSMB->TotalParameterCount;
-	pSMB->FunctionCode = cpu_to_le32(FSCTL_GET_REPARSE_POINT);
-	pSMB->IsFsctl = 1; /* FSCTL */
-	pSMB->IsRootFlag = 0;
-	pSMB->Fid = fid; /* file handle always le */
-	pSMB->ByteCount = 0;
-
-	rc = SendReceive(xid, tcon->ses, (struct smb_hdr *) pSMB,
-			 (struct smb_hdr *) pSMBr, &bytes_returned, 0);
-	if (rc) {
-		cFYI(1, ("Send error in QueryReparseLinkInfo = %d", rc));
-	} else {		/* decode response */
-		__u32 data_offset = le32_to_cpu(pSMBr->DataOffset);
-		__u32 data_count = le32_to_cpu(pSMBr->DataCount);
-		if ((pSMBr->ByteCount < 2) || (data_offset > 512))
-		/* BB also check enough total bytes returned */
-			rc = -EIO;	/* bad smb */
-		else {
-			if (data_count && (data_count < 2048)) {
-				char *end_of_smb = 2 /* sizeof byte count */ +
-						pSMBr->ByteCount +
-						(char *)&pSMBr->ByteCount;
-
-				struct reparse_data *reparse_buf =
-						(struct reparse_data *)
-						((char *)&pSMBr->hdr.Protocol
-								 + data_offset);
-				if ((char *)reparse_buf >= end_of_smb) {
-					rc = -EIO;
-					goto qreparse_out;
-				}
-				if ((reparse_buf->LinkNamesBuf +
-					reparse_buf->TargetNameOffset +
-					reparse_buf->TargetNameLen) >
-						end_of_smb) {
-					cFYI(1, ("reparse buf beyond SMB"));
-					rc = -EIO;
-					goto qreparse_out;
-				}
-
-				if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE) {
-					name_len = UniStrnlen((wchar_t *)
-						(reparse_buf->LinkNamesBuf +
-						reparse_buf->TargetNameOffset),
-						min(buflen/2,
-						reparse_buf->TargetNameLen / 2));
-					cifs_strfromUCS_le(symlinkinfo,
-						(__le16 *) (reparse_buf->LinkNamesBuf +
-						reparse_buf->TargetNameOffset),
-						name_len, nls_codepage);
-				} else { /* ASCII names */
-					strncpy(symlinkinfo,
-						reparse_buf->LinkNamesBuf +
-						reparse_buf->TargetNameOffset,
-						min_t(const int, buflen,
-						   reparse_buf->TargetNameLen));
-				}
-			} else {
-				rc = -EIO;
-				cFYI(1, ("Invalid return data count on "
-					 "get reparse info ioctl"));
-			}
-			symlinkinfo[buflen] = 0; /* just in case so the caller
-					does not go off the end of the buffer */
-			cFYI(1, ("readlink result - %s", symlinkinfo));
-		}
-	}
-qreparse_out:
-	cifs_buf_release(pSMB);
-
-	/* Note: On -EAGAIN error only caller can retry on handle based calls
-		since file handle passed in no longer valid */
-
-	return rc;
-}
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2, 5, 0)
 #ifdef CONFIG_CIFS_POSIX
@@ -3893,197 +3778,6 @@ GetInodeNumOut:
 	cifs_buf_release(pSMB);
 	if (rc == -EAGAIN)
 		goto GetInodeNumberRetry;
-	return rc;
-}
-
-int
-CIFSGetDFSRefer(const int xid, struct cifsSesInfo *ses,
-		const unsigned char *searchName,
-		unsigned char **targetUNCs,
-		unsigned int *number_of_UNC_in_array,
-		const struct nls_table *nls_codepage, int remap)
-{
-/* TRANS2_GET_DFS_REFERRAL */
-	TRANSACTION2_GET_DFS_REFER_REQ *pSMB = NULL;
-	TRANSACTION2_GET_DFS_REFER_RSP *pSMBr = NULL;
-	struct dfs_referral_level_3 *referrals = NULL;
-	int rc = 0;
-	int bytes_returned;
-	int name_len;
-	unsigned int i;
-	char *temp;
-	__u16 params, byte_count;
-	*number_of_UNC_in_array = 0;
-	*targetUNCs = NULL;
-
-	cFYI(1, ("In GetDFSRefer the path %s", searchName));
-	if (ses == NULL)
-		return -ENODEV;
-getDFSRetry:
-	rc = smb_init(SMB_COM_TRANSACTION2, 15, NULL, (void **) &pSMB,
-		      (void **) &pSMBr);
-	if (rc)
-		return rc;
-
-	/* server pointer checked in called function,
-	but should never be null here anyway */
-	pSMB->hdr.Mid = GetNextMid(ses->server);
-	pSMB->hdr.Tid = ses->ipc_tid;
-	pSMB->hdr.Uid = ses->Suid;
-	if (ses->capabilities & CAP_STATUS32)
-		pSMB->hdr.Flags2 |= SMBFLG2_ERR_STATUS;
-	if (ses->capabilities & CAP_DFS)
-		pSMB->hdr.Flags2 |= SMBFLG2_DFS;
-
-	if (ses->capabilities & CAP_UNICODE) {
-		pSMB->hdr.Flags2 |= SMBFLG2_UNICODE;
-		name_len =
-		    cifsConvertToUCS((__le16 *) pSMB->RequestFileName,
-				     searchName, PATH_MAX, nls_codepage, remap);
-		name_len++;	/* trailing null */
-		name_len *= 2;
-	} else {	/* BB improve the check for buffer overruns BB */
-		name_len = strnlen(searchName, PATH_MAX);
-		name_len++;	/* trailing null */
-		strncpy(pSMB->RequestFileName, searchName, name_len);
-	}
-
-	if (ses->server) {
-		if (ses->server->secMode &
-		   (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
-			pSMB->hdr.Flags2 |= SMBFLG2_SECURITY_SIGNATURE;
-	}
-
-	pSMB->hdr.Uid = ses->Suid;
-
-	params = 2 /* level */  + name_len /*includes null */ ;
-	pSMB->TotalDataCount = 0;
-	pSMB->DataCount = 0;
-	pSMB->DataOffset = 0;
-	pSMB->MaxParameterCount = 0;
-	pSMB->MaxDataCount = cpu_to_le16(4000);	/* BB find exact max SMB PDU from sess structure BB */
-	pSMB->MaxSetupCount = 0;
-	pSMB->Reserved = 0;
-	pSMB->Flags = 0;
-	pSMB->Timeout = 0;
-	pSMB->Reserved2 = 0;
-	pSMB->ParameterOffset = cpu_to_le16(offsetof(
-	  struct smb_com_transaction2_get_dfs_refer_req, MaxReferralLevel) - 4);
-	pSMB->SetupCount = 1;
-	pSMB->Reserved3 = 0;
-	pSMB->SubCommand = cpu_to_le16(TRANS2_GET_DFS_REFERRAL);
-	byte_count = params + 3 /* pad */ ;
-	pSMB->ParameterCount = cpu_to_le16(params);
-	pSMB->TotalParameterCount = pSMB->ParameterCount;
-	pSMB->MaxReferralLevel = cpu_to_le16(3);
-	pSMB->hdr.smb_buf_length += byte_count;
-	pSMB->ByteCount = cpu_to_le16(byte_count);
-
-	rc = SendReceive(xid, ses, (struct smb_hdr *) pSMB,
-			 (struct smb_hdr *) pSMBr, &bytes_returned, 0);
-	if (rc) {
-		cFYI(1, ("Send error in GetDFSRefer = %d", rc));
-	} else {		/* decode response */
-/* BB Add logic to parse referrals here */
-		rc = validate_t2((struct smb_t2_rsp *)pSMBr);
-
-		/* BB Also check if enough total bytes returned? */
-		if (rc || (pSMBr->ByteCount < 17))
-			rc = -EIO;      /* bad smb */
-		else {
-			__u16 data_offset = le16_to_cpu(pSMBr->t2.DataOffset);
-			__u16 data_count = le16_to_cpu(pSMBr->t2.DataCount);
-
-			cFYI(1,
-			    ("Decoding GetDFSRefer response BCC: %d  Offset %d",
-			      pSMBr->ByteCount, data_offset));
-			referrals =
-			    (struct dfs_referral_level_3 *)
-					(8 /* sizeof start of data block */ +
-					data_offset +
-					(char *) &pSMBr->hdr.Protocol);
-			cFYI(1, ("num_referrals: %d dfs flags: 0x%x ... \n"
-				"for referral one refer size: 0x%x srv "
-				"type: 0x%x refer flags: 0x%x ttl: 0x%x",
-				le16_to_cpu(pSMBr->NumberOfReferrals),
-				le16_to_cpu(pSMBr->DFSFlags),
-				le16_to_cpu(referrals->ReferralSize),
-				le16_to_cpu(referrals->ServerType),
-				le16_to_cpu(referrals->ReferralFlags),
-				le16_to_cpu(referrals->TimeToLive)));
-			/* BB This field is actually two bytes in from start of
-			   data block so we could do safety check that DataBlock
-			   begins at address of pSMBr->NumberOfReferrals */
-			*number_of_UNC_in_array =
-					le16_to_cpu(pSMBr->NumberOfReferrals);
-
-			/* BB Fix below so can return more than one referral */
-			if (*number_of_UNC_in_array > 1)
-				*number_of_UNC_in_array = 1;
-
-			/* get the length of the strings describing refs */
-			name_len = 0;
-			for (i = 0; i < *number_of_UNC_in_array; i++) {
-				/* make sure that DfsPathOffset not past end */
-				__u16 offset =
-					le16_to_cpu(referrals->DfsPathOffset);
-				if (offset > data_count) {
-					/* if invalid referral, stop here and do
-					not try to copy any more */
-					*number_of_UNC_in_array = i;
-					break;
-				}
-				temp = ((char *)referrals) + offset;
-
-				if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE) {
-					name_len += UniStrnlen((wchar_t *)temp,
-								data_count);
-				} else {
-					name_len += strnlen(temp, data_count);
-				}
-				referrals++;
-				/* BB add check that referral pointer does
-				   not fall off end PDU */
-			}
-			/* BB add check for name_len bigger than bcc */
-			*targetUNCs =
-				kmalloc(name_len+1+(*number_of_UNC_in_array),
-					GFP_KERNEL);
-			if (*targetUNCs == NULL) {
-				rc = -ENOMEM;
-				goto GetDFSRefExit;
-			}
-			/* copy the ref strings */
-			referrals = (struct dfs_referral_level_3 *)
-					(8 /* sizeof data hdr */ + data_offset +
-					(char *) &pSMBr->hdr.Protocol);
-
-			for (i = 0; i < *number_of_UNC_in_array; i++) {
-				temp = ((char *)referrals) +
-					  le16_to_cpu(referrals->DfsPathOffset);
-				if (pSMBr->hdr.Flags2 & SMBFLG2_UNICODE) {
-					cifs_strfromUCS_le(*targetUNCs,
-							  (__le16 *) temp,
-							  name_len,
-							  nls_codepage);
-				} else {
-					strncpy(*targetUNCs, temp, name_len);
-				}
-				/*  BB update target_uncs pointers */
-				referrals++;
-			}
-			temp = *targetUNCs;
-			temp[name_len] = 0;
-		}
-
-	}
-GetDFSRefExit:
-	if (pSMB)
-		cifs_buf_release(pSMB);
-
-	if (rc == -EAGAIN)
-		goto getDFSRetry;
-
 	return rc;
 }
 

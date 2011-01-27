@@ -57,7 +57,6 @@ int cifs_get_inode_info_unix(struct inode **pinode,
 	struct cifsTconInfo *pTcon;
 	struct inode *inode;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(sb);
-	char *tmp_path;
 
 	pTcon = cifs_sb->tcon;
 	cFYI(1, ("Getting info on %s", search_path));
@@ -68,30 +67,7 @@ int cifs_get_inode_info_unix(struct inode **pinode,
 /*	dump_mem("\nUnixQPathInfo return data", &findData,
 		 sizeof(findData)); */
 	if (rc) {
-		if (rc == -EREMOTE) {
-			tmp_path =
-			    kmalloc(strnlen(pTcon->treeName,
-					    MAX_TREE_SIZE + 1) +
-				    strnlen(search_path, MAX_PATHCONF) + 1,
-				    GFP_KERNEL);
-			if (tmp_path == NULL) {
-				return -ENOMEM;
-			}
-			/* have to skip first of the double backslash of
-			   UNC name */
-			strncpy(tmp_path, pTcon->treeName, MAX_TREE_SIZE);
-			strncat(tmp_path, search_path, MAX_PATHCONF);
-			rc = connect_to_dfs_path(xid, pTcon->ses,
-						 /* treename + */ tmp_path,
-						 cifs_sb->local_nls,
-						 cifs_sb->mnt_cifs_flags &
-						    CIFS_MOUNT_MAP_SPECIAL_CHR);
-			kfree(tmp_path);
-
-			/* BB fix up inode etc. */
-		} else if (rc) {
-			return rc;
-		}
+		return rc;
 	} else {
 		struct cifsInodeInfo *cifsInfo;
 		__u32 type = le32_to_cpu(findData.Type);
@@ -346,7 +322,6 @@ int cifs_get_inode_info(struct inode **pinode,
 	struct cifsTconInfo *pTcon;
 	struct inode *inode;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(sb);
-	char *tmp_path;
 	char *buf = NULL;
 	int adjustTZ = FALSE;
 	umode_t default_mode;
@@ -385,31 +360,8 @@ int cifs_get_inode_info(struct inode **pinode,
 	}
 	/* dump_mem("\nQPathInfo return data",&findData, sizeof(findData)); */
 	if (rc) {
-		if (rc == -EREMOTE) {
-			tmp_path =
-			    kmalloc(strnlen
-				    (pTcon->treeName,
-				     MAX_TREE_SIZE + 1) +
-				    strnlen(search_path, MAX_PATHCONF) + 1,
-				    GFP_KERNEL);
-			if (tmp_path == NULL) {
-				kfree(buf);
-				return -ENOMEM;
-			}
-
-			strncpy(tmp_path, pTcon->treeName, MAX_TREE_SIZE);
-			strncat(tmp_path, search_path, MAX_PATHCONF);
-			rc = connect_to_dfs_path(xid, pTcon->ses,
-						 /* treename + */ tmp_path,
-						 cifs_sb->local_nls,
-						 cifs_sb->mnt_cifs_flags &
-						   CIFS_MOUNT_MAP_SPECIAL_CHR);
-			kfree(tmp_path);
-			/* BB fix up inode etc. */
-		} else if (rc) {
-			kfree(buf);
-			return rc;
-		}
+		kfree(buf);
+		return rc;
 	} else {
 		struct cifsInodeInfo *cifsInfo;
 		__u32 attr = le32_to_cpu(pfindData->Attributes);

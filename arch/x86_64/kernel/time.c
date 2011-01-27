@@ -412,8 +412,9 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	rdtscll_sync(&tsc);
 
 	if (vxtime.mode == VXTIME_HPET) {
-		if (offset - vxtime.last > hpet_tick_real) {
-			lost = (offset - vxtime.last) / hpet_tick_real - 1;
+		if (offset - vxtime.last > (unsigned int)hpet_tick_real) {
+			lost = (offset - vxtime.last) /
+			       ((unsigned int)hpet_tick_real) - 1;
 			/* Lost is now in real ticks but we want logical */
 			lost *= tick_divider;
 		}

@@ -176,8 +176,6 @@ extern void cifs_put_link(struct dentry *direntry,
 extern int cifs_follow_link(struct dentry *direntry, struct nameidata *nd);
 extern void cifs_put_link(struct dentry *direntry, struct nameidata *nd);
 #endif
-extern int cifs_readlink(struct dentry *direntry, char __user *buffer,
-			 int buflen);
 extern int cifs_symlink(struct inode *inode, struct dentry *direntry,
 			const char *symname);
 extern int	cifs_removexattr(struct dentry *, const char *);

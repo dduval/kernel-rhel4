@@ -745,16 +745,9 @@ struct inode_operations cifs_file_inode_ops = {
 #endif
 };
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 20)
-const
-#endif
 struct inode_operations cifs_symlink_inode_ops = {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9)
-	.readlink = cifs_readlink,
-#else
 	.readlink = generic_readlink,
 	.put_link = cifs_put_link,
-#endif
 	.follow_link = cifs_follow_link,
 	.permission = cifs_permission,
 	/* BB add the following two eventually */
