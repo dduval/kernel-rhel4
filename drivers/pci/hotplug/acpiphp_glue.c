@@ -613,6 +613,13 @@ find_p2p_bridge(acpi_handle handle, u32 lvl, void *context, void **rv)
 		add_p2p_bridge(handle, seg, bus, device, function);
 	}
 
+	tmp = seg << 8 | dev->subordinate->number;
+ 	/* search P2P bridges under this p2p bridge */
+ 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, (u32)1,
+ 				     find_p2p_bridge, &tmp, NULL);
+ 	if (ACPI_FAILURE(status))
+ 		warn("find_p2p_bridge failed (error code = 0x%x)\n", status);
+
 	return AE_OK;
 }
 

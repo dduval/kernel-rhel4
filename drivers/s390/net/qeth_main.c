@@ -4542,9 +4542,15 @@ qeth_send_packet(struct qeth_card *card, struct sk_buff *skb)
 	if (card->info.type != QETH_CARD_TYPE_IQD)
 		rc = qeth_do_send_packet(card, queue, new_skb, hdr,
 					 elements_needed, ctx);
-	else
+	else {
+		if ((!card->options.layer2) &&
+		    (ipv == 0)) {
+			__qeth_free_new_skb(skb, new_skb);
+			return -EPERM;
+		}
 		rc = qeth_do_send_packet_fast(card, queue, new_skb, hdr,
 					      elements_needed, ctx);
+	}
 	if (!rc){
 		card->stats.tx_packets++;
 		card->stats.tx_bytes += tx_bytes;

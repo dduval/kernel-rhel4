@@ -235,16 +235,16 @@ void iounmap(void __iomem *addr)
 		if (p->addr == (void *)(PAGE_MASK & (unsigned long)addr))
 			break;
 	if (!p) { 
+		write_unlock(&vmlist_lock);
 		printk("__iounmap: bad address %p\n", addr);
-		goto out_unlock;
+		return;
 	}
 	*pprev = p->next;
 	unmap_vm_area(p);
+	write_unlock(&vmlist_lock);
 	if (p->flags >> 20) {
 		/* p->size includes the guard page, but cpa doesn't like that */
 		ioremap_change_attr(p->phys_addr, (p->size - PAGE_SIZE), 0);			 
 	} 
-out_unlock:
-	write_unlock(&vmlist_lock);
 	kfree(p); 
 }
