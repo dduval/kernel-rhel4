@@ -1358,6 +1358,27 @@ void blk_stop_queue(request_queue_t *q)
 EXPORT_SYMBOL(blk_stop_queue);
 
 /**
+ * blk_sync_queue - cancel any pending callbacks on a queue
+ * @q: the queue
+ *
+ * Description:
+ *     The block layer may perform asynchronous callback activity
+ *     on a queue, such as calling the unplug function after a timeout.
+ *     A block device may call blk_sync_queue to ensure that any
+ *     such activity is cancelled, thus allowing it to release resources
+ *     the the callbacks might use. The caller must already have made sure
+ *     that its ->make_request_fn will not re-add plugging prior to calling
+ *     this function.
+ *
+ */
+void blk_sync_queue(struct request_queue *q)
+{
+	del_timer_sync(&q->unplug_timer);
+	kblockd_flush();
+}
+EXPORT_SYMBOL(blk_sync_queue);
+
+/**
  * blk_run_queue - run a single device queue
  * @q:	The queue to run
  */
@@ -1367,7 +1388,21 @@ void blk_run_queue(struct request_queue *q)
 
 	spin_lock_irqsave(q->queue_lock, flags);
 	blk_remove_plug(q);
-	q->request_fn(q);
+
+	/*
+	 * Only recurse once to avoid overrunning the stack, let the unplug
+	 * handling reinvoke the handler shortly if we already got there.
+	 */
+	if (!elv_queue_empty(q)) {
+		if (!test_and_set_bit(QUEUE_FLAG_REENTER, &q->queue_flags)) {
+			q->request_fn(q);
+			clear_bit(QUEUE_FLAG_REENTER, &q->queue_flags);
+		} else {
+			blk_plug_device(q);
+			kblockd_schedule_work(&q->unplug_work);
+		}
+	}
+
 	spin_unlock_irqrestore(q->queue_lock, flags);
 }
 
@@ -1742,7 +1777,6 @@ static struct request *get_request_wait(request_queue_t *q, int rw)
 	DEFINE_WAIT(wait);
 	struct request *rq;
 
-	generic_unplug_device(q);
 	do {
 		struct request_list *rl = &q->rq;
 
@@ -1754,6 +1788,7 @@ static struct request *get_request_wait(request_queue_t *q, int rw)
 		if (!rq) {
 			struct io_context *ioc;
 
+			generic_unplug_device(q);
 			io_schedule();
 
 			/*

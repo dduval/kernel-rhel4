@@ -121,6 +121,14 @@ extern kmem_cache_t	*bio_cachep;
 
 extern atomic_t slab_reclaim_pages;
 
+extern kmem_cache_t *pgd_cache, *pmd_cache, *kpmd_cache;
+extern spinlock_t pgd_lock;
+void pmd_ctor(void *, kmem_cache_t *, unsigned long);
+void kpmd_ctor(void *, kmem_cache_t *, unsigned long);
+void pgd_ctor(void *, kmem_cache_t *, unsigned long);
+void pgd_dtor(void *, kmem_cache_t *, unsigned long);
+
+
 #endif	/* __KERNEL__ */
 
 #endif	/* _LINUX_SLAB_H */

@@ -38,40 +38,35 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-
-#define DEB_PREFIX "vpd "
-
 #include <asm/current.h>
 
 #include "ehca_tools.h"
 #include "ehca_iverbs.h"
 
+static struct kmem_cache *pd_cache;
+
 struct ib_pd *ehca_alloc_pd(struct ib_device *device,
 			    struct ib_ucontext *context, struct ib_udata *udata)
 {
-	extern struct ehca_module ehca_module;
-	struct ib_pd *mypd = NULL;
-	struct ehca_pd *pd = NULL;
+	struct ehca_pd *pd;
 
-	EDEB_EN(7, "device=%p context=%p udata=%p", device, context, udata);
-
-	EHCA_CHECK_DEVICE_P(device);
-
-	pd = kmem_cache_alloc(ehca_module.cache_pd, SLAB_KERNEL);
+	pd = kmem_cache_alloc(pd_cache, SLAB_KERNEL);
 	if (!pd) {
-		EDEB_ERR(4, "ERROR device=%p context=%p pd=%p"
-			 " out of memory", device, context, mypd);
+		ehca_err(device, "device=%p context=%p out of memory",
+			 device, context);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	memset(pd, 0, sizeof(struct ehca_pd));
 	pd->ownpid = current->tgid;
 
-	/* Kernel PD: when device = -1, 0
+	/*
+	 * Kernel PD: when device = -1, 0
 	 * User   PD: when context != -1
 	 */
 	if (!context) {
-		/* Kernel PDs after init reuses always
+		/*
+		 * Kernel PDs after init reuses always
 		 * the one created in ehca_shca_reopen()
 		 */
 		struct ehca_shca *shca = container_of(device, struct ehca_shca,
@@ -80,39 +75,40 @@ struct ib_pd *ehca_alloc_pd(struct ib_device *device,
 	} else
 		pd->fw_pd.value = (u64)pd;
 
-	mypd = &pd->ib_pd;
-
-	EHCA_REGISTER_PD(device, pd);
-
-	EDEB_EX(7, "device=%p context=%p pd=%p", device, context, mypd);
-
-	return mypd;
+	return &pd->ib_pd;
 }
 
 int ehca_dealloc_pd(struct ib_pd *pd)
 {
-	extern struct ehca_module ehca_module;
-	int ret = 0;
 	u32 cur_pid = current->tgid;
-	struct ehca_pd *my_pd = NULL;
+	struct ehca_pd *my_pd = container_of(pd, struct ehca_pd, ib_pd);
 
-	EDEB_EN(7, "pd=%p", pd);
-
-	EHCA_CHECK_PD(pd);
-	my_pd = container_of(pd, struct ehca_pd, ib_pd);
 	if (my_pd->ib_pd.uobject && my_pd->ib_pd.uobject->context &&
 	    my_pd->ownpid != cur_pid) {
-		EDEB_ERR(4, "Invalid caller pid=%x ownpid=%x",
+		ehca_err(pd->device, "Invalid caller pid=%x ownpid=%x",
 			 cur_pid, my_pd->ownpid);
 		return -EINVAL;
 	}
 
-	EHCA_DEREGISTER_PD(pd);
-
-	kmem_cache_free(ehca_module.cache_pd,
+	kmem_cache_free(pd_cache,
 			container_of(pd, struct ehca_pd, ib_pd));
 
-	EDEB_EX(7, "pd=%p", pd);
+	return 0;
+}
 
-	return ret;
+int ehca_init_pd_cache(void)
+{
+	pd_cache = kmem_cache_create("ehca_cache_pd",
+				     sizeof(struct ehca_pd), 0,
+				     SLAB_HWCACHE_ALIGN,
+				     NULL, NULL);
+	if (!pd_cache)
+		return -ENOMEM;
+	return 0;
+}
+
+void ehca_cleanup_pd_cache(void)
+{
+	if (pd_cache)
+		kmem_cache_destroy(pd_cache);
 }

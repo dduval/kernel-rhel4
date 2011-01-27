@@ -317,7 +317,7 @@ mpt_lan_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 		return(1);
 	else
 		priv = netdev_priv(dev);
-
+	
 	dlprintk((KERN_INFO MYNAM ": IOC %s_reset routed to LAN driver!\n",
 			reset_phase==MPT_IOC_SETUP_RESET ? "setup" : (
 			reset_phase==MPT_IOC_PRE_RESET ? "pre" : "post")));
@@ -1152,15 +1152,12 @@ mpt_lan_receive_post_reply(struct net_device *dev,
 
 	if (priv->mpt_rxfidx_tail >= MPT_LAN_MAX_BUCKETS_OUT) {
 		printk (KERN_ERR MYNAM ": %s/%s: Yoohoo! mpt_rxfidx_tail = %d, "
-			"MPT_LAN_MAX_BUCKETS_OUT = %d\n",
+			">= MPT_LAN_MAX_BUCKETS_OUT = %d!!!\n",
 				IOC_AND_NETDEV_NAMES_s_s(dev),
 				priv->mpt_rxfidx_tail,
 				MPT_LAN_MAX_BUCKETS_OUT);
 
-		panic("Damn it Jim! I'm a doctor, not a programmer! "
-				"Oh, wait a sec, I am a programmer. "
-				"And, who's Jim?!?!\n"
-				"Arrgghh! We've done it again!\n");
+		return -1;
 	}
 
 	if (remaining == 0)

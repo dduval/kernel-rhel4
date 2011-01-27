@@ -62,6 +62,7 @@ struct ehca_cpu_comp_task {
 	struct list_head cq_list;
 	struct task_struct *task;
 	spinlock_t task_lock;
+	int cq_jobs;
 };
 
 struct ehca_comp_pool {
@@ -70,8 +71,7 @@ struct ehca_comp_pool {
 	spinlock_t last_cpu_lock;
 };
 
-struct ehca_comp_pool *ehca_create_comp_pool(void);
-void ehca_destroy_comp_pool(struct ehca_comp_pool *pool);
-void ehca_queue_comp_task(struct ehca_comp_pool *pool, struct ehca_cq *__cq);
+int ehca_create_comp_pool(void);
+void ehca_destroy_comp_pool(void);
 
 #endif

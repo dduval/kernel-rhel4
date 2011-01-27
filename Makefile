@@ -2,6 +2,8 @@ VERSION = 2
 PATCHLEVEL = 6
 SUBLEVEL = 9
 EXTRAVERSION = -prep
+RHEL_VERSION = 4
+RHEL_UPDATE = 5
 NAME=AC 1
 
 # *DOCUMENTATION*
@@ -802,6 +804,10 @@ define filechk_version.h
 	(echo \#define UTS_RELEASE \"$(KERNELRELEASE)\"; \
 	  echo \#define LINUX_VERSION_CODE `expr $(VERSION) \\* 65536 + $(PATCHLEVEL) \\* 256 + $(SUBLEVEL)`; \
 	 echo '#define KERNEL_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))'; \
+        echo \#define RHEL_VERSION $(RHEL_VERSION); \
+        echo \#define RHEL_UPDATE $(RHEL_UPDATE); \
+        echo \#define RHEL_RELEASE_CODE `expr $(RHEL_VERSION) \\* 256 + $(RHEL_UPDATE)`; \
+        echo '#define RHEL_RELEASE_VERSION(a,b) (((a) << 8) + (b))'; \
 	)
 endef
 

@@ -429,56 +429,6 @@ int do_settimeofday(struct timespec *tv)
 
 EXPORT_SYMBOL(do_settimeofday);
 
-/*
- * This function is a copy of the architecture independent function
- * but which calls do_settimeofday rather than setting the xtime
- * fields itself.  This way, the fields which are used for 
- * do_settimeofday get updated too.
- */
-long ppc64_sys32_stime(int __user * tptr)
-{
-	int value;
-	struct timespec myTimeval;
-
-	if (!capable(CAP_SYS_TIME))
-		return -EPERM;
-
-	if (get_user(value, tptr))
-		return -EFAULT;
-
-	myTimeval.tv_sec = value;
-	myTimeval.tv_nsec = 0;
-
-	do_settimeofday(&myTimeval);
-
-	return 0;
-}
-
-/*
- * This function is a copy of the architecture independent function
- * but which calls do_settimeofday rather than setting the xtime
- * fields itself.  This way, the fields which are used for 
- * do_settimeofday get updated too.
- */
-long ppc64_sys_stime(long __user * tptr)
-{
-	long value;
-	struct timespec myTimeval;
-
-	if (!capable(CAP_SYS_TIME))
-		return -EPERM;
-
-	if (get_user(value, tptr))
-		return -EFAULT;
-
-	myTimeval.tv_sec = value;
-	myTimeval.tv_nsec = 0;
-
-	do_settimeofday(&myTimeval);
-
-	return 0;
-}
-
 void __init time_init(void)
 {
 	/* This function is only called on the boot processor */

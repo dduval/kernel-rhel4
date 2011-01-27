@@ -40,7 +40,7 @@ struct rdma_dev_addr {
 	unsigned char src_dev_addr[MAX_ADDR_LEN];
 	unsigned char dst_dev_addr[MAX_ADDR_LEN];
 	unsigned char broadcast[MAX_ADDR_LEN];
-	enum rdma_node_type dev_type;
+	enum ib_node_type dev_type;
 };
 
 /**
@@ -90,9 +90,10 @@ static inline void ib_addr_set_pkey(struct rdma_dev_addr *dev_addr, u16 pkey)
 	dev_addr->broadcast[9] = (unsigned char) pkey;
 }
 
-static inline union ib_gid *ib_addr_get_sgid(struct rdma_dev_addr *dev_addr)
+static inline void ib_addr_get_sgid(struct rdma_dev_addr *dev_addr,
+				    union ib_gid *gid)
 {
-	return 	(union ib_gid *) (dev_addr->src_dev_addr + 4);
+	memcpy(gid, dev_addr->src_dev_addr + 4, sizeof *gid);
 }
 
 static inline void ib_addr_set_sgid(struct rdma_dev_addr *dev_addr,
@@ -101,9 +102,10 @@ static inline void ib_addr_set_sgid(struct rdma_dev_addr *dev_addr,
 	memcpy(dev_addr->src_dev_addr + 4, gid, sizeof *gid);
 }
 
-static inline union ib_gid *ib_addr_get_dgid(struct rdma_dev_addr *dev_addr)
+static inline void ib_addr_get_dgid(struct rdma_dev_addr *dev_addr,
+				    union ib_gid *gid)
 {
-	return 	(union ib_gid *) (dev_addr->dst_dev_addr + 4);
+	memcpy(gid, dev_addr->dst_dev_addr + 4, sizeof *gid);
 }
 
 static inline void ib_addr_set_dgid(struct rdma_dev_addr *dev_addr,

@@ -56,7 +56,8 @@ drivers-$(CONFIG_OPROFILE)	+= arch/ppc64/oprofile/
 
 boot := arch/ppc64/boot
 bzImage: vmlinux
-	cp vmlinux arch/ppc64/boot/bzImage
+	mkdir -p $(obj)/arch/ppc64/boot
+	cp vmlinux $(obj)/arch/ppc64/boot/bzImage
 
 boottarget-$(CONFIG_PPC_PSERIES) := zImage zImage.initrd zImage.stub
 boottarget-$(CONFIG_PPC_ISERIES) := vmlinux.sminitrd vmlinux.initrd vmlinux.sm

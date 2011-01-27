@@ -2,6 +2,7 @@
  * This file define the new driver API for Wireless Extensions
  *
  * Version :	6	21.6.04
+ *	(RHEL4 actually closer to version 5 -- JWL)
  *
  * Authors :	Jean Tourrilhes - HPL - <jt@hpl.hp.com>
  * Copyright (c) 2001-2004 Jean Tourrilhes, All Rights Reserved.
@@ -207,7 +208,28 @@
  * will be needed...
  * I just plan to increment with each new version.
  */
-#define IW_HANDLER_VERSION	6
+/*
+ * The upstream update of WIRELESS_EXT to 17 (which accompanied the
+ * update of IW_HANDLER_VERSTION to 6) enabled drivers to move the
+ * get_wireless_stats function pointer to their iw_handler_def structure.
+ * Consequently, many outside-the-kernel drivers check WIRELESS_EXT >=
+ * 17 to conditionally compile code in order to reference get_wireless_stats
+ * either in the iw_handler_def structure or in the net_device structure
+ * (i.e. the previous location).
+ *
+ * During the backport of WIRELESS_EXT 18 to RHEL4, it was impossible to
+ * include the get_wireless_stats pointer in the iw_handler_def structure
+ * due to the need to preserve kABI.  Instead, all wireless drivers in
+ * RHEL4 must use the net_device location for the get_wireless_stats
+ * pointer.
+ *
+ * So, advertise IW_HANDLER_VERSION 5 in RHEL4 because the actual
+ * structure most closely matches the original version 5, even though the
+ * source was taken (and modified for kABI compliance) from version 6.
+ * This gives external driver projects something to check other than
+ * WIRELESS_EXT for the location of get_wireless_stats. -- JWL
+ */
+#define IW_HANDLER_VERSION	5
 
 /*
  * Changes :

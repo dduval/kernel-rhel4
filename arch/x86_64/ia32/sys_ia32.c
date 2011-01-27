@@ -78,7 +78,7 @@
 #define ROUND_UP(x,a)	((__typeof__(x))(((unsigned long)(x) + ((a) - 1)) & ~((a) - 1)))
 #define NAME_OFFSET(de) ((int) ((de)->d_name - (char __user *) (de)))
 
-int cp_compat_stat(struct kstat *kbuf, struct compat_stat __user *ubuf)
+int cp_compat_stat(struct kstat64 *kbuf, struct compat_stat __user *ubuf)
 {
 	typeof(ubuf->st_uid) uid = 0;
 	typeof(ubuf->st_gid) gid = 0;
@@ -88,9 +88,11 @@ int cp_compat_stat(struct kstat *kbuf, struct compat_stat __user *ubuf)
 		return -EOVERFLOW;
 	if (kbuf->size >= 0x7fffffff)
 		return -EOVERFLOW;
+	if (kbuf->ino64 != (u32)kbuf->ino64)
+		return -EOVERFLOW;
 	if (verify_area(VERIFY_WRITE, ubuf, sizeof(struct compat_stat)) ||
 	    __put_user (old_encode_dev(kbuf->dev), &ubuf->st_dev) ||
-	    __put_user (kbuf->ino, &ubuf->st_ino) ||
+	    __put_user (kbuf->ino64, &ubuf->st_ino) ||
 	    __put_user (kbuf->mode, &ubuf->st_mode) ||
 	    __put_user (kbuf->nlink, &ubuf->st_nlink) ||
 	    __put_user (uid, &ubuf->st_uid) ||
@@ -125,7 +127,7 @@ sys32_ftruncate64(unsigned int fd, unsigned long offset_low, unsigned long offse
    support for 64bit inode numbers. */
 
 static int
-cp_stat64(struct stat64 __user *ubuf, struct kstat *stat)
+cp_stat64(struct stat64 __user *ubuf, struct kstat64 *stat)
 {
 	typeof(ubuf->st_uid) uid = 0;
 	typeof(ubuf->st_gid) gid = 0;
@@ -133,8 +135,8 @@ cp_stat64(struct stat64 __user *ubuf, struct kstat *stat)
 	SET_GID(gid, stat->gid);
 	if (verify_area(VERIFY_WRITE, ubuf, sizeof(struct stat64)) ||
 	    __put_user(huge_encode_dev(stat->dev), &ubuf->st_dev) ||
-	    __put_user (stat->ino, &ubuf->__st_ino) ||
-	    __put_user (stat->ino, &ubuf->st_ino) ||
+	    __put_user (stat->ino64, &ubuf->__st_ino) ||
+	    __put_user (stat->ino64, &ubuf->st_ino) ||
 	    __put_user (stat->mode, &ubuf->st_mode) ||
 	    __put_user (stat->nlink, &ubuf->st_nlink) ||
 	    __put_user (uid, &ubuf->st_uid) ||
@@ -156,8 +158,8 @@ cp_stat64(struct stat64 __user *ubuf, struct kstat *stat)
 asmlinkage long
 sys32_stat64(char __user * filename, struct stat64 __user *statbuf)
 {
-	struct kstat stat;
-	int ret = vfs_stat(filename, &stat);
+	struct kstat64 stat;
+	int ret = vfs_stat64(filename, &stat);
 	if (!ret)
 		ret = cp_stat64(statbuf, &stat);
 	return ret;
@@ -166,8 +168,8 @@ sys32_stat64(char __user * filename, struct stat64 __user *statbuf)
 asmlinkage long
 sys32_lstat64(char __user * filename, struct stat64 __user *statbuf)
 {
-	struct kstat stat;
-	int ret = vfs_lstat(filename, &stat);
+	struct kstat64 stat;
+	int ret = vfs_lstat64(filename, &stat);
 	if (!ret)
 		ret = cp_stat64(statbuf, &stat);
 	return ret;
@@ -176,8 +178,8 @@ sys32_lstat64(char __user * filename, struct stat64 __user *statbuf)
 asmlinkage long
 sys32_fstat64(unsigned int fd, struct stat64 __user *statbuf)
 {
-	struct kstat stat;
-	int ret = vfs_fstat(fd, &stat);
+	struct kstat64 stat;
+	int ret = vfs_fstat64(fd, &stat);
 	if (!ret)
 		ret = cp_stat64(statbuf, &stat);
 	return ret;
@@ -698,26 +700,6 @@ sys32_old_select(struct sel_arg_struct __user *arg)
 		return -EFAULT;
 	return compat_sys_select(a.n, compat_ptr(a.inp), compat_ptr(a.outp),
 				 compat_ptr(a.exp), compat_ptr(a.tvp));
-}
-
-/*
- * sys_time() can be implemented in user-level using
- * sys_gettimeofday().  x86-64 did this but i386 Linux did not
- * so we have to implement this system call here.
- */
-asmlinkage long sys32_time(int __user * tloc)
-{
-	int i;
-	struct timeval tv;
-
-	do_gettimeofday(&tv);
-	i = tv.tv_sec;
-
-	if (tloc) {
-		if (put_user(i,tloc))
-			i = -EFAULT;
-	}
-	return i;
 }
 
 extern asmlinkage long

@@ -31,7 +31,7 @@ unsigned int	nfs_debug;
 unsigned int	nfsd_debug;
 unsigned int	nlm_debug;
 
-unsigned int	xprt_min_resvport = 650;
+unsigned int	xprt_min_resvport = 665;
 unsigned int	xprt_max_resvport = 1023;
 
 #ifdef RPC_DEBUG

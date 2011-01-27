@@ -41,7 +41,7 @@
 #include "bond_3ad.h"
 #include "bond_alb.h"
 
-#define DRV_VERSION	"2.6.3"
+#define DRV_VERSION	"2.6.3-rh"
 #define DRV_RELDATE	"June 8, 2005"
 #define DRV_NAME	"bonding"
 #define DRV_DESCRIPTION	"Ethernet Channel Bonding Driver"

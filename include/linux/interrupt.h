@@ -33,6 +33,8 @@ typedef int irqreturn_t;
 #define IRQ_HANDLED	(1)
 #define IRQ_RETVAL(x)	((x) != 0)
 
+typedef irqreturn_t (*irq_handler_t)(int, void *, struct pt_regs *);
+
 struct irqaction {
 	irqreturn_t (*handler)(int, void *, struct pt_regs *);
 	unsigned long flags;

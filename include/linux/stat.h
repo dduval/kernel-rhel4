@@ -72,6 +72,27 @@ struct kstat {
 	unsigned long	blocks;
 };
 
+struct kstat64 {
+	/* these field must match struct kstat exactly so that we can cast to
+	 * that */
+	unsigned long	ino;
+	dev_t		dev;
+	umode_t		mode;
+	unsigned int	nlink;
+	uid_t		uid;
+	gid_t		gid;
+	dev_t		rdev;
+	loff_t		size;
+	struct timespec  atime;
+	struct timespec	mtime;
+	struct timespec	ctime;
+	unsigned long	blksize;
+	unsigned long	blocks;
+
+	/* additional 64-bit data */
+	u64		ino64;
+};
+
 #endif
 
 #endif

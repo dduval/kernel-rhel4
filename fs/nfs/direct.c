@@ -55,6 +55,8 @@
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
 
+#include "iostat.h"
+
 #define NFSDBG_FACILITY		NFSDBG_VFS
 
 static void nfs_free_user_pages(struct page **pages, int npages, int do_dirty);

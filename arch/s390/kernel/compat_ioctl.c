@@ -18,6 +18,8 @@
 #include <asm/dasd.h>
 #include <asm/vmcp.h>
 #include <asm/tape390.h>
+#include <asm/ccwdev.h>
+#include <asm/cmb.h>
 
 static int do_ioctl32_pointer(unsigned int fd, unsigned int cmd,
 				unsigned long arg, struct file *f)
@@ -59,7 +61,11 @@ COMPATIBLE_IOCTL(BIODASDPRRD)
 COMPATIBLE_IOCTL(BIODASDPSRD)
 COMPATIBLE_IOCTL(BIODASDGATTR)
 COMPATIBLE_IOCTL(BIODASDSATTR)
-
+#if defined(CONFIG_DASD_CMB) || defined(CONFIG_DASD_CMB_MODULE)
+COMPATIBLE_IOCTL(BIODASDCMFENABLE)
+COMPATIBLE_IOCTL(BIODASDCMFDISABLE)
+COMPATIBLE_IOCTL(BIODASDREADALLCMB)
+#endif
 #endif
 
 #if defined(CONFIG_S390_TAPE) || defined(CONFIG_S390_TAPE_MODULE)

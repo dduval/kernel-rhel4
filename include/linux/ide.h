@@ -965,7 +965,9 @@ typedef struct hwif_s {
 	unsigned	no_lba48_dma : 1; /* 1 = cannot do LBA48 DMA */
 	unsigned	no_dsc     : 1;	/* 0 default, 1 dsc_overlap disabled */
 	unsigned	auto_poll  : 1; /* supports nop auto-poll */
-
+#ifndef __GENKSYMS__
+	unsigned	atapi_irq_bogon : 1; /* Generates spurious DMA interrupts in PIO mode */
+#endif
 	struct device	gendev;
 	struct semaphore gendev_rel_sem; /* To deal with device release() */
 

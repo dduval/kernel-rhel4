@@ -87,6 +87,11 @@ MODULE_PARM_DESC(mpt_width, " Max Bus Width: wide=1, narrow=0 (default=MPTSCSIH_
 static ushort mpt_factor = MPTSCSIH_MIN_SYNC;
 module_param(mpt_factor, ushort, 0);
 MODULE_PARM_DESC(mpt_factor, " Min Sync Factor (default=MPTSCSIH_MIN_SYNC=0x08)");
+
+static int mpt_qas_disable = 0;
+module_param(mpt_qas_disable, int, 0);
+MODULE_PARM_DESC(mpt_qas_disable, " Disable QAS Support (default=0)");
+
 #endif
 
 static int mpt_saf_te = MPTSCSIH_SAF_TE;
@@ -159,9 +164,9 @@ static struct scsi_host_template mptspi_driver_template = {
  */
 
 static struct pci_device_id mptspi_pci_table[] = {
-	{ PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_53C1030,
+	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVID_53C1030,
 		PCI_ANY_ID, PCI_ANY_ID },
-	{ PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_1030_53C1035,
+	{ PCI_VENDOR_ID_LSI_LOGIC, MPI_MANUFACTPAGE_DEVID_53C1035,
 		PCI_ANY_ID, PCI_ANY_ID },
 	{0}	/* Terminating entry */
 };
@@ -403,7 +408,10 @@ mptspi_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 #endif
 
 	ioc->spi_data.forceDv = 0;
-	ioc->spi_data.noQas = 0;
+	if (mpt_qas_disable)  /* Is command-line QAS Disable requested */
+		ioc->spi_data.noQas |= MPT_TARGET_NO_NEGO_QAS;
+	else
+		ioc->spi_data.noQas = 0;
 
 	for (ii=0; ii < MPT_MAX_SCSI_DEVICES; ii++)
 		ioc->spi_data.dvStatus[ii] =
@@ -468,6 +476,7 @@ static struct pci_driver mptspi_driver = {
 static int __init
 mptspi_init(void)
 {
+
 	show_mptmod_ver(my_NAME, my_VERSION);
 
 	mptspiDoneCtx = mpt_register(mptscsih_io_done, MPTSPI_DRIVER);
@@ -497,7 +506,7 @@ static void __exit
 mptspi_exit(void)
 {
 	pci_unregister_driver(&mptspi_driver);
-	
+
 	mpt_reset_deregister(mptspiDoneCtx);
 	dprintk((KERN_INFO MYNAM
 	  ": Deregistered for IOC reset notifications\n"));

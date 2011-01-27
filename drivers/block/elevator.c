@@ -163,12 +163,23 @@ void elv_requeue_request(request_queue_t *q, struct request *rq)
 	if (q->elevator.elevator_requeue_req_fn)
 		q->elevator.elevator_requeue_req_fn(q, rq);
 	else
-		__elv_add_request(q, rq, ELEVATOR_INSERT_FRONT, 0);
+		__elv_add_request(q, rq, ELEVATOR_INSERT_REQUEUE, 0);
 }
 
 void __elv_add_request(request_queue_t *q, struct request *rq, int where,
 		       int plug)
 {
+	int unplug_it = 1;
+
+	/*
+	 * most requeues happen because of a busy condition, don't
+	 * force unplug of the queue for that case.
+	 */
+	if (where == ELEVATOR_INSERT_REQUEUE) {
+		unplug_it = 0;
+		where = ELEVATOR_INSERT_FRONT;
+	}
+
 	/*
 	 * barriers implicitly indicate back insertion
 	 */
@@ -182,10 +193,10 @@ void __elv_add_request(request_queue_t *q, struct request *rq, int where,
 	rq->q = q;
 	q->elevator.elevator_add_req_fn(q, rq, where);
 
-	if (blk_queue_plugged(q)) {
+	if (unplug_it && blk_queue_plugged(q)) {
 		int nrq = q->rq.count[READ] + q->rq.count[WRITE] - q->in_flight;
 
-		if (nrq == q->unplug_thresh)
+		if (nrq >= q->unplug_thresh)
 			__generic_unplug_device(q);
 	}
 

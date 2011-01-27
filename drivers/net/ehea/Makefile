@@ -1,0 +1,12 @@
+#
+# Makefile for the eHEA ethernet device driver for IBM eServer System p
+#
+ifndef CONFIG_EHEA_BACKLEVEL
+ehea-y = ehea_main.o ehea_phyp.o ehea_qmr.o ehea_ethtool.o ehea_phyp.o
+else
+ehea-objs = ehea_main.o ehea_phyp.o ehea_qmr.o ehea_ethtool.o ehea_phyp.o
+endif
+obj-$(CONFIG_EHEA) += ehea.o
+ifdef CONFIG_EHEA_BACKLEVEL
+CFLAGS += -DTARGET_BACKLVEL
+endif

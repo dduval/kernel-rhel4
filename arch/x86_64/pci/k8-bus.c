@@ -59,15 +59,6 @@ fill_mp_bus_to_cpumask(void)
 		}
 	}
 
-	/* quick sanity check */
-	for (i = 0; i < 256; i++) {
-		if (cpus_empty(pci_bus_to_cpumask[i])) {
-			printk(KERN_ERR
-			       "k8-bus.c: bus %i has empty cpu mask\n", i);
-			pci_bus_to_cpumask[i] = CPU_MASK_ALL;
-		}
-	}
-
 	return 0;
 }
 

@@ -19,6 +19,7 @@
  */
 #include <linux/module.h>
 #include <linux/init.h>
+#include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_transport.h>
@@ -569,6 +570,41 @@ fc_host_unblock(struct Scsi_Host *shost)
 	}
 }
 EXPORT_SYMBOL(fc_host_unblock);
+
+/**
+ * fc_timed_out - FC Transport I/O timeout intercept handler
+ *
+ * @scmd:	The SCSI command which timed out
+ *
+ * This routine protects against error handlers getting invoked while a
+ * rport is in a blocked state, typically due to a temporarily loss of
+ * connectivity. If the error handlers are allowed to proceed, requests
+ * to abort i/o, reset the target, etc will likely fail as there is no way
+ * to communicate with the device to perform the requested function. These
+ * failures may result in the midlayer taking the device offline, requiring
+ * manual intervention to restore operation.
+ *
+ * This routine, called whenever an i/o times out, validates the state of
+ * the underlying rport. If the rport is blocked, it returns
+ * EH_RESET_TIMER, which will continue to reschedule the timeout.
+ * Eventually, either the device will return, or devloss_tmo will fire,
+ * and when the timeout then fires, it will be handled normally.
+ * If the rport is not blocked, normal error handling continues.
+ *
+ * Notes:
+ *	This routine assumes no locks are held on entry.
+ **/
+enum scsi_eh_timer_return
+fc_timed_out(struct scsi_cmnd *scmd)
+{
+	struct scsi_device *sdev = scmd->device;
+
+	if (sdev->sdev_state == SDEV_BLOCK)
+		return EH_RESET_TIMER;
+
+	return EH_NOT_HANDLED;
+}
+EXPORT_SYMBOL(fc_timed_out);
 
 MODULE_AUTHOR("Martin Hicks");
 MODULE_DESCRIPTION("FC Transport Attributes");

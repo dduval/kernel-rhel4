@@ -82,6 +82,20 @@
 
 #endif
 
+typedef struct _internal_cmd {
+	char		*data;		/* data pointer */
+	dma_addr_t	data_dma;	/* data dma address */
+	int		size;		/* transfer size */
+	u8		cmd;		/* SCSI Op Code */
+	u8		bus;		/* bus number */
+	u8		id;		/* SCSI ID (virtual) */
+	u8		lun;
+	u8		flags;		/* Bit Field - See above */
+	u8		physDiskNum;	/* Phys disk number, -1 else */
+	u8		rsvd2;
+	u8		rsvd;
+} INTERNAL_CMD;
+
 extern void mptscsih_remove(struct pci_dev *);
 // This was changed in the 2.6.13 kernel
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,13))
@@ -114,7 +128,7 @@ extern int mptscsih_readFCDevicePage0(MPT_ADAPTER *ioc, u8 bus, u8 targetId, pFC
 extern void mptscsih_hot_plug_worker_thread(void * arg);
 extern int mptscsih_TMHandler(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 target, u8 lun, int ctx2abort, ulong timeout);
 extern int mptscsih_change_queue_depth(struct scsi_device *sdev, int qdepth);
+extern int mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *iocmd);
 extern int mptscsih_sanity_check(struct scsi_device *sdev);
 extern void mptscsih_poll(struct scsi_device *sdev);
 extern void scsi_print_command(struct scsi_cmnd *cmd);
-

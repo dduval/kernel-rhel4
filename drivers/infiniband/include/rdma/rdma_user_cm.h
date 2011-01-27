@@ -203,6 +203,7 @@ enum {
 /* IB specific option names for get/set. */
 enum {
 	IB_PATH_OPTIONS = 1,
+	IB_CM_REQ_OPTIONS = 2,
 };
 
 struct rdma_ucm_get_option_resp {

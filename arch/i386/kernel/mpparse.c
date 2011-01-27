@@ -931,7 +931,8 @@ void __init mp_register_ioapic (
 	if (idx < MAX_IO_APICS)
 		set_fixmap_nocache(FIX_IO_APIC_BASE_0 + idx, address);
 
-	if ((boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) && (boot_cpu_data.x86 < 15))
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_INTEL) &&
+	    !APIC_XAPIC(apic_version[boot_cpu_physical_apicid]))
 		mp_ioapics[idx].mpc_apicid = io_apic_get_unique_id(idx, id);
 	else
 		mp_ioapics[idx].mpc_apicid = id;

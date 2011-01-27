@@ -30,6 +30,7 @@
 static int quiesce_ok = 0;
 static CommandList_struct *cciss_dump_cmnd[MAX_CTLR];
 static ReadCapdata_struct *size_buff;
+static ReadCapdata_struct_16 *size_buff_16;
 #define BLOCK_SECTOR(s) ((s) << (PAGE_SHIFT - 9))
 
 /* function prototypes */
@@ -121,14 +122,17 @@ static int cciss_dump_rw_block(void *device, int rw,
 	int count = (len * PAGE_SIZE);
 	int ret;
 	int ctlr, lun;
-	__u8 cmd = CCISS_READ;
-
-	if (rw)
-		cmd = CCISS_WRITE;
+	__u8 cmd;
 
 	if (find_ctlr_lun_ids(&ctlr, &lun, dev->LunID)){
 		return -1;
 	}
+	
+	if (rw)
+		cmd = hba[ctlr]->cciss_write;
+	else
+		cmd = hba[ctlr]->cciss_read;
+
 
 	if (!quiesce_ok) {
 		return -1;
@@ -152,36 +156,31 @@ static int cciss_dump_rw_block(void *device, int rw,
 static int cciss_sanity_check(int ctlr, int lun)
 {
 	unsigned int block_size;
-	unsigned int total_size;
+	sector_t total_size;
 	int return_code;
 
 	memset(size_buff, 0, sizeof(ReadCapdata_struct));
 
+	if (hba[ctlr]->cciss_read == CCISS_READ_10) {
 	return_code = sendcmd(CCISS_READ_CAPACITY, ctlr, size_buff,
 			sizeof(ReadCapdata_struct), 1, lun, 0, NULL,
 			TYPE_CMD, 0, 1);
+	} else {
+	return_code = sendcmd(CCISS_READ_CAPACITY_16, ctlr, size_buff_16,
+			sizeof(ReadCapdata_struct_16), 1, lun, 0, NULL,
+			TYPE_CMD, 0, 1);
+	}
 
 	if (return_code == IO_OK) {
-		total_size = (0xff &
-			(unsigned int)(size_buff->total_size[0])) << 24;
-		total_size |= (0xff &
-			(unsigned int)(size_buff->total_size[1])) << 16;
-		total_size |= (0xff &
-			(unsigned int)(size_buff->total_size[2])) << 8;
-		total_size |= (0xff & (unsigned int)
-			(size_buff->total_size[3]));
+		if (hba[ctlr]->cciss_read == CCISS_READ_10) {
+			total_size = be32_to_cpu(*(__u32 *) size_buff->total_size)+1;
+			block_size = be32_to_cpu(*(__u32 *) size_buff->block_size);
+		} else {
+			total_size = be64_to_cpu(*(__u64 *) size_buff_16->total_size)+1;
+			block_size = be32_to_cpu(*(__u32 *) size_buff_16->block_size);
+		}
 		total_size++; 	/* command returns highest */
 				/* block address */
-
-		block_size = (0xff &
-			(unsigned int)(size_buff->block_size[0])) << 24;
-		block_size |= (0xff &
-			(unsigned int)(size_buff->block_size[1])) << 16;
-		block_size |= (0xff &
-			(unsigned int)(size_buff->block_size[2])) << 8;
-		block_size |= (0xff &
-			(unsigned int)(size_buff->block_size[3]));
-
 	} else {	/* read capacity command failed */
 		return -1;
 	}
@@ -204,7 +203,7 @@ static int find_ctlr_lun_ids(int *ctlr, int *lun, __u32 LunID)
 	*lun = -1;
 	for (i=0; i<MAX_CTLR; i++){
 		if (hba[i] != NULL){
-			for (j=0; j<NWD; j++){
+			for (j=0; j<CISS_MAX_LUN; j++){
 				if (hba[i]->drv[j].LunID == LunID) {
 					*ctlr = i;
 					*lun = j;

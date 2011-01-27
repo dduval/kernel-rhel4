@@ -57,13 +57,7 @@ static struct ccw_driver dasd_fba_driver; /* see below */
 static int
 dasd_fba_probe(struct ccw_device *cdev)
 {
-	int ret;
-
-	ret = dasd_generic_probe (cdev, &dasd_fba_discipline);
-	if (ret)
-		return ret;
-	ccw_device_set_options(cdev, CCWDEV_DO_PATHGROUP);
-	return 0;
+	return dasd_generic_probe (cdev, &dasd_fba_discipline);
 }
 
 static int
@@ -132,7 +126,7 @@ dasd_fba_check_characteristics(struct dasd_device *device)
 
 	private = (struct dasd_fba_private *) device->private;
 	if (private == NULL) {
-		private = kmalloc(sizeof(struct dasd_fba_private), GFP_KERNEL);
+		private = kzalloc(sizeof(struct dasd_fba_private), GFP_KERNEL);
 		if (private == NULL) {
 			DEV_MESSAGE(KERN_WARNING, device, "%s",
 				    "memory allocation failed for private "
@@ -352,6 +346,8 @@ dasd_fba_build_cp(struct dasd_device * device, struct request *req)
 			recid++;
 		}
 	}
+	if (req->flags & REQ_FAILFAST)
+		set_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags);
 	cqr->device = device;
 	cqr->expires = 5 * 60 * HZ;	/* 5 minutes */
 	cqr->retries = 32;
@@ -568,16 +564,8 @@ static struct dasd_discipline dasd_fba_discipline = {
 static int __init
 dasd_fba_init(void)
 {
-	int ret;
-
 	ASCEBC(dasd_fba_discipline.ebcname, 4);
-
-	ret = ccw_driver_register(&dasd_fba_driver);
-	if (ret)
-		return ret;
-
-	dasd_generic_auto_online(&dasd_fba_driver);
-	return 0;
+	return ccw_driver_register(&dasd_fba_driver);
 }
 
 static void __exit

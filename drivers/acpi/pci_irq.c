@@ -326,10 +326,10 @@ int
 acpi_pci_irq_enable (
 	struct pci_dev		*dev)
 {
-	int			irq = 0;
-	u8			pin = 0;
-	int			edge_level = ACPI_LEVEL_SENSITIVE;
-	int			active_high_low = ACPI_ACTIVE_LOW;
+	int irq = 0;
+	u8 pin = 0;
+	int edge_level = ACPI_LEVEL_SENSITIVE;
+	int active_high_low = ACPI_ACTIVE_LOW;
 
 	ACPI_FUNCTION_TRACE("acpi_pci_irq_enable");
 
@@ -369,8 +369,10 @@ acpi_pci_irq_enable (
 		printk(KERN_WARNING PREFIX "PCI interrupt %s[%c]: no GSI",
 			pci_name(dev), ('A' + pin));
 		/* Interrupt Line values above 0xF are forbidden */
-		if (dev->irq >= 0 && (dev->irq <= 0xF)) {
+		if (dev->irq > 0 && (dev->irq <= 0xF)) {
 			printk(" - using IRQ %d\n", dev->irq);
+			acpi_register_gsi(dev->irq, ACPI_LEVEL_SENSITIVE,
+					  ACPI_ACTIVE_LOW);
 			return_VALUE(0);
 		}
 		else {
@@ -381,12 +383,12 @@ acpi_pci_irq_enable (
 
 	dev->irq = acpi_register_gsi(irq, edge_level, active_high_low);
 
-	printk(KERN_INFO PREFIX "PCI interrupt %s[%c] -> GSI %u "
-		"(%s, %s) -> IRQ %d\n",
-		pci_name(dev), 'A' + pin, irq,
-		(edge_level == ACPI_LEVEL_SENSITIVE) ? "level" : "edge",
-		(active_high_low == ACPI_ACTIVE_LOW) ? "low" : "high",
-		dev->irq);
+	printk(KERN_INFO PREFIX "PCI Interrupt %s[%c] -> ",
+	       pci_name(dev), 'A' + pin);
+
+	printk("GSI %u (%s, %s) -> IRQ %d\n", irq,
+	       (edge_level == ACPI_LEVEL_SENSITIVE) ? "level" : "edge",
+	       (active_high_low == ACPI_ACTIVE_LOW) ? "low" : "high", dev->irq);
 
 	return_VALUE(0);
 }

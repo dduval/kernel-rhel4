@@ -180,5 +180,5 @@ extern void fill_inquiry_response(struct us_data *us,
 /* Vendor ID list for devices that require special handling */
 #define USB_VENDOR_ID_GENESYS		0x05e3	/* Genesys Logic */
 #define USB_VENDOR_ID_TEAC		0x0644	/* TEAC */
-
+#define USB_VENDOR_ID_IBM		0x04b3  /* IBM BladeCenter */
 #endif

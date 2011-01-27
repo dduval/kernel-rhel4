@@ -45,8 +45,7 @@
 
 #include "ehca_tools.h"
 
-/** QP Table Entry Memory Map
- */
+/* QP Table Entry Memory Map */
 struct hipz_qptemm {
 	u64 qpx_hcr;
 	u64 qpx_c;
@@ -118,7 +117,6 @@ struct hipz_qptemm {
 	u64 qpx_sigt;
 	u64 qpx_wqecnt;
 /* 0x1c0*/
-
 	u64 qpx_rqhp;
 	u64 qpx_rqptp;
 	u64 qpx_rqsize;
@@ -166,8 +164,7 @@ struct hipz_qptemm {
 
 #define QPTEMM_OFFSET(x) offsetof(struct hipz_qptemm,x)
 
-/** MRMWPT Entry Memory Map
- */
+/* MRMWPT Entry Memory Map */
 struct hipz_mrmwmm {
 	/* 0x00 */
 	u64 mrx_hcr;
@@ -240,10 +237,9 @@ struct hipz_qpedmm {
 	u64 qpedx_rrva3;
 };
 
-#define QPEDMM_OFFSET(x) offsetof(struct hipz_QPEDMM,x)
+#define QPEDMM_OFFSET(x) offsetof(struct hipz_qpedmm,x)
 
-/** CQ Table Entry Memory Map
- */
+/* CQ Table Entry Memory Map */
 struct hipz_cqtemm {
 	u64 cqx_hcr;
 	u64 cqx_c;
@@ -273,8 +269,7 @@ struct hipz_cqtemm {
 
 #define CQTEMM_OFFSET(x) offsetof(struct hipz_cqtemm,x)
 
-/** EQ Table Entry Memory Map
- */
+/* EQ Table Entry Memory Map */
 struct hipz_eqtemm {
 	u64 eqx_hcr;
 	u64 eqx_c;

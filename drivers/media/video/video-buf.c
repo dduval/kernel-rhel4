@@ -1087,6 +1087,24 @@ videobuf_vm_nopage(struct vm_area_struct *vma, unsigned long vaddr,
 	page = alloc_page(GFP_USER);
 	if (!page)
 		return NOPAGE_OOM;
+
+#ifdef CONFIG_X86_64
+	/*
+	 * If the board isn't able to access the allocated page, try to alloc
+	 * it on ZONE_DMA
+	 */
+	if (virt_to_bus(page_address(page)) > ((u32)-1 & PAGE_MASK)) {
+		unsigned int gfp = GFP_USER | GFP_DMA;
+		free_page(page);
+		/* try harder if there's no true IOMMU */
+		if (PCI_DMA_BUS_IS_PHYS)
+			gfp |= __GFP_REPEAT;
+		page = alloc_page(gfp);
+		if (!page)
+			return NOPAGE_OOM;
+	}
+#endif
+
 	clear_user_page(page_address(page), vaddr, page);
 	if (type)
 		*type = VM_FAULT_MINOR;

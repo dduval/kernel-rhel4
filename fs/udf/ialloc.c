@@ -87,6 +87,12 @@ struct inode * udf_new_inode (struct inode *dir, int mode, int * err)
 	}
 	*err = -ENOSPC;
 
+	UDF_I_UNIQUE(inode) = 0;
+	UDF_I_LENEXTENTS(inode) = 0;
+	UDF_I_NEXT_ALLOC_BLOCK(inode) = 0;
+	UDF_I_NEXT_ALLOC_GOAL(inode) = 0;
+	UDF_I_STRAT4096(inode) = 0;
+
 	block = udf_new_block(dir->i_sb, NULL, UDF_I_LOCATION(dir).partitionReferenceNum,
 		start, err);
 	if (*err)
@@ -96,11 +102,6 @@ struct inode * udf_new_inode (struct inode *dir, int mode, int * err)
 	}
 	lock_super(sb);
 
-	UDF_I_UNIQUE(inode) = 0;
-	UDF_I_LENEXTENTS(inode) = 0;
-	UDF_I_NEXT_ALLOC_BLOCK(inode) = 0;
-	UDF_I_NEXT_ALLOC_GOAL(inode) = 0;
-	UDF_I_STRAT4096(inode) = 0;
 	if (UDF_SB_LVIDBH(sb))
 	{
 		struct logicalVolHeaderDesc *lvhd;

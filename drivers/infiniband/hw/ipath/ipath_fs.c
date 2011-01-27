@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -203,8 +204,8 @@ static ssize_t atomic_port_info_read(struct file *file, char __user *buf,
 	portinfo[4] = (dd->ipath_lid << 16);
 
 	/*
-	 * Notimpl yet SMLID (should we store this in the driver, in case
-	 * SMA dies?)  CapabilityMask is 0, we don't support any of these
+	 * Notimpl yet SMLID.
+	 * CapabilityMask is 0, we don't support any of these
 	 * DiagCode is 0; we don't store any diag info for now Notimpl yet
 	 * M_KeyLeasePeriod (we don't support M_Key)
 	 */
@@ -562,6 +563,17 @@ bail:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
+static int ipathfs_get_sb(struct file_system_type *fs_type, int flags,
+			const char *dev_name, void *data, struct vfsmount *mnt)
+{
+	int ret = get_sb_single(fs_type, flags, data,
+				    ipathfs_fill_super, mnt);
+	if (ret >= 0)
+		ipath_super = mnt->mnt_sb;
+	return ret;
+}
+#else
 static struct super_block *ipathfs_get_sb(struct file_system_type *fs_type,
 				        int flags, const char *dev_name,
 					void *data)
@@ -570,6 +582,7 @@ static struct super_block *ipathfs_get_sb(struct file_system_type *fs_type,
 				    ipathfs_fill_super);
 	return ipath_super;
 }
+#endif
 
 static void ipathfs_kill_super(struct super_block *s)
 {

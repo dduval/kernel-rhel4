@@ -69,6 +69,7 @@ irq_desc_t irq_desc[NR_IRQS] __cacheline_aligned = {
 };
 
 int __irq_offset_value;
+EXPORT_SYMBOL(__irq_offset_value);
 int ppc_spurious_interrupts;
 unsigned long lpevent_count;
 
@@ -174,7 +175,7 @@ int request_irq(unsigned int irq,
 	if (retval)
 		kfree(action);
 
-	return 0;
+	return retval;
 }
 
 EXPORT_SYMBOL(request_irq);
@@ -889,6 +890,7 @@ int virt_irq_create_mapping(unsigned int real_irq)
 	}
 	return NO_IRQ;
 }
+EXPORT_SYMBOL(virt_irq_create_mapping);
 
 /*
  * In most cases will get a hit on the very first slot checked in the

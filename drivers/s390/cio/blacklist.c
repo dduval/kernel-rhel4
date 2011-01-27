@@ -35,7 +35,7 @@
  */
 
 /* 65536 bits to indicate if a devno is blacklisted or not */
-#define __BL_DEV_WORDS (__MAX_SUBCHANNELS + (8*sizeof(long) - 1) / \
+#define __BL_DEV_WORDS ((__MAX_SUBCHANNELS + (8*sizeof(long) - 1)) / \
 			 (8*sizeof(long)))
 static unsigned long bl_dev[__BL_DEV_WORDS];
 typedef enum {add, free} range_action;
@@ -220,38 +220,6 @@ is_blacklisted (int devno)
 
 #ifdef CONFIG_PROC_FS
 /*
- * Function: s390_redo_validation
- * Look for no longer blacklisted devices
- * FIXME: there must be a better way to do this */
-static inline void
-s390_redo_validation (void)
-{
-	unsigned int irq;
-
-	CIO_TRACE_EVENT (0, "redoval");
-	for (irq = 0; irq < __MAX_SUBCHANNELS; irq++) {
-		int ret;
-		struct subchannel *sch;
-
-		sch = get_subchannel_by_schid(irq);
-		if (sch) {
-			/* Already known. */
-			put_device(&sch->dev);
-			continue;
-		}
-		ret = css_probe_device(irq);
-		if (ret == -ENXIO)
-			break; /* We're through. */
-		if (ret == -ENOMEM)
-			/*
-			 * Stop validation for now. Bad, but no need for a
-			 * panic.
-			 */
-			break;
-	}
-}
-
-/*
  * Function: blacklist_parse_proc_parameters
  * parse the stuff which is piped to /proc/cio_ignore
  */
@@ -275,7 +243,7 @@ blacklist_parse_proc_parameters (char *buf)
 		return;
 	}
 
-	s390_redo_validation ();
+	css_schedule_reprobe();
 }
 
 /* FIXME: These should be real bus ids and not home-grown ones! */
@@ -289,7 +257,7 @@ static int cio_ignore_read (char *page, char **start, off_t off,
 	len = 0;
 	for (devno = off; /* abuse the page variable
 			   * as counter, see fs/proc/generic.c */
-	     devno <= __MAX_SUBCHANNELS && len + entry_size < count; devno++) {
+	     devno < __MAX_SUBCHANNELS && len + entry_size < count; devno++) {
 		if (!test_bit(devno, bl_dev))
 			continue;
 		len += sprintf(page + len, "0.0.%04lx", devno);
@@ -302,7 +270,7 @@ static int cio_ignore_read (char *page, char **start, off_t off,
 		len += sprintf(page + len, "\n");
 	}
 
-	if (devno <= __MAX_SUBCHANNELS)
+	if (devno < __MAX_SUBCHANNELS)
 		*eof = 1;
 	*start = (char *) (devno - off); /* number of checked entries */
 	return len;

@@ -498,7 +498,7 @@ _GLOBAL(_outsl_ns)
 
 _GLOBAL(cvt_fd)
 	lfd	0,0(r5)		/* load up fpscr value */
-	mtfsf	0xff,0
+	MTFSF_L(0)
 	lfs	0,0(r3)
 	stfd	0,0(r4)
 	mffs	0		/* save new fpscr value */
@@ -507,7 +507,7 @@ _GLOBAL(cvt_fd)
 
 _GLOBAL(cvt_df)
 	lfd	0,0(r5)		/* load up fpscr value */
-	mtfsf	0xff,0
+	MTFSF_L(0)
 	lfd	0,0(r3)
 	stfs	0,0(r4)
 	mffs	0		/* save new fpscr value */
@@ -707,7 +707,7 @@ _GLOBAL(sys_call_table32)
 	.llong .sys_unlink      	/* 10 */
 	.llong .sys32_execve
 	.llong .sys_chdir
-	.llong .sys32_time
+	.llong .compat_sys_time
 	.llong .sys_mknod
 	.llong .sys_chmod		/* 15 */
 	.llong .sys_lchown
@@ -719,7 +719,7 @@ _GLOBAL(sys_call_table32)
 	.llong .sys_oldumount
 	.llong .sys_setuid
 	.llong .sys_getuid
-	.llong .ppc64_sys32_stime       /* 25 */
+	.llong .compat_sys_stime	/* 25 */
 	.llong .sys32_ptrace
 	.llong .sys_alarm
 	.llong .sys_ni_syscall		/* old fstat syscall */
@@ -1002,7 +1002,7 @@ _GLOBAL(sys_call_table)
 	.llong .sys_ni_syscall		/* old umount syscall */
 	.llong .sys_setuid
 	.llong .sys_getuid
-	.llong .ppc64_sys_stime		/* 25 */
+	.llong .sys_stime		/* 25 */
 	.llong .sys_ptrace
 	.llong .sys_alarm
 	.llong .sys_ni_syscall		/* old fstat syscall */

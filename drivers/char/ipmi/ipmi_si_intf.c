@@ -799,7 +799,7 @@ static int ipmi_thread(void *data)
 			/* do nothing */
 		}
 		else if (smi_result == SI_SM_CALL_WITH_DELAY)
-			udelay(1);
+			schedule();
 		else
 			schedule_timeout_interruptible(1);
 	}
@@ -998,7 +998,7 @@ static struct ipmi_smi_handlers handlers =
 /* There can be 4 IO ports passed in (with or without IRQs), 4 addresses,
    a default IO port, and 1 ACPI/SPMI address.  That sets SI_MAX_DRIVERS */
 
-#define SI_MAX_PARMS 4
+#define SI_MAX_PARMS 8
 #define SI_MAX_DRIVERS ((SI_MAX_PARMS * 2) + 2)
 static struct smi_info *smi_infos[SI_MAX_DRIVERS] =
 { NULL, NULL, NULL, NULL };
@@ -2481,7 +2481,8 @@ static int init_one_smi(int intf_num, struct smi_info **smi)
 			new_smi->handlers->cleanup(new_smi->si_sm);
 		kfree(new_smi->si_sm);
 	}
-	new_smi->io_cleanup(new_smi);
+	if (new_smi->io_cleanup)
+		new_smi->io_cleanup(new_smi);
 
 	return rv;
 }
@@ -2609,7 +2610,8 @@ static void __exit cleanup_one_si(struct smi_info *to_clean)
 
 	kfree(to_clean->si_sm);
 
-	to_clean->io_cleanup(to_clean);
+	if (to_clean->io_cleanup)
+		to_clean->io_cleanup(to_clean);
 }
 
 static __exit void cleanup_ipmi_si(void)

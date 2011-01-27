@@ -264,6 +264,10 @@ static int ipoib_mcast_join_finish(struct ipoib_mcast *mcast,
 		if (!ah) {
 			ipoib_warn(priv, "ib_address_create failed\n");
 		} else {
+			spin_lock_irq(&priv->lock);
+			mcast->ah = ah;
+			spin_unlock_irq(&priv->lock);
+
 			ipoib_dbg_mcast(priv, "MGID " IPOIB_GID_FMT
 					" AV %p, LID 0x%04x, SL %d\n",
 					IPOIB_GID_ARG(mcast->mcmember.mgid),
@@ -271,10 +275,6 @@ static int ipoib_mcast_join_finish(struct ipoib_mcast *mcast,
 					be16_to_cpu(mcast->mcmember.mlid),
 					mcast->mcmember.sl);
 		}
-
-		spin_lock_irq(&priv->lock);
-		mcast->ah = ah;
-		spin_unlock_irq(&priv->lock);
 	}
 
 	/* actually send any queued packets */
@@ -471,15 +471,25 @@ static void ipoib_mcast_join(struct net_device *dev, struct ipoib_mcast *mcast,
 
 	if (create) {
 		comp_mask |=
-			IB_SA_MCMEMBER_REC_QKEY		|
-			IB_SA_MCMEMBER_REC_SL		|
-			IB_SA_MCMEMBER_REC_FLOW_LABEL	|
-			IB_SA_MCMEMBER_REC_TRAFFIC_CLASS;
+			IB_SA_MCMEMBER_REC_QKEY          |
+			IB_SA_MCMEMBER_REC_SL		 |
+			IB_SA_MCMEMBER_REC_FLOW_LABEL	 |
+			IB_SA_MCMEMBER_REC_TRAFFIC_CLASS |
+			IB_SA_MCMEMBER_REC_RATE_SELECTOR |
+			IB_SA_MCMEMBER_REC_RATE          |
+			IB_SA_MCMEMBER_REC_HOP_LIMIT     |
+			IB_SA_MCMEMBER_REC_MTU_SELECTOR  |
+			IB_SA_MCMEMBER_REC_MTU;
 
 		rec.qkey	  = priv->broadcast->mcmember.qkey;
 		rec.sl		  = priv->broadcast->mcmember.sl;
 		rec.flow_label	  = priv->broadcast->mcmember.flow_label;
 		rec.traffic_class = priv->broadcast->mcmember.traffic_class;
+		rec.rate_selector = IB_SA_EQ;
+		rec.rate          = priv->broadcast->mcmember.rate;
+		rec.hop_limit     = priv->broadcast->mcmember.hop_limit;
+		rec.mtu_selector  = IB_SA_EQ;
+		rec.mtu           = priv->broadcast->mcmember.mtu;
 	}
 
 	init_completion(&mcast->done);
@@ -820,7 +830,8 @@ void ipoib_mcast_restart_task(void *dev_ptr)
 
 	ipoib_mcast_stop_thread(dev, 0);
 
-	spin_lock_irqsave(&dev->xmit_lock, flags);
+	local_irq_save(flags);
+	netif_tx_lock(dev);
 	spin_lock(&priv->lock);
 
 	/*
@@ -863,8 +874,7 @@ void ipoib_mcast_restart_task(void *dev_ptr)
 
 			if (mcast) {
 				/* Destroy the send only entry */
-				list_del(&mcast->list);
-				list_add_tail(&mcast->list, &remove_list);
+				list_move_tail(&mcast->list, &remove_list);
 
 				rb_replace_node(&mcast->rb_node,
 						&nmcast->rb_node,
@@ -889,13 +899,13 @@ void ipoib_mcast_restart_task(void *dev_ptr)
 			rb_erase(&mcast->rb_node, &priv->multicast_tree);
 
 			/* Move to the remove list */
-			list_del(&mcast->list);
-			list_add_tail(&mcast->list, &remove_list);
+			list_move_tail(&mcast->list, &remove_list);
 		}
 	}
 
 	spin_unlock(&priv->lock);
-	spin_unlock_irqrestore(&dev->xmit_lock, flags);
+	netif_tx_unlock(dev);
+	local_irq_restore(flags);
 
 	/* We have to cancel outside of the spinlock */
 	list_for_each_entry_safe(mcast, tmcast, &remove_list, list) {

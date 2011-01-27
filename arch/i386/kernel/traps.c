@@ -242,7 +242,7 @@ void show_registers(struct pt_regs *regs)
 		for (i = 0; i < 64; i++, eip++) {
 			unsigned char c;
 
-			if (eip < (u8 *)PAGE_OFFSET || __get_user(c, eip)) {
+			if (eip < (u8 *)PAGE_OFFSET || __direct_get_user(c, eip)) {
 				printk(" Bad EIP value.");
 				break;
 			}

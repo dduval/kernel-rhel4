@@ -102,10 +102,16 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 	};
 	struct ib_device *device = id->device;
 	struct ib_cq *cq;
+	struct ib_mr *mr;
 	struct ib_pd *pd;
 	int rc;
 
 	sdp_dbg(sk, "%s\n", __func__);
+
+	sdp_sk(sk)->tx_head = 1;
+	sdp_sk(sk)->tx_tail = 1;
+	sdp_sk(sk)->rx_head = 1;
+	sdp_sk(sk)->rx_tail = 1;
 
 	sdp_sk(sk)->tx_ring = kmalloc(sizeof *sdp_sk(sk)->tx_ring * SDP_TX_SIZE,
 				      GFP_KERNEL);
@@ -131,14 +137,15 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 		sdp_warn(sk, "Unable to allocate PD: %d.\n", rc);
 		goto err_pd;
 	}
-	
-        sdp_sk(sk)->mr = ib_get_dma_mr(pd, IB_ACCESS_LOCAL_WRITE);
-        if (IS_ERR(sdp_sk(sk)->mr)) {
-                rc = PTR_ERR(sdp_sk(sk)->mr);
+
+        mr = ib_get_dma_mr(pd, IB_ACCESS_LOCAL_WRITE);
+        if (IS_ERR(mr)) {
+                rc = PTR_ERR(mr);
 		sdp_warn(sk, "Unable to get dma MR: %d.\n", rc);
                 goto err_mr;
         }
 
+	sdp_sk(sk)->mr = mr;
 	INIT_WORK(&sdp_sk(sk)->work, sdp_work, sdp_sk(sk));
 
 	cq = ib_create_cq(device, sdp_completion_handler, sdp_cq_event_handler,
@@ -149,6 +156,8 @@ int sdp_init_qp(struct sock *sk, struct rdma_cm_id *id)
 		sdp_warn(sk, "Unable to allocate CQ: %d.\n", rc);
 		goto err_cq;
 	}
+
+	ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
 
         qp_init_attr.send_cq = qp_init_attr.recv_cq = cq;
 
@@ -237,9 +246,11 @@ int sdp_connect_handler(struct sock *sk, struct rdma_cm_id *id,
 	return 0;
 }
 
-static int sdp_response_handler(struct sock *sk, struct rdma_cm_event *event)
+static int sdp_response_handler(struct sock *sk, struct rdma_cm_id *id,
+				struct rdma_cm_event *event)
 {
 	struct sdp_hah *h;
+	struct sockaddr_in *dst_addr;
 	sdp_dbg(sk, "%s\n", __func__);
 
 	sk->sk_state = TCP_ESTABLISHED;
@@ -259,10 +270,17 @@ static int sdp_response_handler(struct sock *sk, struct rdma_cm_event *event)
 		sdp_sk(sk)->bufs,
 		sdp_sk(sk)->xmit_size_goal);
 
+	sdp_sk(sk)->poll_cq = 1;
 	ib_req_notify_cq(sdp_sk(sk)->cq, IB_CQ_NEXT_COMP);
+	sdp_poll_cq(sdp_sk(sk), sdp_sk(sk)->cq);
 
 	sk->sk_state_change(sk);
 	sk_wake_async(sk, 0, POLL_OUT);
+
+	dst_addr = (struct sockaddr_in *)&id->route.addr.dst_addr;
+	inet_sk(sk)->dport = dst_addr->sin_port;
+	inet_sk(sk)->daddr = dst_addr->sin_addr.s_addr;
+
 	return 0;
 }
 
@@ -321,7 +339,7 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 	struct sock *sk;
 	struct sdp_hah hah;
 	struct sdp_hh hh;
-	
+
 	int rc = 0;
 
 	sk = id->context;
@@ -365,7 +383,8 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		hh.localrcvsz = hh.desremrcvsz = htonl(SDP_MAX_SEND_SKB_FRAGS *
 			PAGE_SIZE + sizeof(struct sdp_bsdh));
 		hh.max_adverts = 0x1;
-
+		inet_sk(sk)->saddr = inet_sk(sk)->rcv_saddr =
+			((struct sockaddr_in *)&id->route.addr.src_addr)->sin_addr.s_addr;
 		memset(&conn_param, 0, sizeof conn_param);
 		conn_param.private_data_len = sizeof hh;
 		conn_param.private_data = &hh;
@@ -410,11 +429,14 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		break;
 	case RDMA_CM_EVENT_CONNECT_RESPONSE:
 		sdp_dbg(sk, "RDMA_CM_EVENT_CONNECT_RESPONSE\n");
-		rc = sdp_response_handler(sk, event);
+		rc = sdp_response_handler(sk, id, event);
 		if (rc)
 			rdma_reject(id, NULL, 0);
 		else
 			rc = rdma_accept(id, NULL);
+
+		if (!rc)
+			rc = sdp_post_credits(sdp_sk(sk));
 		break;
 	case RDMA_CM_EVENT_CONNECT_ERROR:
 		sdp_dbg(sk, "RDMA_CM_EVENT_CONNECT_ERROR\n");
@@ -430,6 +452,8 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		break;
 	case RDMA_CM_EVENT_ESTABLISHED:
 		sdp_dbg(sk, "RDMA_CM_EVENT_ESTABLISHED\n");
+		inet_sk(sk)->saddr = inet_sk(sk)->rcv_saddr =
+			((struct sockaddr_in *)&id->route.addr.src_addr)->sin_addr.s_addr;
 		rc = sdp_connected_handler(sk, event);
 		break;
 	case RDMA_CM_EVENT_DISCONNECTED:
@@ -457,8 +481,8 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		sdp_sk(sk)->id = NULL;
 		id->qp = NULL;
 		id->context = NULL;
-		sdp_set_error(sk, rc);
 		parent = sdp_sk(sk)->parent;
+		sdp_reset_sk(sk, rc);
 	}
 
 	release_sock(sk);
@@ -470,16 +494,17 @@ int sdp_cma_handler(struct rdma_cm_id *id, struct rdma_cm_event *event)
 		lock_sock(parent);
 		if (!sdp_sk(parent)->id) { /* TODO: look at SOCK_DEAD? */
 			sdp_dbg(sk, "parent is going away.\n");
+			child = NULL;
 			goto done;
 		}
-		list_del_init(&sdp_sk(child)->backlog_queue);
-		if (!list_empty(&sdp_sk(child)->accept_queue)) {
-			list_del_init(&sdp_sk(child)->accept_queue);
-			sk_acceptq_removed(parent);
-		}
+		if (!list_empty(&sdp_sk(child)->backlog_queue))
+			list_del_init(&sdp_sk(child)->backlog_queue);
+		else
+			child = NULL;
 done:
 		release_sock(parent);
-		sk_common_release(child);
+		if (child)
+			sk_common_release(child);
 	}
 	return rc;
 }

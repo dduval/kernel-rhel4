@@ -377,7 +377,7 @@ tioca_dma_mapped(struct pci_dev *pdev, u64 paddr, size_t req_size)
 	struct tioca_dmamap *ca_dmamap;
 	void *map;
 	unsigned long flags;
-	struct pcidev_info *pcidev_info = SN_PCIDEV_INFO(pdev);;
+	struct pcidev_info *pcidev_info = SN_PCIDEV_INFO(pdev);
 
 	tioca_common = (struct tioca_common *)pcidev_info->pdi_pcibus_info;
 	tioca_kern = (struct tioca_kernel *)tioca_common->ca_kernel_private;
@@ -589,7 +589,7 @@ tioca_bus_fixup(struct pcibus_bussoft *prom_bussoft, struct pci_controller *cont
 
 	/* sanity check prom rev */
 
-	if (sn_sal_rev() < 0x0406) {
+	if (is_shub1() && sn_sal_rev() < 0x0406) {
 		printk
 		    (KERN_ERR "%s:  SGI prom rev 4.06 or greater required "
 		     "for tioca support\n", __FUNCTION__);

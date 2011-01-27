@@ -271,7 +271,7 @@ out:	jr	ra
 	sys	sys_unlink	1			/* 4010 */
 	sys	sys32_execve	0
 	sys	sys_chdir	1
-	sys	sys_time	1
+	sys	compat_sys_time	1
 	sys	sys_mknod	3
 	sys	sys_chmod	2			/* 4015 */
 	sys	sys_lchown	3
@@ -283,7 +283,7 @@ out:	jr	ra
 	sys	sys_oldumount	1
 	sys	sys_setuid	1
 	sys	sys_getuid	0
-	sys	sys_stime	1			/* 4025 */
+	sys	compat_sys_stime	1			/* 4025 */
 	sys	sys32_ptrace	4
 	sys	sys_alarm	1
 	sys	sys_ni_syscall	0			/* was sys_fstat */

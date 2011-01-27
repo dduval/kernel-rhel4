@@ -52,6 +52,10 @@ struct dm_table {
 	/* events get handed up using this callback */
 	void (*event_fn)(void *);
 	void *event_context;
+
+#ifndef __GENKSYMS__
+	struct mapped_device *md;
+#endif
 };
 
 /*
@@ -203,7 +207,8 @@ static int alloc_targets(struct dm_table *t, unsigned int num)
 	return 0;
 }
 
-int dm_table_create(struct dm_table **result, int mode, unsigned num_targets)
+int dm_table_create(struct dm_table **result, int mode,
+		    unsigned num_targets, struct mapped_device *md)
 {
 	struct dm_table *t = kmalloc(sizeof(*t), GFP_KERNEL);
 
@@ -226,6 +231,7 @@ int dm_table_create(struct dm_table **result, int mode, unsigned num_targets)
 	}
 
 	t->mode = mode;
+	t->md = md;
 	*result = t;
 	return 0;
 }
@@ -795,7 +801,7 @@ sector_t dm_table_get_size(struct dm_table *t)
 
 struct dm_target *dm_table_get_target(struct dm_table *t, unsigned int index)
 {
-	if (index > t->num_targets)
+	if (index >= t->num_targets)
 		return NULL;
 
 	return t->targets + index;
@@ -944,12 +950,20 @@ int dm_table_flush_all(struct dm_table *t)
 	return ret;
 }
 
+struct mapped_device *dm_table_get_md(struct dm_table *t)
+{
+	dm_get(t->md);
+
+	return t->md;
+}
+
 EXPORT_SYMBOL(dm_vcalloc);
 EXPORT_SYMBOL(dm_get_device);
 EXPORT_SYMBOL(dm_put_device);
 EXPORT_SYMBOL(dm_table_event);
 EXPORT_SYMBOL(dm_table_get_size);
 EXPORT_SYMBOL(dm_table_get_mode);
+EXPORT_SYMBOL(dm_table_get_md);
 EXPORT_SYMBOL(dm_table_put);
 EXPORT_SYMBOL(dm_table_get);
 EXPORT_SYMBOL(dm_table_unplug_all);

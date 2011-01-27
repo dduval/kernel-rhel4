@@ -48,10 +48,8 @@ cifs_hardlink(struct dentry *old_file, struct inode *inode,
 /* No need to check for cross device links since server will do that
    BB note DFS case in future though (when we may have to check) */
 
-	down(&inode->i_sb->s_vfs_rename_sem);
 	fromName = build_path_from_dentry(old_file);
 	toName = build_path_from_dentry(direntry);
-	up(&inode->i_sb->s_vfs_rename_sem);
 	if((fromName == NULL) || (toName == NULL)) {
 		rc = -ENOMEM;
 		goto cifs_hl_exit;
@@ -67,7 +65,7 @@ cifs_hardlink(struct dentry *old_file, struct inode *inode,
 					cifs_sb_target->local_nls, 
 					cifs_sb_target->mnt_cifs_flags &
 						CIFS_MOUNT_MAP_SPECIAL_CHR);
-		if(rc == -EIO)
+		if((rc == -EIO) || (rc == -EINVAL))
 			rc = -EOPNOTSUPP;  
 	}
 
@@ -84,16 +82,18 @@ cifs_hardlink(struct dentry *old_file, struct inode *inode,
 	cifsInode->time = 0;	/* will force revalidate to go get info when needed */
 
 cifs_hl_exit:
-	if (fromName)
-		kfree(fromName);
-	if (toName)
-		kfree(toName);
+	kfree(fromName);
+	kfree(toName);
 	FreeXid(xid);
 	return rc;
 }
-
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
+void *
+cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
+#else
 int
 cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
+#endif
 {
 	struct inode *inode = direntry->d_inode;
 	int rc = -EACCES;
@@ -105,9 +105,7 @@ cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
 
 	xid = GetXid();
 
-	down(&direntry->d_sb->s_vfs_rename_sem);
 	full_path = build_path_from_dentry(direntry);
-	up(&direntry->d_sb->s_vfs_rename_sem);
 
 	if (!full_path)
 		goto out_no_free;
@@ -138,6 +136,9 @@ cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
 /* BB Add special case check for Samba DFS symlinks */
 
 		target_path[PATH_MAX-1] = 0;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,9) 
+		rc = vfs_follow_link(nd, target_path);
+#endif
 	} else {
 		kfree(target_path);
 		target_path = ERR_PTR(rc);
@@ -147,8 +148,14 @@ out:
 	kfree(full_path);
 out_no_free:
 	FreeXid(xid);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,8) 
 	nd_set_link(nd, target_path);
+#endif
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
+	return NULL;	/* No cookie */
+#else
 	return 0;
+#endif
 }
 
 int
@@ -166,16 +173,14 @@ cifs_symlink(struct inode *inode, struct dentry *direntry, const char *symname)
 	cifs_sb = CIFS_SB(inode->i_sb);
 	pTcon = cifs_sb->tcon;
 
-	down(&inode->i_sb->s_vfs_rename_sem);
 	full_path = build_path_from_dentry(direntry);
-	up(&inode->i_sb->s_vfs_rename_sem);
 
 	if(full_path == NULL) {
 		FreeXid(xid);
 		return -ENOMEM;
 	}
 
-	cFYI(1, ("Full path: %s ", full_path));
+	cFYI(1, ("Full path: %s", full_path));
 	cFYI(1, ("symname is %s", symname));
 
 	/* BB what if DFS and this volume is on different share? BB */
@@ -194,17 +199,18 @@ cifs_symlink(struct inode *inode, struct dentry *direntry, const char *symname)
 						 inode->i_sb,xid);
 
 		if (rc != 0) {
-			cFYI(1,
-			     ("Create symlink worked but get_inode_info failed with rc = %d ",
+			cFYI(1, ("Create symlink ok, getinodeinfo fail rc = %d",
 			      rc));
 		} else {
-			direntry->d_op = &cifs_dentry_ops;
+			if (pTcon->nocase)
+				direntry->d_op = &cifs_ci_dentry_ops;
+			else
+				direntry->d_op = &cifs_dentry_ops;
 			d_instantiate(direntry, newinode);
 		}
 	}
 
-	if (full_path)
-		kfree(full_path);
+	kfree(full_path);
 	FreeXid(xid);
 	return rc;
 }
@@ -250,8 +256,7 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 		len = buflen;
 	tmpbuffer = kmalloc(len,GFP_KERNEL);   
 	if(tmpbuffer == NULL) {
-		if (full_path)
-			kfree(full_path);
+		kfree(full_path);
 		FreeXid(xid);
 		return -ENOMEM;
 	}
@@ -296,12 +301,11 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 					else {
 						cFYI(1,("num referral: %d",num_referrals));
 						if(referrals) {
-							cFYI(1,("referral string: %s ",referrals));
+							cFYI(1,("referral string: %s",referrals));
 							strncpy(tmpbuffer, referrals, len-1);                            
 						}
 					}
-					if(referrals)
-						kfree(referrals);
+					kfree(referrals);
 					kfree(tmp_path);
 }
 				/* BB add code like else decode referrals then memcpy to
@@ -320,19 +324,21 @@ cifs_readlink(struct dentry *direntry, char __user *pBuffer, int buflen)
 		      rc));
 	}
 
-	if (tmpbuffer) {
-		kfree(tmpbuffer);
-	}
-	if (full_path) {
-		kfree(full_path);
-	}
+	kfree(tmpbuffer);
+	kfree(full_path);
 	FreeXid(xid);
 	return rc;
 }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,12)
+void cifs_put_link(struct dentry *direntry, struct nameidata *nd, void *cookie)
+#else
 void cifs_put_link(struct dentry *direntry, struct nameidata *nd)
+#endif
 {
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,8)
 	char *p = nd_get_link(nd);
 	if (!IS_ERR(p))
 		kfree(p);
+#endif
 }

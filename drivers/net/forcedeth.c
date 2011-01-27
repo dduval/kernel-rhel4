@@ -95,6 +95,8 @@
  *			   of nv_remove
  *      0.42: 06 Aug 2005: Fix lack of link speed initialization
  *			   in the second (and later) nv_open call
+ *	0.47: 26 Oct 2005: Add phyaddr 0 in phy scan.
+ *	0.57: 14 May 2006: Moved mac address writes to nv_probe and nv_remove.
  *
  * Known bugs:
  * We suspect that on some hardware no TX done interrupts are generated.
@@ -106,7 +108,7 @@
  * DEV_NEED_TIMERIRQ will not harm you on sane hardware, only generating a few
  * superfluous timer interrupts from the nic.
  */
-#define FORCEDETH_VERSION		"0.41"
+#define FORCEDETH_VERSION		"0.42-rh"
 #define DRV_NAME			"forcedeth"
 
 #include <linux/module.h>
@@ -1485,7 +1487,6 @@ static void nv_set_multicast(struct net_device *dev)
 	memset(mask, 0, sizeof(mask));
 
 	if (dev->flags & IFF_PROMISC) {
-		printk(KERN_NOTICE "%s: Promiscuous mode enabled.\n", dev->name);
 		pff = NVREG_PFF_PROMISC;
 	} else {
 		pff = NVREG_PFF_MYADDR;
@@ -2075,7 +2076,7 @@ static int nv_open(struct net_device *dev)
 
 	dprintk(KERN_DEBUG "nv_open: begin\n");
 
-	/* 1) erase previous misconfiguration */
+	/* erase previous misconfiguration */
 	/* 4.1-1: stop adapter: ignored, 4.3 seems to be overkill */
 	writel(NVREG_MCASTADDRA_FORCE, base + NvRegMulticastAddrA);
 	writel(0, base + NvRegMulticastAddrB);
@@ -2088,7 +2089,7 @@ static int nv_open(struct net_device *dev)
 
 	writel(0, base + NvRegAdapterControl);
 
-	/* 2) initialize descriptor rings */
+	/* initialize descriptor rings */
 	set_bufsize(dev);
 	oom = nv_init_ring(dev);
 
@@ -2099,10 +2100,7 @@ static int nv_open(struct net_device *dev)
 
 	np->in_shutdown = 0;
 
-	/* 3) set mac address */
-	nv_copy_mac_to_hw(dev);
-
-	/* 4) give hw rings */
+	/* give hw rings */
 	writel((u32) np->ring_addr, base + NvRegRxRingPhysAddr);
 	if (np->desc_ver == DESC_VER_1 || np->desc_ver == DESC_VER_2)
 		writel((u32) (np->ring_addr + RX_RING*sizeof(struct ring_desc)), base + NvRegTxRingPhysAddr);
@@ -2111,7 +2109,6 @@ static int nv_open(struct net_device *dev)
 	writel( ((RX_RING-1) << NVREG_RINGSZ_RXSHIFT) + ((TX_RING-1) << NVREG_RINGSZ_TXSHIFT),
 		base + NvRegRingSizes);
 
-	/* 5) continue setup */
 	writel(np->linkspeed, base + NvRegLinkSpeed);
 	writel(NVREG_UNKSETUP3_VAL1, base + NvRegUnknownSetupReg3);
 	writel(np->desc_ver, base + NvRegTxRxControl);
@@ -2125,7 +2122,6 @@ static int nv_open(struct net_device *dev)
 	writel(NVREG_IRQSTAT_MASK, base + NvRegIrqStatus);
 	writel(NVREG_MIISTAT_MASK2, base + NvRegMIIStatus);
 
-	/* 6) continue setup */
 	writel(NVREG_MISC1_FORCE | NVREG_MISC1_HD, base + NvRegMisc1);
 	writel(readl(base + NvRegTransmitterStatus), base + NvRegTransmitterStatus);
 	writel(NVREG_PFF_ALWAYS, base + NvRegPacketFilterFlags);
@@ -2236,12 +2232,6 @@ static int nv_close(struct net_device *dev)
 
 	if (np->wolenabled)
 		nv_start_rx(dev);
-
-	/* special op: write back the misordered MAC address - otherwise
-	 * the next nv_probe would see a wrong address.
-	 */
-	writel(np->orig_mac[0], base + NvRegMacAddrA);
-	writel(np->orig_mac[1], base + NvRegMacAddrB);
 
 	/* FIXME: power down nic */
 
@@ -2398,6 +2388,9 @@ static int __devinit nv_probe(struct pci_dev *pci_dev, const struct pci_device_i
 			dev->dev_addr[0], dev->dev_addr[1], dev->dev_addr[2],
 			dev->dev_addr[3], dev->dev_addr[4], dev->dev_addr[5]);
 
+	/* set mac address */
+	nv_copy_mac_to_hw(dev);
+
 	/* disable WOL */
 	writel(0, base + NvRegWakeUpFlags);
 	np->wolenabled = 0;
@@ -2420,16 +2413,17 @@ static int __devinit nv_probe(struct pci_dev *pci_dev, const struct pci_device_i
 	}
 
 	/* find a suitable phy */
-	for (i = 1; i < 32; i++) {
+	for (i = 1; i <= 32; i++) {
 		int id1, id2;
+		int phyaddr = i & 0x1F;
 
 		spin_lock_irq(&np->lock);
-		id1 = mii_rw(dev, i, MII_PHYSID1, MII_READ);
+		id1 = mii_rw(dev, phyaddr, MII_PHYSID1, MII_READ);
 		spin_unlock_irq(&np->lock);
 		if (id1 < 0 || id1 == 0xffff)
 			continue;
 		spin_lock_irq(&np->lock);
-		id2 = mii_rw(dev, i, MII_PHYSID2, MII_READ);
+		id2 = mii_rw(dev, phyaddr, MII_PHYSID2, MII_READ);
 		spin_unlock_irq(&np->lock);
 		if (id2 < 0 || id2 == 0xffff)
 			continue;
@@ -2437,23 +2431,19 @@ static int __devinit nv_probe(struct pci_dev *pci_dev, const struct pci_device_i
 		id1 = (id1 & PHYID1_OUI_MASK) << PHYID1_OUI_SHFT;
 		id2 = (id2 & PHYID2_OUI_MASK) >> PHYID2_OUI_SHFT;
 		dprintk(KERN_DEBUG "%s: open: Found PHY %04x:%04x at address %d.\n",
-				pci_name(pci_dev), id1, id2, i);
-		np->phyaddr = i;
+			pci_name(pci_dev), id1, id2, phyaddr);
+		np->phyaddr = phyaddr;
 		np->phy_oui = id1 | id2;
 		break;
 	}
-	if (i == 32) {
-		/* PHY in isolate mode? No phy attached and user wants to
-		 * test loopback? Very odd, but can be correct.
-		 */
+	if (i == 33) {
 		printk(KERN_INFO "%s: open: Could not find a valid PHY.\n",
-				pci_name(pci_dev));
+		       pci_name(pci_dev));
+		goto out_freering;
 	}
 
-	if (i != 32) {
-		/* reset it */
-		phy_init(dev);
-	}
+	/* reset it */
+	phy_init(dev);
 
 	/* set default link speed settings */
 	np->linkspeed = NVREG_LINKSPEED_FORCE|NVREG_LINKSPEED_10;
@@ -2495,15 +2485,22 @@ static void __devexit nv_remove(struct pci_dev *pci_dev)
 {
 	struct net_device *dev = pci_get_drvdata(pci_dev);
 	struct fe_priv *np = get_nvpriv(dev);
+	u8 __iomem *base = get_hwbase(dev);
 
 	unregister_netdev(dev);
+
+	/* special op: write back the misordered MAC address - otherwise
+	 * the next nv_probe would see a wrong address.
+	 */
+	writel(np->orig_mac[0], base + NvRegMacAddrA);
+	writel(np->orig_mac[1], base + NvRegMacAddrB);
 
 	/* free all structures */
 	if (np->desc_ver == DESC_VER_1 || np->desc_ver == DESC_VER_2)
 		pci_free_consistent(np->pci_dev, sizeof(struct ring_desc) * (RX_RING + TX_RING), np->rx_ring.orig, np->ring_addr);
 	else
 		pci_free_consistent(np->pci_dev, sizeof(struct ring_desc_ex) * (RX_RING + TX_RING), np->rx_ring.ex, np->ring_addr);
-	iounmap(get_hwbase(dev));
+	iounmap(base);
 	pci_release_regions(pci_dev);
 	pci_disable_device(pci_dev);
 	free_netdev(dev);

@@ -608,8 +608,7 @@ void __init init_apic_mappings(void)
 	 * Fetch the APIC ID of the BSP in case we have a
 	 * default configuration (or the MP table is broken).
 	 */
-	if (boot_cpu_id == -1U)
-		boot_cpu_id = GET_APIC_ID(apic_read(APIC_ID));
+	boot_cpu_id = GET_APIC_ID(apic_read(APIC_ID));
 
 #ifdef CONFIG_X86_IO_APIC
 	{
@@ -824,11 +823,11 @@ int setup_profiling_timer(unsigned int multiplier)
 }
 
 #ifdef CONFIG_X86_MCE_AMD
-void setup_threshold_lvt(unsigned long lvt_off)
+void setup_APIC_extened_lvt(unsigned char lvt_off, unsigned char vector,
+			    unsigned char msg_type, unsigned char mask)
 {
-       unsigned int v = 0;
-       unsigned long reg = (lvt_off << 4) + 0x500;
-       v |= THRESHOLD_APIC_VECTOR;
+       unsigned long reg = (lvt_off << 4) + K8_APIC_EXT_LVT_BASE;
+       unsigned int v = (mask << 16) | (msg_type << 8) | vector;       
        apic_write(reg, v);
 }
 #endif /* CONFIG_X86_MCE_AMD */
@@ -1050,7 +1049,7 @@ int __init APIC_init_uniprocessor (void)
 	connect_bsp_APIC();
 
 	phys_cpu_present_map = physid_mask_of_physid(boot_cpu_id);
-	apic_write_around(APIC_ID, boot_cpu_id);
+	apic_write_around(APIC_ID, SET_APIC_ID(boot_cpu_id));
 
 	setup_local_APIC();
 

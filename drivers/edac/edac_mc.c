@@ -28,6 +28,7 @@
 #include <linux/jiffies.h>
 #include <linux/spinlock.h>
 #include <linux/list.h>
+#include <linux/kthread.h>
 
 #include <asm/uaccess.h>
 #include <asm/page.h>
@@ -66,6 +67,8 @@ static u32 pci_parity_count = 0;
 static DECLARE_MUTEX(mem_ctls_mutex);
 
 static struct list_head mc_devices = LIST_HEAD_INIT(mc_devices);
+
+static struct task_struct *edac_thread;
 
 #ifdef CONFIG_SYSCTL
 
@@ -468,9 +471,7 @@ struct mem_ctl_info *edac_mc_alloc(unsigned sz_pvt, unsigned nr_csrows,
 	return mci;
 }
 
-EXPORT_SYMBOL(edac_mc_find_mci_by_pdev);
-
-struct mem_ctl_info *edac_mc_find_mci_by_pdev(struct pci_dev *pdev)
+static struct mem_ctl_info *find_mci_by_pdev(struct pci_dev *pdev)
 {
 	struct mem_ctl_info *mci;
 	struct list_head *item;
@@ -497,7 +498,7 @@ static int add_mc_to_global_list (struct mem_ctl_info *mci)
 		mci->mc_idx = 0;
 		insert_before = &mc_devices;
 	} else {
-		if (edac_mc_find_mci_by_pdev(mci->pdev)) {
+		if (find_mci_by_pdev(mci->pdev)) {
 			printk(KERN_WARNING
 			       "MC: %s (%s) %s %s already assigned %d\n",
 			       mci->pdev->dev.bus_id, pci_name(mci->pdev),
@@ -529,13 +530,57 @@ static int add_mc_to_global_list (struct mem_ctl_info *mci)
 	return 0;
 }
 
+
+/**
+ * edac_mc_find: Search for a mem_ctl_info structure whose index is 'idx'.
+ *
+ * If found, return a pointer to the structure.
+ * Else return NULL.
+ *
+ * Caller must hold mem_ctls_mutex.
+ */
+struct mem_ctl_info * edac_mc_find(int idx)
+{
+	struct list_head *item;
+	struct mem_ctl_info *mci;
+
+	list_for_each(item, &mc_devices) {
+		mci = list_entry(item, struct mem_ctl_info, link);
+
+		if (mci->mc_idx >= idx) {
+			if (mci->mc_idx == idx)
+				return mci;
+
+			break;
+		}
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL(edac_mc_find);
+
+static void complete_mc_list_del (struct rcu_head *head)
+{
+	struct mem_ctl_info *mci;
+
+	mci = container_of(head, struct mem_ctl_info, rcu);
+	INIT_LIST_HEAD(&mci->link);
+	complete(&mci->complete);
+}
+
+static void del_mc_from_global_list (struct mem_ctl_info *mci)
+{
+	list_del_rcu(&mci->link);
+	init_completion(&mci->complete);
+	call_rcu(&mci->rcu, complete_mc_list_del);
+	wait_for_completion(&mci->complete);
+}
+
 EXPORT_SYMBOL(edac_mc_add_mc);
 
 /* FIXME - should a warning be printed if no error detection? correction? */
 int edac_mc_add_mc(struct mem_ctl_info *mci)
 {
-	int rc = 1;
-
 	debugf0("MC: " __FILE__ ": %s()\n", __func__);
 #ifdef CONFIG_EDAC_DEBUG
 	if (edac_debug_level >= 1)
@@ -555,7 +600,7 @@ int edac_mc_add_mc(struct mem_ctl_info *mci)
 	down(&mem_ctls_mutex);
 
 	if (add_mc_to_global_list(mci))
-		goto finish;
+		goto fail0;
 
 	printk(KERN_INFO
 	       "MC%d: Giving out device to %s %s: PCI %s (%s)\n",
@@ -570,8 +615,7 @@ int edac_mc_add_mc(struct mem_ctl_info *mci)
 		printk(KERN_WARNING
 		       "MC%d: proc entry too long for device\n",
 		       mci->mc_idx);
-		/* FIXME - should there be an error code and unwind? */
-		goto finish;
+		goto fail1;
 	}
 
 	if(create_proc_read_entry(mci->proc_name, 0, proc_mc,
@@ -579,51 +623,41 @@ int edac_mc_add_mc(struct mem_ctl_info *mci)
 		printk(KERN_WARNING
 		       "MC%d: failed to create proc entry for controller\n",
 		       mci->mc_idx);
-		/* FIXME - should there be an error code and unwind? */
-		goto finish;
+		goto fail1;
 	}
 
-	rc = 0;
-
-finish:
 	up(&mem_ctls_mutex);
-	return rc;
-}
+	return 0;
 
-static void complete_mc_list_del (struct rcu_head *head)
-{
-	struct mem_ctl_info *mci;
-
-	mci = container_of(head, struct mem_ctl_info, rcu);
-	INIT_LIST_HEAD(&mci->link);
-	complete(&mci->complete);
-}
-
-static void del_mc_from_global_list (struct mem_ctl_info *mci)
-{
-	list_del_rcu(&mci->link);
-	init_completion(&mci->complete);
-	call_rcu(&mci->rcu, complete_mc_list_del);
-	wait_for_completion(&mci->complete);
+fail1:
+	del_mc_from_global_list(mci);
+fail0:
+ 	up(&mem_ctls_mutex);
+	return 1;
 }
 
 EXPORT_SYMBOL(edac_mc_del_mc);
 
-int edac_mc_del_mc(struct mem_ctl_info *mci)
+struct mem_ctl_info *edac_mc_del_mc(struct pci_dev *pdev)
 {
-	int rc = 1;
+	struct mem_ctl_info *mci;
 
-	debugf0("MC%d: " __FILE__ ": %s()\n", mci->mc_idx, __func__);
+	debugf0("MC: %s()\n", __func__);
 	down(&mem_ctls_mutex);
+
+	if ((mci = find_mci_by_pdev(pdev)) == NULL) {
+		up(&mem_ctls_mutex);
+		return NULL;
+	}
+
 	del_mc_from_global_list(mci);
 	remove_proc_entry(mci->proc_name, proc_mc);
+	up(&mem_ctls_mutex);
 	printk(KERN_INFO
 	       "MC%d: Removed device %d for %s %s: PCI %s (%s)\n",
 	       mci->mc_idx, mci->mc_idx, mci->mod_name, mci->ctl_name,
 	       mci->pdev->dev.bus_id, pci_name(mci->pdev));
-	rc = 0;
-	up(&mem_ctls_mutex);
-	return rc;
+	return mci;
 }
 
 
@@ -986,13 +1020,12 @@ static inline void edac_pci_dev_parity_iterator(void)
 
 static void check_mc_devices (void)
 {
-	unsigned long flags;
 	struct list_head *item;
 	struct mem_ctl_info *mci;
 
 	debugf3("MC: " __FILE__ ": %s()\n", __func__);
-	/* during poll, have interrupts off */
-	local_irq_save(flags);
+
+	down(&mem_ctls_mutex);
 
 	list_for_each(item, &mc_devices) {
 		mci = list_entry(item, struct mem_ctl_info, link);
@@ -1001,7 +1034,7 @@ static void check_mc_devices (void)
 			mci->edac_check(mci);
 	}
 
-	local_irq_restore(flags);
+	up(&mem_ctls_mutex);
 }
 
 
@@ -1028,61 +1061,20 @@ static void check_mc(unsigned long dummy)
 	}
 }
 
-/*
- * EDAC thread state information
- */
-struct bs_thread_info
+static inline signed long __sched schedule_timeout_interruptible(signed long timeout)
 {
-	struct task_struct *task;
-	struct completion *event;
-	char *name;
-	void (*run)(unsigned long dummy);
-	long dummy;
-};
+       __set_current_state(TASK_INTERRUPTIBLE);
+       return schedule_timeout(timeout);
+}
 
-static struct bs_thread_info bs_thread;
-
-/*
- *  edac_kernel_thread
- *      This the kernel thread that processes edac operations
- *      in a normal thread environment
- */
 static int edac_kernel_thread(void *arg)
 {
-	struct bs_thread_info *thread = (struct bs_thread_info *) arg;
+	while (!kthread_should_stop()) {
+		check_mc_devices();
 
-	/* detach thread */
-	daemonize(thread->name);
-
-	current->exit_signal = SIGCHLD;
-	allow_signal(SIGKILL);
-	thread->task = current;
-
-	/* indicate to starting task we have started */
-	complete(thread->event);
-
-	/* loop forever, until we are told to stop */
-	while(thread->run != NULL) {
-		void (*run)(unsigned long dummy);
-
-		/* call the function to check the memory controllers */
-		run = thread->run;
-		if(run)
-			run(thread->dummy);
-
-		if(signal_pending(current))
-			flush_signals(current);
-
-		/* ensure we are interruptable */
-		set_current_state(TASK_INTERRUPTIBLE);
-
-		/* goto sleep for the interval */
-		schedule_timeout((HZ * poll_msec) / 1000);
-	}
-
-	/* notify waiter that we are exiting */
-	complete(thread->event);
-
+ 		/* goto sleep for the interval */
+		schedule_timeout_interruptible((HZ * poll_msec) / 1000);
+ 	}
 	return 0;
 }
 
@@ -1092,9 +1084,6 @@ static int edac_kernel_thread(void *arg)
  */
 int __init edac_mc_init(void)
 {
-	int ret;
-	struct completion event;
-
 	debugf0("MC: " __FILE__ ": %s()\n", __func__);
 	printk(KERN_INFO "MC: " __FILE__ " version " EDAC_MC_VER
 	       "\n");
@@ -1113,16 +1102,9 @@ int __init edac_mc_init(void)
 	mc_sysctl_header = register_sysctl_table(mc_root_table, 1);
 #endif				/* CONFIG_SYSCTL */
 
-	/* Create our kernel thread */
-	init_completion(&event);
-	bs_thread.event = &event;
-	bs_thread.name = EDAC_THREAD_NAME;
-	bs_thread.run = check_mc;
-	bs_thread.dummy = 0;
-
 	/* create our kernel thread */
-	ret = kernel_thread(edac_kernel_thread, &bs_thread, CLONE_KERNEL);
-	if(ret < 0) {
+	edac_thread = kthread_run(edac_kernel_thread, NULL, "kedac");
+	if (IS_ERR(edac_thread)) {
 		if (proc_mc)
 			remove_proc_entry(MC_PROC_DIR, &proc_root);
 
@@ -1133,15 +1115,11 @@ int __init edac_mc_init(void)
 			mc_sysctl_header = NULL;
 		}
 #endif                          /* CONFIG_SYSCTL */
-		return -ENOMEM;
+		return PTR_ERR(edac_thread);
 	}
-
-	/* wait for our kernel theard ack that it is up and running */
-	wait_for_completion(&event);
 
 	return 0;
 }
-
 
 /*
  * edac_mc_exit()
@@ -1149,21 +1127,9 @@ int __init edac_mc_init(void)
  */
 static void __exit edac_mc_exit(void)
 {
-	struct completion event;
-
 	debugf0("MC: " __FILE__ ": %s()\n", __func__);
 
-	init_completion(&event);
-	bs_thread.event = &event;
-
-	/* As soon as ->run is set to NULL, the task could disappear,
-	 * so we need to hold tasklist_lock until we have sent the signal
-	 */
-	read_lock(&tasklist_lock);
-	bs_thread.run = NULL;
-	send_sig(SIGKILL, bs_thread.task, 1);
-	read_unlock(&tasklist_lock);
-	wait_for_completion(&event);
+	kthread_stop(edac_thread);
 
 	/* if enabled, unregister our /proc/mc tree */
 	if (proc_mc)

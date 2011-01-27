@@ -167,6 +167,8 @@ struct skb_shared_info {
  *	@csum: Checksum
  *	@__unused: Dead field, may be reused
  *	@cloned: Head may be cloned (check refcnt to be sure)
+ *	@proto_csum_valid: Protocol csum validated since arriving at localhost
+ *	@proto_csum_blank: Protocol csum must be added before leaving localhost
  *	@pkt_type: Packet class
  *	@ip_summed: Driver fed us an IP checksum
  *	@priority: Packet queueing priority
@@ -237,10 +239,19 @@ struct sk_buff {
 				data_len,
 				mac_len,
 				csum;
+#ifndef CONFIG_XEN
 	unsigned char		local_df,
 				cloned,
 				pkt_type,
 				ip_summed;
+#else
+	unsigned char		local_df;
+	unsigned char		cloned:1,
+				proto_csum_valid:1,
+				proto_csum_blank:1;
+	unsigned char		pkt_type,
+				ip_summed;
+#endif
 	__u32			priority;
 	unsigned short		protocol,
 				security;
@@ -291,7 +302,20 @@ struct sk_buff {
 #include <asm/system.h>
 
 extern void	       __kfree_skb(struct sk_buff *skb);
+#ifndef CONFIG_HAVE_ARCH_ALLOC_SKB
 extern struct sk_buff *alloc_skb(unsigned int size, int priority);
+#else /* XEN */
+extern struct sk_buff *__alloc_skb(unsigned int size, int priority,
+						 int fclone);
+static inline struct sk_buff *alloc_skb(unsigned int size, int priority)
+{
+	return __alloc_skb(size, priority, 0);
+}
+#endif
+extern struct sk_buff *alloc_skb_from_cache(kmem_cache_t *cp,
+					    unsigned int size,
+					    int priority,
+					    int fclone);
 extern void	       kfree_skbmem(struct sk_buff *skb);
 extern struct sk_buff *skb_clone(struct sk_buff *skb, int priority);
 extern struct sk_buff *skb_copy(const struct sk_buff *skb, int priority);
@@ -919,6 +943,9 @@ static inline void __skb_queue_purge(struct sk_buff_head *list)
 		kfree_skb(skb);
 }
 
+#ifdef CONFIG_XEN
+extern struct sk_buff * __dev_alloc_skb(unsigned int length, int gfp_mask);
+#else
 /**
  *	__dev_alloc_skb - allocate an skbuff for sending
  *	@length: length to allocate
@@ -939,6 +966,7 @@ static inline struct sk_buff *__dev_alloc_skb(unsigned int length,
 		skb_reserve(skb, 16);
 	return skb;
 }
+#endif
 
 /**
  *	dev_alloc_skb - allocate an skbuff for sending

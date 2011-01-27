@@ -159,6 +159,18 @@ show_port(struct class_device *cdev, char *buf)
 }
 static CLASS_DEVICE_ATTR(port, S_IRUGO, show_port, NULL);
 
+static int show_address(struct scsi_target *starget, char *buf)
+{
+	if (iscsi_addr_type(starget) == AF_INET)
+		return sprintf(buf, "%u.%u.%u.%u\n",
+			       NIPQUAD(iscsi_sin_addr(starget)));
+	else if (iscsi_addr_type(starget) == AF_INET6)
+		return sprintf(buf, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x\n",
+			       NIP6(iscsi_sin6_addr(starget)));
+
+	return -EINVAL;
+}
+
 static ssize_t
 show_ip_address(struct class_device *cdev, char *buf)
 {
@@ -169,15 +181,25 @@ show_ip_address(struct class_device *cdev, char *buf)
 	if (i->fnt->get_ip_address)
 		i->fnt->get_ip_address(starget);
 
-	if (iscsi_addr_type(starget) == AF_INET)
-		return sprintf(buf, "%u.%u.%u.%u\n",
-			       NIPQUAD(iscsi_sin_addr(starget)));
-	else if(iscsi_addr_type(starget) == AF_INET6)
-		return sprintf(buf, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x\n",
-			       NIP6(iscsi_sin6_addr(starget)));
-	return -EINVAL;
+	return show_address(starget, buf);
 }
+
 static CLASS_DEVICE_ATTR(ip_address, S_IRUGO, show_ip_address, NULL);
+
+static ssize_t
+show_portal_ip_address(struct class_device *cdev, char *buf)
+{
+	struct scsi_target *starget = transport_class_to_starget(cdev);
+	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
+	struct iscsi_internal *i = to_iscsi_internal(shost->transportt);
+
+	if (i->fnt->get_portal_ip_address)
+		i->fnt->get_portal_ip_address(starget);
+
+	return show_address(starget, buf);
+}
+static CLASS_DEVICE_ATTR(portal_ip_address, S_IRUGO, show_portal_ip_address,
+                        NULL);
 
 static ssize_t
 show_isid(struct class_device *cdev, char *buf)
@@ -293,6 +315,7 @@ iscsi_attach_transport(struct iscsi_function_template *fnt)
 	SETUP_SESSION_RD_ATTR(port);
 	SETUP_SESSION_RD_ATTR(tpgt);
 	SETUP_SESSION_RD_ATTR(ip_address);
+	SETUP_SESSION_RD_ATTR(portal_ip_address);
 	SETUP_SESSION_RD_ATTR(initial_r2t);
 	SETUP_SESSION_RD_ATTR(immediate_data);
 	SETUP_SESSION_RD_ATTR(max_recv_data_segment_len);

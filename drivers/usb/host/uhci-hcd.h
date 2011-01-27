@@ -375,6 +375,12 @@ struct uhci_hcd {
 	struct timer_list stall_timer;
 
 	wait_queue_head_t waitqh;		/* endpoint_disable waiters */
+
+	unsigned int frame_number;              /* As of last check */
+	unsigned int is_stopped;
+#define UHCI_IS_STOPPED         9999            /* Larger than a frame # */
+	unsigned int scan_in_progress;          /* Schedule scan is running */
+	unsigned int need_rescan;               /* Redo the schedule scan */
 };
 
 struct urb_priv {

@@ -93,5 +93,6 @@ int fc_target_block(struct scsi_target *starget);
 void fc_target_unblock(struct scsi_target *starget);
 int fc_host_block(struct Scsi_Host *shost);
 void fc_host_unblock(struct Scsi_Host *shost);
+enum scsi_eh_timer_return fc_timed_out(struct scsi_cmnd *scmd);
 
 #endif /* SCSI_TRANSPORT_FC_H */

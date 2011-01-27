@@ -46,12 +46,6 @@
 #include "ipz_pt_fn.h"
 
 
-struct ehca_pfmodule {
-};
-
-struct ehca_pfshca {
-};
-
 struct ehca_pfqp {
 	struct ipz_qpt sqpt;
 	struct ipz_qpt rqpt;
@@ -66,15 +60,6 @@ struct ehca_pfeq {
 	struct ipz_qpt qpt;
 	struct h_galpa galpa;
 	u32 eqnr;
-};
-
-struct ehca_pfpd {
-};
-
-struct ehca_pfmr {
-};
-
-struct ehca_pfmw {
 };
 
 struct ipz_adapter_handle {

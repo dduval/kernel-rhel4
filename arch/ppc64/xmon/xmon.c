@@ -297,6 +297,22 @@ static void release_output_lock(void)
 }
 #endif
 
+void set_controlled_dabr(long val)
+{
+#ifdef CONFIG_PPC_PSERIES
+	int rc;
+	if (systemcfg->platform == PLATFORM_PSERIES_LPAR) {
+		rc = plpar_hcall_norets(H_SET_DABR, val);
+		if (rc != H_Success)
+			printf("Warning: setting DABR failed. rc = %d\n", rc);
+	} else {
+		set_dabr(val);
+	}
+#else
+	set_dabr(val);
+#endif
+}
+
 int xmon_core(struct pt_regs *regs, int fromipi)
 {
 	int cmd = 0;
@@ -713,7 +729,7 @@ static void insert_bpts(void)
 static void insert_cpu_bpts(void)
 {
 	if (dabr.enabled)
-		set_dabr(dabr.address | (dabr.enabled & 7));
+		set_controlled_dabr(dabr.address | (dabr.enabled & 7));
 	if (iabr && (cur_cpu_spec->cpu_features & CPU_FTR_IABR))
 		set_iabr(iabr->address
 			 | (iabr->enabled & (BP_IABR|BP_IABR_TE)));
@@ -741,7 +757,7 @@ static void remove_bpts(void)
 
 static void remove_cpu_bpts(void)
 {
-	set_dabr(0);
+	set_controlled_dabr(0);
 	if ((cur_cpu_spec->cpu_features & CPU_FTR_IABR))
 		set_iabr(0);
 }

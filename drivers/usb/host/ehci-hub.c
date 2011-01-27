@@ -47,8 +47,9 @@ static int ehci_hub_suspend (struct usb_hcd *hcd)
 
 	/* suspend any active/unsuspended ports, maybe allow wakeup */
 	while (port--) {
-		u32	t1 = readl (&ehci->regs->port_status [port]);
-		u32	t2 = t1;
+		u32 __iomem	*reg = &ehci->regs->port_status [port];
+		u32		t1 = readl (reg) & ~PORT_RWC_BITS;
+		u32		t2 = t1;
 
 		if ((t1 & PORT_PE) && !(t1 & PORT_OWNER))
 			t2 |= PORT_SUSPEND;
@@ -60,7 +61,7 @@ static int ehci_hub_suspend (struct usb_hcd *hcd)
 		if (t1 != t2) {
 			ehci_vdbg (ehci, "port %d, %08x -> %08x\n",
 				port + 1, t1, t2);
-			writel (t2, &ehci->regs->port_status [port]);
+			writel (t2, reg);
 		}
 	}
 
@@ -110,7 +111,8 @@ static int ehci_hub_resume (struct usb_hcd *hcd)
 	i = HCS_N_PORTS (ehci->hcs_params);
 	while (i--) {
 		temp = readl (&ehci->regs->port_status [i]);
-		temp &= ~(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E);
+		temp &= ~(PORT_RWC_BITS
+			| PORT_WKOC_E | PORT_WKDISC_E | PORT_WKCONN_E);
 		if (temp & PORT_SUSPEND) {
 			ehci->reset_done [i] = jiffies + msecs_to_jiffies (20);
 			temp |= PORT_RESUME;
@@ -123,7 +125,7 @@ static int ehci_hub_resume (struct usb_hcd *hcd)
 		temp = readl (&ehci->regs->port_status [i]);
 		if ((temp & PORT_SUSPEND) == 0)
 			continue;
-		temp &= ~PORT_RESUME;
+		temp &= ~(PORT_RWC_BITS | PORT_RESUME);
 		writel (temp, &ehci->regs->port_status [i]);
 		ehci_vdbg (ehci, "resumed port %d\n", i + 1);
 	}
@@ -179,6 +181,7 @@ static int check_reset_complete (
 
 		// what happens if HCS_N_CC(params) == 0 ?
 		port_status |= PORT_OWNER;
+		port_status &= ~PORT_RWC_BITS;
 		writel (port_status, &ehci->regs->port_status [index]);
 
 	} else
@@ -217,7 +220,8 @@ ehci_hub_status_data (struct usb_hcd *hcd, char *buf)
 		if (temp & PORT_OWNER) {
 			/* don't report this in GetPortStatus */
 			if (temp & PORT_CSC) {
-				temp &= ~PORT_CSC;
+				temp &= ~PORT_RWC_BITS;
+				temp |= PORT_CSC;
 				writel (temp, &ehci->regs->port_status [i]);
 			}
 			continue;
@@ -321,7 +325,7 @@ static int ehci_hub_control (
 				&ehci->regs->port_status [wIndex]);
 			break;
 		case USB_PORT_FEAT_C_ENABLE:
-			writel (temp | PORT_PEC,
+			writel((temp & ~PORT_RWC_BITS) | PORT_PEC,
 				&ehci->regs->port_status [wIndex]);
 			break;
 		case USB_PORT_FEAT_SUSPEND:
@@ -331,7 +335,8 @@ static int ehci_hub_control (
 				if ((temp & PORT_PE) == 0)
 					goto error;
 				/* resume signaling for 20 msec */
-				writel ((temp & ~PORT_WAKE_BITS) | PORT_RESUME,
+				temp &= ~(PORT_RWC_BITS | PORT_WAKE_BITS);
+				writel (temp | PORT_RESUME,
 					&ehci->regs->port_status [wIndex]);
 				ehci->reset_done [wIndex] = jiffies
 						+ msecs_to_jiffies (20);
@@ -342,15 +347,15 @@ static int ehci_hub_control (
 			break;
 		case USB_PORT_FEAT_POWER:
 			if (HCS_PPC (ehci->hcs_params))
-				writel (temp & ~PORT_POWER,
+				writel (temp & ~(PORT_RWC_BITS | PORT_POWER),
 					&ehci->regs->port_status [wIndex]);
 			break;
 		case USB_PORT_FEAT_C_CONNECTION:
-			writel (temp | PORT_CSC,
+			writel ((temp & ~PORT_RWC_BITS) | PORT_CSC,
 				&ehci->regs->port_status [wIndex]);
 			break;
 		case USB_PORT_FEAT_C_OVER_CURRENT:
-			writel (temp | PORT_OCC,
+			writel ((temp & ~PORT_RWC_BITS) | PORT_OCC,
 				&ehci->regs->port_status [wIndex]);
 			break;
 		case USB_PORT_FEAT_C_RESET:
@@ -394,7 +399,7 @@ static int ehci_hub_control (
 
 			/* stop resume signaling */
 			temp = readl (&ehci->regs->port_status [wIndex]);
-			writel (temp & ~PORT_RESUME,
+			writel (temp & ~(PORT_RWC_BITS | PORT_RESUME),
 				&ehci->regs->port_status [wIndex]);
 			retval = handshake (
 					&ehci->regs->port_status [wIndex],
@@ -415,7 +420,7 @@ static int ehci_hub_control (
 			ehci->reset_done [wIndex] = 0;
 
 			/* force reset to complete */
-			writel (temp & ~PORT_RESET,
+			writel (temp & ~(PORT_RWC_BITS | PORT_RESET),
 					&ehci->regs->port_status [wIndex]);
 			retval = handshake (
 					&ehci->regs->port_status [wIndex],
@@ -475,6 +480,7 @@ static int ehci_hub_control (
 		if (temp & PORT_OWNER)
 			break;
 
+		temp &= ~PORT_RWC_BITS;
 		switch (wValue) {
 		case USB_PORT_FEAT_SUSPEND:
 			if ((temp & PORT_PE) == 0

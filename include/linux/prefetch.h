@@ -39,6 +39,7 @@
  *	the loop macro.
  */
  
+#ifndef CONFIG_XEN
 #ifndef ARCH_HAS_PREFETCH
 static inline void prefetch(const void *x) {;}
 #endif
@@ -55,14 +56,18 @@ static inline void prefetchw(const void *x) {;}
 #define PREFETCH_STRIDE (4*L1_CACHE_BYTES)
 #endif
 
+#endif /* !CONFIG_XEN */
+
 static inline void prefetch_range(void *addr, size_t len)
 {
 #ifdef ARCH_HAS_PREFETCH
+#ifndef CONFIG_XEN
 	char *cp;
 	char *end = addr + len;
 
 	for (cp = addr; cp < end; cp += PREFETCH_STRIDE)
 		prefetch(cp);
+#endif
 #endif
 }
 

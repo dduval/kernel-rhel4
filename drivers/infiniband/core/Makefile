@@ -1,17 +1,20 @@
-obj-$(CONFIG_INFINIBAND) +=		ib_core.o ib_mad.o ib_ping.o ib_cm.o \
-					ib_sa.o ib_addr.o rdma_cm.o ib_local_sa.o \
-					findex.o ib_multicast.o
-obj-$(CONFIG_INFINIBAND_USER_MAD) += 	ib_umad.o
-obj-$(CONFIG_INFINIBAND_USER_ACCESS) += ib_uverbs.o ib_ucm.o rdma_ucm.o
+infiniband-$(CONFIG_INFINIBAND_ADDR_TRANS)	:= ib_addr.o rdma_cm.o
+user_access-$(CONFIG_INFINIBAND_ADDR_TRANS)	:= rdma_ucm.o
 
-findex-y :=			index.o
+obj-$(CONFIG_INFINIBAND) +=		ib_core.o ib_mad.o ib_sa.o \
+					ib_cm.o $(infiniband-y)
+obj-$(CONFIG_INFINIBAND_USER_MAD) +=	ib_umad.o
+obj-$(CONFIG_INFINIBAND_USER_ACCESS) +=	ib_uverbs.o ib_ucm.o
+obj-$(CONFIG_INFINIBAND_USER_ACCESS) += $(user_access-y)
 
 ib_core-y :=			packer.o ud_header.o verbs.o sysfs.o \
 				device.o fmr_pool.o cache.o
 
 ib_mad-y :=			mad.o smi.o agent.o mad_rmpp.o
 
-ib_ping-y :=			ping.o
+ib_sa-y :=			sa_query.o
+
+ib_cm-y :=			cm.o
 
 rdma_cm-y :=			cma.o
 
@@ -19,18 +22,9 @@ rdma_ucm-y :=			ucma.o ucma_ib.o
 
 ib_addr-y :=			addr.o
 
-ib_multicast-y :=		multicast.o
-
-ib_sa-y :=			sa_query.o
-
-ib_local_sa-y :=		local_sa.o
-
-ib_cm-y :=			cm.o
-
 ib_umad-y :=			user_mad.o
 
 ib_ucm-y :=			ucm.o
 
 ib_uverbs-y :=			uverbs_main.o uverbs_cmd.o uverbs_mem.o \
 				uverbs_marshall.o
-

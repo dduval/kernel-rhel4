@@ -368,17 +368,15 @@ void __init clear_kernel_mapping(unsigned long address, unsigned long size)
 	
 	for (; address < end; address += LARGE_PAGE_SIZE) { 
 		pgd_t *pgd = pgd_offset_k(address);
-               pmd_t *pmd;
+		pmd_t *pmd, local_pmd;
 		if (!pgd || pgd_none(*pgd))
 			continue; 
-               pmd = pmd_offset(pgd, address);
+		pmd = pmd_offset(pgd, address);
 		if (!pmd || pmd_none(*pmd))
 			continue; 
-		if (0 == (pmd_val(*pmd) & _PAGE_PSE)) { 
-			/* Could handle this, but it should not happen currently. */
-			printk(KERN_ERR 
-	       "clear_kernel_mapping: mapping has been split. will leak memory\n"); 
-			pmd_ERROR(*pmd); 
+		if (0 == (pmd_val(*pmd) & _PAGE_PSE)) {
+			local_pmd = __pmd(pmd_val(*pmd) & ~_PAGE_NX);
+			pte_free(pmd_page(local_pmd));
 		}
 		set_pmd(pmd, __pmd(0)); 		
 	}
@@ -644,32 +642,22 @@ static __init int x8664_sysctl_init(void)
 __initcall(x8664_sysctl_init);
 #endif
 
-/* Pseudo VMAs to allow ptrace access for the vsyscall pages.  x86-64 has two
-   different ones: one for 32bit and one for 64bit. Use the appropiate
-   for the target task. */
+/* A pseudo VMA to allow ptrace access for the vsyscall page.  This only
+   covers the 64bit vsyscall page now. 32bit has a real VMA now and does
+   not need special handling anymore. */
 
 static struct vm_area_struct gate_vma = {
 	.vm_start = VSYSCALL_START,
-	.vm_end = VSYSCALL_END,
-	.vm_page_prot = PAGE_READONLY
-};
-
-static struct vm_area_struct gate32_vma = {
-	.vm_start = VSYSCALL32_BASE,
-	.vm_end = VSYSCALL32_END,
-	.vm_page_prot = PAGE_READONLY
+	.vm_end = VSYSCALL_START + PAGE_SIZE,
+	.vm_page_prot = PAGE_READONLY_EXEC,
+	.vm_flags = VM_READ | VM_EXEC
 };
 
 struct vm_area_struct *get_gate_vma(struct task_struct *tsk)
 {
 #ifdef CONFIG_IA32_EMULATION
-	if (test_tsk_thread_flag(tsk, TIF_IA32)) {
-		/* lookup code assumes the pages are present. set them up
-		   now */
-		if (__map_syscall32(tsk->mm, VSYSCALL32_BASE) < 0)
-			return NULL;
-		return &gate32_vma;
-	}
+	if (test_tsk_thread_flag(tsk, TIF_IA32))
+		return NULL;
 #endif
 	return &gate_vma;
 }
@@ -677,6 +665,8 @@ struct vm_area_struct *get_gate_vma(struct task_struct *tsk)
 int in_gate_area(struct task_struct *task, unsigned long addr)
 {
 	struct vm_area_struct *vma = get_gate_vma(task);
+	if (!vma)
+		return 0;
 	return (addr >= vma->vm_start) && (addr < vma->vm_end);
 }
 

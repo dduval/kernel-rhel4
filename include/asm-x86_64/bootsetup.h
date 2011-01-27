@@ -4,7 +4,8 @@
 
 #include <asm/setup.h>
 
-extern char x86_boot_params[COMMAND_LINE_SIZE];
+#define BOOT_PARAM_SIZE		4096
+extern char x86_boot_params[BOOT_PARAM_SIZE];
 
 /*
  * This is set up by the setup-routine at boot-time

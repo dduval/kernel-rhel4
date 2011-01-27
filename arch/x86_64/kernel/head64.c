@@ -41,7 +41,7 @@ static void __init copy_bootdata(char *real_mode_data)
 	int new_data;
 	char * command_line;
 
-	memcpy(x86_boot_params, real_mode_data, COMMAND_LINE_SIZE); 
+	memcpy(x86_boot_params, real_mode_data, BOOT_PARAM_SIZE);
 	new_data = *(int *) (x86_boot_params + NEW_CL_POINTER);
 	if (!new_data) {
 		if (OLD_CL_MAGIC != * (u16 *) OLD_CL_MAGIC_ADDR) {

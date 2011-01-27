@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -31,7 +32,7 @@
  */
 
 #include "ipath_verbs.h"
-#include "ips_common.h"
+#include "ipath_kernel.h"
 
 /* cut down ridiculously long IB macro names */
 #define OP(x) IB_OPCODE_UC_##x
@@ -212,7 +213,7 @@ int ipath_make_uc_req(struct ipath_qp *qp,
 	qp->s_cur_sge = &qp->s_sge;
 	qp->s_cur_size = len;
 	*bth0p = bth0 | (qp->s_state << 24);
-	*bth2p = qp->s_next_psn++ & IPS_PSN_MASK;
+	*bth2p = qp->s_next_psn++ & IPATH_PSN_MASK;
 	return 1;
 
 done:
@@ -260,8 +261,7 @@ void ipath_uc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		 * size to 56 bytes so the last 4 bytes of
 		 * the BTH header (PSN) is in the data buffer.
 		 */
-		header_in_data =
-			ipath_layer_get_rcvhdrentsize(dev->dd) == 16;
+		header_in_data = dev->dd->ipath_rcvhdrentsize == 16;
 		if (header_in_data) {
 			psn = be32_to_cpu(((__be32 *) data)[0]);
 			data += sizeof(__be32);

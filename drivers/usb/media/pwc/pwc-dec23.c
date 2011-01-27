@@ -1,6 +1,6 @@
 /* Linux driver for Philips webcam
    Decompression for chipset version 2 et 3
-   (C) 2004      Luc Saillard (luc@saillard.org)
+   (C) 2004-2006  Luc Saillard (luc@saillard.org)
 
    NOTE: this version of pwc is an unofficial (modified) release of pwc & pcwx
    driver and thus may have bugs that are not present in the original version.
@@ -21,159 +21,174 @@
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
 */
 
+#include "pwc-ioctl.h"
 #include "pwc-timon.h"
 #include "pwc-kiara.h"
 #include "pwc-dec23.h"
-#include "pwc-ioctl.h"
 
 #include <linux/string.h>
 
-/****
- *
- *
- *
+/*
+ * USE_LOOKUP_TABLE_TO_CLAMP
+ *   0: use a C version of this tests:  {  a<0?0:(a>255?255:a) }
+ *   1: use a faster lookup table for cpu with a big cache (intel)
  */
+#define USE_LOOKUP_TABLE_TO_CLAMP	1
+/*
+ * UNROLL_LOOP_FOR_COPYING_BLOCK
+ *   0: use a loop for a smaller code (but little slower)
+ *   1: when unrolling the loop, gcc produces some faster code (perhaps only
+ *   valid for intel processor class). Activating this option, automaticaly
+ *   activate USE_LOOKUP_TABLE_TO_CLAMP
+ */
+#define UNROLL_LOOP_FOR_COPY		1
+#if UNROLL_LOOP_FOR_COPY
+# undef USE_LOOKUP_TABLE_TO_CLAMP
+# define USE_LOOKUP_TABLE_TO_CLAMP 1
+#endif
 
+/*
+ * ENABLE_BAYER_DECODER
+ *   0: bayer decoder is not build (save some space)
+ *   1: bayer decoder is build and can be used
+ */
+#define ENABLE_BAYER_DECODER 0
 
-static void fill_table_a000(unsigned int *p)
+static void build_subblock_pattern(struct pwc_dec23_private *pdec)
 {
-  static unsigned int initial_values[12] = {
-     0xFFAD9B00, 0xFFDDEE00, 0x00221200, 0x00526500,
-     0xFFC21E00, 0x003DE200, 0xFF924B80, 0xFFD2A300,
-     0x002D5D00, 0x006DB480, 0xFFED3E00, 0x0012C200
-  };
-  static unsigned int values_derivated[12] = {
-     0x0000A4CA, 0x00004424, 0xFFFFBBDC, 0xFFFF5B36,
-     0x00007BC4, 0xFFFF843C, 0x0000DB69, 0x00005ABA,
-     0xFFFFA546, 0xFFFF2497, 0x00002584, 0xFFFFDA7C
-  };
-  unsigned int temp_values[12];
-  int i,j;
+	static const unsigned int initial_values[12] = {
+		-0x526500, -0x221200, 0x221200, 0x526500,
+			   -0x3de200, 0x3de200,
+		-0x6db480, -0x2d5d00, 0x2d5d00, 0x6db480,
+			   -0x12c200, 0x12c200
 
-  memcpy(temp_values,initial_values,sizeof(initial_values));
-  for (i=0;i<256;i++)
-   {
-     for (j=0;j<12;j++)
-      {
-	*p++ = temp_values[j];
-	temp_values[j] += values_derivated[j];
-      }
-   }
+	};
+	static const unsigned int values_derivated[12] = {
+		0xa4ca, 0x4424, -0x4424, -0xa4ca,
+			0x7bc4, -0x7bc4,
+		0xdb69, 0x5aba, -0x5aba, -0xdb69,
+			0x2584, -0x2584
+	};
+	unsigned int temp_values[12];
+	int i, j;
+
+	memcpy(temp_values, initial_values, sizeof(initial_values));
+	for (i = 0; i < 256; i++) {
+		for (j = 0; j < 12; j++) {
+			pdec->table_subblock[i][j] = temp_values[j];
+			temp_values[j] += values_derivated[j];
+		}
+	}
 }
 
-static void fill_table_d000(unsigned char *p)
+static void build_bit_powermask_table(struct pwc_dec23_private *pdec)
 {
-  int bit,byte;
+	unsigned char *p;
+	unsigned int bit, byte, mask, val;
+	unsigned int bitpower = 1;
 
-  for (bit=0; bit<8; bit++)
-   {
-     unsigned char bitpower = 1<<bit;
-     unsigned char mask = bitpower-1;
-     for (byte=0; byte<256; byte++)
-      {
-	if (byte & bitpower)
-	  *p++ = -(byte & mask);
-	else
-	  *p++ = (byte & mask);
-      }
-   }
+	for (bit = 0; bit < 8; bit++) {
+		mask = bitpower - 1;
+		p = pdec->table_bitpowermask[bit];
+		for (byte = 0; byte < 256; byte++) {
+			val = (byte & mask);
+			if (byte & bitpower)
+				val = -val;
+			*p++ = val;
+		}
+		bitpower<<=1;
+	}
+}
+
+
+static void build_table_color(const unsigned int romtable[16][8],
+			      unsigned char p0004[16][1024],
+			      unsigned char p8004[16][256])
+{
+	int compression_mode, j, k, bit, pw;
+	unsigned char *p0, *p8;
+	const unsigned int *r;
+
+	/* We have 16 compressions tables */
+	for (compression_mode = 0; compression_mode < 16; compression_mode++) {
+		p0 = p0004[compression_mode];
+		p8 = p8004[compression_mode];
+		r  = romtable[compression_mode];
+
+		for (j = 0; j < 8; j++, r++, p0 += 128) {
+
+			for (k = 0; k < 16; k++) {
+				if (k == 0)
+					bit = 1;
+				else if (k >= 1 && k < 3)
+					bit = (r[0] >> 15) & 7;
+				else if (k >= 3 && k < 6)
+					bit = (r[0] >> 12) & 7;
+				else if (k >= 6 && k < 10)
+					bit = (r[0] >> 9) & 7;
+				else if (k >= 10 && k < 13)
+					bit = (r[0] >> 6) & 7;
+				else if (k >= 13 && k < 15)
+					bit = (r[0] >> 3) & 7;
+				else
+					bit = (r[0]) & 7;
+				if (k == 0)
+					*p8++ = 8;
+				else
+					*p8++ = j - bit;
+				*p8++ = bit;
+
+				pw = 1 << bit;
+				p0[k + 0x00] = (1 * pw) + 0x80;
+				p0[k + 0x10] = (2 * pw) + 0x80;
+				p0[k + 0x20] = (3 * pw) + 0x80;
+				p0[k + 0x30] = (4 * pw) + 0x80;
+				p0[k + 0x40] = (-1 * pw) + 0x80;
+				p0[k + 0x50] = (-2 * pw) + 0x80;
+				p0[k + 0x60] = (-3 * pw) + 0x80;
+				p0[k + 0x70] = (-4 * pw) + 0x80;
+			}	/* end of for (k=0; k<16; k++, p8++) */
+		}	/* end of for (j=0; j<8; j++ , table++) */
+	} /* end of foreach compression_mode */
 }
 
 /*
  *
- * Kiara: 0 <= ver <= 7
- * Timon: 0 <= ver <= 15
- *
  */
-void fill_table_color(unsigned int version, const unsigned int *romtable, 
-    unsigned char *p0004, 
-    unsigned char *p8004)
+static void fill_table_dc00_d800(struct pwc_dec23_private *pdec)
 {
-  const unsigned int *table;
-  unsigned char *p0, *p8;
-  int i,j,k;
-  int dl,bit,pw;
+#define SCALEBITS 15
+#define ONE_HALF  (1UL << (SCALEBITS - 1))
+	int i;
+	unsigned int offset1 = ONE_HALF;
+	unsigned int offset2 = 0x0000;
 
-  romtable += version*256;
+	for (i=0; i<256; i++) {
+		pdec->table_dc00[i] = offset1 & ~(ONE_HALF);
+		pdec->table_d800[i] = offset2;
 
-  for (i=0; i<2; i++)
-   {
-     table = romtable + i*128;
-
-     for (dl=0; dl<16; dl++)
-      {
-	p0 = p0004 + (i<<14) + (dl<<10);
-	p8 = p8004 + (i<<12) + (dl<<8);
-
-	for (j=0; j<8; j++ , table++, p0+=128)
-	 {
-	   for (k=0; k<16; k++)
-	    {
-	      if (k==0)
-		bit=1;
-	      else if (k>=1 && k<3)
-		bit=(table[0]>>15)&7;
-	      else if (k>=3 && k<6)
-		bit=(table[0]>>12)&7;
-	      else if (k>=6 && k<10)
-		bit=(table[0]>>9)&7;
-	      else if (k>=10 && k<13)
-		bit=(table[0]>>6)&7;
-	      else if (k>=13 && k<15)
-		bit=(table[0]>>3)&7;
-	      else
-		bit=(table[0])&7;
-	      if (k == 0)
-		*(unsigned char *)p8++ = 8;
-	      else
-		*(unsigned char *)p8++ = j - bit;
-	      *(unsigned char *)p8++ = bit;
-
-	      pw = 1<<bit;
-	      p0[k+0x00] = (1*pw)  + 0x80;
-	      p0[k+0x10] = (2*pw)  + 0x80;
-	      p0[k+0x20] = (3*pw)  + 0x80;
-	      p0[k+0x30] = (4*pw)  + 0x80;
-	      p0[k+0x40] = (-pw)   + 0x80;
-	      p0[k+0x50] = (2*-pw) + 0x80;
-	      p0[k+0x60] = (3*-pw) + 0x80;
-	      p0[k+0x70] = (4*-pw) + 0x80;
-	    } /* end of for (k=0; k<16; k++, p8++) */
-	 } /* end of for (j=0; j<8; j++ , table++) */
-      } /* end of for (dl=0; dl<16; dl++) */
-   } /* end of for (i=0; i<2; i++) */
+		offset1 += 0x7bc4;
+		offset2 += 0x7bc4;
+	}
 }
 
 /*
- * precision = (pdev->xx + pdev->yy)
+ * To decode the stream:
+ *   if look_bits(2) == 0:	# op == 2 in the lookup table
+ *      skip_bits(2)
+ *      end of the stream
+ *   elif look_bits(3) == 7:	# op == 1 in the lookup table
+ *      skip_bits(3)
+ *      yyyy = get_bits(4)
+ *      xxxx = get_bits(8)
+ *   else:			# op == 0 in the lookup table
+ *      skip_bits(x)
  *
- */
-void fill_table_dc00_d800(unsigned int precision, unsigned int *pdc00, unsigned int *pd800)
-{
-  int i;
-  unsigned int offset1, offset2;
- 
-  for(i=0,offset1=0x4000, offset2=0; i<256 ; i++,offset1+=0x7BC4, offset2+=0x7BC4)
-   {
-     unsigned int msb = offset1 >> 15;
-
-     if ( msb > 255)
-      {
-	if (msb)
-	  msb=0;
-	else
-	  msb=255;
-      }
-
-     *pdc00++ = msb << precision;
-     *pd800++ = offset2;
-   }
-
-}
-
-/*
+ * For speedup processing, we build a lookup table and we takes the first 6 bits.
+ *
  * struct {
  *   unsigned char op;	    // operation to execute
  *   unsigned char bits;    // bits use to perform operation
@@ -181,443 +196,746 @@ void fill_table_dc00_d800(unsigned int precision, unsigned int *pdc00, unsigned 
  *   unsigned char offset2; // offset to add to access in the table_0004
  * }
  *
+ * How to build this table ?
+ *   op == 2 when (i%4)==0
+ *   op == 1 when (i%8)==7
+ *   op == 0 otherwise
+ *
  */
-static unsigned int table_ops[] = {
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x10, 0x00,0x06,0x01,0x30,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x01,0x20, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x50, 0x00,0x05,0x02,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x03,0x00, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x10, 0x00,0x06,0x02,0x10,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x01,0x60, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x50, 0x00,0x05,0x02,0x40,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x03,0x40, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x10, 0x00,0x06,0x01,0x70,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x01,0x20, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x50, 0x00,0x05,0x02,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x03,0x00, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x10, 0x00,0x06,0x02,0x50,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x01,0x60, 0x01,0x00,0x00,0x00,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x00, 0x00,0x04,0x01,0x50, 0x00,0x05,0x02,0x40,
-0x02,0x00,0x00,0x00, 0x00,0x03,0x01,0x40, 0x00,0x05,0x03,0x40, 0x01,0x00,0x00,0x00
+static const unsigned char hash_table_ops[64*4] = {
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x10,
+	0x00, 0x06, 0x01, 0x30,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x01, 0x20,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x50,
+	0x00, 0x05, 0x02, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x03, 0x00,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x10,
+	0x00, 0x06, 0x02, 0x10,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x01, 0x60,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x50,
+	0x00, 0x05, 0x02, 0x40,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x03, 0x40,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x10,
+	0x00, 0x06, 0x01, 0x70,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x01, 0x20,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x50,
+	0x00, 0x05, 0x02, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x03, 0x00,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x10,
+	0x00, 0x06, 0x02, 0x50,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x01, 0x60,
+	0x01, 0x00, 0x00, 0x00,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x00,
+	0x00, 0x04, 0x01, 0x50,
+	0x00, 0x05, 0x02, 0x40,
+	0x02, 0x00, 0x00, 0x00,
+	0x00, 0x03, 0x01, 0x40,
+	0x00, 0x05, 0x03, 0x40,
+	0x01, 0x00, 0x00, 0x00
 };
 
 /*
- * TODO: multiply by 4 all values
  *
  */
-static unsigned int MulIdx[256] = {
- 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
- 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,
- 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
- 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4,
- 6, 7, 8, 9, 7,10,11, 8, 8,11,10, 7, 9, 8, 7, 6,
- 4, 5, 5, 4, 4, 5, 5, 4, 4, 5, 5, 4, 4, 5, 5, 4,
- 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2,
- 0, 3, 3, 0, 1, 2, 2, 1, 2, 1, 1, 2, 3, 0, 0, 3,
- 0, 1, 2, 3, 3, 2, 1, 0, 3, 2, 1, 0, 0, 1, 2, 3,
- 1, 1, 1, 1, 3, 3, 3, 3, 0, 0, 0, 0, 2, 2, 2, 2,
- 7,10,11, 8, 9, 8, 7, 6, 6, 7, 8, 9, 8,11,10, 7,
- 4, 5, 5, 4, 5, 4, 4, 5, 5, 4, 4, 5, 4, 5, 5, 4,
- 7, 9, 6, 8,10, 8, 7,11,11, 7, 8,10, 8, 6, 9, 7,
- 1, 3, 0, 2, 2, 0, 3, 1, 2, 0, 3, 1, 1, 3, 0, 2,
- 1, 2, 2, 1, 3, 0, 0, 3, 0, 3, 3, 0, 2, 1, 1, 2,
-10, 8, 7,11, 8, 6, 9, 7, 7, 9, 6, 8,11, 7, 8,10
+static const unsigned int MulIdx[16][16] = {
+	{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,},
+	{0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,},
+	{0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3,},
+	{4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4,},
+	{6, 7, 8, 9, 7, 10, 11, 8, 8, 11, 10, 7, 9, 8, 7, 6,},
+	{4, 5, 5, 4, 4, 5, 5, 4, 4, 5, 5, 4, 4, 5, 5, 4,},
+	{1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2,},
+	{0, 3, 3, 0, 1, 2, 2, 1, 2, 1, 1, 2, 3, 0, 0, 3,},
+	{0, 1, 2, 3, 3, 2, 1, 0, 3, 2, 1, 0, 0, 1, 2, 3,},
+	{1, 1, 1, 1, 3, 3, 3, 3, 0, 0, 0, 0, 2, 2, 2, 2,},
+	{7, 10, 11, 8, 9, 8, 7, 6, 6, 7, 8, 9, 8, 11, 10, 7,},
+	{4, 5, 5, 4, 5, 4, 4, 5, 5, 4, 4, 5, 4, 5, 5, 4,},
+	{7, 9, 6, 8, 10, 8, 7, 11, 11, 7, 8, 10, 8, 6, 9, 7,},
+	{1, 3, 0, 2, 2, 0, 3, 1, 2, 0, 3, 1, 1, 3, 0, 2,},
+	{1, 2, 2, 1, 3, 0, 0, 3, 0, 3, 3, 0, 2, 1, 1, 2,},
+	{10, 8, 7, 11, 8, 6, 9, 7, 7, 9, 6, 8, 11, 7, 8, 10}
 };
 
+#if USE_LOOKUP_TABLE_TO_CLAMP
+#define MAX_OUTER_CROP_VALUE	(512)
+static unsigned char pwc_crop_table[256 + 2*MAX_OUTER_CROP_VALUE];
+#define CLAMP(x) (pwc_crop_table[MAX_OUTER_CROP_VALUE+(x)])
+#else
+#define CLAMP(x) ((x)>255?255:((x)<0?0:x))
+#endif
 
 
-void pwc_dec23_init(int type, int release, unsigned char *mode, void *data)
+/* If the type or the command change, we rebuild the lookup table */
+int pwc_dec23_init(struct pwc_device *pwc, int type, unsigned char *cmd)
 {
-  int flags;
-  struct pwc_dec23_private *pdev = data;
-  release = release;
+	int flags, version, shift, i;
+	struct pwc_dec23_private *pdec;
 
-  switch (type)
-   {
-    case 720:
-    case 730:
-    case 740:
-    case 750:
-      flags = mode[2]&0x18;	/* our: flags = 8, mode[2]==e8 */
-      if (flags==8)
-	pdev->zz = 7;
-      else if (flags==0x10)
-	pdev->zz = 8;
-      else
-	pdev->zz = 6;
-      flags = mode[2]>>5;	/* our: 7 */
+	if (pwc->decompress_data == NULL) {
+		pdec = kmalloc(sizeof(struct pwc_dec23_private), GFP_KERNEL);
+		if (pdec == NULL)
+			return -ENOMEM;
+		pwc->decompress_data = pdec;
+	}
+	pdec = pwc->decompress_data;
 
-      fill_table_color(flags, (unsigned int *)KiaraRomTable, pdev->table_0004, pdev->table_8004);
-      break;
+	if (DEVICE_USE_CODEC3(type)) {
+		flags = cmd[2] & 0x18;
+		if (flags == 8)
+			pdec->nbits = 7;	/* More bits, mean more bits to encode the stream, but better quality */
+		else if (flags == 0x10)
+			pdec->nbits = 8;
+		else
+			pdec->nbits = 6;
 
+		version = cmd[2] >> 5;
+		build_table_color(KiaraRomTable[version][0], pdec->table_0004_pass1, pdec->table_8004_pass1);
+		build_table_color(KiaraRomTable[version][1], pdec->table_0004_pass2, pdec->table_8004_pass2);
 
-    case 675:
-    case 680:
-    case 690:
-      flags = mode[2]&6;
-      if (flags==2)
-	pdev->zz = 7;
-      else if (flags==4)
-	pdev->zz = 8;
-      else
-	pdev->zz = 6;
-      flags = mode[2]>>3;
+	} else {
 
-      fill_table_color(flags, (unsigned int *)TimonRomTable, pdev->table_0004, pdev->table_8004);
-      break;
+		flags = cmd[2] & 6;
+		if (flags == 2)
+			pdec->nbits = 7;
+		else if (flags == 4)
+			pdec->nbits = 8;
+		else
+			pdec->nbits = 6;
 
-    default:
-      /* Not supported */
-      return;
-   }
+		version = cmd[2] >> 3;
+		build_table_color(TimonRomTable[version][0], pdec->table_0004_pass1, pdec->table_8004_pass1);
+		build_table_color(TimonRomTable[version][1], pdec->table_0004_pass2, pdec->table_8004_pass2);
+	}
 
-  /* * * * ** */
-  pdev->xx = 8 - pdev->zz;
-  pdev->yy = 15 - pdev->xx;
-  pdev->zzmask = 0xFF>>pdev->xx;
-  //pdev->zzmask = (1U<<pdev->zz)-1;
+	/* Informations can be coded on a variable number of bits but never less than 8 */
+	shift = 8 - pdec->nbits;
+	pdec->scalebits = SCALEBITS - shift;
+	pdec->nbitsmask = 0xFF >> shift;
 
+	fill_table_dc00_d800(pdec);
+	build_subblock_pattern(pdec);
+	build_bit_powermask_table(pdec);
 
-  fill_table_dc00_d800(pdev->xx + pdev->yy, pdev->table_dc00, pdev->table_d800);
-  fill_table_a000(pdev->table_a004);
-  fill_table_d000(pdev->table_d004);
+#if USE_LOOKUP_TABLE_TO_CLAMP
+	/* Build the static table to clamp value [0-255] */
+	for (i=0;i<MAX_OUTER_CROP_VALUE;i++)
+		pwc_crop_table[i] = 0;
+	for (i=0; i<256; i++)
+		pwc_crop_table[MAX_OUTER_CROP_VALUE+i] = i;
+	for (i=0; i<MAX_OUTER_CROP_VALUE; i++)
+		pwc_crop_table[MAX_OUTER_CROP_VALUE+256+i] = 255;
+#endif
+
+	return 0;
 }
 
+/*
+ * Copy the 4x4 image block to Y plane buffer
+ */
+static void copy_image_block_Y(const int *src, unsigned char *dst, unsigned int bytes_per_line, unsigned int scalebits)
+{
+#if UNROLL_LOOP_FOR_COPY
+	const unsigned char *cm = pwc_crop_table+MAX_OUTER_CROP_VALUE;
+	const int *c = src;
+	unsigned char *d = dst;
+
+	*d++ = cm[c[0] >> scalebits];
+	*d++ = cm[c[1] >> scalebits];
+	*d++ = cm[c[2] >> scalebits];
+	*d++ = cm[c[3] >> scalebits];
+
+	d = dst + bytes_per_line;
+	*d++ = cm[c[4] >> scalebits];
+	*d++ = cm[c[5] >> scalebits];
+	*d++ = cm[c[6] >> scalebits];
+	*d++ = cm[c[7] >> scalebits];
+
+	d = dst + bytes_per_line*2;
+	*d++ = cm[c[8] >> scalebits];
+	*d++ = cm[c[9] >> scalebits];
+	*d++ = cm[c[10] >> scalebits];
+	*d++ = cm[c[11] >> scalebits];
+
+	d = dst + bytes_per_line*3;
+	*d++ = cm[c[12] >> scalebits];
+	*d++ = cm[c[13] >> scalebits];
+	*d++ = cm[c[14] >> scalebits];
+	*d++ = cm[c[15] >> scalebits];
+#else
+	int i;
+	const int *c = src;
+	unsigned char *d = dst;
+	for (i = 0; i < 4; i++, c++)
+		*d++ = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line;
+	for (i = 0; i < 4; i++, c++)
+		*d++ = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line*2;
+	for (i = 0; i < 4; i++, c++)
+		*d++ = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line*3;
+	for (i = 0; i < 4; i++, c++)
+		*d++ = CLAMP((*c) >> scalebits);
+#endif
+}
 
 /*
- * To manage the stream, we keep in a 32 bits variables,
- * the next bits in the stream. fill_reservoir() add to
- * the reservoir at least wanted nbits.
- *
+ * Copy the 4x4 image block to a CrCb plane buffer
  *
  */
-#define fill_nbits(reservoir,nbits_in_reservoir,stream,nbits_wanted) do { \
-   while (nbits_in_reservoir<nbits_wanted) \
+static void copy_image_block_CrCb(const int *src, unsigned char *dst, unsigned int bytes_per_line, unsigned int scalebits)
+{
+#if UNROLL_LOOP_FOR_COPY
+	/* Unroll all loops */
+	const unsigned char *cm = pwc_crop_table+MAX_OUTER_CROP_VALUE;
+	const int *c = src;
+	unsigned char *d = dst;
+
+	*d++ = cm[c[0] >> scalebits];
+	*d++ = cm[c[4] >> scalebits];
+	*d++ = cm[c[1] >> scalebits];
+	*d++ = cm[c[5] >> scalebits];
+	*d++ = cm[c[2] >> scalebits];
+	*d++ = cm[c[6] >> scalebits];
+	*d++ = cm[c[3] >> scalebits];
+	*d++ = cm[c[7] >> scalebits];
+
+	d = dst + bytes_per_line;
+	*d++ = cm[c[12] >> scalebits];
+	*d++ = cm[c[8] >> scalebits];
+	*d++ = cm[c[13] >> scalebits];
+	*d++ = cm[c[9] >> scalebits];
+	*d++ = cm[c[14] >> scalebits];
+	*d++ = cm[c[10] >> scalebits];
+	*d++ = cm[c[15] >> scalebits];
+	*d++ = cm[c[11] >> scalebits];
+#else
+	int i;
+	const int *c1 = src;
+	const int *c2 = src + 4;
+	unsigned char *d = dst;
+
+	for (i = 0; i < 4; i++, c1++, c2++) {
+		*d++ = CLAMP((*c1) >> scalebits);
+		*d++ = CLAMP((*c2) >> scalebits);
+	}
+	c1 = src + 12;
+	d = dst + bytes_per_line;
+	for (i = 0; i < 4; i++, c1++, c2++) {
+		*d++ = CLAMP((*c1) >> scalebits);
+		*d++ = CLAMP((*c2) >> scalebits);
+	}
+#endif
+}
+
+#if ENABLE_BAYER_DECODER
+/*
+ * Format: 8x2 pixels
+ *   . G . G . G . G . G . G . G
+ *   . . . . . . . . . . . . . .
+ *   . G . G . G . G . G . G . G
+ *   . . . . . . . . . . . . . .
+ *   or
+ *   . . . . . . . . . . . . . .
+ *   G . G . G . G . G . G . G .
+ *   . . . . . . . . . . . . . .
+ *   G . G . G . G . G . G . G .
+*/
+static void copy_image_block_Green(const int *src, unsigned char *dst, unsigned int bytes_per_line, unsigned int scalebits)
+{
+#if UNROLL_LOOP_FOR_COPY
+	/* Unroll all loops */
+	const unsigned char *cm = pwc_crop_table+MAX_OUTER_CROP_VALUE;
+	unsigned char *d = dst;
+	const int *c = src;
+
+	d[0] = cm[c[0] >> scalebits];
+	d[2] = cm[c[1] >> scalebits];
+	d[4] = cm[c[2] >> scalebits];
+	d[6] = cm[c[3] >> scalebits];
+	d[8] = cm[c[4] >> scalebits];
+	d[10] = cm[c[5] >> scalebits];
+	d[12] = cm[c[6] >> scalebits];
+	d[14] = cm[c[7] >> scalebits];
+
+	d = dst + bytes_per_line;
+	d[0] = cm[c[8] >> scalebits];
+	d[2] = cm[c[9] >> scalebits];
+	d[4] = cm[c[10] >> scalebits];
+	d[6] = cm[c[11] >> scalebits];
+	d[8] = cm[c[12] >> scalebits];
+	d[10] = cm[c[13] >> scalebits];
+	d[12] = cm[c[14] >> scalebits];
+	d[14] = cm[c[15] >> scalebits];
+#else
+	int i;
+	unsigned char *d;
+	const int *c = src;
+
+	d = dst;
+	for (i = 0; i < 8; i++, c++)
+		d[i*2] = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line;
+	for (i = 0; i < 8; i++, c++)
+		d[i*2] = CLAMP((*c) >> scalebits);
+#endif
+}
+#endif
+
+#if ENABLE_BAYER_DECODER
+/*
+ * Format: 4x4 pixels
+ *   R . R . R . R
+ *   . B . B . B .
+ *   R . R . R . R
+ *   . B . B . B .
+ */
+static void copy_image_block_RedBlue(const int *src, unsigned char *dst, unsigned int bytes_per_line, unsigned int scalebits)
+{
+#if UNROLL_LOOP_FOR_COPY
+	/* Unroll all loops */
+	const unsigned char *cm = pwc_crop_table+MAX_OUTER_CROP_VALUE;
+	unsigned char *d = dst;
+	const int *c = src;
+
+	d[0] = cm[c[0] >> scalebits];
+	d[2] = cm[c[1] >> scalebits];
+	d[4] = cm[c[2] >> scalebits];
+	d[6] = cm[c[3] >> scalebits];
+
+	d = dst + bytes_per_line;
+	d[1] = cm[c[4] >> scalebits];
+	d[3] = cm[c[5] >> scalebits];
+	d[5] = cm[c[6] >> scalebits];
+	d[7] = cm[c[7] >> scalebits];
+
+	d = dst + bytes_per_line*2;
+	d[0] = cm[c[8] >> scalebits];
+	d[2] = cm[c[9] >> scalebits];
+	d[4] = cm[c[10] >> scalebits];
+	d[6] = cm[c[11] >> scalebits];
+
+	d = dst + bytes_per_line*3;
+	d[1] = cm[c[12] >> scalebits];
+	d[3] = cm[c[13] >> scalebits];
+	d[5] = cm[c[14] >> scalebits];
+	d[7] = cm[c[15] >> scalebits];
+#else
+	int i;
+	unsigned char *d;
+	const int *c = src;
+
+	d = dst;
+	for (i = 0; i < 4; i++, c++)
+		d[i*2] = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line;
+	for (i = 0; i < 4; i++, c++)
+		d[i*2+1] = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line*2;
+	for (i = 0; i < 4; i++, c++)
+		d[i*2] = CLAMP((*c) >> scalebits);
+
+	d = dst + bytes_per_line*3;
+	for (i = 0; i < 4; i++, c++)
+		d[i*2+1] = CLAMP((*c) >> scalebits);
+#endif
+}
+#endif
+
+/*
+ * To manage the stream, we keep bits in a 32 bits register.
+ * fill_nbits(n): fill the reservoir with at least n bits
+ * skip_bits(n): discard n bits from the reservoir
+ * get_bits(n): fill the reservoir, returns the first n bits and discard the
+ *              bits from the reservoir.
+ * __get_nbits(n): faster version of get_bits(n), but asumes that the reservoir
+ *                 contains at least n bits. bits returned is discarded.
+ */
+#define fill_nbits(pdec, nbits_wanted) do { \
+   while (pdec->nbits_in_reservoir<(nbits_wanted)) \
     { \
-      reservoir |= (*(stream)++) << nbits_in_reservoir; \
-      nbits_in_reservoir+=8; \
+      pdec->reservoir |= (*(pdec->stream)++) << (pdec->nbits_in_reservoir); \
+      pdec->nbits_in_reservoir += 8; \
     } \
 }  while(0);
 
-#define get_nbits(reservoir,nbits_in_reservoir,stream,nbits_wanted,result) do { \
-   fill_nbits(reservoir,nbits_in_reservoir,stream,nbits_wanted); \
-   result = (reservoir) & ((1U<<nbits_wanted)-1); \
-   reservoir >>= nbits_wanted; \
-   nbits_in_reservoir -= nbits_wanted; \
+#define skip_nbits(pdec, nbits_to_skip) do { \
+   pdec->reservoir >>= (nbits_to_skip); \
+   pdec->nbits_in_reservoir -= (nbits_to_skip); \
 }  while(0);
 
+#define get_nbits(pdec, nbits_wanted, result) do { \
+   fill_nbits(pdec, nbits_wanted); \
+   result = (pdec->reservoir) & ((1U<<(nbits_wanted))-1); \
+   skip_nbits(pdec, nbits_wanted); \
+}  while(0);
 
+#define __get_nbits(pdec, nbits_wanted, result) do { \
+   result = (pdec->reservoir) & ((1U<<(nbits_wanted))-1); \
+   skip_nbits(pdec, nbits_wanted); \
+}  while(0);
 
-static void DecompressBand23(const struct pwc_dec23_private *pdev,
-                             const unsigned char *rawyuv,
+#define look_nbits(pdec, nbits_wanted) \
+   ((pdec->reservoir) & ((1U<<(nbits_wanted))-1))
+
+/*
+ * Decode a 4x4 pixel block
+ */
+static void decode_block(struct pwc_dec23_private *pdec,
+			 const unsigned char *ptable0004,
+			 const unsigned char *ptable8004)
+{
+	unsigned int primary_color;
+	unsigned int channel_v, offset1, op;
+	int i;
+
+	fill_nbits(pdec, 16);
+	__get_nbits(pdec, pdec->nbits, primary_color);
+
+	if (look_nbits(pdec,2) == 0) {
+		skip_nbits(pdec, 2);
+		/* Very simple, the color is the same for all pixels of the square */
+		for (i = 0; i < 16; i++)
+			pdec->temp_colors[i] = pdec->table_dc00[primary_color];
+
+		return;
+	}
+
+	/* This block is encoded with small pattern */
+	for (i = 0; i < 16; i++)
+		pdec->temp_colors[i] = pdec->table_d800[primary_color];
+
+	__get_nbits(pdec, 3, channel_v);
+	channel_v = ((channel_v & 1) << 2) | (channel_v & 2) | ((channel_v & 4) >> 2);
+
+	ptable0004 += (channel_v * 128);
+	ptable8004 += (channel_v * 32);
+
+	offset1 = 0;
+	do
+	{
+		unsigned int htable_idx, rows = 0;
+		const unsigned int *block;
+
+		/* [  zzzz y x x ]
+		 *     xx == 00 :=> end of the block def, remove the two bits from the stream
+		 *    yxx == 111
+		 *    yxx == any other value
+		 *
+		 */
+		fill_nbits(pdec, 16);
+		htable_idx = look_nbits(pdec, 6);
+		op = hash_table_ops[htable_idx * 4];
+
+		if (op == 2) {
+			skip_nbits(pdec, 2);
+
+		} else if (op == 1) {
+			/* 15bits [ xxxx xxxx yyyy 111 ]
+			 * yyy => offset in the table8004
+			 * xxx => offset in the tabled004 (tree)
+			 */
+			unsigned int mask, shift;
+			unsigned int nbits, col1;
+			unsigned int yyyy;
+
+			skip_nbits(pdec, 3);
+			/* offset1 += yyyy */
+			__get_nbits(pdec, 4, yyyy);
+			offset1 += 1 + yyyy;
+			offset1 &= 0x0F;
+			nbits = ptable8004[offset1 * 2];
+
+			/* col1 = xxxx xxxx */
+			__get_nbits(pdec, nbits+1, col1);
+
+			/* Bit mask table */
+			mask = pdec->table_bitpowermask[nbits][col1];
+			shift = ptable8004[offset1 * 2 + 1];
+			rows = ((mask << shift) + 0x80) & 0xFF;
+
+			block = pdec->table_subblock[rows];
+			for (i = 0; i < 16; i++)
+				pdec->temp_colors[i] += block[MulIdx[offset1][i]];
+
+		} else {
+			/* op == 0
+			 * offset1 is coded on 3 bits
+			 */
+			unsigned int shift;
+
+			offset1 += hash_table_ops [htable_idx * 4 + 2];
+			offset1 &= 0x0F;
+
+			rows = ptable0004[offset1 + hash_table_ops [htable_idx * 4 + 3]];
+			block = pdec->table_subblock[rows];
+			for (i = 0; i < 16; i++)
+				pdec->temp_colors[i] += block[MulIdx[offset1][i]];
+
+			shift = hash_table_ops[htable_idx * 4 + 1];
+			skip_nbits(pdec, shift);
+		}
+
+	} while (op != 2);
+
+}
+
+static void DecompressBand23(struct pwc_dec23_private *pdec,
+			     const unsigned char *rawyuv,
 			     unsigned char *planar_y,
 			     unsigned char *planar_u,
 			     unsigned char *planar_v,
-			     unsigned int image_x,		/* aka number of pixels wanted ??? */
-			     unsigned int pixels_per_line,	/* aka number of pixels per line */
-			     int flags)
+			     unsigned int   compressed_image_width,
+			     unsigned int   real_image_width)
 {
+	int compression_index, nblocks;
+	const unsigned char *ptable0004;
+	const unsigned char *ptable8004;
 
+	pdec->reservoir = 0;
+	pdec->nbits_in_reservoir = 0;
+	pdec->stream = rawyuv + 1;	/* The first byte of the stream is skipped */
 
-  unsigned int reservoir, nbits_in_reservoir;
-  int first_4_bits;
-  unsigned int bytes_per_channel;
-  int line_size;	/* size of the line (4Y+U+V) */
-  int passes;
-  const unsigned char *ptable0004, *ptable8004;
+	get_nbits(pdec, 4, compression_index);
 
-  int even_line;
-  unsigned int temp_colors[16];
-  int nblocks;
+	/* pass 1: uncompress Y component */
+	nblocks = compressed_image_width / 4;
 
-  const unsigned char *stream;
-  unsigned char *dest_y, *dest_u=NULL, *dest_v=NULL;
-  unsigned int offset_to_plane_u, offset_to_plane_v;
+	ptable0004 = pdec->table_0004_pass1[compression_index];
+	ptable8004 = pdec->table_8004_pass1[compression_index];
 
-  int i;
+	/* Each block decode a square of 4x4 */
+	while (nblocks) {
+		decode_block(pdec, ptable0004, ptable8004);
+		copy_image_block_Y(pdec->temp_colors, planar_y, real_image_width, pdec->scalebits);
+		planar_y += 4;
+		nblocks--;
+	}
 
+	/* pass 2: uncompress UV component */
+	nblocks = compressed_image_width / 8;
 
-  reservoir = 0;
-  nbits_in_reservoir = 0;
-  stream = rawyuv+1;	/* The first byte of the stream is skipped */
-  even_line = 1;
+	ptable0004 = pdec->table_0004_pass2[compression_index];
+	ptable8004 = pdec->table_8004_pass2[compression_index];
 
-  get_nbits(reservoir,nbits_in_reservoir,stream,4,first_4_bits);
+	/* Each block decode a square of 4x4 */
+	while (nblocks) {
+		decode_block(pdec, ptable0004, ptable8004);
+		copy_image_block_CrCb(pdec->temp_colors, planar_u, real_image_width/2, pdec->scalebits);
 
-  line_size = pixels_per_line*3;
+		decode_block(pdec, ptable0004, ptable8004);
+		copy_image_block_CrCb(pdec->temp_colors, planar_v, real_image_width/2, pdec->scalebits);
 
-  for (passes=0;passes<2;passes++)
-   {
-     if (passes==0)
-      {
-	bytes_per_channel = pixels_per_line;
-	dest_y = planar_y;
-	nblocks = image_x/4;
-      }
-     else
-      {
-	/* Format planar: All Y, then all U, then all V */
-	bytes_per_channel = pixels_per_line/2;
-	dest_u = planar_u;
-	dest_v = planar_v;
-	dest_y = dest_u;
-	nblocks = image_x/8;
-      }
-
-     offset_to_plane_u = bytes_per_channel*2;
-     offset_to_plane_v = bytes_per_channel*3;
-     /*
-     printf("bytes_per_channel = %d\n",bytes_per_channel);
-     printf("offset_to_plane_u = %d\n",offset_to_plane_u);
-     printf("offset_to_plane_v = %d\n",offset_to_plane_v);
-     */
-
-     while (nblocks-->0)
-      {
-	unsigned int gray_index;
-
-	fill_nbits(reservoir,nbits_in_reservoir,stream,16);
-	gray_index = reservoir & pdev->zzmask;
-	reservoir >>= pdev->zz;
-	nbits_in_reservoir -= pdev->zz;
-
-	fill_nbits(reservoir,nbits_in_reservoir,stream,2);
-
-	if ( (reservoir & 3) == 0)
-	 {
-	   reservoir>>=2;
-	   nbits_in_reservoir-=2;
-	   for (i=0;i<16;i++)
-	     temp_colors[i] = pdev->table_dc00[gray_index];
-
-	 }
-	else
-	 {
-	   unsigned int channel_v, offset1;
-
-	   /* swap bit 0 and 2 of offset_OR */
-	   channel_v = ((reservoir & 1) << 2) | (reservoir & 2) | ((reservoir & 4)>>2);
-	   reservoir>>=3;
-	   nbits_in_reservoir-=3;
-
-	   for (i=0;i<16;i++)
-	     temp_colors[i] = pdev->table_d800[gray_index];
-
-	   ptable0004 = pdev->table_0004 + (passes*16384) + (first_4_bits*1024) + (channel_v*128);
-	   ptable8004 = pdev->table_8004 + (passes*4096)  + (first_4_bits*256)  + (channel_v*32);
-
-	   offset1 = 0;
-	   while(1) 
-	    {
-	      unsigned int index_in_table_ops, op, rows=0;
-	      fill_nbits(reservoir,nbits_in_reservoir,stream,16);
-
-	      /* mode is 0,1 or 2 */
-	      index_in_table_ops = (reservoir&0x3F);
-	      op = table_ops[ index_in_table_ops*4 ];
-	      if (op == 2)
-	       {
-		 reservoir >>= 2;
-		 nbits_in_reservoir -= 2;
-		 break;	/* exit the while(1) */
-	       }
-	      if (op == 0)
-	       {
-		 unsigned int shift;
-
-		 offset1 = (offset1 + table_ops[index_in_table_ops*4+2]) & 0x0F;
-		 shift = table_ops[ index_in_table_ops*4+1 ];
-		 reservoir >>= shift;
-		 nbits_in_reservoir -= shift;
-		 rows = ptable0004[ offset1 + table_ops[index_in_table_ops*4+3] ];
-	       }
-	      if (op == 1)
-	       {
-		  /* 10bits [ xxxx xxxx yyyy 000 ]
-		   * yyy => offset in the table8004
-		   * xxx => offset in the tabled004
-		   */
-		 unsigned int mask, shift;
-		 unsigned int col1, row1, total_bits;
-
-		 offset1 = (offset1 + ((reservoir>>3)&0x0F)+1) & 0x0F;
-
-		 col1 = (reservoir>>7) & 0xFF;
-		 row1 = ptable8004 [ offset1*2 ];
-
-		 /* Bit mask table */
-		 mask = pdev->table_d004[ (row1<<8) + col1 ];
-		 shift = ptable8004 [ offset1*2 + 1];
-		 rows = ((mask << shift) + 0x80) & 0xFF;
-
-		 total_bits = row1 + 8;
-		 reservoir >>= total_bits;
-		 nbits_in_reservoir -= total_bits;
-	       }
-	       {
-		 const unsigned int *table_a004 = pdev->table_a004 + rows*12;
-		 unsigned int *poffset = MulIdx + offset1*16;	/* 64/4 (int) */
-		 for (i=0;i<16;i++)
-		  {
-		    temp_colors[i] += table_a004[ *poffset ];
-		    poffset++;
-		  }
-	       }
-	   }
-	 }
-#define USE_SIGNED_INT_FOR_COLOR
-#ifdef USE_SIGNED_INT_FOR_COLOR
-#  define CLAMP(x) ((x)>255?255:((x)<0?0:x))
-#else
-#  define CLAMP(x) ((x)>255?255:x)
-#endif
-
-	if (passes == 0)
-	 {
-#ifdef USE_SIGNED_INT_FOR_COLOR
-	   const int *c = temp_colors;
-#else
-	   const unsigned int *c = temp_colors;
-#endif
-	   unsigned char *d;
-
-	   d = dest_y;
-	   for (i=0;i<4;i++,c++)
-	     *d++ = CLAMP((*c) >> pdev->yy);
-
-	   d = dest_y + bytes_per_channel;
-	   for (i=0;i<4;i++,c++)
-	     *d++ = CLAMP((*c) >> pdev->yy);
-
-	   d = dest_y + offset_to_plane_u;
-	   for (i=0;i<4;i++,c++)
-	     *d++ = CLAMP((*c) >> pdev->yy);
-
-	   d = dest_y + offset_to_plane_v;
-	   for (i=0;i<4;i++,c++)
-	     *d++ = CLAMP((*c) >> pdev->yy);
-
-	   dest_y += 4;
-	 }
-	else if (passes == 1)
-	 {
-#ifdef USE_SIGNED_INT_FOR_COLOR
-	   int *c1 = temp_colors;
-	   int *c2 = temp_colors+4;
-#else
-	   unsigned int *c1 = temp_colors;
-	   unsigned int *c2 = temp_colors+4;
-#endif
-	   unsigned char *d;
-
-	   d = dest_y;
-	   for (i=0;i<4;i++,c1++,c2++)
-	    {
-	      *d++ = CLAMP((*c1) >> pdev->yy);
-	      *d++ = CLAMP((*c2) >> pdev->yy);
-	    }
-	   c1 = temp_colors+12;
-	   //c2 = temp_colors+8;
-	   d = dest_y + bytes_per_channel;
-	   for (i=0;i<4;i++,c1++,c2++)
-	    {
-	      *d++ = CLAMP((*c1) >> pdev->yy);
-	      *d++ = CLAMP((*c2) >> pdev->yy);
-	    }
-
-	   if (even_line)	/* Each line, swap u/v */
-	    {
-	      even_line=0;
-	      dest_y = dest_v;
-	      dest_u += 8;
-	    }
-	   else
-	    {
-	      even_line=1;
-	      dest_y = dest_u;
-	      dest_v += 8;
-	    }
-	 }
-
-      } /* end of while (nblocks-->0) */
-
-   } /* end of for (passes=0;passes<2;passes++) */
+		planar_v += 8;
+		planar_u += 8;
+		nblocks -= 2;
+	}
 
 }
+
+#if ENABLE_BAYER_DECODER
+/*
+ * Size need to be a multiple of 8 in width
+ *
+ * Return a block of four line encoded like this:
+ *
+ *   G R G R G R G R G R G R G R G R
+ *   B G B G B G B G B G B G B G B G
+ *   G R G R G R G R G R G R G R G R
+ *   B G B G B G B G B G B G B G B G
+ *
+ */
+static void DecompressBandBayer(struct pwc_dec23_private *pdec,
+				const unsigned char *rawyuv,
+				unsigned char *rgbbayer,
+				unsigned int   compressed_image_width,
+				unsigned int   real_image_width)
+{
+	int compression_index, nblocks;
+	const unsigned char *ptable0004;
+	const unsigned char *ptable8004;
+	unsigned char *dest;
+
+	pdec->reservoir = 0;
+	pdec->nbits_in_reservoir = 0;
+	pdec->stream = rawyuv + 1;	/* The first byte of the stream is skipped */
+
+	get_nbits(pdec, 4, compression_index);
+
+	/* pass 1: uncompress RB component */
+	nblocks = compressed_image_width / 4;
+
+	ptable0004 = pdec->table_0004_pass1[compression_index];
+	ptable8004 = pdec->table_8004_pass1[compression_index];
+	dest = rgbbayer;
+
+	/* Each block decode a square of 4x4 */
+	while (nblocks) {
+		decode_block(pdec, ptable0004, ptable8004);
+		copy_image_block_RedBlue(pdec->temp_colors, rgbbayer, real_image_width, pdec->scalebits);
+		dest += 8;
+		nblocks--;
+	}
+
+	/* pass 2: uncompress G component */
+	nblocks = compressed_image_width / 8;
+
+	ptable0004 = pdec->table_0004_pass2[compression_index];
+	ptable8004 = pdec->table_8004_pass2[compression_index];
+
+	/* Each block decode a square of 4x4 */
+	while (nblocks) {
+		decode_block(pdec, ptable0004, ptable8004);
+		copy_image_block_Green(pdec->temp_colors, rgbbayer+1, real_image_width, pdec->scalebits);
+
+		decode_block(pdec, ptable0004, ptable8004);
+		copy_image_block_Green(pdec->temp_colors, rgbbayer+real_image_width, real_image_width, pdec->scalebits);
+
+		rgbbayer += 16;
+		nblocks -= 2;
+	}
+}
+#endif
 
 
 /**
  *
- * image: size of the image wanted
- * view : size of the image returned by the camera
- * offset: (x,y) to displayer image in the view
+ * Uncompress a pwc23 buffer.
+ *
+ * pwc.view: size of the image wanted
+ * pwc.image: size of the image returned by the camera
+ * pwc.offset: (x,y) to displayer image in the view
  *
  * src: raw data
  * dst: image output
- * flags: PWCX_FLAG_PLANAR
- * pdev: private buffer
- * bandlength:
- *
+ * flags: PWCX_FLAG_PLANAR or PWCX_FLAG_BAYER
  */
-void pwc_dec23_decompress(const struct pwc_coord *image,
-                            const struct pwc_coord *view,
-			    const struct pwc_coord *offset,
-			    const void *src,
-			    void *dst,
-			    int flags,
-			    const void *data,
-			    int bandlength)
+void pwc_dec23_decompress(const struct pwc_device *pwc,
+			  const void *src,
+			  void *dst,
+			  int flags)
 {
-  const struct pwc_dec23_private *pdev = data;
-  unsigned char *pout, *pout_planar_y=NULL, *pout_planar_u=NULL, *pout_planar_v=NULL;
-  int i,n,stride,pixel_size;
+	int bandlines_left, stride, bytes_per_block;
+
+	bandlines_left = pwc->image.y / 4;
+	bytes_per_block = pwc->view.x * 4;
+
+	if (flags & PWCX_FLAG_BAYER) {
+#if ENABLE_BAYER_DECODER
+		/* RGB Bayer format */
+		unsigned char *rgbout;
+
+		stride = pwc->view.x * pwc->offset.y;
+		rgbout = dst + stride + pwc->offset.x;
 
 
-  if (flags & PWCX_FLAG_BAYER)
-   {
-     pout = dst + (view->x * offset->y) + offset->x;
-     pixel_size = view->x * 4;
-   }
-  else
-   {
-     n = view->x * view->y;
+		while (bandlines_left--) {
 
-     /* offset in Y plane */
-     stride = view->x * offset->y;
-     pout_planar_y = dst + stride + offset->x;
+			DecompressBandBayer(pwc->decompress_data,
+					    src,
+					    rgbout,
+					    pwc->image.x, pwc->view.x);
 
-     /* offsets in U/V planes */
-     stride = (view->x * offset->y)/4 + offset->x/2;
-     pout_planar_u = dst + n +     + stride;
-     pout_planar_v = dst + n + n/4 + stride;
+			src += pwc->vbandlength;
+			rgbout += bytes_per_block;
 
-     pixel_size = view->x * 4;
-   }
+		}
+#else
+		memset(dst, 0, pwc->view.x * pwc->view.y);
+#endif
 
+	} else {
+		/* YUV420P image format */
+		unsigned char *pout_planar_y;
+		unsigned char *pout_planar_u;
+		unsigned char *pout_planar_v;
+		unsigned int   plane_size;
 
-  for (i=0;i<image->y;i+=4)
-   {
-     if (flags & PWCX_FLAG_BAYER)
-      {
-	//TODO:
-	//DecompressBandBayer(pdev,src,pout,image.x,view->x,flags);
-	src += bandlength;
-	pout += pixel_size;
-      }
-     else
-      {
-	DecompressBand23(pdev,src,pout_planar_y,pout_planar_u,pout_planar_v,image->x,view->x,flags);
-	src += bandlength;
-	pout_planar_y += pixel_size;
-	pout_planar_u += view->x;
-	pout_planar_v += view->x;
-      }
-   }
+		plane_size = pwc->view.x * pwc->view.y;
+
+		/* offset in Y plane */
+		stride = pwc->view.x * pwc->offset.y;
+		pout_planar_y = dst + stride + pwc->offset.x;
+
+		/* offsets in U/V planes */
+		stride = (pwc->view.x * pwc->offset.y) / 4 + pwc->offset.x / 2;
+		pout_planar_u = dst + plane_size + stride;
+		pout_planar_v = dst + plane_size + plane_size / 4 + stride;
+
+		while (bandlines_left--) {
+
+			DecompressBand23(pwc->decompress_data,
+					 src,
+					 pout_planar_y, pout_planar_u, pout_planar_v,
+					 pwc->image.x, pwc->view.x);
+			src += pwc->vbandlength;
+			pout_planar_y += bytes_per_block;
+			pout_planar_u += pwc->view.x;
+			pout_planar_v += pwc->view.x;
+
+		}
+
+	}
+
 }
 
 void pwc_dec23_exit(void)
 {
-  /* Do nothing */
+	/* Do nothing */
 
 }
 
+/**
+ * Allocate a private structure used by lookup table.
+ * You must call kfree() to free the memory allocated.
+ */
+int pwc_dec23_alloc(struct pwc_device *pwc)
+{
+	pwc->decompress_data = kmalloc(sizeof(struct pwc_dec23_private), GFP_KERNEL);
+	if (pwc->decompress_data == NULL)
+		return -ENOMEM;
+	return 0;
+}
+
+/* vim: set cino= formatoptions=croql cindent shiftwidth=8 tabstop=8: */

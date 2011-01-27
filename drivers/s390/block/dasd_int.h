@@ -14,9 +14,21 @@
 
 #ifdef __KERNEL__
 
+#include <asm/types.h>
+
 /* erp debugging in dasd.c and dasd_3990_erp.c */
 #define ERP_DEBUG
 
+/*
+ * Unique identifier for dasd device.
+ */
+struct dasd_uid {
+	__u8 alias;
+	char vendor[4];
+	char serial[15];
+	__u16 ssid;
+	__u8 unit_addr;
+};
 
 /* we keep old device allocation scheme; IOW, minors are still in 0..255 */
 #define DASD_PER_MAJOR (1U << (MINORBITS - DASD_PARTN_BITS))
@@ -27,7 +39,7 @@
  *   new: the dasd_device structure is allocated.
  *   known: the discipline for the device is identified.
  *   basic: the device can do basic i/o.
- *   accept: the device is analysed (format is known).
+ *   unfmt: the device could not be analyzed (format is unknown).
  *   ready: partition detection is done and the device is can do block io.
  *   online: the device accepts requests from the block device queue.
  *
@@ -48,8 +60,9 @@
 #define DASD_STATE_NEW	  0
 #define DASD_STATE_KNOWN  1
 #define DASD_STATE_BASIC  2
-#define DASD_STATE_READY  3
-#define DASD_STATE_ONLINE 4
+#define DASD_STATE_UNFMT  3
+#define DASD_STATE_READY  4
+#define DASD_STATE_ONLINE 5
 
 #include <linux/module.h>
 #include <linux/wait.h>
@@ -208,6 +221,7 @@ struct dasd_ccw_req {
 
 /* per dasd_ccw_req flags */
 #define DASD_CQR_FLAGS_USE_ERP   0	/* use ERP for this request */
+#define DASD_CQR_FLAGS_FAILFAST  1	/* FAILFAST */
 
 /* Signature for error recovery functions. */
 typedef struct dasd_ccw_req *(*dasd_erp_fn_t) (struct dasd_ccw_req *);
@@ -286,9 +300,11 @@ struct dasd_device {
 	unsigned int bp_block;		/* bytes per block */
 	unsigned int s2b_shift;		/* log2 (bp_block/512) */
 	unsigned long flags;		/* per device flags */
+	unsigned short features;        /* copy of devmap-features (read-only!) */
 
 	/* Device discipline stuff. */
 	struct dasd_discipline *discipline;
+	struct dasd_discipline *base_discipline;
 	char *private;
 
 	/* Device state and target state. */
@@ -329,8 +345,6 @@ struct dasd_device {
 #define DASD_STOPPED_DC_EIO  16        /* disconnected, return -EIO */
 
 /* per device flags */
-#define DASD_FLAG_RO		0	/* device is read-only */
-#define DASD_FLAG_USE_DIAG	1	/* use diag disciplnie */
 #define DASD_FLAG_DSC_ERROR	2	/* return -EIO when disconnected */
 #define DASD_FLAG_OFFLINE	3	/* device is in offline processing */
 
@@ -488,18 +502,23 @@ void dasd_generic_remove (struct ccw_device *cdev);
 int dasd_generic_set_online(struct ccw_device *, struct dasd_discipline *);
 int dasd_generic_set_offline (struct ccw_device *cdev);
 int dasd_generic_notify(struct ccw_device *, int);
-void dasd_generic_auto_online (struct ccw_driver *);
 
 /* externals in dasd_devmap.c */
 extern int dasd_max_devindex;
 extern int dasd_probeonly;
 extern int dasd_autodetect;
+extern int dasd_nopav;
 
 int dasd_devmap_init(void);
 void dasd_devmap_exit(void);
 
 struct dasd_device *dasd_create_device(struct ccw_device *);
 void dasd_delete_device(struct dasd_device *);
+
+int dasd_get_uid(struct ccw_device *, struct dasd_uid *);
+int dasd_set_uid(struct ccw_device *, struct dasd_uid *);
+int dasd_get_feature(struct ccw_device *, int);
+int dasd_set_feature(struct ccw_device *, int, int);
 
 int dasd_add_sysfs_files(struct ccw_device *);
 void dasd_remove_sysfs_files(struct ccw_device *);

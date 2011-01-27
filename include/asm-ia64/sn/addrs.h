@@ -57,16 +57,7 @@
 #define for_each_online_node(nid)	for (nid=0; nid < numnodes; nid++)
 #define for_each_node(nid)		for (nid=0; nid < MAX_NUMNODES; nid++)
 #define node_possible(nid)		((nid) >= 0 && (nid) < MAX_NUMNODES)
-
-#define first_node(src) __first_node(&(src))
-#define next_node(n, src) __next_node((n), &(src))
-#define for_each_node_mask(node, mask)			\
-	for ((node) = first_node(mask);			\
-		(node) < MAX_NUMNODES;			\
-		(node) = next_node((node), (mask)))
-
-#define nodes_clear(m)	memset(&m, 0, sizeof(m))
-#define node_set(i, n)	__set_bit((i), &(n))
+#define node_set(i, n)			__set_bit((i), &(n))
 
 /*
  * Define basic shift & mask constants for manipulating NASIDs and AS values.
@@ -296,5 +287,13 @@
 #define REMOTE_HUB_L(n, a)		HUB_L(REMOTE_HUB_ADDR((n), (a)))
 #define REMOTE_HUB_S(n, a, d)		HUB_S(REMOTE_HUB_ADDR((n), (a)), (d))
 
+/*
+ * Coretalk address breakdown
+ */
+#define CTALK_NASID_SHFT		40
+#define CTALK_NASID_MASK		(0x3FFFULL << CTALK_NASID_SHFT)
+#define CTALK_CID_SHFT			38
+#define CTALK_CID_MASK			(0x3ULL << CTALK_CID_SHFT)
+#define CTALK_NODE_OFFSET		0x3FFFFFFFFF
 
 #endif /* _ASM_IA64_SN_ADDRS_H */

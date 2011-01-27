@@ -531,6 +531,14 @@ running once the system is up.
 	inport.irq=	[HW] Inport (ATI XL and Microsoft) busmouse driver
 			Format: <irq>
 
+	combined_mode=	[HW] control which driver uses IDE ports in combined
+			mode: legacy IDE driver, libata, or both
+			(in the libata case, libata.atapi_enabled=1 may be
+			useful as well).  Note that using the ide or libata
+			options may affect your device naming (e.g. by
+			changing hdc to sdb).
+			Format: combined (default), ide, or libata
+
 	inttest=	[IA64]
 
 	io7=		[HW] IO7 for Marvel based alpha systems
@@ -934,7 +942,11 @@ running once the system is up.
 					used on IXP2000 systems where the
 					bus has to be configured a certain way
 					for adjunct CPUs.
-
+ 		bfsort			Sort PCI devices into breadth-first order.
+ 					This sorting is done to get a device
+ 					order compatible with older (<= 2.4) kernels.
+ 		nobfsort		Don't sort PCI devices into breadth-first order.
+ 
 	pcmv=		[HW,PCMCIA] BadgePAD 4
 
 	pd.		[PARIDE]

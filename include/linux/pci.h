@@ -199,6 +199,7 @@
 #define  PCI_CAP_ID_MSI		0x05	/* Message Signalled Interrupts */
 #define  PCI_CAP_ID_CHSWP	0x06	/* CompactPCI HotSwap */
 #define  PCI_CAP_ID_PCIX	0x07	/* PCI-X */
+#define  PCI_CAP_ID_HT		0x08	/* HyperTransport */
 #define  PCI_CAP_ID_SHPC 	0x0C	/* PCI Standard Hot-Plug Controller */
 #define  PCI_CAP_ID_EXP 	0x10	/* PCI Express */
 #define  PCI_CAP_ID_MSIX	0x11	/* MSI-X */
@@ -480,6 +481,7 @@ enum pci_mmap_state {
 #define DEVICE_COUNT_COMPATIBLE	4
 #define DEVICE_COUNT_RESOURCE	12
 
+#define PCI_BUS_FLAGS_NO_MSI 1
 /*
  * The pci_dev structure is used to describe PCI devices.
  */
@@ -537,6 +539,8 @@ struct pci_dev {
 	unsigned int	is_busmaster:1; /* device is busmaster */
 #ifndef __GENKSYMS__
 	unsigned int	block_ucfg_access:1;	/* userspace config space access is blocked */
+	unsigned int    no_msi:1;       /* device is busmaster */
+	unsigned int	no_d1d2:1;   /* only allow d0 or d3 */
 #endif
 	u32		saved_config_space[16]; /* config space saved at suspend time */
 #ifdef CONFIG_PCI_NAMES
@@ -716,6 +720,7 @@ extern struct pci_dev *pci_dev_get(struct pci_dev *dev);
 extern void pci_dev_put(struct pci_dev *dev);
 extern void pci_remove_bus(struct pci_bus *b);
 extern void pci_remove_bus_device(struct pci_dev *dev);
+extern void pci_sort_breadthfirst(void);
 
 /* Generic PCI functions exported to card drivers */
 

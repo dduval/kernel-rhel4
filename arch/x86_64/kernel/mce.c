@@ -138,7 +138,11 @@ void do_machine_check(struct pt_regs * regs, long error_code)
 		return;
 
 	memset(&m, 0, sizeof(struct mce));
+#ifndef CONFIG_XEN
 	m.cpu = hard_smp_processor_id();
+#else
+	m.cpu = safe_smp_processor_id();
+#endif
 	rdmsrl(MSR_IA32_MCG_STATUS, m.mcgstatus);
 	if (!(m.mcgstatus & MCG_STATUS_RIPV))
 		kill_it = 1;
@@ -483,6 +487,8 @@ static struct sys_device device_mce = {
 	.cls	= &mce_sysclass,
 };
 
+DEFINE_PER_CPU(struct sys_device, device_mce);
+
 /* Why are there no generic functions for this? */
 #define ACCESSOR(name, var, start) \
 	static ssize_t show_ ## name(struct sys_device *s, char *buf) { 	   	   \
@@ -512,6 +518,28 @@ static struct sysdev_attribute * bank_attributes[NR_BANKS] = {
 ACCESSOR(tolerant,tolerant,)
 ACCESSOR(check_interval,check_interval,mce_restart())
 
+/* Per cpu sysdev init.  All of the cpus still share the same ctl bank */
+static __init int mce_create_device(unsigned int cpu)
+{
+        int err;         int i;
+        if (!mce_available(&cpu_data[cpu]))
+                return -EIO;
+
+        per_cpu(device_mce,cpu).id = cpu;
+        per_cpu(device_mce,cpu).cls = &mce_sysclass;
+
+        err = sysdev_register(&per_cpu(device_mce,cpu));
+
+        if (!err) {
+                for (i = 0; i < banks; i++)
+                        sysdev_create_file(&per_cpu(device_mce,cpu),
+                                bank_attributes[i]);
+                sysdev_create_file(&per_cpu(device_mce,cpu), &attr_tolerant);
+                sysdev_create_file(&per_cpu(device_mce,cpu), &attr_check_interval);
+        }
+        return err;
+}
+
 static __init int mce_init_device(void)
 {
 	int err;
@@ -520,17 +548,11 @@ static __init int mce_init_device(void)
 	if (!mce_available(&boot_cpu_data))
 		return -EIO;
 	err = sysdev_class_register(&mce_sysclass);
-	if (!err)
-		err = sysdev_register(&device_mce);
-	if (!err) { 
-		/* could create per CPU objects, but it is not worth it. */
-		for (i = 0; i < banks; i++)
-			sysdev_create_file(&device_mce, bank_attributes[i]);
 
-		sysdev_create_file(&device_mce, &attr_tolerant); 
-		sysdev_create_file(&device_mce, &attr_check_interval);
-	} 
-	
+        for_each_online_cpu(i) {
+                mce_create_device(i);
+        }
+
 	misc_register(&mce_log_device);
 	return err;
 

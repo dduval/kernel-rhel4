@@ -17,6 +17,7 @@
 
 #if defined(__KERNEL__) && defined(CONFIG_SMP) && !defined(__ASSEMBLY__)
 
+#include <asm/system.h>
 #include <asm/lowcore.h>
 
 /*

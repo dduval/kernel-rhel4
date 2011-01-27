@@ -24,7 +24,9 @@
 #define CFI_ADJUST_CFA_OFFSET .cfi_adjust_cfa_offset
 #define CFI_OFFSET .cfi_offset
 #define CFI_REL_OFFSET .cfi_rel_offset
-
+#define CFI_REGISTER .cfi_register
+#define CFI_REMEMBER_STATE .cfi_remember_state
+#define CFI_RESTORE_STATE .cfi_restore_state
 #else
 
 /* use assembler line comment character # to ignore the arguments. */
@@ -36,6 +38,9 @@
 #define CFI_ADJUST_CFA_OFFSET	#
 #define CFI_OFFSET	#
 #define CFI_REL_OFFSET	#
+#define CFI_REGISTER	#
+#define CFI_REMEMBER_STATE #
+#define CFI_RESTORE_STATE #
 
 #endif
 

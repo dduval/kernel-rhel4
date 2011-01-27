@@ -1,5 +1,6 @@
 deps_config := \
 	lib/Kconfig \
+	drivers/xen/Kconfig \
 	crypto/Kconfig \
 	security/selinux/Kconfig \
 	security/Kconfig \
@@ -12,14 +13,13 @@ deps_config := \
 	fs/Kconfig \
 	drivers/firmware/Kconfig \
 	drivers/edac/Kconfig \
-	drivers/infiniband/ulp/rds/Kconfig \
-	drivers/infiniband/ulp/iser/Kconfig \
-	drivers/infiniband/ulp/srp/Kconfig \
+	drivers/infiniband/util/Kconfig \
 	drivers/infiniband/ulp/sdp/Kconfig \
+	drivers/infiniband/ulp/srp/Kconfig \
 	drivers/infiniband/ulp/ipoib/Kconfig \
 	drivers/infiniband/hw/ehca/Kconfig \
-	drivers/infiniband/hw/mthca/Kconfig \
 	drivers/infiniband/hw/ipath/Kconfig \
+	drivers/infiniband/hw/mthca/Kconfig \
 	drivers/infiniband/Kconfig \
 	drivers/usb/gadget/Kconfig \
 	drivers/usb/atm/Kconfig \
@@ -146,8 +146,10 @@ deps_config := \
 	drivers/message/fusion/Kconfig \
 	drivers/md/Kconfig \
 	drivers/cdrom/Kconfig \
+	drivers/ata/Kconfig \
 	drivers/scsi/pcmcia/Kconfig \
 	drivers/scsi/arm/Kconfig \
+	drivers/scsi/qla4xxx/Kconfig \
 	drivers/scsi/qla2xxx/Kconfig \
 	drivers/scsi/iscsi_sfnet/Kconfig \
 	drivers/scsi/megaraid/Kconfig.megaraid \

@@ -789,14 +789,24 @@ static void __init amd_detect_cmp(struct cpuinfo_x86 *c)
 	int cpu = smp_processor_id();
 	unsigned bits;
 
-	bits = 0;
-	while ((1 << bits) < c->x86_num_cores)
-		bits++;
+        unsigned ecx = cpuid_ecx(0x80000008);
+
+        c->x86_num_cores = (ecx & 0xff) + 1;
+
+        /* CPU telling us the core id bits shift? */
+        bits = (ecx >> 12) & 0xF;
+
+        /* Otherwise recompute */
+	if (bits == 0) {
+	        while ((1 << bits) < c->x86_num_cores)
+		        bits++;
+	}
 
 	/* Low order bits define the core id (index of core in socket) */
 	cpu_core_id[cpu] = phys_proc_id[cpu] & ((1 << bits)-1);
 	/* Convert the APIC ID into the socket ID */
 	phys_proc_id[cpu] >>= bits;
+
 #endif
 }
 
@@ -829,8 +839,12 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 	
 	/* C-stepping K8? */
 	level = cpuid_eax(1);
-	if ((level >= 0x0f48 && level < 0x0f50) || level >= 0x0f58)
+        if (c->x86 == 15 && ((level >= 0x0f48 && level < 0x0f50) || level >= 0x0f58))
 		set_bit(X86_FEATURE_K8_C, &c->x86_capability);
+
+        /* Enable workaround for FXSAVE leak */
+        if (c->x86 >= 6)
+                set_bit(X86_FEATURE_FXSAVE_LEAK, &c->x86_capability);
 
 	r = get_model_name(c);
 	if (!r) { 
@@ -844,12 +858,13 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 	} 
 	display_cacheinfo(c);
 
-#ifdef CONFIG_SMP
-	if (cpuid_eax(0x80000000) >= 0x80000008) {
-		c->x86_num_cores = (cpuid_ecx(0x80000008) & 0xff) + 1;
-		if (c->x86_num_cores & (c->x86_num_cores - 1))
-			c->x86_num_cores = 1;
+        /* c->x86_power is 8000_0007 edx. Bit 8 is constant TSC */
+        if (c->x86_power & (1<<8))
+                set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
 
+#ifdef CONFIG_SMP
+        /* Multi core CPU? */
+	if (cpuid_eax(0x80000000) >= 0x80000008) {
 		amd_detect_cmp(c);
 
 #ifdef CONFIG_NUMA
@@ -984,6 +999,10 @@ static void __init init_intel(struct cpuinfo_x86 *c)
 
 	if (c->x86 == 15)
 		c->x86_cache_alignment = c->x86_clflush_size * 2;
+
+	if ((c->x86 == 0xf && c->x86_model >= 0x03) ||
+	    (c->x86 == 0x6 && c->x86_model >= 0x0e))
+		set_bit(X86_FEATURE_CONSTANT_TSC, &c->x86_capability);
 
 #ifdef CONFIG_SMP
 	c->x86_num_cores = num_cpu_cores(c);
@@ -1184,7 +1203,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 
 		/* Other (Linux-defined) */
 		"cxmmx", "k6_mtrr", "cyrix_arr", "centaur_mcr", NULL, NULL, NULL, NULL,
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		"constant_tsc", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 

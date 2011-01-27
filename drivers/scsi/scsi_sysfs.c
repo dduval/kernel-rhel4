@@ -48,6 +48,36 @@ const char *scsi_device_state_name(enum scsi_device_state state)
 	return name;
 }
 
+static const struct {
+	unsigned long		value;
+	char			*name;
+} shost_states[] = {
+#if 0
+	{ SHOST_CREATED, "created" },
+	{ SHOST_RUNNING, "running" },
+#endif
+	{ 1UL << SHOST_CANCEL, "cancel" },
+	{ 1UL << SHOST_DEL, "deleted" },
+	{ 1UL << SHOST_RECOVERY, "recovery" },
+#if 0
+	{ 1UL << SHOST_CANCEL_RECOVERY, "cancel/recovery" },
+	{ 1UL << SHOST_DEL_RECOVERY, "deleted/recovery", },
+#endif
+};
+const char *scsi_host_state_name(unsigned long state)
+{
+	int i;
+	char *name = NULL;
+
+	for (i = 0; i < ARRAY_SIZE(shost_states); i++) {
+		if (shost_states[i].value == state) {
+			name = shost_states[i].name;
+			break;
+		}
+	}
+	return name;
+}
+
 static int check_set(unsigned int *val, char *src)
 {
 	char *last;

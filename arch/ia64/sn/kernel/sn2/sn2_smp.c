@@ -137,10 +137,10 @@ sn2_global_tlb_purge_new(struct mm_struct *mm, unsigned long start,
 	volatile unsigned long *ptc0, *ptc1;
 	unsigned long itc, itc2, flags, data0 = 0, data1 = 0, rr_value, old_rr = 0;
 	short nasids[MAX_NUMNODES], nix;
-	DECLARE_BITMAP(nodes_flushed, NR_NODES);
+	DECLARE_BITMAP(nodes_flushed, MAX_NUMNODES);
 	int active, max_active, deadlock;
 
-	bitmap_zero(nodes_flushed, NR_NODES);
+	bitmap_zero(nodes_flushed, MAX_NUMNODES);
 	i = 0;
 
 	for_each_cpu_mask(cpu, mm->cpu_vm_mask) {
@@ -175,8 +175,8 @@ sn2_global_tlb_purge_new(struct mm_struct *mm, unsigned long start,
 
 	itc = ia64_get_itc();
 	nix = 0;
-	for (cnode = find_first_bit(&nodes_flushed, NR_NODES); cnode < NR_NODES;
-			cnode = find_next_bit(&nodes_flushed, NR_NODES, ++cnode))
+	for (cnode = find_first_bit(&nodes_flushed, MAX_NUMNODES); cnode < MAX_NUMNODES;
+			cnode = find_next_bit(&nodes_flushed, MAX_NUMNODES, ++cnode))
 		nasids[nix++] = cnodeid_to_nasid(cnode);
 
 	rr_value = (mm->context << 3) | REGION_NUMBER(start);

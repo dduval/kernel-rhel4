@@ -40,8 +40,6 @@
  */
 
 
-#define DEB_PREFIX "e_qp"
-
 #include <linux/module.h>
 #include <linux/err.h>
 #include "ehca_classes.h"
@@ -50,11 +48,6 @@
 #include "ehca_iverbs.h"
 #include "hcp_if.h"
 
-
-extern int ehca_create_aqp1(struct ehca_shca *shca, struct ehca_sport *sport);
-extern int ehca_destroy_aqp1(struct ehca_sport *sport);
-
-extern int ehca_port_act_time;
 
 /**
  * ehca_define_sqp - Defines special queue pair 1 (GSI QP). When special queue
@@ -69,15 +62,10 @@ u64 ehca_define_sqp(struct ehca_shca *shca,
 		    struct ehca_qp *ehca_qp,
 		    struct ib_qp_init_attr *qp_init_attr)
 {
-
-	u32 pma_qp_nr = 0;
-	u32 bma_qp_nr = 0;
-	u64 ret = H_SUCCESS;
+	u32 pma_qp_nr, bma_qp_nr;
+	u64 ret;
 	u8 port = qp_init_attr->port_num;
-	int counter = 0;
-
-	EDEB_EN(7, "port=%x qp_type=%x",
-		port, qp_init_attr->qp_type);
+	int counter;
 
 	shca->sport[port - 1].port_state = IB_PORT_DOWN;
 
@@ -93,31 +81,31 @@ u64 ehca_define_sqp(struct ehca_shca *shca,
 					 &pma_qp_nr, &bma_qp_nr);
 
 		if (ret != H_SUCCESS) {
-			EDEB_ERR(4, "Can't define AQP1 for port %x. rc=%lx",
-				    port, ret);
-			goto ehca_define_aqp1;
+			ehca_err(&shca->ib_device,
+				 "Can't define AQP1 for port %x. rc=%lx",
+				 port, ret);
+			return ret;
 		}
 		break;
 	default:
-		ret = H_PARAMETER;
-		goto ehca_define_aqp1;
+		ehca_err(&shca->ib_device, "invalid qp_type=%x",
+			 qp_init_attr->qp_type);
+		return H_PARAMETER;
 	}
 
-	while ((shca->sport[port - 1].port_state != IB_PORT_ACTIVE) &&
-	       (counter < ehca_port_act_time)) {
-		EDEB(6, "... wait until port %x is active",
-			port);
+	for (counter = 0;
+	     shca->sport[port - 1].port_state != IB_PORT_ACTIVE &&
+		     counter < ehca_port_act_time;
+	     counter++) {
+		ehca_dbg(&shca->ib_device, "... wait until port %x is active",
+			 port);
 		msleep_interruptible(1000);
-		counter++;
 	}
 
 	if (counter == ehca_port_act_time) {
-		EDEB_ERR(4, "Port %x is not active.", port);
-		ret = H_HARDWARE;
+		ehca_err(&shca->ib_device, "Port %x is not active.", port);
+		return H_HARDWARE;
 	}
 
-ehca_define_aqp1:
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return H_SUCCESS;
 }

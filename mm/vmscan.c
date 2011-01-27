@@ -878,7 +878,9 @@ shrink_caches(struct zone **zones, struct scan_control *sc)
 	}
 }
 
-static int free_below_min(struct zone **zones)
+static int free_below_min(struct zone **zones, unsigned int gfp_mask,
+			 int can_try_harder, int alloc_type,
+			 unsigned int order)
 {
 	unsigned long free = 0;
 	unsigned long min = 0;
@@ -886,9 +888,9 @@ static int free_below_min(struct zone **zones)
 
 	for (i = 0; zones[i] != NULL; i++) {
 		struct zone *zone = zones[i];
- 
+		 
 		free += zone->free_pages;
-		min += zone->pages_min;
+		min += zone_min(zone,gfp_mask,can_try_harder,alloc_type,order);
 	}
 	
 	return (min >= free);
@@ -908,7 +910,7 @@ static int free_below_min(struct zone **zones)
  * allocation attempt will fail.
  */
 int try_to_free_pages(struct zone **zones,
-		unsigned int gfp_mask, unsigned int order)
+		unsigned int gfp_mask, unsigned int order, int can_try_harder, int alloc_type)
 {
 	int priority;
 	int ret = 0;
@@ -967,7 +969,7 @@ int try_to_free_pages(struct zone **zones,
 	}
 	if ((gfp_mask & __GFP_FS) && !(gfp_mask & __GFP_NORETRY) &&
 	     !total_reclaimed && sc.nr_congested < SWAP_CLUSTER_MAX &&
-	     free_below_min(zones))
+	     free_below_min(zones, gfp_mask, can_try_harder, alloc_type, order))
 		out_of_memory(gfp_mask);
 out:
 	for (i = 0; zones[i] != 0; i++)

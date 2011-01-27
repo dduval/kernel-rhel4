@@ -175,7 +175,7 @@ static int __devinit snd_card_emu10k1_probe(struct pci_dev *pci,
 	}
 #endif
  
-	if (emu->audigy && (emu->serial == 0x10221102) ) {
+	if (emu->audigy && ((emu->serial == 0x10221102) || (emu->serial == 0x10211102))) {
 		strcpy(card->driver, "Audigy4");
 		strcpy(card->shortname, "Sound Blaster Audigy4");
 	} else if (emu->audigy && (emu->serial == 0x10011102) ) {

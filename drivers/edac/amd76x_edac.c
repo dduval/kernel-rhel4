@@ -203,6 +203,7 @@ static int amd76x_probe1(struct pci_dev *pdev, int dev_idx)
 	};
 	u32 ems;
 	u32 ems_mode;
+	struct amd76x_error_info discard;
 
 	debugf0("MC: " __FILE__ ": %s()\n", __func__);
 
@@ -218,7 +219,7 @@ static int amd76x_probe1(struct pci_dev *pdev, int dev_idx)
 
 	debugf0("MC: " __FILE__ ": %s(): mci = %p\n", __func__, mci);
 
-	mci->pdev = pci_dev_get(pdev);
+	mci->pdev = pdev;
 	mci->mtype_cap = MEM_FLAG_RDDR;
 
 	mci->edac_ctl_cap = EDAC_FLAG_NONE | EDAC_FLAG_EC | EDAC_FLAG_SECDED;
@@ -262,9 +263,7 @@ static int amd76x_probe1(struct pci_dev *pdev, int dev_idx)
 		csrow->edac_mode = ems_modes[ems_mode];
 	}
 
-	/* clear counters */
-	pci_write_bits32(mci->pdev, AMD76X_ECC_MODE_STATUS, (u32) (0x3 << 8),
-			 (u32) (0x3 << 8));
+	amd76x_get_error_info(mci, &discard);  /* clear counters */
 
 	if (edac_mc_add_mc(mci)) {
 		debugf3("MC: " __FILE__
@@ -277,11 +276,8 @@ static int amd76x_probe1(struct pci_dev *pdev, int dev_idx)
 	return 0;
 
 fail:
-	if (mci) {
-		if(mci->pdev)
-			pci_dev_put(mci->pdev);
+	if (mci != NULL)
 		edac_mc_free(mci);
-	}
 	return rc;
 }
 
@@ -311,11 +307,8 @@ static void __devexit amd76x_remove_one(struct pci_dev *pdev)
 
 	debugf0(__FILE__ ": %s()\n", __func__);
 
-	if ((mci = edac_mc_find_mci_by_pdev(pdev)) == NULL)
+	if ((mci = edac_mc_del_mc(pdev)) == NULL)
 		return;
-	if (edac_mc_del_mc(mci))
-		return;
-	pci_dev_put(mci->pdev);
 	edac_mc_free(mci);
 }
 

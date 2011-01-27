@@ -957,7 +957,11 @@ megaraid_init_mbox(adapter_t *adapter)
 	// DMA in this range
 	pci_read_config_dword(adapter->pdev, PCI_CONF_AMISIG64, &magic64);
 
-	if ((magic64 == HBA_SIGNATURE_64BIT) || 
+	if (((magic64 == HBA_SIGNATURE_64BIT) &&
+		((adapter->pdev->subsystem_device !=
+		PCI_SUBSYS_ID_MEGARAID_SATA_150_6) &&
+		(adapter->pdev->subsystem_device !=
+		PCI_SUBSYS_ID_MEGARAID_SATA_150_4))) ||
 		(adapter->pdev->vendor == PCI_VENDOR_ID_DELL &&
 		adapter->pdev->device == PCI_DEVICE_ID_PERC4_DI_EVERGLADES) ||
 		(adapter->pdev->vendor == PCI_VENDOR_ID_LSI_LOGIC &&
@@ -3065,11 +3069,13 @@ mbox_post_sync_cmd_fast(adapter_t *adapter, uint8_t raw_mbox[])
 	wmb();
 	WRINDOOR(raid_dev, raid_dev->mbox_dma | 0x1);
 
-	for (i = 0; i < 0xFFFFF; i++) {
+	for (i = 0; i < MBOX_SYNC_WAIT_CNT; i++) {
 		if (mbox->numstatus != 0xFF) break;
+		rmb();
+		udelay(MBOX_SYNC_DELAY_200);
 	}
 
-	if (i == 0xFFFFF) {
+	if (i == MBOX_SYNC_WAIT_CNT) {
 		// We may need to re-calibrate the counter
 		con_log(CL_ANN, (KERN_CRIT
 			"megaraid: fast sync command timed out\n"));

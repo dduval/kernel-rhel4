@@ -59,10 +59,7 @@ static void * __devinit update_dn_pci_info(struct device_node *dn, void *data)
 
 		model = (char *)get_property(dn, "model", NULL);
 
-		if (strstr(model, "U3"))
-			dn->devfn = -1;
-		else
-			dn->devfn = 0;	/* assumption */
+		dn->devfn = -1;
 	} else {
 		regs = (u32 *)get_property(dn, "reg", NULL);
 		if (regs) {

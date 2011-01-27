@@ -249,7 +249,8 @@ void usb_hcd_pci_remove (struct pci_dev *dev)
 	hcd->state = USB_STATE_HALT;
 	pci_set_drvdata(dev, NULL);
 
-	free_irq (hcd->irq, hcd);
+	if (hcd->irq != -1)
+		free_irq (hcd->irq, hcd);
 	if (hcd->driver->flags & HCD_MEMORY) {
 		iounmap (hcd->regs);
 		release_mem_region (pci_resource_start (dev, 0),

@@ -118,7 +118,9 @@ static void __init check_hlt(void)
 		printk("disabled\n");
 		return;
 	}
+#ifndef CONFIG_XEN
 	__asm__ __volatile__("hlt ; hlt ; hlt ; hlt");
+#endif
 	printk("OK.\n");
 }
 

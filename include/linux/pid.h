@@ -36,6 +36,8 @@ extern void FASTCALL(detach_pid(struct task_struct *task, enum pid_type));
  */
 extern struct pid *FASTCALL(find_pid(enum pid_type, int));
 
+extern struct pid *find_ge_pid(int nr);
+
 extern int alloc_pidmap(void);
 extern void FASTCALL(free_pidmap(int));
 extern void switch_exec_pids(struct task_struct *leader, struct task_struct *thread);

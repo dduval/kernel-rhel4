@@ -174,7 +174,8 @@ static void mwait_idle(void)
 void __init select_idle_routine(const struct cpuinfo_x86 *c)
 {
 	static int printed;
-	if (cpu_has(c, X86_FEATURE_MWAIT)) {
+	if (cpu_has(c, X86_FEATURE_MWAIT) && 
+		(c->x86_vendor == X86_VENDOR_INTEL)) {
 		/*
 		 * Skip, if setup has overridden idle.
 		 * One CPU supports mwait => All CPUs supports mwait

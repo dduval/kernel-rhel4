@@ -32,8 +32,14 @@ u8 x86_cpu_to_log_apicid[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
 
 extern struct genapic apic_cluster;
 extern struct genapic apic_flat;
+extern struct genapic apic_physflat;
 
+#ifndef CONFIG_XEN
 struct genapic *genapic = &apic_flat;
+#else
+extern struct genapic apic_xen;
+struct genapic *genapic = &apic_xen;
+#endif
 
 
 /*
@@ -41,10 +47,12 @@ struct genapic *genapic = &apic_flat;
  */
 void __init clustered_apic_check(void)
 {
+#ifndef CONFIG_XEN
 	long i;
 	u8 clusters, max_cluster;
 	u8 id;
 	u8 cluster_cnt[NUM_APIC_CLUSTERS];
+	int num_cpus = 0;
 
 #if defined(CONFIG_ACPI_BUS)
 	/*
@@ -68,10 +76,19 @@ void __init clustered_apic_check(void)
 #endif
 	memset(cluster_cnt, 0, sizeof(cluster_cnt));
 
+	/* Count how many CPUs the BIOS told us about, but not
+	   more than what the user specified */
 	for (i = 0; i < NR_CPUS; i++) {
 		id = bios_cpu_apicid[i];
-		if (id != BAD_APICID)
-			cluster_cnt[APIC_CLUSTERID(id)]++;
+		if (id == BAD_APICID)
+			continue;
+		cluster_cnt[APIC_CLUSTERID(id)]++;
+		num_cpus++;
+	}
+
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD) {
+		genapic = num_cpus > 8 ? &apic_physflat : &apic_flat;
+		goto print;
 	}
 
 	clusters = 0;
@@ -97,12 +114,24 @@ void __init clustered_apic_check(void)
 		genapic = &apic_cluster;
 
 print:
+#else
+	/* hardcode to xen apic functions */
+	genapic = &apic_xen;
+#endif
 	printk(KERN_INFO "Setting APIC routing to %s\n", genapic->name);
 }
 
 /* Same for both flat and clustered. */
 
+#ifdef CONFIG_XEN
+extern void xen_send_IPI_shortcut(unsigned int shortcut, int vector, unsigned int dest);
+#endif
+
 void send_IPI_self(int vector)
 {
+#ifndef CONFIG_XEN
 	__send_IPI_shortcut(APIC_DEST_SELF, vector, APIC_DEST_PHYSICAL);
+#else
+	xen_send_IPI_shortcut(APIC_DEST_SELF, vector, APIC_DEST_PHYSICAL);
+#endif
 }

@@ -1,5 +1,5 @@
 /*
- *   (c) 2003, 2004, 2005 Advanced Micro Devices, Inc.
+ *   (c) 2003-2006 Advanced Micro Devices, Inc.
  *  Your use of this code is subject to the terms and conditions of the
  *  GNU general public license version 2. See "COPYING" or
  *  http://www.gnu.org/licenses/gpl.html
@@ -14,10 +14,14 @@
  *  Based upon datasheets & sample CPUs kindly provided by AMD.
  *
  *  Valuable input gratefully received from Dave Jones, Pavel Machek,
- *  Dominik Brodowski, and others.
+ *  Dominik Brodowski, Jacob Shin, and others.
+ *  Originally developed by Paul Devriendt.
  *  Processor information obtained from Chapter 9 (Power and Thermal Management)
  *  of the "BIOS and Kernel Developer's Guide for the AMD Athlon 64 and AMD
  *  Opteron Processors" available for download from www.amd.com
+ *
+ *  Tables for specific CPUs can be inferred from
+ *     http://www.amd.com/us-en/assets/content_type/white_papers_and_tech_docs/30430.pdf
  */
 
 #include <linux/kernel.h>
@@ -32,6 +36,8 @@
 #include <asm/msr.h>
 #include <asm/io.h>
 #include <asm/delay.h>
+#include <asm/pci-direct.h>
+#include <asm/processor.h>
 
 #if defined(CONFIG_ACPI_PROCESSOR) || defined(CONFIG_ACPI_PROCESSOR_MODULE)
 #include <linux/acpi.h>
@@ -40,15 +46,22 @@
 
 #define PFX "powernow-k8: "
 #define BFX PFX "BIOS error: "
-#define VERSION "version 1.60.0"
+#define VERSION "version 2.00.00-rhel4"
 #include "powernow-k8.h"
 
 static int disable __initdata = 0;
+static int tscsync = 0;
 
 /* serialize freq changes  */
 static DECLARE_MUTEX(fidvid_sem);
 
 static struct powernow_k8_data *powernow_data[NR_CPUS];
+
+#ifndef CONFIG_SMP
+static cpumask_t cpu_core_map[1];
+#endif
+
+static int cpu_family = CPU_OPTERON;
 
 /* Return a frequency in MHz, given an input fid */
 static u32 find_freq_from_fid(u32 fid)
@@ -62,10 +75,29 @@ static u32 find_khz_freq_from_fid(u32 fid)
 	return 1000 * find_freq_from_fid(fid);
 }
 
-/* Return a voltage in miliVolts, given an input vid */
-static u32 find_millivolts_from_vid(struct powernow_k8_data *data, u32 vid)
+/* Return a frequency in MHz, given an input fid and did */
+static u32 find_freq_from_fiddid(u32 fid, u32 did)
 {
-	return 1550-vid*25;
+	return 100 * (fid + 0x10) >> did;
+}
+
+static u32 find_khz_freq_from_fiddid(u32 fid, u32 did)
+{
+	return 1000 * find_freq_from_fiddid(fid, did);
+}
+
+static u32 find_fid_from_pstate(u32 pstate)
+{
+	u32 hi, lo;
+	rdmsr(MSR_PSTATE_DEF_BASE + pstate, lo, hi);
+	return lo & HW_PSTATE_FID_MASK;
+}
+
+static u32 find_did_from_pstate(u32 pstate)
+{
+	u32 hi, lo;
+	rdmsr(MSR_PSTATE_DEF_BASE + pstate, lo, hi);
+	return (lo & HW_PSTATE_DID_MASK) >> HW_PSTATE_DID_SHIFT;
 }
 
 /* Return the vco fid for an input fid */
@@ -86,6 +118,9 @@ static int pending_bit_stuck(void)
 {
 	u32 lo, hi;
 
+	if (cpu_family == CPU_HW_PSTATE)
+		return 0;
+
 	rdmsr(MSR_FIDVID_STATUS, lo, hi);
 	return lo & MSR_S_LO_CHANGE_PENDING ? 1 : 0;
 }
@@ -98,6 +133,15 @@ static int query_current_values_with_pending_wait(struct powernow_k8_data *data)
 {
 	u32 lo, hi;
 	u32 i = 0;
+
+	if (cpu_family == CPU_HW_PSTATE) {
+		rdmsr(MSR_PSTATE_STATUS, lo, hi);
+		i = lo & HW_PSTATE_MASK;
+		rdmsr(MSR_PSTATE_DEF_BASE + i, lo, hi);
+		data->currfid = lo & HW_PSTATE_FID_MASK;
+		data->currdid = (lo & HW_PSTATE_DID_MASK) >> HW_PSTATE_DID_SHIFT;
+		return 0;
+	}
 
 	lo = MSR_S_LO_CHANGE_PENDING;
 	while (lo & MSR_S_LO_CHANGE_PENDING) {
@@ -152,7 +196,7 @@ static int write_new_fid(struct powernow_k8_data *data, u32 fid)
 	u32 i = 0;
 
 	if ((fid & INVALID_FID_MASK) || (data->currvid & INVALID_VID_MASK)) {
-		printk(KERN_ERR PFX "internal error - overflow on fid write\n");
+		printk(KERN_ERR PFX "Hardware error - overflow on fid write\n");
 		return 1;
 	}
 
@@ -160,6 +204,18 @@ static int write_new_fid(struct powernow_k8_data *data, u32 fid)
 
 	dprintk(KERN_DEBUG PFX "writing fid 0x%x, lo 0x%x, hi 0x%x\n",
 		fid, lo, data->plllock * PLL_LOCK_CONVERSION);
+
+        if (tscsync) {
+                int i;
+                cpumask_t oldmask = current->cpus_allowed;
+                for_each_online_cpu(i) {
+                        set_cpus_allowed(current, cpumask_of_cpu(i));
+                        schedule();
+			wrmsr(MSR_FIDVID_CTL, lo & ~MSR_C_LO_INIT_FID_VID, STOP_GRANT_5NS);
+                }
+                set_cpus_allowed(current, oldmask);
+                schedule();
+        }
 
 	do {
 		wrmsr(MSR_FIDVID_CTL, lo, data->plllock * PLL_LOCK_CONVERSION);
@@ -244,7 +300,15 @@ static int decrease_vid_code_by_step(struct powernow_k8_data *data, u32 reqvid, 
 	return 0;
 }
 
-/* Change the fid and vid, by the 3 phases. */
+/* Change hardware pstate by single MSR write */
+static int transition_pstate(struct powernow_k8_data *data, u32 pstate)
+{
+	wrmsr(MSR_PSTATE_CTRL, pstate, 0);
+	data->currfid = find_fid_from_pstate(pstate);
+	return 0;
+}
+
+/* Change Opteron/Athlon64 fid and vid, by the 3 phases. */
 static int transition_fid_vid(struct powernow_k8_data *data, u32 reqfid, u32 reqvid)
 {
 	if (core_voltage_pre_transition(data, reqvid))
@@ -464,24 +528,35 @@ static int check_supported_cpu(unsigned int cpu)
 		goto out;
 
 	eax = cpuid_eax(CPUID_PROCESSOR_SIGNATURE);
-	if (((eax & CPUID_USE_XFAM_XMOD) != CPUID_USE_XFAM_XMOD) ||
-	    ((eax & CPUID_XFAM) != CPUID_XFAM_K8) ||
-	    ((eax & CPUID_XMOD) > CPUID_XMOD_REV_G)) {
-		printk(KERN_INFO PFX "Processor cpuid %x not supported\n", eax);
+	if (((eax & CPUID_XFAM) != CPUID_XFAM_K8) && 
+	    ((eax & CPUID_XFAM) < CPUID_XFAM_10H)) 
 		goto out;
-	}
 
-	eax = cpuid_eax(CPUID_GET_MAX_CAPABILITIES);
-	if (eax < CPUID_FREQ_VOLT_CAPABILITIES) {
-		printk(KERN_INFO PFX
-		       "No frequency change capabilities detected\n");
-		goto out;
-	}
+	if ((eax & CPUID_XFAM) == CPUID_XFAM_K8) {
+		if (((eax & CPUID_USE_XFAM_XMOD) != CPUID_USE_XFAM_XMOD) ||
+	    		((eax & CPUID_XMOD) > CPUID_XMOD_REV_G)) {
+			printk(KERN_INFO PFX "Processor cpuid %x not supported\n", eax);
+			goto out;
+		}
 
-	cpuid(CPUID_FREQ_VOLT_CAPABILITIES, &eax, &ebx, &ecx, &edx);
-	if ((edx & P_STATE_TRANSITION_CAPABLE) != P_STATE_TRANSITION_CAPABLE) {
-		printk(KERN_INFO PFX "Power state transitions not supported\n");
-		goto out;
+		eax = cpuid_eax(CPUID_GET_MAX_CAPABILITIES);
+		if (eax < CPUID_FREQ_VOLT_CAPABILITIES) {
+			printk(KERN_INFO PFX
+			       "No frequency change capabilities detected\n");
+			goto out;
+		}
+
+		cpuid(CPUID_FREQ_VOLT_CAPABILITIES, &eax, &ebx, &ecx, &edx);
+		if ((edx & P_STATE_TRANSITION_CAPABLE) != P_STATE_TRANSITION_CAPABLE) {
+			printk(KERN_INFO PFX "Power state transitions not supported\n");
+			goto out;
+		}
+	} else { /* must be a HW Pstate capable processor */
+		cpuid(CPUID_FREQ_VOLT_CAPABILITIES, &eax, &ebx, &ecx, &edx);
+                if ((edx & USE_HW_PSTATE) == USE_HW_PSTATE) 
+			cpu_family = CPU_HW_PSTATE;
+                else 
+			goto out;
 	}
 
 	rc = 1;
@@ -539,12 +614,18 @@ static void print_basics(struct powernow_k8_data *data)
 {
 	int j;
 	for (j = 0; j < data->numps; j++) {
-		if (data->powernow_table[j].frequency != CPUFREQ_ENTRY_INVALID)
-			printk(KERN_INFO PFX "   %d : fid 0x%x (%d MHz), vid 0x%x (%d mV)\n", j,
+		if (data->powernow_table[j].frequency != CPUFREQ_ENTRY_INVALID) { 
+			if (cpu_family == CPU_HW_PSTATE) {
+				printk(KERN_INFO PFX "   %d : fid 0x%x gid 0x%x (%d MHz)\n", j, (data->powernow_table[j].index & 0xff00) >> 8,
+				(data->powernow_table[j].index & 0xff0000) >> 16,
+				data->powernow_table[j].frequency/1000);
+			} else {
+				printk(KERN_INFO PFX "   %d : fid 0x%x (%d MHz), vid 0x%x\n", j,
 				data->powernow_table[j].index & 0xff,
 				data->powernow_table[j].frequency/1000,
-				data->powernow_table[j].index >> 8,
-				find_millivolts_from_vid(data, data->powernow_table[j].index >> 8));
+			        data->powernow_table[j].index >> 8);
+			}
+		}
 	}
 	if (data->batps)
 		printk(KERN_INFO PFX "Only %d pstates on battery\n", data->batps);
@@ -707,10 +788,8 @@ static void powernow_k8_acpi_pst_values(struct powernow_k8_data *data, unsigned 
 
 static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 {
-	int i;
-	int cntlofreq = 0;
 	struct cpufreq_frequency_table *powernow_table;
-	u32 fid, vid;
+        int ret_val;
 
 	if (acpi_processor_register_performance(&data->acpi_data, data->cpu)) {
 		dprintk(KERN_DEBUG PFX "register performance failed: bad ACPI data\n");
@@ -737,10 +816,92 @@ static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 		goto err_out;
 	}
 
+	if (cpu_family == CPU_HW_PSTATE)
+		ret_val = fill_powernow_table_pstate(data, powernow_table);
+	else
+		ret_val = fill_powernow_table_fidvid(data, powernow_table);
+	if (ret_val)
+		goto err_out_mem;
+
+	powernow_table[data->acpi_data.state_count].frequency = CPUFREQ_TABLE_END;
+	powernow_table[data->acpi_data.state_count].index = 0;
+	data->powernow_table = powernow_table;
+
+	/* fill in data */
+	data->numps = data->acpi_data.state_count;
+	print_basics(data);
+	powernow_k8_acpi_pst_values(data, 0);
+
+	/* notify BIOS that we exist */
+	acpi_processor_notify_smm(THIS_MODULE);
+
+	return 0;
+
+err_out_mem:
+	kfree(powernow_table);
+
+err_out:
+	acpi_processor_unregister_performance(&data->acpi_data, data->cpu);
+
+	/* data->acpi_data.state_count informs us at ->exit() whether ACPI was used */
+	data->acpi_data.state_count = 0;
+
+	return -ENODEV;
+}
+
+static int fill_powernow_table_pstate(struct powernow_k8_data *data, struct cpufreq_frequency_table *powernow_table)
+{
+	int i;
+
 	for (i = 0; i < data->acpi_data.state_count; i++) {
+		u32 index;
+		u32 hi = 0, lo = 0;
+		u32 fid;
+		u32 did;
+
+		index = data->acpi_data.states[i].control & HW_PSTATE_MASK;
+		if (index > MAX_HW_PSTATE) {
+			printk(KERN_ERR PFX "invalid pstate %d - bad value %d.\n", i, index);
+			printk(KERN_ERR PFX "Please report to BIOS manufacturer\n");
+		}
+		rdmsr(MSR_PSTATE_DEF_BASE + index, lo, hi);
+		if (!(hi & HW_PSTATE_VALID_MASK)) {
+			dprintk("invalid pstate %d, ignoring\n", index);
+			powernow_table[i].frequency = CPUFREQ_ENTRY_INVALID;
+			continue;
+		}
+
+		fid = lo & HW_PSTATE_FID_MASK;
+		did = (lo & HW_PSTATE_DID_MASK) >> HW_PSTATE_DID_SHIFT;
+
+		dprintk("   %d : fid 0x%x, did 0x%x\n", index, fid, did);
+
+		powernow_table[i].index = index | (fid << HW_FID_INDEX_SHIFT) | (did << HW_DID_INDEX_SHIFT);
+
+		powernow_table[i].frequency = find_khz_freq_from_fiddid(fid, did);
+
+		if (powernow_table[i].frequency != (data->acpi_data.states[i].core_frequency * 1000)) {
+			printk(KERN_INFO PFX "invalid freq entries %u kHz vs. %u kHz\n",
+				powernow_table[i].frequency,
+				(unsigned int) (data->acpi_data.states[i].core_frequency * 1000));
+			powernow_table[i].frequency = CPUFREQ_ENTRY_INVALID;
+			continue;
+		}
+	}
+	return 0;
+}
+
+static int fill_powernow_table_fidvid(struct powernow_k8_data *data, struct cpufreq_frequency_table *powernow_table)
+{
+	int i;
+	int cntlofreq = 0;
+	for (i = 0; i < data->acpi_data.state_count; i++) {
+		u32 fid;
+		u32 vid;
+
 		if (data->exttype) {
-			fid = data->acpi_data.states[i].status & FID_MASK;
-			vid = (data->acpi_data.states[i].status >> VID_SHIFT) & VID_MASK;
+			fid = data->acpi_data.states[i].status & EXT_FID_MASK;
+			vid = (data->acpi_data.states[i].status >> VID_SHIFT) & EXT_VID_MASK;
 		} else {
 			fid = data->acpi_data.states[i].control & FID_MASK;
 			vid = (data->acpi_data.states[i].control >> VID_SHIFT) & VID_MASK;
@@ -776,7 +937,7 @@ static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 				if ((powernow_table[i].frequency != powernow_table[cntlofreq].frequency) ||
 				    (powernow_table[i].index != powernow_table[cntlofreq].index)) {
 					printk(KERN_ERR PFX "Too many lo freq table entries\n");
-					goto err_out;
+					return 1;
 				}
 
 				dprintk(KERN_INFO PFX "double low frequency table entry, ignoring it.\n");
@@ -795,26 +956,7 @@ static int powernow_k8_cpu_init_acpi(struct powernow_k8_data *data)
 		}
 	}
 
-	powernow_table[data->acpi_data.state_count].frequency = CPUFREQ_TABLE_END;
-	powernow_table[data->acpi_data.state_count].index = 0;
-	data->powernow_table = powernow_table;
-
-	/* fill in data */
-	data->numps = data->acpi_data.state_count;
-	print_basics(data);
-	powernow_k8_acpi_pst_values(data, 0);
-
-	/* notify BIOS that we exist */
-	acpi_processor_notify_smm(THIS_MODULE);
-
 	return 0;
-err_out:
-	acpi_processor_unregister_performance(&data->acpi_data, data->cpu);
-
-	/* data->acpi_data.state_count informs us at ->exit() whether ACPI was used */
-	data->acpi_data.state_count = 0;
-
-	return -ENODEV;
 }
 
 static void powernow_k8_cpu_exit_acpi(struct powernow_k8_data *data)
@@ -830,16 +972,17 @@ static void powernow_k8_acpi_pst_values(struct powernow_k8_data *data, unsigned 
 #endif /* CONFIG_ACPI_PROCESSOR */
 
 /* Take a frequency, and issue the fid/vid transition command */
-static int transition_frequency(struct powernow_k8_data *data, unsigned int index)
+static int transition_frequency_fidvid(struct powernow_k8_data *data, unsigned int index)
 {
-	u32 fid;
-	u32 vid;
+	u32 fid = 0;
+	u32 vid = 0;
 	int res, i;
 	struct cpufreq_freqs freqs;
 
 	dprintk(KERN_DEBUG PFX "cpu %d transition to index %u\n",
 		smp_processor_id(), index );
 
+	/* fid/vid correctness check for k8 */
 	/* fid are the lower 8 bits of the index we stored into
 	 * the cpufreq frequency table in find_psb_table, vid are 
 	 * the upper 8 bits.
@@ -871,14 +1014,11 @@ static int transition_frequency(struct powernow_k8_data *data, unsigned int inde
 	dprintk(KERN_DEBUG PFX "cpu %d, changing to fid 0x%x, vid 0x%x\n",
 				smp_processor_id(), fid, vid);
 
-	freqs.cpu = data->cpu;
-
 	freqs.old = find_khz_freq_from_fid(data->currfid);
 	freqs.new = find_khz_freq_from_fid(fid);
-        cpufreq_notify_transition(&freqs, CPUFREQ_PRECHANGE);
 
-        for (i = 0; i < data->num_siblings; i++) {
-		freqs.cpu = data->cpu_siblings[i];
+	for_each_cpu_mask(i, data->available_cores) {
+		freqs.cpu = i;
 		cpufreq_notify_transition(&freqs, CPUFREQ_PRECHANGE);
 	}
 
@@ -888,9 +1028,53 @@ static int transition_frequency(struct powernow_k8_data *data, unsigned int inde
 	freqs.new = find_khz_freq_from_fid(data->currfid);
 	cpufreq_notify_transition(&freqs, CPUFREQ_POSTCHANGE);
 
-        for (i = 0; i < data->num_siblings; i++) {
-                freqs.cpu = data->cpu_siblings[i];
+	for_each_cpu_mask(i, data->available_cores) {
+                freqs.cpu = i;
                 cpufreq_notify_transition(&freqs, CPUFREQ_POSTCHANGE);
+        }
+
+	/* Update all the fid/vids of our siblings */
+	for_each_cpu_mask(i, data->available_cores) {
+		powernow_data[i]->currvid = data->currvid;
+		powernow_data[i]->currfid = data->currfid;
+	}	
+
+	return res;
+}
+
+/* Take a frequency, and issue the hardware pstate transition command */
+static int transition_frequency_pstate(struct powernow_k8_data *data, unsigned int index)
+{
+	u32 fid = 0;
+	u32 did = 0;
+	u32 pstate = 0;
+	int res, i;
+	struct cpufreq_freqs freqs;
+
+	dprintk("cpu %d transition to index %u\n", smp_processor_id(), index);
+
+	/* get fid did for hardware pstate transition */
+	pstate = index & HW_PSTATE_MASK;
+	if (pstate > MAX_HW_PSTATE)
+		return 0;
+	fid = (index & HW_FID_INDEX_MASK) >> HW_FID_INDEX_SHIFT;
+	did = (index & HW_DID_INDEX_MASK) >> HW_DID_INDEX_SHIFT;
+	freqs.old = find_khz_freq_from_fiddid(data->currfid, data->currdid);
+	freqs.new = find_khz_freq_from_fiddid(fid, did);
+
+	for_each_cpu_mask(i, data->available_cores) {
+		freqs.cpu = i;
+		cpufreq_notify_transition(&freqs, CPUFREQ_PRECHANGE);
+	}
+
+	res = transition_pstate(data, pstate);
+	data->currfid = find_fid_from_pstate(pstate);	
+	data->currdid = find_did_from_pstate(pstate);
+	freqs.new = find_khz_freq_from_fiddid(data->currfid, data->currdid);
+
+	for_each_cpu_mask(i, data->available_cores) {
+		freqs.cpu = i;
+		cpufreq_notify_transition(&freqs, CPUFREQ_POSTCHANGE);
         }
 	return res;
 }
@@ -900,10 +1084,15 @@ static int powernowk8_target(struct cpufreq_policy *pol, unsigned targfreq, unsi
 {
 	cpumask_t oldmask = CPU_MASK_ALL;
 	struct powernow_k8_data *data = powernow_data[pol->cpu];
+	u32 checkfid;
+	u32 checkvid;
 	unsigned int newstate;
 	int ret = -EIO;
 	int i;
 	unsigned socket_policy; 
+
+	checkfid = data->currfid;
+	checkvid = data->currvid;
 
 	/* only run on specific CPU from here on */
 	oldmask = current->cpus_allowed;
@@ -928,8 +1117,18 @@ static int powernowk8_target(struct cpufreq_policy *pol, unsigned targfreq, unsi
 		goto err_out;
 	}
 
-	dprintk(KERN_DEBUG PFX "targ: curr fid 0x%x, vid 0x%x\n",
-		data->currfid, data->currvid);
+	if (cpu_family == CPU_HW_PSTATE)
+		dprintk(KERN_DEBUG PFX "targ: curr fid 0x%x, vid 0x%x\n",
+			data->currfid, data->currvid);
+	else {
+		dprintk("targ: curr fid 0x%x, vid 0x%x\n",
+		data->currfid, data->currvid);	  
+		if ((checkvid != data->currvid) || (checkfid != data->currfid)) {
+			printk(KERN_INFO PFX
+				"error - out of sync, fix 0x%x 0x%x, vid 0x%x 0x%x\n",
+				checkfid, data->currfid, checkvid, data->currvid);
+		}
+	}
 
 	if (cpufreq_frequency_table_target(pol, data->powernow_table, targfreq, relation, &newstate))
 		goto err_out;
@@ -941,34 +1140,38 @@ static int powernowk8_target(struct cpufreq_policy *pol, unsigned targfreq, unsi
 	down(&fidvid_sem);
 
 	/* then go through and find the common frequency */
-	for (i = 0; i < data->num_siblings; i++) {
+	if (cpu_family == CPU_OPTERON) {
+		for_each_cpu_mask(i, data->available_cores) {
 		/* make sure the sibling is initialized */
-		if (!powernow_data[data->cpu_siblings[i]]) {
-                        ret = 0;
-                        up(&fidvid_sem);
-                        goto err_out;
-                }
-		if (powernow_data[data->cpu_siblings[i]]->reqstate < newstate)
-			newstate = powernow_data[data->cpu_siblings[i]]->reqstate;
+			if (!powernow_data[i]) {
+				ret = 0;
+				up(&fidvid_sem);
+				goto err_out;
+			}
+			if (powernow_data[i]->reqstate < newstate)
+				newstate = powernow_data[i]->reqstate;
+		}
 	}
 
 	powernow_k8_acpi_pst_values(data, newstate);
 
-	if (transition_frequency(data, newstate)) {
+	if (cpu_family == CPU_HW_PSTATE)
+		ret = transition_frequency_pstate(data, newstate);
+	else
+		ret = transition_frequency_fidvid(data, newstate);
+	if (ret) {
 		printk(KERN_ERR PFX "transition frequency failed\n");
 		ret = 1;
 		up(&fidvid_sem);
 		goto err_out;
 	}
 
-	/* Update all the fid/vids of our siblings */
-	for (i = 0; i < data->num_siblings; i++) {
-		powernow_data[data->cpu_siblings[i]]->currvid = data->currvid;
-		powernow_data[data->cpu_siblings[i]]->currfid = data->currfid;
-	}	
 	up(&fidvid_sem);
 
-	pol->cur = find_khz_freq_from_fid(data->currfid);
+	if (cpu_family == CPU_HW_PSTATE)
+		pol->cur = find_khz_freq_from_fiddid(data->currfid, data->currdid);
+	else
+		pol->cur = find_khz_freq_from_fid(data->currfid);
 	ret = 0;
 
 err_out:
@@ -977,6 +1180,35 @@ err_out:
 
 	return ret;
 }
+
+#ifdef CONFIG_SMP
+/* On an MP system that is transitioning all cores in sync, adjust the
+ * vids for each frequency to the highest.  Otherwise, systems made up
+ * of different steppings may fail.
+ */
+static void sync_tables(int curcpu)
+{
+       int j;
+       for (j = 0; j < powernow_data[curcpu]->numps; j++) {
+		int i;
+		int maxvid = 0;
+		for_each_online_cpu(i) {
+			int testvid;
+			if (!powernow_data[i] || !powernow_data[i]->powernow_table)
+				continue;
+			testvid = powernow_data[i]->powernow_table[j].index & 0xff00;
+			if (testvid > maxvid)
+				maxvid = testvid;
+		}
+		for_each_online_cpu(i) {
+			if (!powernow_data[i] || ! powernow_data[i]->powernow_table)
+				continue;
+			powernow_data[i]->powernow_table[j].index &= 0xff;
+			powernow_data[i]->powernow_table[j].index |= maxvid;
+		}
+       }
+}
+#endif
 
 /* Driver entry point to verify the policy and range of frequencies */
 static int powernowk8_verify(struct cpufreq_policy *pol)
@@ -992,7 +1224,6 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
 	struct powernow_k8_data *data;
 	cpumask_t oldmask = CPU_MASK_ALL;
 	int rc;
-	u32 eax, ebx, ecx, edx;
 
 	if (!cpu_online(pol->cpu))
                return -ENODEV;
@@ -1013,7 +1244,7 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
 		 */
 
 		if (pol->cpu != 0) {
-			printk(KERN_ERR PFX "init not cpu 0\n");
+			printk(KERN_ERR PFX "No _PSS objects for CPU other than CPU0\n");
 			kfree(data);
 			return -ENODEV;
 		}
@@ -1047,20 +1278,35 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
 	if (query_current_values_with_pending_wait(data))
 		goto err_out;
 
-	fidvid_msr_init();
+	if (cpu_family == CPU_OPTERON)
+	        fidvid_msr_init();
 
 	/* run on any CPU again */
 	set_cpus_allowed(current, oldmask);
 	schedule();
 
 	pol->governor = CPUFREQ_DEFAULT_GOVERNOR;
+	if (cpu_family == CPU_HW_PSTATE)
+		pol->cpus = cpumask_of_cpu(pol->cpu);
+	else if (tscsync)
+#ifdef CONFIG_SMP
+		pol->cpus = cpu_online_map;
+#else
+		pol->cpus = cpumask_of_cpu(0);
+#endif	
+	else
+		pol->cpus = cpu_core_map[pol->cpu];
+	data->available_cores = pol->cpus;
 
 	/* Take a crude guess here. 
 	 * That guess was in microseconds, so multiply with 1000 */
 	pol->cpuinfo.transition_latency = (((data->rvo + 8) * data->vstable * VST_UNITS_20US)
 	    + (3 * (1 << data->irt) * 10)) * 1000;
 
-	pol->cur = find_khz_freq_from_fid(data->currfid);
+	if (cpu_family == CPU_HW_PSTATE)
+		pol->cur = find_khz_freq_from_fiddid(data->currfid, data->currdid);
+	else
+	        pol->cur = find_khz_freq_from_fid(data->currfid);
 	dprintk(KERN_DEBUG PFX "policy current frequency %d kHz\n", pol->cur);
 
 	/* min/max the cpu is capable of */
@@ -1073,21 +1319,26 @@ static int __init powernowk8_cpu_init(struct cpufreq_policy *pol)
 
 	cpufreq_frequency_table_get_attr(data->powernow_table, pol->cpu);
 
-	printk(KERN_INFO PFX "cpu_init done, current fid 0x%x, vid 0x%x\n",
-	       data->currfid, data->currvid);
+	if (cpu_family == CPU_HW_PSTATE)
+		dprintk("cpu_init done, current fid 0x%x, did 0x%x\n",
+			data->currfid, data->currdid);
+	else
+	        dprintk(KERN_INFO PFX "cpu_init done, current fid 0x%x, vid 0x%x\n",
+			data->currfid, data->currvid);
 
-	/* check to see if multi-core CPUs are present.  If so, assign siblings */
-	cpuid(1, &eax, &ebx, &ecx, &edx);
-	if (((ebx & 0xff0000) >> 16) >= 1) {
-		/* only two processors supported in revE */
-		data->num_siblings = 1;
-		/* odd cpus have a sibling 1 lower (1->0), even siblings have a sibling 1 higher (2->3) */ 
-		if (data->cpu & 1)
-			data->cpu_siblings[0] = data->cpu - 1;
-		else
-			data->cpu_siblings[0] = data->cpu + 1;
-	}
 	powernow_data[pol->cpu] = data;
+
+#ifdef CONFIG_SMP
+        if (tscsync) {
+                u32 reg;
+                sync_tables(pol->cpu);
+                reg = read_pci_config(0, NB_PCI_ADDR + cpu_core_id[pol->cpu],
+				      NB_PM_DEV, NB_C1_REG);
+                /* turn off C1 clock ramping */
+                write_pci_config(0, NB_PCI_ADDR + cpu_core_id[pol->cpu],
+				 NB_PM_DEV, NB_C1_REG, reg & NB_C1_MASK);
+        }
+#endif
 
 	return 0;
 
@@ -1149,9 +1400,14 @@ static int __init powernowk8_init(void)
 			supported_cpus++;
 	}
 
+#ifndef CONFIG_SMP
+        tscsync = 0;
+#endif
+
 	if (supported_cpus == num_online_cpus()) {
-		printk(KERN_INFO PFX "Found %d AMD Athlon 64 / Opteron processors (" VERSION ")\n",
-			supported_cpus);
+               printk(KERN_INFO PFX "Found %d %s "
+                       "processors (" VERSION ")\n", supported_cpus,
+                       boot_cpu_data.x86_model_id);
 		return cpufreq_register_driver(&cpufreq_amd64_driver);
 	}
 
@@ -1175,3 +1431,6 @@ module_exit(powernowk8_exit);
 
 module_param(disable, int, 0);
 MODULE_PARM_DESC(disable, "disables powernow-k8");
+
+module_param(tscsync, int, 0);
+MODULE_PARM_DESC(tscsync, "enable tsc by synchronizing powernow-k8 changes");

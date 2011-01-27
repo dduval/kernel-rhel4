@@ -57,7 +57,7 @@
 #include <linux/sunrpc/clnt.h>
 #include <linux/file.h>
 #include <linux/workqueue.h>
-#include <linux/random.h>
+#include <linux/net.h>
 
 #include <net/sock.h>
 #include <net/checksum.h>
@@ -75,7 +75,6 @@
 
 #define XPRT_MAX_BACKOFF	(8)
 #define XPRT_IDLE_TIMEOUT	(5*60*HZ)
-#define XPRT_MAX_RESVPORT	(800)
 
 /*
  * Local functions
@@ -1365,7 +1364,14 @@ static inline u32 xprt_alloc_xid(struct rpc_xprt *xprt)
 
 static inline void xprt_init_xid(struct rpc_xprt *xprt)
 {
-	get_random_bytes(&xprt->xid, sizeof(xprt->xid));
+	xprt->xid = net_random();
+}
+
+static inline unsigned short xprt_get_random_port(void)
+{
+	unsigned short range = xprt_max_resvport - xprt_min_resvport;
+	unsigned short rand = (unsigned short) net_random() % range;
+	return rand + xprt_min_resvport;
 }
 
 /*
@@ -1492,7 +1498,7 @@ xprt_setup(int proto, struct sockaddr_in *ap, struct rpc_timeout *to)
 	xprt->timer.function = xprt_init_autodisconnect;
 	xprt->timer.data = (unsigned long) xprt;
 	xprt->last_used = jiffies;
-	xprt->port = XPRT_MAX_RESVPORT;
+	xprt->port = xprt_get_random_port();
 
 	/* Set timeout parameters */
 	if (to) {

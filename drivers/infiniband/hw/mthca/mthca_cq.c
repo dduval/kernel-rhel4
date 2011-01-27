@@ -540,24 +540,17 @@ static inline int mthca_poll_one(struct mthca_dev *dev,
 		entry->wr_id = srq->wrid[wqe_index];
 		mthca_free_srq_wqe(srq, wqe);
 	} else {
+		s32 wqe;
 		wq = &(*cur_qp)->rq;
-		wqe_index = be32_to_cpu(cqe->wqe) >> wq->wqe_shift;
-		/* Memfree FW bug workaround: appears in
-		   Sinai FW 1.0.800, Arbel FW 5.1.400 and should be fixed
-		   in later revisions. */
-		if (unlikely(wqe_index >= (*cur_qp)->rq.max)) {
-			if (unlikely(is_error) &&
-			    unlikely(wqe_index == 0xffffffff >> wq->wqe_shift) &&
-			    mthca_is_memfree(dev))
-				wqe_index = wq->max - 1;
-			else {
-				mthca_err(dev, "Corrupted RQ CQE. "
-					  "CQ 0x%x QP 0x%x idx 0x%x > 0x%x\n",
-					  cq->cqn, entry->qp_num, wqe_index,
-					  wq->max);
-				return -EINVAL;
-			}
-		}
+		wqe = be32_to_cpu(cqe->wqe);
+		wqe_index = wqe >> wq->wqe_shift;
+               /*
+		* WQE addr == base - 1 might be reported in receive completion
+		* with error instead of (rq size - 1) by Sinai FW 1.0.800 and
+		* Arbel FW 5.1.400.  This bug should be fixed in later FW revs.
+		*/
+		if (unlikely(wqe_index < 0))
+			wqe_index = wq->max - 1;
 		entry->wr_id = (*cur_qp)->wrid[wqe_index];
 	}
 
@@ -829,6 +822,7 @@ int mthca_init_cq(struct mthca_dev *dev, int nent,
 	spin_lock_init(&cq->lock);
 	cq->refcount = 1;
 	init_waitqueue_head(&cq->wait);
+	mutex_init(&cq->mutex);
 
 	memset(cq_context, 0, sizeof *cq_context);
 	cq_context->flags           = cpu_to_be32(MTHCA_CQ_STATUS_OK      |

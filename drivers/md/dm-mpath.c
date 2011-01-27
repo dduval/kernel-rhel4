@@ -285,10 +285,27 @@ failed:
 	m->current_pg = NULL;
 }
 
+/*
+ * Check if multipath target needs to push back bios to device-mapper core.
+ * This macro checks if:
+ *   o The device is in the process of being suspended with 'noflush' flag,
+ *     because the dm core accepts pushback request only in that case.
+ *     (dm_noflush_suspending() returns true only in that case.)
+ *   o queue_if_no_path had been set before the suspend process has begun.
+ *     (In the suspend process, the presuspend hook will have run and
+ *      moved the real queue_if_no_path state into saved_queue_if_no_path.
+ *      So in that case, queue_if_no_path should be 0 and
+ *      saved_queue_if_no_path should be 1.)
+ *
+ * (m)->lock must be held before using this macro.
+ */
+#define __PUSHBACK(m) (!(m)->queue_if_no_path && (m)->saved_queue_if_no_path && \
+		       dm_noflush_suspending((m)->ti))
+
 static int map_io(struct multipath *m, struct bio *bio, struct mpath_io *mpio,
 		  unsigned was_queued)
 {
-	int r = 1;
+	int r = DM_MAPIO_REMAPPED;
 	unsigned long flags;
 	struct pgpath *pgpath;
 
@@ -313,10 +330,12 @@ static int map_io(struct multipath *m, struct bio *bio, struct mpath_io *mpio,
 		    !m->queue_io)
 			queue_work(kmultipathd, &m->process_queued_ios);
 		pgpath = NULL;
-		r = 0;
-	} else if (!pgpath)
+		r = DM_MAPIO_SUBMITTED;
+	} else if (!pgpath) {
 		r = -EIO;		/* Failed */
-	else
+		if (__PUSHBACK(m))
+			r = DM_MAPIO_REQUEUE;
+	} else
 		bio->bi_bdev = pgpath->path.dev->bdev;
 
 	mpio->pgpath = pgpath;
@@ -375,8 +394,16 @@ static void dispatch_queued_ios(struct multipath *m)
 		r = map_io(m, bio, mpio, 1);
 		if (r < 0)
 			bio_endio(bio, bio->bi_size, r);
-		else if (r == 1)
+		else if (r == DM_MAPIO_REMAPPED)
 			generic_make_request(bio);
+		else if (r == DM_MAPIO_REQUEUE)
+			/*
+			 * end_io handles the requeue request by
+			 * returning the bio with error status.
+			 * We don't return the r value to end_io,
+			 * since it is probably not needed.
+			 */
+			bio_endio(bio, bio->bi_size, -EIO);
 
 		bio = next;
 	}
@@ -712,6 +739,8 @@ static int multipath_ctr(struct dm_target *ti, unsigned int argc,
 		return -EINVAL;
 	}
 
+	m->ti = ti;
+
 	r = parse_features(&as, m, ti);
 	if (r)
 		goto bad;
@@ -753,7 +782,6 @@ static int multipath_ctr(struct dm_target *ti, unsigned int argc,
 	}
 
 	ti->private = m;
-	m->ti = ti;
 
 	return 0;
 
@@ -789,7 +817,7 @@ static int multipath_map(struct dm_target *ti, struct bio *bio,
 	map_context->ptr = mpio;
 	bio->bi_rw |= (1 << BIO_RW_FAILFAST);
 	r = map_io(m, bio, mpio, 0);
-	if (r < 0)
+	if (r < 0 || r == DM_MAPIO_REQUEUE)
 		mempool_free(mpio, m->mpio_pool);
 
 	return r;
@@ -1013,7 +1041,10 @@ static int do_end_io(struct multipath *m, struct bio *bio,
 
 	spin_lock_irqsave(&m->lock, flags);
 	if (!m->nr_valid_paths) {
-		if (!m->queue_if_no_path) {
+		if (__PUSHBACK(m)) {
+			spin_unlock_irqrestore(&m->lock, flags);
+			return DM_ENDIO_REQUEUE;
+		} else if (!m->queue_if_no_path) {
 			spin_unlock_irqrestore(&m->lock, flags);
 			return -EIO;
 		} else {
@@ -1050,7 +1081,7 @@ static int do_end_io(struct multipath *m, struct bio *bio,
 		queue_work(kmultipathd, &m->process_queued_ios);
 	spin_unlock_irqrestore(&m->lock, flags);
 
-	return 1;	/* io not complete */
+	return DM_ENDIO_INCOMPLETE;	/* io not complete */
 }
 
 static int multipath_end_io(struct dm_target *ti, struct bio *bio,
@@ -1068,7 +1099,7 @@ static int multipath_end_io(struct dm_target *ti, struct bio *bio,
 		if (ps->type->end_io)
 			ps->type->end_io(ps, &pgpath->path);
 	}
-	if (r <= 0)
+	if (r != DM_ENDIO_INCOMPLETE)
 		mempool_free(mpio, m->mpio_pool);
 
 	return r;
@@ -1269,12 +1300,46 @@ error:
 	return -EINVAL;
 }
 
+static int multipath_ioctl(struct dm_target *ti, struct inode *inode,
+			   struct file *filp, unsigned int cmd,
+			   unsigned long arg)
+{
+	struct multipath *m = (struct multipath *) ti->private;
+	struct block_device *bdev = NULL;
+	unsigned long flags;
+	struct file fake_file = {};
+	struct dentry fake_dentry = {};
+	int r = 0;
+
+	fake_file.f_dentry = &fake_dentry;
+
+	spin_lock_irqsave(&m->lock, flags);
+
+	if (!m->current_pgpath)
+		__choose_pgpath(m);
+
+	if (m->current_pgpath) {
+		bdev = m->current_pgpath->path.dev->bdev;
+		fake_dentry.d_inode = bdev->bd_inode;
+		fake_file.f_mode = m->current_pgpath->path.dev->mode;
+	}
+
+	if (m->queue_io)
+		r = -EAGAIN;
+	else if (!bdev)
+		r = -EIO;
+
+	spin_unlock_irqrestore(&m->lock, flags);
+
+	return r ? : blkdev_ioctl(bdev->bd_inode, &fake_file, cmd, arg);
+}
+
 /*-----------------------------------------------------------------
  * Module setup
  *---------------------------------------------------------------*/
 static struct target_type multipath_target = {
 	.name = "multipath",
-	.version = {1, 0, 4},
+	.version = {1, 0, 5},
 	.module = THIS_MODULE,
 	.ctr = multipath_ctr,
 	.dtr = multipath_dtr,
@@ -1284,6 +1349,7 @@ static struct target_type multipath_target = {
 	.resume = multipath_resume,
 	.status = multipath_status,
 	.message = multipath_message,
+	.ioctl  = multipath_ioctl,
 };
 
 static int __init dm_multipath_init(void)

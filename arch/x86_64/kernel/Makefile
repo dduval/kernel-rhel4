@@ -19,6 +19,7 @@ obj-$(CONFIG_MICROCODE)		+= microcode.o
 obj-$(CONFIG_X86_CPUID)		+= cpuid.o
 obj-$(CONFIG_SMP)		+= smp.o smpboot.o trampoline.o
 obj-$(CONFIG_X86_LOCAL_APIC)	+= apic.o  nmi.o
+obj-$(CONFIG_X86_XEN_GENAPIC)	+= genapic.o genapic_xen.o
 obj-$(CONFIG_X86_IO_APIC)	+= io_apic.o mpparse.o \
 		genapic.o genapic_cluster.o genapic_flat.o
 obj-$(CONFIG_PM)		+= suspend.o
@@ -43,3 +44,16 @@ topology-y                     += ../../i386/mach-default/topology.o
 swiotlb-$(CONFIG_SWIOTLB)      += ../../ia64/lib/swiotlb.o
 microcode-$(subst m,y,$(CONFIG_MICROCODE))  += ../../i386/kernel/microcode.o
 intel_cacheinfo-y		+= ../../i386/kernel/cpu/intel_cacheinfo.o
+
+ifdef CONFIG_XEN
+time-y				+= ../../i386/kernel/time-xen.o
+quirks-y			:= ../../i386/kernel/quirks-xen.o
+
+n-obj-xen := i8259.o reboot.o i8237.o smpboot.o trampoline.o
+
+include $(srctree)/scripts/Makefile.xen
+
+obj-y := $(call filterxen, $(obj-y), $(n-obj-xen))
+obj-y := $(call cherrypickxen, $(obj-y))
+extra-y := $(call cherrypickxen, $(extra-y))
+endif

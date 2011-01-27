@@ -13,6 +13,7 @@
 #include <linux/in.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
+#include <linux/rbtree.h>
 #include <linux/rwsem.h>
 #include <linux/wait.h>
 #include <linux/uio.h>
@@ -80,6 +81,8 @@
  * NFSv3/v4 Access mode cache entry
  */
 struct nfs_access_entry {
+	struct rb_node		rb_node;
+	struct list_head	lru;
 	unsigned long		jiffies;
 	struct rpc_cred *	cred;
 	int			mask;
@@ -126,7 +129,7 @@ struct nfs_inode {
 	/*
 	 * Various flags
 	 */
-	unsigned int		flags;
+	unsigned long		flags;
 	unsigned long		cache_validity;
 
 	/*
@@ -164,7 +167,9 @@ struct nfs_inode {
 	 */
 	atomic_t		data_updates;
 
-	struct nfs_access_entry	cache_access;
+	struct rb_root		access_cache;
+	struct list_head	access_cache_entry_lru;
+	struct list_head	access_cache_inode_lru;
 #ifdef CONFIG_NFS_V3_ACL
 	struct posix_acl	*acl_access;
 	struct posix_acl	*acl_default;
@@ -220,6 +225,7 @@ struct nfs_inode {
 #define NFS_INO_REVALIDATING   0x0001      /* revalidating attrs */
 #define NFS_INO_ADVISE_RDPLUS  0x0002      /* advise readdirplus */
 #define NFS_INO_STALE      0x0004      /* possible stale inode */
+#define NFS_INO_ACL_LRU_SET	0x0008	/* Inode is on the LRU list */
 
 static inline struct nfs_inode *NFS_I(struct inode *inode)
 {
@@ -255,13 +261,17 @@ static inline int nfs_caches_unstable(struct inode *inode)
 	return atomic_read(&NFS_I(inode)->data_updates) != 0;
 }
 
+static inline void nfs_mark_for_revalidate(struct inode *inode)
+{
+	spin_lock(&inode->i_lock);
+	NFS_I(inode)->cache_validity |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS;
+	spin_unlock(&inode->i_lock);
+}
+
 static inline void NFS_CACHEINV(struct inode *inode)
 {
-	if (!nfs_caches_unstable(inode)) {
-		spin_lock(&inode->i_lock);
-		NFS_I(inode)->cache_validity |= NFS_INO_INVALID_ATTR | NFS_INO_INVALID_ACCESS;
-		spin_unlock(&inode->i_lock);
-	}
+	if (!nfs_caches_unstable(inode))
+		nfs_mark_for_revalidate(inode);
 }
 
 static inline int nfs_server_capable(struct inode *inode, int cap)
@@ -301,7 +311,7 @@ static inline long nfs_save_change_attribute(struct inode *inode)
 static inline int nfs_verify_change_attribute(struct inode *inode, unsigned long chattr)
 {
 	return !nfs_caches_unstable(inode)
-		&& chattr == NFS_I(inode)->cache_change_attribute;
+		&& time_after_eq(chattr, NFS_I(inode)->cache_change_attribute);
 }
 
 /*
@@ -311,10 +321,12 @@ extern void nfs_zap_caches(struct inode *);
 extern struct inode *nfs_fhget(struct super_block *, struct nfs_fh *,
 				struct nfs_fattr *);
 extern int nfs_refresh_inode(struct inode *, struct nfs_fattr *);
+extern int nfs_post_op_update_inode(struct inode *inode, struct nfs_fattr *fattr);
 extern int nfs_getattr(struct vfsmount *, struct dentry *, struct kstat *);
 extern int nfs_permission(struct inode *, int, struct nameidata *);
 extern int nfs_access_get_cached(struct inode *, struct rpc_cred *, struct nfs_access_entry *);
 extern void nfs_access_add_cache(struct inode *, struct nfs_access_entry *);
+extern void nfs_access_zap_cache(struct inode *inode);
 extern int nfs_open(struct inode *, struct file *);
 extern int nfs_release(struct inode *, struct file *);
 extern int nfs_attribute_timeout(struct inode *inode);

@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -31,7 +32,7 @@
  */
 
 #include "ipath_verbs.h"
-#include "ips_common.h"
+#include "ipath_kernel.h"
 
 /* cut down ridiculously long IB macro names */
 #define OP(x) IB_OPCODE_RC_##x
@@ -48,7 +49,7 @@ static void ipath_init_restart(struct ipath_qp *qp, struct ipath_swqe *wqe)
 	struct ipath_ibdev *dev;
 	u32 len;
 
-	len = ((qp->s_psn - wqe->psn) & IPS_PSN_MASK) *
+	len = ((qp->s_psn - wqe->psn) & IPATH_PSN_MASK) *
 		ib_mtu_enum_to_int(qp->path_mtu);
 	qp->s_sge.sge = wqe->sg_list[0];
 	qp->s_sge.sg_list = wqe->sg_list + 1;
@@ -64,7 +65,7 @@ static void ipath_init_restart(struct ipath_qp *qp, struct ipath_swqe *wqe)
 }
 
 /**
- * ipath_make_rc_ack - construct a RDMA read response packet
+ * ipath_make_rc_ack - construct a response packet (ACK, NAK, or RDMA read)
  * @qp: a pointer to the QP
  * @ohdr: a pointer to the IB header being constructed
  * @pmtu: the path MTU
@@ -158,9 +159,9 @@ u32 ipath_make_rc_ack(struct ipath_qp *qp,
 		qp->s_ack_state = OP(RDMA_READ_RESPONSE_LAST);
 		bth0 = OP(ACKNOWLEDGE) << 24;
 		if (qp->s_nak_state)
-			ohdr->u.aeth = cpu_to_be32((qp->r_msn & IPS_MSN_MASK) |
+			ohdr->u.aeth = cpu_to_be32((qp->r_msn & IPATH_MSN_MASK) |
 						    (qp->s_nak_state <<
-						     IPS_AETH_CREDIT_SHIFT));
+						     IPATH_AETH_CREDIT_SHIFT));
 		else
 			ohdr->u.aeth = ipath_compute_aeth(qp);
 		hwords++;
@@ -200,6 +201,18 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 	    qp->s_rnr_timeout)
 		goto done;
 
+	/* Limit the number of packets sent without an ACK. */
+	if (ipath_cmp24(qp->s_psn, qp->s_last_psn + IPATH_PSN_CREDIT) > 0) {
+		qp->s_wait_credit = 1;
+		dev->n_rc_stalls++;
+		spin_lock(&dev->pending_lock);
+		if (list_empty(&qp->timerwait))
+			list_add_tail(&qp->timerwait,
+				      &dev->pending[dev->pending_index]);
+		spin_unlock(&dev->pending_lock);
+		goto done;
+	}
+
 	/* header size in 32-bit words LRH+BTH = (8+12)/4. */
 	hwords = 5;
 	bth0 = 0;
@@ -220,7 +233,7 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 			/* Check if send work queue is empty. */
 			if (qp->s_tail == qp->s_head)
 				goto done;
-			qp->s_psn = wqe->psn = qp->s_next_psn;
+			wqe->psn = qp->s_next_psn;
 			newreq = 1;
 		}
 		/*
@@ -360,7 +373,7 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 			if (qp->s_tail >= qp->s_size)
 				qp->s_tail = 0;
 		}
-		bth2 |= qp->s_psn++ & IPS_PSN_MASK;
+		bth2 |= qp->s_psn++ & IPATH_PSN_MASK;
 		if ((int)(qp->s_psn - qp->s_next_psn) > 0)
 			qp->s_next_psn = qp->s_psn;
 		/*
@@ -386,18 +399,12 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 		qp->s_state = OP(SEND_MIDDLE);
 		/* FALLTHROUGH */
 	case OP(SEND_MIDDLE):
-		bth2 = qp->s_psn++ & IPS_PSN_MASK;
+		bth2 = qp->s_psn++ & IPATH_PSN_MASK;
 		if ((int)(qp->s_psn - qp->s_next_psn) > 0)
 			qp->s_next_psn = qp->s_psn;
 		ss = &qp->s_sge;
 		len = qp->s_len;
 		if (len > pmtu) {
-			/*
-			 * Request an ACK every 1/2 MB to avoid retransmit
-			 * timeouts.
-			 */
-			if (((wqe->length - len) % (512 * 1024)) == 0)
-				bth2 |= 1 << 31;
 			len = pmtu;
 			break;
 		}
@@ -428,18 +435,12 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 		qp->s_state = OP(RDMA_WRITE_MIDDLE);
 		/* FALLTHROUGH */
 	case OP(RDMA_WRITE_MIDDLE):
-		bth2 = qp->s_psn++ & IPS_PSN_MASK;
+		bth2 = qp->s_psn++ & IPATH_PSN_MASK;
 		if ((int)(qp->s_psn - qp->s_next_psn) > 0)
 			qp->s_next_psn = qp->s_psn;
 		ss = &qp->s_sge;
 		len = qp->s_len;
 		if (len > pmtu) {
-			/*
-			 * Request an ACK every 1/2 MB to avoid retransmit
-			 * timeouts.
-			 */
-			if (((wqe->length - len) % (512 * 1024)) == 0)
-				bth2 |= 1 << 31;
 			len = pmtu;
 			break;
 		}
@@ -465,7 +466,7 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 		 * See ipath_restart_rc().
 		 */
 		ipath_init_restart(qp, wqe);
-		len = ((qp->s_psn - wqe->psn) & IPS_PSN_MASK) * pmtu;
+		len = ((qp->s_psn - wqe->psn) & IPATH_PSN_MASK) * pmtu;
 		ohdr->u.rc.reth.vaddr =
 			cpu_to_be64(wqe->wr.wr.rdma.remote_addr + len);
 		ohdr->u.rc.reth.rkey =
@@ -473,7 +474,7 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 		ohdr->u.rc.reth.length = cpu_to_be32(qp->s_len);
 		qp->s_state = OP(RDMA_READ_REQUEST);
 		hwords += sizeof(ohdr->u.rc.reth) / 4;
-		bth2 = qp->s_psn++ & IPS_PSN_MASK;
+		bth2 = qp->s_psn++ & IPATH_PSN_MASK;
 		if ((int)(qp->s_psn - qp->s_next_psn) > 0)
 			qp->s_next_psn = qp->s_psn;
 		ss = NULL;
@@ -497,6 +498,8 @@ int ipath_make_rc_req(struct ipath_qp *qp,
 		 */
 		goto done;
 	}
+	if (ipath_cmp24(qp->s_psn, qp->s_last_psn + IPATH_PSN_CREDIT - 1) >= 0)
+		bth2 |= 1 << 31;	/* Request ACK. */
 	qp->s_len -= len;
 	qp->s_hdrwords = hwords;
 	qp->s_cur_sge = ss;
@@ -528,7 +531,7 @@ static void send_rc_ack(struct ipath_qp *qp)
 
 	/* Construct the header. */
 	ohdr = &hdr.u.oth;
-	lrh0 = IPS_LRH_BTH;
+	lrh0 = IPATH_LRH_BTH;
 	/* header size in 32-bit words LRH+BTH+AETH = (8+12+4)/4. */
 	hwords = 6;
 	if (unlikely(qp->remote_ah_attr.ah_flags & IB_AH_GRH)) {
@@ -536,14 +539,14 @@ static void send_rc_ack(struct ipath_qp *qp)
 					 &qp->remote_ah_attr.grh,
 					 hwords, 0);
 		ohdr = &hdr.u.l.oth;
-		lrh0 = IPS_LRH_GRH;
+		lrh0 = IPATH_LRH_GRH;
 	}
 	/* read pkey_index w/o lock (its atomic) */
-	bth0 = ipath_layer_get_pkey(dev->dd, qp->s_pkey_index);
+	bth0 = ipath_get_pkey(dev->dd, qp->s_pkey_index);
 	if (qp->r_nak_state)
-		ohdr->u.aeth = cpu_to_be32((qp->r_msn & IPS_MSN_MASK) |
+		ohdr->u.aeth = cpu_to_be32((qp->r_msn & IPATH_MSN_MASK) |
 					    (qp->r_nak_state <<
-					     IPS_AETH_CREDIT_SHIFT));
+					     IPATH_AETH_CREDIT_SHIFT));
 	else
 		ohdr->u.aeth = ipath_compute_aeth(qp);
 	if (qp->r_ack_state >= OP(COMPARE_SWAP)) {
@@ -556,10 +559,10 @@ static void send_rc_ack(struct ipath_qp *qp)
 	hdr.lrh[0] = cpu_to_be16(lrh0);
 	hdr.lrh[1] = cpu_to_be16(qp->remote_ah_attr.dlid);
 	hdr.lrh[2] = cpu_to_be16(hwords + SIZE_OF_CRC);
-	hdr.lrh[3] = cpu_to_be16(ipath_layer_get_lid(dev->dd));
+	hdr.lrh[3] = cpu_to_be16(dev->dd->ipath_lid);
 	ohdr->bth[0] = cpu_to_be32(bth0);
 	ohdr->bth[1] = cpu_to_be32(qp->remote_qpn);
-	ohdr->bth[2] = cpu_to_be32(qp->r_ack_psn & IPS_PSN_MASK);
+	ohdr->bth[2] = cpu_to_be32(qp->r_ack_psn & IPATH_PSN_MASK);
 
 	/*
 	 * If we can send the ACK, clear the ACK state.
@@ -736,6 +739,15 @@ bail:
 	return;
 }
 
+static inline void update_last_psn(struct ipath_qp *qp, u32 psn)
+{
+	if (qp->s_wait_credit) {
+		qp->s_wait_credit = 0;
+		tasklet_hi_schedule(&qp->s_task);
+	}
+	qp->s_last_psn = psn;
+}
+
 /**
  * do_rc_ack - process an incoming RC ACK
  * @qp: the QP the ACK came in on
@@ -804,7 +816,7 @@ static int do_rc_ack(struct ipath_qp *qp, u32 aeth, u32 psn, int opcode)
 			 * The last valid PSN seen is the previous
 			 * request's.
 			 */
-			qp->s_last_psn = wqe->psn - 1;
+			update_last_psn(qp, wqe->psn - 1);
 			/* Retry this request. */
 			ipath_restart_rc(qp, wqe->psn, &wc);
 			/*
@@ -863,7 +875,7 @@ static int do_rc_ack(struct ipath_qp *qp, u32 aeth, u32 psn, int opcode)
 		ipath_get_credit(qp, aeth);
 		qp->s_rnr_retry = qp->s_rnr_retry_cnt;
 		qp->s_retry = qp->s_retry_cnt;
-		qp->s_last_psn = psn;
+		update_last_psn(qp, psn);
 		ret = 1;
 		goto bail;
 
@@ -882,24 +894,24 @@ static int do_rc_ack(struct ipath_qp *qp, u32 aeth, u32 psn, int opcode)
 			goto bail;
 
 		/* The last valid PSN is the previous PSN. */
-		qp->s_last_psn = psn - 1;
+		update_last_psn(qp, psn - 1);
 
 		dev->n_rc_resends += (int)qp->s_psn - (int)psn;
 
 		reset_psn(qp, psn);
 
 		qp->s_rnr_timeout =
-			ib_ipath_rnr_table[(aeth >> IPS_AETH_CREDIT_SHIFT) &
-					   IPS_AETH_CREDIT_MASK];
+			ib_ipath_rnr_table[(aeth >> IPATH_AETH_CREDIT_SHIFT) &
+					   IPATH_AETH_CREDIT_MASK];
 		ipath_insert_rnr_queue(qp);
 		goto bail;
 
 	case 3:		/* NAK */
 		/* The last valid PSN seen is the previous request's. */
 		if (qp->s_last != qp->s_tail)
-			qp->s_last_psn = wqe->psn - 1;
-		switch ((aeth >> IPS_AETH_CREDIT_SHIFT) &
-			IPS_AETH_CREDIT_MASK) {
+			update_last_psn(qp, wqe->psn - 1);
+		switch ((aeth >> IPATH_AETH_CREDIT_SHIFT) &
+			IPATH_AETH_CREDIT_MASK) {
 		case 0:	/* PSN sequence error */
 			dev->n_seq_naks++;
 			/*
@@ -1070,7 +1082,7 @@ static inline void ipath_rc_rcv_resp(struct ipath_ibdev *dev,
 		 * since we don't want s_sge modified.
 		 */
 		qp->s_len -= pmtu;
-		qp->s_last_psn = psn;
+		update_last_psn(qp, psn);
 		spin_unlock_irqrestore(&qp->s_lock, flags);
 		ipath_copy_sge(&qp->s_sge, data, pmtu);
 		goto bail;
@@ -1267,7 +1279,7 @@ static inline int ipath_rc_rcv_error(struct ipath_ibdev *dev,
 		 * Check for the PSN of the last atomic operation
 		 * performed and resend the result if found.
 		 */
-		if ((psn & IPS_PSN_MASK) != qp->r_atomic_psn)
+		if ((psn & IPATH_PSN_MASK) != qp->r_atomic_psn)
 			goto done;
 		break;
 	}
@@ -1322,8 +1334,7 @@ void ipath_rc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		 * the eager header buffer size to 56 bytes so the last 4
 		 * bytes of the BTH header (PSN) is in the data buffer.
 		 */
-		header_in_data =
-			ipath_layer_get_rcvhdrentsize(dev->dd) == 16;
+		header_in_data = dev->dd->ipath_rcvhdrentsize == 16;
 		if (header_in_data) {
 			psn = be32_to_cpu(((__be32 *) data)[0]);
 			data += sizeof(__be32);
@@ -1637,7 +1648,7 @@ void ipath_rc_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 			*(u64 *) qp->r_sge.sge.vaddr = sdata;
 		spin_unlock_irq(&dev->pending_lock);
 		qp->r_msn++;
-		qp->r_atomic_psn = psn & IPS_PSN_MASK;
+		qp->r_atomic_psn = psn & IPATH_PSN_MASK;
 		psn |= 1 << 31;
 		break;
 	}

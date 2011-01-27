@@ -399,6 +399,8 @@ qim_get_option_rom_table(scsi_qla_host_t *ha,
 		break;
 	case PCI_DEVICE_ID_QLOGIC_ISP2422:
 	case PCI_DEVICE_ID_QLOGIC_ISP2432:
+	case PCI_DEVICE_ID_QLOGIC_ISP5422:
+	case PCI_DEVICE_ID_QLOGIC_ISP5432:
 		*pOptionRomTable = OptionRomTable2422;
 		*OptionRomTableSize = sizeof(OptionRomTable2422);
 		break;

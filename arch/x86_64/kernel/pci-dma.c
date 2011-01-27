@@ -53,7 +53,7 @@ void dma_unmap_sg(struct device *dev, struct scatterlist *sg,
 		struct scatterlist *s = &sg[i];
 		BUG_ON(s->page == NULL); 
 		BUG_ON(s->dma_address == 0); 
-		dma_unmap_single(dev, s->dma_address, s->dma_length, dir);
+		/* Nothing was mapped above, so nothing is to unmap. */
 	} 
 }
 

@@ -81,9 +81,7 @@ static u32 gart_unmapped_entry;
 
 #define for_all_nb(dev) \
 	dev = NULL;	\
-	while ((dev = pci_find_device(PCI_VENDOR_ID_AMD, 0x1103, dev))!=NULL)\
-	     if (dev->bus->number == 0 && 				     \
-		    (PCI_SLOT(dev->devfn) >= 24) && (PCI_SLOT(dev->devfn) <= 31))
+	while ((dev = pci_find_device(PCI_VENDOR_ID_AMD, 0x1103, dev))!=NULL)
 
 static struct pci_dev *northbridges[MAX_NB];
 static u32 northbridge_flush_word[MAX_NB];
@@ -140,10 +138,6 @@ static unsigned long alloc_iommu(int size)
 static void free_iommu(unsigned long offset, int size)
 { 
 	unsigned long flags;
-	if (size == 1) { 
-		clear_bit(offset, iommu_gart_bitmap); 
-		return;
-	}
 	spin_lock_irqsave(&iommu_bitmap_lock, flags);
 	__clear_bit_string(iommu_gart_bitmap, offset, size);
 	spin_unlock_irqrestore(&iommu_bitmap_lock, flags);
@@ -191,12 +185,17 @@ static void *dma_alloc_pages(struct device *dev, unsigned gfp, unsigned order)
 {
 	struct page *page;
 	int node;
+#ifdef CONFIG_PCI
 	if (dev->bus == &pci_bus_type) {
 		cpumask_t mask;
 		mask = pcibus_to_cpumask(to_pci_dev(dev)->bus->number);
 		node = cpu_to_node(first_cpu(mask));
 	} else
 		node = numa_node_id();
+#else
+	/* This is most likely to be used on Xen anyway. */
+	node = numa_node_id();
+#endif
 	page = alloc_pages_node(node, gfp, order);
 	return page ? page_address(page) : NULL;
 }

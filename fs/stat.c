@@ -62,6 +62,44 @@ int vfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 
 EXPORT_SYMBOL(vfs_getattr);
 
+int vfs_getattr64(struct vfsmount *mnt, struct dentry *dentry, struct kstat64 *stat)
+{
+	struct inode *inode = dentry->d_inode;
+	int retval;
+
+	retval = security_inode_getattr(mnt, dentry);
+	if (retval)
+		return retval;
+
+	/* retrieve a 64-bit inode number if possible */
+	if (IS_INO64(inode)) {
+		struct inode_operations_ext *ixop =
+			(struct inode_operations_ext *) inode->i_op;
+
+		return ixop->getattr64(mnt, dentry, stat);
+	}
+
+	if (inode->i_op->getattr) {
+		retval = inode->i_op->getattr(mnt, dentry, (struct kstat *) stat);
+		if (retval == 0)
+			stat->ino64 = stat->ino;
+		return retval;
+	}
+
+	generic_fillattr(inode, (struct kstat *) stat);
+	stat->ino64 = stat->ino;
+	if (!stat->blksize) {
+		struct super_block *s = inode->i_sb;
+		unsigned blocks;
+		blocks = (stat->size+s->s_blocksize-1) >> s->s_blocksize_bits;
+		stat->blocks = (s->s_blocksize / 512) * blocks;
+		stat->blksize = s->s_blocksize;
+	}
+	return 0;
+}
+
+EXPORT_SYMBOL(vfs_getattr64);
+
 int vfs_stat(char __user *name, struct kstat *stat)
 {
 	struct nameidata nd;
@@ -106,13 +144,57 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
 
 EXPORT_SYMBOL(vfs_fstat);
 
+int vfs_stat64(char __user *name, struct kstat64 *stat)
+{
+	struct nameidata nd;
+	int error;
+
+	error = user_path_walk(name, &nd);
+	if (!error) {
+		error = vfs_getattr64(nd.mnt, nd.dentry, stat);
+		path_release(&nd);
+	}
+	return error;
+}
+
+EXPORT_SYMBOL(vfs_stat64);
+
+int vfs_lstat64(char __user *name, struct kstat64 *stat)
+{
+	struct nameidata nd;
+	int error;
+
+	error = user_path_walk_link(name, &nd);
+	if (!error) {
+		error = vfs_getattr64(nd.mnt, nd.dentry, stat);
+		path_release(&nd);
+	}
+	return error;
+}
+
+EXPORT_SYMBOL(vfs_lstat64);
+
+int vfs_fstat64(unsigned int fd, struct kstat64 *stat)
+{
+	struct file *f = fget(fd);
+	int error = -EBADF;
+
+	if (f) {
+		error = vfs_getattr64(f->f_vfsmnt, f->f_dentry, stat);
+		fput(f);
+	}
+	return error;
+}
+
+EXPORT_SYMBOL(vfs_fstat64);
+
 #ifdef __ARCH_WANT_OLD_STAT
 
 /*
  * For backward compatibility?  Maybe this should be moved
  * into arch/i386 instead?
  */
-static int cp_old_stat(struct kstat *stat, struct __old_kernel_stat __user * statbuf)
+static int cp_old_stat(struct kstat64 *stat, struct __old_kernel_stat __user * statbuf)
 {
 	static int warncount = 5;
 	struct __old_kernel_stat tmp;
@@ -128,7 +210,9 @@ static int cp_old_stat(struct kstat *stat, struct __old_kernel_stat __user * sta
 
 	memset(&tmp, 0, sizeof(struct __old_kernel_stat));
 	tmp.st_dev = old_encode_dev(stat->dev);
-	tmp.st_ino = stat->ino;
+	if (sizeof(tmp.st_ino) < 8 && stat->ino64 != (u32)stat->ino64)
+		return -EOVERFLOW;
+	tmp.st_ino = stat->ino64;
 	tmp.st_mode = stat->mode;
 	tmp.st_nlink = stat->nlink;
 	if (tmp.st_nlink != stat->nlink)
@@ -149,8 +233,8 @@ static int cp_old_stat(struct kstat *stat, struct __old_kernel_stat __user * sta
 
 asmlinkage long sys_stat(char __user * filename, struct __old_kernel_stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_stat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_stat64(filename, &stat);
 
 	if (!error)
 		error = cp_old_stat(&stat, statbuf);
@@ -159,8 +243,8 @@ asmlinkage long sys_stat(char __user * filename, struct __old_kernel_stat __user
 }
 asmlinkage long sys_lstat(char __user * filename, struct __old_kernel_stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_lstat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_lstat64(filename, &stat);
 
 	if (!error)
 		error = cp_old_stat(&stat, statbuf);
@@ -169,8 +253,8 @@ asmlinkage long sys_lstat(char __user * filename, struct __old_kernel_stat __use
 }
 asmlinkage long sys_fstat(unsigned int fd, struct __old_kernel_stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
+	struct kstat64 stat;
+	int error = vfs_fstat64(fd, &stat);
 
 	if (!error)
 		error = cp_old_stat(&stat, statbuf);
@@ -180,7 +264,7 @@ asmlinkage long sys_fstat(unsigned int fd, struct __old_kernel_stat __user * sta
 
 #endif /* __ARCH_WANT_OLD_STAT */
 
-static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
+static int cp_new_stat(struct kstat64 *stat, struct stat __user *statbuf)
 {
 	struct stat tmp;
 
@@ -198,7 +282,9 @@ static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
 #else
 	tmp.st_dev = new_encode_dev(stat->dev);
 #endif
-	tmp.st_ino = stat->ino;
+	if (sizeof(tmp.st_ino) < 8 && stat->ino64 != (u32)stat->ino64)
+		return -EOVERFLOW;
+	tmp.st_ino = stat->ino64;
 	tmp.st_mode = stat->mode;
 	tmp.st_nlink = stat->nlink;
 	if (tmp.st_nlink != stat->nlink)
@@ -230,8 +316,8 @@ static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
 
 asmlinkage long sys_newstat(char __user * filename, struct stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_stat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_stat64(filename, &stat);
 
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
@@ -240,8 +326,8 @@ asmlinkage long sys_newstat(char __user * filename, struct stat __user * statbuf
 }
 asmlinkage long sys_newlstat(char __user * filename, struct stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_lstat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_lstat64(filename, &stat);
 
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
@@ -250,8 +336,8 @@ asmlinkage long sys_newlstat(char __user * filename, struct stat __user * statbu
 }
 asmlinkage long sys_newfstat(unsigned int fd, struct stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
+	struct kstat64 stat;
+	int error = vfs_fstat64(fd, &stat);
 
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
@@ -288,7 +374,7 @@ asmlinkage long sys_readlink(const char __user * path, char __user * buf, int bu
 /* ---------- LFS-64 ----------- */
 #ifdef __ARCH_WANT_STAT64
 
-static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
+static long cp_new_stat64(struct kstat64 *stat, struct stat64 __user *statbuf)
 {
 	struct stat64 tmp;
 
@@ -303,9 +389,9 @@ static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
 	tmp.st_dev = huge_encode_dev(stat->dev);
 	tmp.st_rdev = huge_encode_dev(stat->rdev);
 #endif
-	tmp.st_ino = stat->ino;
+	tmp.st_ino = stat->ino64;
 #ifdef STAT64_HAS_BROKEN_ST_INO
-	tmp.__st_ino = stat->ino;
+	tmp.__st_ino = stat->ino64;
 #endif
 	tmp.st_mode = stat->mode;
 	tmp.st_nlink = stat->nlink;
@@ -325,8 +411,8 @@ static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
 
 asmlinkage long sys_stat64(char __user * filename, struct stat64 __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_stat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_stat64(filename, &stat);
 
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);
@@ -335,8 +421,8 @@ asmlinkage long sys_stat64(char __user * filename, struct stat64 __user * statbu
 }
 asmlinkage long sys_lstat64(char __user * filename, struct stat64 __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_lstat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_lstat64(filename, &stat);
 
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);
@@ -345,8 +431,8 @@ asmlinkage long sys_lstat64(char __user * filename, struct stat64 __user * statb
 }
 asmlinkage long sys_fstat64(unsigned long fd, struct stat64 __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
+	struct kstat64 stat;
+	int error = vfs_fstat64(fd, &stat);
 
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);

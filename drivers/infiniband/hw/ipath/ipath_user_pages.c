@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -30,12 +31,10 @@
  * SOFTWARE.
  */
 
-#include <linux/version.h>
 #include <linux/mm.h>
 #include <linux/device.h>
 
 #include "ipath_kernel.h"
-
 
 static void __ipath_release_user_pages(struct page **p, size_t num_pages,
 				   int dirty)
@@ -55,9 +54,9 @@ static void __ipath_release_user_pages(struct page **p, size_t num_pages,
 static int __get_user_pages(unsigned long start_page, size_t num_pages,
 			struct page **p, struct vm_area_struct **vma)
 {
+	unsigned long lock_limit;
 	size_t got;
 	int ret;
-	unsigned long lock_limit;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
 	lock_limit = current->rlim[RLIMIT_MEMLOCK].rlim_cur >>

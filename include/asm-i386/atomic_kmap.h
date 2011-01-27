@@ -22,7 +22,11 @@ extern pte_t *kmap_pte;
 #define kmap_prot PAGE_KERNEL
 #define kmap_prot_nocache PAGE_KERNEL_NOCACHE
 
+#ifndef CONFIG_XEN
 #define PKMAP_BASE (0xff000000UL)
+#else
+#define PKMAP_BASE ((FIXADDR_BOOT_START - PAGE_SIZE*(LAST_PKMAP+1)) & PMD_MASK)
+#endif
 #define NR_SHARED_PMDS ((0xffffffff-PKMAP_BASE+1)/PMD_SIZE)
 
 static inline unsigned long __kmap_atomic_vaddr(enum km_type type)

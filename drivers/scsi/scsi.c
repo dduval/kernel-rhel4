@@ -635,6 +635,24 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 	return rtn;
 }
 
+/**
+ * scsi_req_abort_cmd -- Request command recovery for the specified command
+ * cmd: pointer to the SCSI command of interest
+ *
+ * This function requests that SCSI Core start recovery for the
+ * command by deleting the timer and adding the command to the eh
+ * queue.  It can be called by either LLDDs or SCSI Core.  LLDDs who
+ * implement their own error recovery MAY ignore the timeout event if
+ * they generated scsi_req_abort_cmd.
+ */
+void scsi_req_abort_cmd(struct scsi_cmnd *cmd)
+{
+	if (!scsi_delete_timer(cmd))
+		return;
+	scsi_times_out(cmd);
+}
+EXPORT_SYMBOL(scsi_req_abort_cmd);
+
 /*
  * Function:    scsi_init_cmd_from_req
  *

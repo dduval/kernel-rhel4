@@ -3,10 +3,11 @@
  *    tape device driver for 3480/3490E/3590 tapes.
  *
  *  S390 and zSeries version
- *    Copyright (C) 2001,2002 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 2001,2005 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
+ *		 Stefan Bader <shbader@de.ibm.com>
  */
 
 #ifndef _TAPE_H
@@ -111,6 +112,7 @@ enum tape_request_status {
 	TAPE_REQUEST_QUEUED,	/* request is queued to be processed */
 	TAPE_REQUEST_IN_IO,	/* request is currently in IO */
 	TAPE_REQUEST_DONE,	/* request is completed. */
+	TAPE_REQUEST_CANCEL,	/* request should be canceled. */
 };
 
 /* Tape CCW request */
@@ -237,6 +239,9 @@ struct tape_device {
 	/* Block dev frontend data */
 	struct tape_blk_data		blk_data;
 #endif
+
+	/* Function to start or stop the next request later. */
+	struct work_struct		tape_dnr;
 };
 
 /* Externals from tape_core.c */
@@ -245,6 +250,7 @@ extern void tape_free_request(struct tape_request *);
 extern int tape_do_io(struct tape_device *, struct tape_request *);
 extern int tape_do_io_async(struct tape_device *, struct tape_request *);
 extern int tape_do_io_interruptible(struct tape_device *, struct tape_request *);
+extern int tape_cancel_io(struct tape_device *, struct tape_request *);
 void tape_hotplug_event(struct tape_device *, int major, int action);
 
 static inline int

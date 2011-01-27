@@ -356,6 +356,7 @@ static int __init smp_read_mpc(struct mp_config_table *mpc)
 			}
 		}
 	}
+	clustered_apic_check();
 	if (!num_processors)
 		printk(KERN_ERR "SMP mptable: no processors registered!\n");
 	return num_processors;
@@ -563,7 +564,7 @@ void __init get_smp_config (void)
 		 * Read the physical hardware table.  Anything here will
 		 * override the defaults.
 		 */
-		if (!smp_read_mpc((void *)(unsigned long)mpf->mpf_physptr)) {
+		if (!smp_read_mpc(phys_to_virt(mpf->mpf_physptr))) {
 			smp_found_config = 0;
 			printk(KERN_ERR "BIOS bug, MP table errors detected!...\n");
 			printk(KERN_ERR "... disabling SMP support. (tell your hw vendor)\n");
@@ -601,7 +602,6 @@ static int __init smp_scan_config (unsigned long base, unsigned long length)
 	extern void __bad_mpf_size(void); 
 	unsigned int *bp = phys_to_virt(base);
 	struct intel_mp_floating *mpf;
-	static int printed __initdata; 
 
 	Dprintk("Scan SMP from %p for %ld bytes.\n", bp,length);
 	if (sizeof(*mpf) != 16)
@@ -624,10 +624,6 @@ static int __init smp_scan_config (unsigned long base, unsigned long length)
 		}
 		bp += 4;
 		length -= 16;
-	}
-	if (!printed) {		
-		printk(KERN_INFO "No mptable found.\n");
-		printed = 1;
 	}
 	return 0;
 }
@@ -665,7 +661,11 @@ void __init find_intel_smp (void)
 
 	address = *(unsigned short *)phys_to_virt(0x40E);
 	address <<= 4;
-	smp_scan_config(address, 0x1000);
+	if (smp_scan_config(address, 0x1000))
+		return;
+
+	/* If we have come this far, we did not find an MP table  */
+	 printk(KERN_INFO "No mptable found.\n");
 }
 
 /*

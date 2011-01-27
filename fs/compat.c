@@ -84,8 +84,8 @@ asmlinkage long compat_sys_utimes(char __user *filename, struct compat_timeval _
 asmlinkage long compat_sys_newstat(char __user * filename,
 		struct compat_stat __user *statbuf)
 {
-	struct kstat stat;
-	int error = vfs_stat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_stat64(filename, &stat);
 
 	if (!error)
 		error = cp_compat_stat(&stat, statbuf);
@@ -95,8 +95,8 @@ asmlinkage long compat_sys_newstat(char __user * filename,
 asmlinkage long compat_sys_newlstat(char __user * filename,
 		struct compat_stat __user *statbuf)
 {
-	struct kstat stat;
-	int error = vfs_lstat(filename, &stat);
+	struct kstat64 stat;
+	int error = vfs_lstat64(filename, &stat);
 
 	if (!error)
 		error = cp_compat_stat(&stat, statbuf);
@@ -106,8 +106,8 @@ asmlinkage long compat_sys_newlstat(char __user * filename,
 asmlinkage long compat_sys_newfstat(unsigned int fd,
 		struct compat_stat __user * statbuf)
 {
-	struct kstat stat;
-	int error = vfs_fstat(fd, &stat);
+	struct kstat64 stat;
+	int error = vfs_fstat64(fd, &stat);
 
 	if (!error)
 		error = cp_compat_stat(&stat, statbuf);

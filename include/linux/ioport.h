@@ -82,6 +82,7 @@ struct resource_list {
 #define IORESOURCE_MEM_SHADOWABLE	(1<<5)	/* dup: IORESOURCE_SHADOWABLE */
 #define IORESOURCE_MEM_EXPANSIONROM	(1<<6)
 
+#define IORESOURCE_ROM_ENABLE		(1<<0)  /* ROM is enabled, same as PCI_ROM_ADDRESS_ENABLE */
 /* PC/ISA/whatever - the normal PC address spaces: IO and memory */
 extern struct resource ioport_resource;
 extern struct resource iomem_resource;

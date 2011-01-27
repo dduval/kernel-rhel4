@@ -2550,9 +2550,9 @@ EXPORT_SYMBOL (iucv_reject);
 #if 0
 EXPORT_SYMBOL (iucv_reply);
 EXPORT_SYMBOL (iucv_reply_array);
-EXPORT_SYMBOL (iucv_reply_prmmsg);
 EXPORT_SYMBOL (iucv_resume);
 #endif
+EXPORT_SYMBOL (iucv_reply_prmmsg);
 EXPORT_SYMBOL (iucv_send);
 EXPORT_SYMBOL (iucv_send2way);
 EXPORT_SYMBOL (iucv_send2way_array);

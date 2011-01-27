@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -206,12 +207,17 @@ static int ipath_mcast_add(struct ipath_ibdev *dev,
 		goto bail;
 	}
 
+	spin_lock(&dev->n_mcast_grps_lock);
 	if (dev->n_mcast_grps_allocated == ib_ipath_max_mcast_grps) {
+		spin_unlock(&dev->n_mcast_grps_lock);
 		ret = ENOMEM;
 		goto bail;
 	}
 
 	dev->n_mcast_grps_allocated++;
+	spin_unlock(&dev->n_mcast_grps_lock);
+
+	mcast->n_attached++;
 
 	list_add_tail_rcu(&mqp->list, &mcast->qp_list);
 
@@ -342,7 +348,9 @@ int ipath_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		atomic_dec(&mcast->refcount);
 		wait_event(mcast->wait, !atomic_read(&mcast->refcount));
 		ipath_mcast_free(mcast);
+		spin_lock(&dev->n_mcast_grps_lock);
 		dev->n_mcast_grps_allocated--;
+		spin_unlock(&dev->n_mcast_grps_lock);
 	}
 
 	ret = 0;

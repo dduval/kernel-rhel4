@@ -17,14 +17,13 @@ MODULE_AUTHOR(MODULEAUTHOR);
 MODULE_DESCRIPTION(my_NAME);
 MODULE_LICENSE("GPL");
 
-extern int mptsas_dummy_symbol, mptspi_dummy_symbol, mptfc_dummy_symbol;
+extern int mptsas_dummy_symbol, mptspi_dummy_symbol;
 
 static int
 mptscsih_init(void)
 {
 	mptsas_dummy_symbol = 1;
 	mptspi_dummy_symbol = 1;
-	mptfc_dummy_symbol = 1;
 	return 0;
 }
 

@@ -969,6 +969,13 @@ static int load_elf_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 #ifdef __HAVE_ARCH_VSYSCALL
 	map_vsyscall();
 #endif
+#ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES
+        retval = arch_setup_additional_pages(bprm, executable_stack);
+        if (retval < 0) {
+                send_sig(SIGKILL, current, 0);
+                goto out;
+        }
+#endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */
 
 	compute_creds(bprm);
 	current->flags &= ~PF_FORKNOEXEC;
@@ -1146,7 +1153,7 @@ static int dump_write(struct file *file, const void *addr, int nr)
 	return file->f_op->write(file, addr, nr, &file->f_pos) == nr;
 }
 
-static int dump_seek(struct file *file, off_t off)
+static int dump_seek(struct file *file, loff_t off)
 {
 	if (file->f_op->llseek) {
 		if (file->f_op->llseek(file, off, 0) != off)
@@ -1263,7 +1270,7 @@ static inline void fill_elf_header(struct elfhdr *elf, int segs)
 	return;
 }
 
-static inline void fill_elf_note_phdr(struct elf_phdr *phdr, int sz, off_t offset)
+static inline void fill_elf_note_phdr(struct elf_phdr *phdr, int sz, loff_t offset)
 {
 	phdr->p_type = PT_NOTE;
 	phdr->p_offset = offset;
@@ -1424,7 +1431,7 @@ static int elf_core_dump(long signr, struct pt_regs * regs, struct file * file)
 	int i;
 	struct vm_area_struct *vma;
 	struct elfhdr *elf = NULL;
-	off_t offset = 0, dataoff;
+	loff_t offset = 0, dataoff;
 	unsigned long limit = current->rlim[RLIMIT_CORE].rlim_cur;
 	int numnote;
 	struct memelfnote *notes = NULL;
@@ -1655,10 +1662,10 @@ static int elf_core_dump(long signr, struct pt_regs * regs, struct file * file)
 	ELF_CORE_WRITE_EXTRA_DATA;
 #endif
 
-	if ((off_t) file->f_pos != offset) {
+	if (file->f_pos != offset) {
 		/* Sanity check */
-		printk("elf_core_dump: file->f_pos (%ld) != offset (%ld)\n",
-		       (off_t) file->f_pos, offset);
+		printk("elf_core_dump: file->f_pos (%Ld) != offset (%Ld)\n",
+		       file->f_pos, offset);
 	}
 
 end_coredump:

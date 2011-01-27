@@ -115,8 +115,8 @@
  * spinlock to internal buffers before writing.
  *
  * Lock ordering (including related VFS locks) is following:
- *   i_sem > dqonoff_sem > iprune_sem > journal_lock > dqptr_sem >
- *   > dquot->dq_lock > dqio_sem
+ *   i_sem > dqonoff_sem > journal_lock > dqptr_sem > dquot->dq_lock > 
+ *   dqio_sem
  * i_sem on quota files is special (it's below dqio_sem)
  */
 
@@ -402,13 +402,16 @@ out_dqlock:
 
 /* Invalidate all dquots on the list. Note that this function is called after
  * quota is disabled and pointers from inodes removed so there cannot be new
- * quota users. Also because we hold dqonoff_sem there can be no quota users
- * for this sb+type at all. */
+ * quota users. There can still be some users of quotas due to inodes being
+ * just deleted or pruned by prune_icache() (those are not attached to any
+ * list). We have to wait for such users.
+ */
 static void invalidate_dquots(struct super_block *sb, int type)
 {
 	struct dquot *dquot;
 	struct list_head *head;
 
+restart:
 	spin_lock(&dq_list_lock);
 	for (head = inuse_list.next; head != &inuse_list;) {
 		dquot = list_entry(head, struct dquot, dq_inuse);
@@ -417,11 +420,34 @@ static void invalidate_dquots(struct super_block *sb, int type)
 			continue;
 		if (dquot->dq_type != type)
 			continue;
-#ifdef __DQUOT_PARANOIA
-		if (atomic_read(&dquot->dq_count))
-			BUG();
-#endif
-		/* Quota now has no users and it has been written on last dqput() */
+		/* Wait for dquot users */
+		if (atomic_read(&dquot->dq_count)) {
+			DEFINE_WAIT(wait);
+
+			atomic_inc(&dquot->dq_count);
+			prepare_to_wait(&dquot->dq_wait_unused, &wait,
+					TASK_UNINTERRUPTIBLE);
+			spin_unlock(&dq_list_lock);
+			/* Once dqput() wakes us up, we know it's time to free
+			 * the dquot.
+			 * IMPORTANT: we rely on the fact that there is always
+			 * at most one process waiting for dquot to free.
+			 * Otherwise dq_count would be > 1 and we would never
+			 * wake up.
+			 */
+			if (atomic_read(&dquot->dq_count) > 1)
+				schedule();
+			finish_wait(&dquot->dq_wait_unused, &wait);
+			dqput(dquot);
+			/* At this moment dquot() need not exist (it could be
+			 * reclaimed by prune_dqcache(). Hence we must
+			 * restart. */
+			goto restart;
+		}
+		/*
+		 * Quota now has no users and it has been written on last
+		 * dqput()
+		 */
 		remove_dquot_hash(dquot);
 		remove_free_dquot(dquot);
 		remove_inuse(dquot);
@@ -540,6 +566,10 @@ we_slept:
 	if (atomic_read(&dquot->dq_count) > 1) {
 		/* We have more than one user... nothing to do */
 		atomic_dec(&dquot->dq_count);
+		/* Releasing dquot during quotaoff phase? */
+		if (!sb_has_quota_enabled(dquot->dq_sb, dquot->dq_type) &&
+		    atomic_read(&dquot->dq_count) == 1)
+			wake_up(&dquot->dq_wait_unused);
 		spin_unlock(&dq_list_lock);
 		return;
 	}
@@ -581,6 +611,7 @@ static struct dquot *get_empty_dquot(struct super_block *sb, int type)
 	INIT_LIST_HEAD(&dquot->dq_inuse);
 	INIT_HLIST_NODE(&dquot->dq_hash);
 	INIT_LIST_HEAD(&dquot->dq_dirty);
+	init_waitqueue_head(&dquot->dq_wait_unused);
 	dquot->dq_sb = sb;
 	dquot->dq_type = type;
 	atomic_set(&dquot->dq_count, 1);
@@ -732,13 +763,9 @@ static void drop_dquot_ref(struct super_block *sb, int type)
 {
 	LIST_HEAD(tofree_head);
 
-	/* We need to be guarded against prune_icache to reach all the
-	 * inodes - otherwise some can be on the local list of prune_icache */
-	down(&iprune_sem);
 	down_write(&sb_dqopt(sb)->dqptr_sem);
 	remove_dquot_ref(sb, type, &tofree_head);
 	up_write(&sb_dqopt(sb)->dqptr_sem);
-	up(&iprune_sem);
 	put_dquot_list(&tofree_head);
 }
 

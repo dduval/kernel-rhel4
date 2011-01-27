@@ -73,6 +73,42 @@ int sdp_debug_level;
 module_param_named(debug_level, sdp_debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "Enable debug tracing if > 0.");
 #endif
+#ifdef CONFIG_INFINIBAND_SDP_DEBUG
+int sdp_data_debug_level;
+
+module_param_named(data_debug_level, sdp_data_debug_level, int, 0644);
+MODULE_PARM_DESC(data_debug_level, "Enable data path debug tracing if > 0.");
+#endif
+
+static int send_poll_hit;
+
+module_param_named(send_poll_hit, send_poll_hit, int, 0644);
+MODULE_PARM_DESC(send_poll_hit, "How many times send poll helped.");
+
+static int send_poll_miss;
+
+module_param_named(send_poll_miss, send_poll_miss, int, 0644);
+MODULE_PARM_DESC(send_poll_miss, "How many times send poll missed.");
+
+static int recv_poll_hit;
+
+module_param_named(recv_poll_hit, recv_poll_hit, int, 0644);
+MODULE_PARM_DESC(recv_poll_hit, "How many times recv poll helped.");
+
+static int recv_poll_miss;
+
+module_param_named(recv_poll_miss, recv_poll_miss, int, 0644);
+MODULE_PARM_DESC(recv_poll_miss, "How many times recv poll missed.");
+
+static int send_poll = 100;
+
+module_param_named(send_poll, send_poll, int, 0644);
+MODULE_PARM_DESC(send_poll, "How many times to poll send.");
+
+static int recv_poll = 1000;
+
+module_param_named(recv_poll, recv_poll, int, 0644);
+MODULE_PARM_DESC(recv_poll, "How many times to poll recv.");
 
 struct workqueue_struct *sdp_workqueue;
 
@@ -114,35 +150,15 @@ static int sdp_get_port(struct sock *sk, unsigned short snum)
 	return 0;
 }
 
-/* TODO: linger? */
-void sdp_close_sk(struct sock *sk)
+static void sdp_destroy_qp(struct sdp_sock *ssk)
 {
-	struct sdp_sock *ssk = sdp_sk(sk);
-	struct rdma_cm_id *id = NULL;
 	struct ib_pd *pd = NULL;
 	struct ib_cq *cq = NULL;
-
-	sdp_dbg(sk, "%s\n", __func__);
-
-	lock_sock(sk);
-
-	sk->sk_send_head = NULL;
-	skb_queue_purge(&sk->sk_write_queue);
-
-	id = ssk->id;
-	if (ssk->id) {
-		id->qp = NULL;
-		ssk->id = NULL;
-		release_sock(sk);
-		rdma_destroy_id(id);
-	} else
-		release_sock(sk);
 
 	if (ssk->qp) {
 		pd = ssk->qp->pd;
 		cq = ssk->cq;
-		sdp_sk(sk)->cq = NULL;
-		flush_scheduled_work();
+		ssk->cq = NULL;
 		ib_destroy_qp(ssk->qp);
 
 		while (ssk->rx_head != ssk->rx_tail) {
@@ -161,10 +177,8 @@ void sdp_close_sk(struct sock *sk)
 		}
 	}
 
-	if (cq) {
+	if (cq)
 		ib_destroy_cq(cq);
-		flush_scheduled_work();
-	}
 
 	if (ssk->mr)
 		ib_dereg_mr(ssk->mr);
@@ -172,12 +186,89 @@ void sdp_close_sk(struct sock *sk)
 	if (pd)
 		ib_dealloc_pd(pd);
 
+	kfree(ssk->rx_ring);
+	kfree(ssk->tx_ring);
+}
+
+void sdp_reset_sk(struct sock *sk, int rc)
+{
+	struct sdp_sock *ssk = sdp_sk(sk);
+
+	sdp_dbg(sk, "%s\n", __func__);
+
+	if (ssk->cq)
+		sdp_poll_cq(ssk, ssk->cq);
+
+	if (!(sk->sk_shutdown & RCV_SHUTDOWN))
+		sdp_set_error(sk, rc);
+
+	sdp_destroy_qp(ssk);
+
+	memset((void *)&ssk->id, 0, sizeof(*ssk) - offsetof(typeof(*ssk), id));
+
+	if (ssk->time_wait) {
+		sdp_dbg(sk, "%s: destroy in time wait state\n", __func__);
+		sdp_time_wait_destroy_sk(ssk);
+	}
+
+	sk->sk_state_change(sk);
+}
+
+/* Like tcp_reset */
+/* When we get a reset (completion with error) we do this. */
+void sdp_reset(struct sock *sk)
+{
+	int err;
+
+	if (sk->sk_state != TCP_ESTABLISHED)
+		return;
+
+	/* We want the right error as BSD sees it (and indeed as we do). */
+
+	/* On fin we currently only set RCV_SHUTDOWN, so .. */
+	err = (sk->sk_shutdown & RCV_SHUTDOWN) ? EPIPE : ECONNRESET;
+
+	sdp_set_error(sk, -err);
+	wake_up(&sdp_sk(sk)->wq);
+	sk->sk_state_change(sk);
+}
+
+/* TODO: linger? */
+static void sdp_close_sk(struct sock *sk)
+{
+	struct sdp_sock *ssk = sdp_sk(sk);
+	struct rdma_cm_id *id = NULL;
+	sdp_dbg(sk, "%s\n", __func__);
+
+	lock_sock(sk);
+
+	sk->sk_send_head = NULL;
+	skb_queue_purge(&sk->sk_write_queue);
+        /*
+         * If sendmsg cached page exists, toss it.
+         */
+        if (sk->sk_sndmsg_page) {
+                __free_page(sk->sk_sndmsg_page);
+                sk->sk_sndmsg_page = NULL;
+        }
+
+	id = ssk->id;
+	if (ssk->id) {
+		id->qp = NULL;
+		ssk->id = NULL;
+		release_sock(sk);
+		rdma_destroy_id(id);
+		lock_sock(sk);
+	}
+
 	skb_queue_purge(&sk->sk_receive_queue);
 
-	kfree(sdp_sk(sk)->rx_ring);
-	kfree(sdp_sk(sk)->tx_ring);
+	sdp_destroy_qp(ssk);
 
 	sdp_dbg(sk, "%s done; releasing sock\n", __func__);
+	release_sock(sk);
+
+	flush_scheduled_work();
 }
 
 static void sdp_destruct(struct sock *sk)
@@ -282,6 +373,11 @@ static void sdp_close(struct sock *sk, long timeout)
 		sdp_post_sends(sdp_sk(sk), 0);
 	}
 
+	/* TODO: state should move to CLOSE or CLOSE_WAIT etc on disconnect.
+	   Since it currently doesn't, do it here to avoid blocking below. */
+	if (!sdp_sk(sk)->id)
+		sdp_set_state(sk, TCP_CLOSE);
+
 	sk_stream_wait_close(sk, timeout);
 
 adjudge_to_death:
@@ -359,6 +455,7 @@ static int sdp_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		rc = sdp_get_port(sk, 0);
 		if (rc)
 			return rc;
+		inet_sk(sk)->sport = htons(inet_sk(sk)->num);
 	}
 
 	sdp_dbg(sk, "%s %u.%u.%u.%u:%hu -> %u.%u.%u.%u:%hu\n", __func__,
@@ -485,11 +582,18 @@ static struct sock *sdp_accept(struct sock *sk, int flags, int *err)
 	newssk->parent = NULL;
 	sk_acceptq_removed(sk);
 	newsk = &newssk->isk.sk;
-	sdp_dbg(sk, "%s: ib_req_notify_cq\n", __func__);
-	ib_req_notify_cq(newssk->cq, IB_CQ_NEXT_COMP);
-	/* TODO: poll cq here */
 out:
 	release_sock(sk);
+	if (newsk) {
+		lock_sock(newsk);
+		if (newssk->cq) {
+			sdp_dbg(newsk, "%s: ib_req_notify_cq\n", __func__);
+			newssk->poll_cq = 1;
+			ib_req_notify_cq(newssk->cq, IB_CQ_NEXT_COMP);
+			sdp_poll_cq(newssk, newssk->cq);
+		}
+		release_sock(newsk);
+	}
 	sdp_dbg(sk, "%s: status %d sk %p newsk %p\n", __func__,
 		*err, sk, newsk);
 	return newsk;
@@ -500,15 +604,47 @@ out_err:
 	goto out;
 }
 
+/* Like tcp_ioctl */
 static int sdp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 {
+	struct sdp_sock *ssk = sdp_sk(sk);
+	int answ;
+
 	sdp_dbg(sk, "%s\n", __func__);
+
+	switch (cmd) {
+	case SIOCINQ:
+		if (sk->sk_state == TCP_LISTEN)
+			return -EINVAL;
+
+		lock_sock(sk);
+		if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))
+			answ = 0;
+		else if (sock_flag(sk, SOCK_URGINLINE) ||
+			 !ssk->urg_data ||
+			 before(ssk->urg_seq, ssk->copied_seq) ||
+			 !before(ssk->urg_seq, ssk->rcv_nxt)) {
+			answ = ssk->rcv_nxt - ssk->copied_seq;
+
+			/* Subtract 1, if FIN is in queue. */
+			if (answ && !skb_queue_empty(&sk->sk_receive_queue))
+				answ -=
+		        ((struct sk_buff *)sk->sk_receive_queue.prev)->h.raw[0]
+		        == SDP_MID_DISCONN ? 1 : 0;
+		} else
+			answ = ssk->urg_seq - ssk->copied_seq;
+		release_sock(sk);
+		break;
+	case SIOCATMARK:
+		answ = ssk->urg_data && ssk->urg_seq == ssk->copied_seq;
+		break;
+	default:
+		return -ENOIOCTLCMD;
+	}
 	/* TODO: Need to handle:
-	         case SIOCINQ:
-		 case SIOCOUTQ:
-		 case SIOCATMARK:
+	   case SIOCOUTQ:
 	 */
-	return -ENOIOCTLCMD;
+	return put_user(answ, (int __user *)arg); 
 }
 
 void sdp_destroy_work(void *data)
@@ -541,6 +677,13 @@ void sdp_time_wait_work(void *data)
 	sock_put(data);
 }
 
+void sdp_time_wait_destroy_sk(struct sdp_sock *ssk)
+{
+	ssk->time_wait = 0;
+	ssk->isk.sk.sk_state = TCP_CLOSE;
+	queue_work(sdp_workqueue, &ssk->destroy_work);
+}
+
 static int sdp_init_sock(struct sock *sk)
 {
 	struct sdp_sock *ssk = sdp_sk(sk);
@@ -552,10 +695,6 @@ static int sdp_init_sock(struct sock *sk)
 	INIT_WORK(&ssk->time_wait_work, sdp_time_wait_work, sk);
 	INIT_WORK(&ssk->destroy_work, sdp_destroy_work, sk);
 
-	ssk->tx_head = 1;
-	ssk->tx_tail = 1;
-	ssk->rx_head = 1;
-	ssk->rx_tail = 1;
 	sk->sk_route_caps |= NETIF_F_SG | NETIF_F_NO_CSUM;
 	return 0;
 }
@@ -581,8 +720,19 @@ static void sdp_shutdown(struct sock *sk, int how)
 	sdp_post_sends(ssk, 0);
 }
 
+static void sdp_mark_push(struct sdp_sock *ssk, struct sk_buff *skb)
+{
+	TCP_SKB_CB(skb)->flags |= TCPCB_FLAG_PSH;
+	ssk->pushed_seq = ssk->write_seq;
+}
+
 static inline void sdp_push_pending_frames(struct sock *sk)
 {
+	struct sk_buff *skb = sk->sk_send_head;
+	if (skb) {
+		sdp_mark_push(sdp_sk(sk), skb);
+		sdp_post_sends(sdp_sk(sk), 0);
+	}
 }
 
 /* SOL_SOCKET level options are handled by sock_setsockopt */
@@ -691,6 +841,33 @@ static int sdp_getsockopt(struct sock *sk, int level, int optname,
 	return 0;
 }
 
+static inline int poll_recv_cq(struct sock *sk)
+{
+	int i;
+	if (sdp_sk(sk)->cq) {
+		for (i = 0; i < recv_poll; ++i)
+			if (!sdp_poll_cq(sdp_sk(sk), sdp_sk(sk)->cq)) {
+				++recv_poll_hit;
+				return 0;
+			}
+		++recv_poll_miss;
+	}
+	return 1;
+}
+
+static inline void poll_send_cq(struct sock *sk)
+{
+	int i;
+	if (sdp_sk(sk)->cq) {
+		for (i = 0; i < send_poll; ++i)
+			if (!sdp_poll_cq(sdp_sk(sk), sdp_sk(sk)->cq)) {
+				++send_poll_hit;
+				return;
+			}
+		++send_poll_miss;
+	}
+}
+
 /* Like tcp_recv_urg */
 /*
  *	Handle reading urgent data. BSD has very simple semantics for
@@ -702,6 +879,8 @@ static int sdp_recv_urg(struct sock *sk, long timeo,
 			int *addr_len)
 {
 	struct sdp_sock *ssk = sdp_sk(sk);
+
+	poll_recv_cq(sk);
 
 	/* No URG data to read. */
 	if (sock_flag(sk, SOCK_URGINLINE) || !ssk->urg_data ||
@@ -743,12 +922,6 @@ static int sdp_recv_urg(struct sock *sk, long timeo,
 	return -EAGAIN;
 }
 
-static inline int sdp_has_urgent_data(struct sk_buff *skb)
-{
-	/* TODO: handle inline urgent data */
-	return 0;
-}
-
 static void sdp_rcv_space_adjust(struct sock *sk)
 {
 	sdp_post_recvs(sdp_sk(sk));
@@ -767,20 +940,24 @@ static int forced_push(struct sdp_sock *sk)
 	return 0;
 }
 
-static void sdp_mark_push(struct sdp_sock *ssk, struct sk_buff *skb)
-{
-	TCP_SKB_CB(skb)->flags |= TCPCB_FLAG_PSH;
-	ssk->pushed_seq = ssk->write_seq;
-}
-
 static inline int select_size(struct sock *sk, struct sdp_sock *ssk)
 {
 	return 0;
 }
 
+static inline void sdp_mark_urg(struct sock *sk, struct sdp_sock *ssk, int flags)
+{
+	if (unlikely(flags & MSG_OOB)) {
+		struct sk_buff *skb = sk->sk_write_queue.prev;
+		TCP_SKB_CB(skb)->flags |= TCPCB_URG;
+	}
+}
+
 static inline void sdp_push(struct sock *sk, struct sdp_sock *ssk, int flags,
 			    int mss_now, int nonagle)
 {
+	if (sk->sk_send_head)
+		sdp_mark_urg(sk, ssk, flags);
 	sdp_post_sends(ssk, nonagle);
 }
 
@@ -816,7 +993,7 @@ int sdp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	long timeo;
 
 	lock_sock(sk);
-	sdp_dbg(sk, "%s\n", __func__);
+	sdp_dbg_data(sk, "%s\n", __func__);
 
 	flags = msg->msg_flags;
 	timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
@@ -883,6 +1060,13 @@ new_segment:
 			if (copy > seglen)
 				copy = seglen;
 
+			/* OOB data byte should be the last byte of
+			   the data payload */
+			if (unlikely(TCP_SKB_CB(skb)->flags & TCPCB_URG) &&
+			    !(flags & MSG_OOB)) {
+				sdp_mark_push(ssk, skb);
+				goto new_segment;
+			}
 			/* Where to copy to? */
 			if (skb_tailroom(skb) > 0) {
 				/* We have some space in skb head. Superb! */
@@ -968,7 +1152,7 @@ new_segment:
 
 			ssk->write_seq += copy;
 			TCP_SKB_CB(skb)->end_seq += copy;
-			skb_shinfo(skb)->tso_segs = 0;
+			/*unused: skb_shinfo(skb)->gso_segs = 0;*/
 
 			from += copy;
 			copied += copy;
@@ -1003,6 +1187,7 @@ wait_for_memory:
 out:
 	if (copied)
 		sdp_push(sk, ssk, flags, mss_now, ssk->nonagle);
+	poll_send_cq(sk);
 	release_sock(sk);
 	return copied;
 
@@ -1027,20 +1212,22 @@ out_err:
 /* Maybe use skb_recv_datagram here? */
 /* Note this does not seem to handle vectored messages. Relevant? */
 static int sdp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
-					size_t len, int noblock, int flags, 
-					int *addr_len)
+		       size_t len, int noblock, int flags, 
+		       int *addr_len)
 {
 	struct sk_buff *skb = NULL;
+	struct sdp_sock *ssk = sdp_sk(sk);
 	long timeo;
 	int target;
 	unsigned long used;
 	int err;
-	int offset = sdp_sk(sk)->offset;
+	u32 peek_seq;
+	u32 *seq;
 	int copied = 0;
-	int urg_data = 0;
+	int rc;
 
 	lock_sock(sk);
-	sdp_dbg(sk, "%s\n", __func__);
+	sdp_dbg_data(sk, "%s\n", __func__);
 
 	err = -ENOTCONN;
 	if (sk->sk_state == TCP_LISTEN)
@@ -1051,26 +1238,48 @@ static int sdp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	if (flags & MSG_OOB)
 		goto recv_urg;
 
+	seq = &ssk->copied_seq;
+	if (flags & MSG_PEEK) {
+		peek_seq = ssk->copied_seq;
+		seq = &peek_seq;
+	}
+
 	target = sock_rcvlowat(sk, flags & MSG_WAITALL, len);
 
 	do {
+		u32 offset;
 
-                /* Are we at urgent data? Stop if we have read anything or have SIGURG pending. */
-                if (urg_data) {
-                        if (copied)
-                                break;
-                        if (signal_pending(current)) {
-                                copied = timeo ? sock_intr_errno(timeo) : -EAGAIN;
-                                break;
-                        }
-                }
+		/* Are we at urgent data? Stop if we have read anything or have SIGURG pending. */
+		if (ssk->urg_data && ssk->urg_seq == *seq) {
+			if (copied)
+				break;
+			if (signal_pending(current)) {
+				copied = timeo ? sock_intr_errno(timeo) : -EAGAIN;
+				break;
+			}
+		}
 
 		skb = skb_peek(&sk->sk_receive_queue);
-		if (skb) {
+		do {
+			if (!skb)
+				break;
+
 			if (skb->h.raw[0] == SDP_MID_DISCONN)
 				goto found_fin_ok;
-			goto found_ok_skb;
-		}
+
+			if (before(*seq, TCP_SKB_CB(skb)->seq)) {
+				printk(KERN_INFO "recvmsg bug: copied %X "
+				       "seq %X\n", *seq, TCP_SKB_CB(skb)->seq);
+				break;
+			}
+
+			offset = *seq - TCP_SKB_CB(skb)->seq;
+			if (offset < skb->len)
+				goto found_ok_skb;
+
+			BUG_TRAP(flags & MSG_PEEK);
+			skb = skb->next;
+		} while (skb != (struct sk_buff *)&sk->sk_receive_queue);
 
 		if (copied >= target)
 			break;
@@ -1117,27 +1326,43 @@ static int sdp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 
-		if (copied >= target) {
+		rc = poll_recv_cq(sk);
+
+		if (copied >= target && !recv_poll) {
 			/* Do not sleep, just process backlog. */
 			release_sock(sk);
 			lock_sock(sk);
-		} else {
-			sdp_dbg(sk, "%s: sk_wait_data %ld\n", __func__, timeo);
+		} else if (rc) {
+			sdp_dbg_data(sk, "%s: sk_wait_data %ld\n", __func__, timeo);
 			sk_wait_data(sk, &timeo);
 		}
 		continue;
 
 	found_ok_skb:
-		sdp_dbg(sk, "%s: found_ok_skb len %d\n", __func__, skb->len);
-		sdp_dbg(sk, "%s: len %Zd offset %d\n", __func__, len, offset);
-		sdp_dbg(sk, "%s: copied %d target %d\n", __func__, copied, target);
-		urg_data = sdp_has_urgent_data(skb);
+		sdp_dbg_data(sk, "%s: found_ok_skb len %d\n", __func__, skb->len);
+		sdp_dbg_data(sk, "%s: len %Zd offset %d\n", __func__, len, offset);
+		sdp_dbg_data(sk, "%s: copied %d target %d\n", __func__, copied, target);
 		used = skb->len - offset;
 		if (len < used)
-		       	used = len;
+			used = len;
 
-		sdp_dbg(sk, "%s: used %ld\n", __func__, used);
+		sdp_dbg_data(sk, "%s: used %ld\n", __func__, used);
 
+		if (ssk->urg_data) {
+			u32 urg_offset = ssk->urg_seq - *seq;
+			if (urg_offset < used) {
+				if (!urg_offset) {
+					if (!sock_flag(sk, SOCK_URGINLINE)) {
+						++*seq;
+						offset++;
+						used--;
+						if (!used)
+							goto skip_copy;
+					}
+				} else
+					used = urg_offset;
+			}
+		}
 		if (!(flags & MSG_TRUNC)) {
 			int err;
 			err = skb_copy_datagram_iovec(skb, offset,
@@ -1154,33 +1379,31 @@ static int sdp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 
-                copied += used;
-                len -= used;
-		offset += used;
-		sdp_dbg(sk, "%s: done copied %d target %d\n", __func__, copied, target);
+		copied += used;
+		len -= used;
+		*seq += used;
+
+		sdp_dbg_data(sk, "%s: done copied %d target %d\n", __func__, copied, target);
 
 		sdp_rcv_space_adjust(sk);
-
-                if (offset < skb->len)
-			continue; /* TODO: break? */
-
-                if (!(flags & MSG_PEEK))
-			sk_eat_skb(sk, skb);
-
+skip_copy:
+		if (ssk->urg_data && after(ssk->copied_seq, ssk->urg_seq))
+			ssk->urg_data = 0;
+		if (used + offset < skb->len)
+			continue;
 		offset = 0;
-		skb = NULL;
+
+		if (!(flags & MSG_PEEK))
+			sk_eat_skb(sk, skb, 0);
 
 		continue;
 found_fin_ok:
+		++*seq;
 		if (!(flags & MSG_PEEK))
-			sk_eat_skb(sk, skb);
+			sk_eat_skb(sk, skb, 0);
 
-		offset = 0;
-		skb = NULL;
 		break;
 	} while (len > 0);
-
-	sdp_sk(sk)->offset = skb && !(flags & MSG_PEEK) ? offset : 0;
 
 	release_sock(sk);
 	return copied;
@@ -1205,6 +1428,7 @@ static int sdp_listen(struct sock *sk, int backlog)
 		rc = sdp_get_port(sk, 0);
 		if (rc)
 			return rc;
+		inet_sk(sk)->sport = htons(inet_sk(sk)->num);
 	}
 
 	rc = rdma_listen(ssk->id, backlog);
@@ -1266,7 +1490,7 @@ static unsigned int sdp_poll(struct file *file, struct socket *socket,
 			     struct poll_table_struct *wait)
 {
 	int mask;
-	sdp_dbg(socket->sk, "%s\n", __func__);
+	sdp_dbg_data(socket->sk, "%s\n", __func__);
 
 	mask = datagram_poll(file, socket, wait);
 	/* TODO: Slightly ugly: it would be nicer if there was function
@@ -1283,6 +1507,21 @@ static unsigned int sdp_poll(struct file *file, struct socket *socket,
 static void sdp_enter_memory_pressure(void)
 {
 	sdp_dbg(NULL, "%s\n", __func__);
+}
+
+void sdp_urg(struct sdp_sock *ssk, struct sk_buff *skb)
+{
+	struct sock *sk = &ssk->isk.sk;
+	u8 tmp;
+	u32 ptr = skb->len - 1;
+
+	ssk->urg_seq = TCP_SKB_CB(skb)->seq + ptr;
+
+	if (skb_copy_bits(skb, ptr, &tmp, 1))
+		BUG();
+	ssk->urg_data = TCP_URG_VALID | tmp;
+	if (!sock_flag(sk, SOCK_DEAD))
+		sk->sk_data_ready(sk, 0);
 }
 
 static atomic_t sockets_allocated;

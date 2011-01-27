@@ -185,6 +185,8 @@ static int ipoib_change_mtu(struct net_device *dev, int new_mtu)
 
 	dev->mtu = min(priv->mcast_mtu, priv->admin_mtu);
 
+	queue_work(ipoib_workqueue, &priv->flush_task);
+
 	return 0;
 }
 
@@ -339,7 +341,8 @@ void ipoib_flush_paths(struct net_device *dev)
 	struct ipoib_path *path, *tp;
 	LIST_HEAD(remove_list);
 
-	spin_lock_irq(&priv->lock);
+	spin_lock_irq(&priv->tx_lock);
+	spin_lock(&priv->lock);
 
 	list_splice(&priv->path_list, &remove_list);
 	INIT_LIST_HEAD(&priv->path_list);
@@ -350,12 +353,15 @@ void ipoib_flush_paths(struct net_device *dev)
 	list_for_each_entry_safe(path, tp, &remove_list, list) {
 		if (path->query)
 			ib_sa_cancel_query(path->query_id, path->query);
-		spin_unlock_irq(&priv->lock);
+		spin_unlock(&priv->lock);
+		spin_unlock_irq(&priv->tx_lock);
 		wait_for_completion(&path->done);
 		path_free(dev, path);
-		spin_lock_irq(&priv->lock);
+		spin_lock_irq(&priv->tx_lock);
+		spin_lock(&priv->lock);
 	}
-	spin_unlock_irq(&priv->lock);
+	spin_unlock(&priv->lock);
+	spin_unlock_irq(&priv->tx_lock);
 }
 
 static void path_rec_completion(int status,
@@ -407,6 +413,8 @@ static void path_rec_completion(int status,
 		list_for_each_entry(neigh, &path->neigh_list, list) {
 			kref_get(&path->ah->ref);
 			neigh->ah = path->ah;
+			memcpy(&neigh->dgid.raw, &path->pathrec.dgid.raw,
+			       sizeof(union ib_gid));
 
 			while ((skb = __skb_dequeue(&neigh->queue)))
 				__skb_queue_tail(&skqueue, skb);
@@ -453,15 +461,39 @@ static int path_rec_start(struct net_device *dev,
 			  struct ipoib_path *path)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
+	ib_sa_comp_mask comp_mask = IB_SA_PATH_REC_MTU_SELECTOR | IB_SA_PATH_REC_MTU;
 
-	ipoib_dbg(priv, "Start path record lookup for " IPOIB_GID_FMT "\n",
-		  IPOIB_GID_ARG(path->pathrec.dgid));
+	path->pathrec.mtu_selector = IB_SA_GT;
+
+	switch (roundup_pow_of_two(dev->mtu + IPOIB_ENCAP_LEN)) {
+	case 512:
+		path->pathrec.mtu = IB_MTU_256;
+		break;
+	case 1024:
+		path->pathrec.mtu = IB_MTU_512;
+		break;
+	case 2048:
+		path->pathrec.mtu = IB_MTU_1024;
+		break;
+	case 4096:
+		path->pathrec.mtu = IB_MTU_2048;
+		break;
+	default:
+		/* Wildcard everything */
+		comp_mask = 0;
+		path->pathrec.mtu = 0;
+		path->pathrec.mtu_selector = 0;
+	}
+
+	ipoib_dbg(priv, "Start path record lookup for " IPOIB_GID_FMT " MTU > %d\n",
+		  IPOIB_GID_ARG(path->pathrec.dgid),
+		  comp_mask ? ib_mtu_enum_to_int(path->pathrec.mtu) : 0);
 
 	init_completion(&path->done);
 
 	path->query_id =
 		ib_sa_path_rec_get(priv->ca, priv->port,
-				   &path->pathrec,
+				   &path->pathrec, comp_mask    |
 				   IB_SA_PATH_REC_DGID		|
 				   IB_SA_PATH_REC_SGID		|
 				   IB_SA_PATH_REC_NUMB_PATH	|
@@ -513,6 +545,8 @@ static void neigh_add_path(struct sk_buff *skb, struct net_device *dev)
 	if (path->ah) {
 		kref_get(&path->ah->ref);
 		neigh->ah = path->ah;
+		memcpy(&neigh->dgid.raw, &path->pathrec.dgid.raw,
+		       sizeof(union ib_gid));
 
 		ipoib_send(dev, skb, path->ah,
 			   be32_to_cpup((__be32 *) skb->dst->neighbour->ha));
@@ -636,6 +670,25 @@ static int ipoib_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		neigh = *to_ipoib_neigh(skb->dst->neighbour);
 
 		if (likely(neigh->ah)) {
+			if (unlikely(memcmp(&neigh->dgid.raw,
+					    skb->dst->neighbour->ha + 4,
+					    sizeof(union ib_gid)))) {
+				spin_lock(&priv->lock);
+				/*
+				 * It's safe to call ipoib_put_ah() inside
+				 * priv->lock here, because we know that
+				 * path->ah will always hold one more reference,
+				 * so ipoib_put_ah() will never do more than
+				 * decrement the ref count.
+				 */
+				ipoib_put_ah(neigh->ah);
+				list_del(&neigh->list);
+				ipoib_neigh_free(neigh);
+				spin_unlock(&priv->lock);
+				ipoib_path_lookup(skb, dev);
+				goto out;
+			}
+
 			ipoib_send(dev, skb, neigh->ah,
 				   be32_to_cpup((__be32 *) skb->dst->neighbour->ha));
 			goto out;

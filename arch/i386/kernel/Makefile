@@ -69,3 +69,14 @@ $(obj)/built-in.o: ld_flags += -R $(obj)/vsyscall-syms.o
 SYSCFLAGS_vsyscall-syms.o = -m32 -r
 $(obj)/vsyscall-syms.o: $(src)/vsyscall.lds $(obj)/vsyscall-sysenter.o FORCE
 	$(call if_changed,syscall)
+
+ifdef CONFIG_XEN
+include $(srctree)/scripts/Makefile.xen
+
+n-obj-xen := i8259.o timers/ reboot.o smpboot.o trampoline.o \
+		doublefault.o entry_trampoline.o
+obj-y += fixup.o
+obj-y := $(call filterxen, $(obj-y), $(n-obj-xen))
+obj-y := $(call cherrypickxen, $(obj-y))
+extra-y := $(call cherrypickxen, $(extra-y))
+endif

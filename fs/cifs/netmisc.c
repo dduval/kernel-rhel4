@@ -84,11 +84,11 @@ static const struct smb_to_posix_error mapping_table_ERRDOS[] = {
 
 static const struct smb_to_posix_error mapping_table_ERRSRV[] = {
 	{ERRerror, -EIO},
-	{ERRbadpw, -EPERM},
+	{ERRbadpw, -EACCES},  /* was EPERM */
 	{ERRbadtype, -EREMOTE},
 	{ERRaccess, -EACCES},
 	{ERRinvtid, -ENXIO},
-	{ERRinvnetname, -ENODEV},
+	{ERRinvnetname, -ENXIO},
 	{ERRinvdevice, -ENXIO},
 	{ERRqfull, -ENOSPC},
 	{ERRqtoobig, -ENOSPC},
@@ -133,7 +133,6 @@ static const struct smb_to_posix_error mapping_table_ERRHRD[] = {
 int
 cifs_inet_pton(int address_family, char *cp,void *dst)
 {
-	struct in_addr address;
 	int value;
 	int digit;
 	int i;
@@ -190,8 +189,7 @@ cifs_inet_pton(int address_family, char *cp,void *dst)
 	if (value > addr_class_max[end - bytes])
 		return 0;
 
-	address.s_addr = *((__be32 *) bytes) | htonl(value);
-	*((__be32 *)dst) = address.s_addr;
+	*((__be32 *)dst) = *((__be32 *) bytes) | htonl(value);
 	return 1; /* success */
 }
 
@@ -332,7 +330,7 @@ static const struct {
 	ERRHRD, ERRgeneral, NT_STATUS_ACCOUNT_RESTRICTION}, {
 	ERRSRV, 2241, NT_STATUS_INVALID_LOGON_HOURS}, {
 	ERRSRV, 2240, NT_STATUS_INVALID_WORKSTATION}, {
-	ERRSRV, 2242, NT_STATUS_PASSWORD_EXPIRED}, {
+	ERRSRV, ERRpasswordExpired, NT_STATUS_PASSWORD_EXPIRED}, {
 	ERRSRV, 2239, NT_STATUS_ACCOUNT_DISABLED}, {
 	ERRHRD, ERRgeneral, NT_STATUS_NONE_MAPPED}, {
 	ERRHRD, ERRgeneral, NT_STATUS_TOO_MANY_LUIDS_REQUESTED}, {
@@ -678,7 +676,7 @@ static const struct {
 	ERRDOS, 193, NT_STATUS_IMAGE_CHECKSUM_MISMATCH}, {
 	ERRHRD, ERRgeneral, NT_STATUS_LOST_WRITEBEHIND_DATA}, {
 	ERRHRD, ERRgeneral, NT_STATUS_CLIENT_SERVER_PARAMETERS_INVALID}, {
-	ERRSRV, 2242, NT_STATUS_PASSWORD_MUST_CHANGE}, {
+	ERRSRV, ERRpasswordExpired, NT_STATUS_PASSWORD_MUST_CHANGE}, {
 	ERRHRD, ERRgeneral, NT_STATUS_NOT_FOUND}, {
 	ERRHRD, ERRgeneral, NT_STATUS_NOT_TINY_STREAM}, {
 	ERRHRD, ERRgeneral, NT_STATUS_RECOVERY_FAILURE}, {
@@ -815,7 +813,7 @@ map_smb_to_linux_error(struct smb_hdr *smb)
 	if (smb->Flags2 & SMBFLG2_ERR_STATUS) {
 		/* translate the newer STATUS codes to old style errors and then to POSIX errors */
 		__u32 err = le32_to_cpu(smb->Status.CifsError);
-		if(cifsFYI)
+		if(cifsFYI & CIFS_RC)
 			cifs_print_status(err);
 		ntstatus_to_dos(err, &smberrclass, &smberrcode);
 	} else {
@@ -870,7 +868,14 @@ unsigned int
 smbCalcSize(struct smb_hdr *ptr)
 {
 	return (sizeof (struct smb_hdr) + (2 * ptr->WordCount) +
-		BCC(ptr));
+		2 /* size of the bcc field */ + BCC(ptr));
+}
+
+unsigned int
+smbCalcSize_LE(struct smb_hdr *ptr)
+{
+	return (sizeof (struct smb_hdr) + (2 * ptr->WordCount) +
+		2 /* size of the bcc field */ + le16_to_cpu(BCC_LE(ptr)));
 }
 
 /* The following are taken from fs/ntfs/util.c */
@@ -881,6 +886,8 @@ smbCalcSize(struct smb_hdr *ptr)
      * Convert the NT UTC (based 1601-01-01, in hundred nanosecond units)
      * into Unix UTC (based 1970-01-01, in seconds).
      */
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,5,0)
 struct timespec
 cifs_NTtimeToUnix(u64 ntutc)
 {
@@ -903,3 +910,4 @@ cifs_UnixTimeToNT(struct timespec t)
 	/* Convert to 100ns intervals and then add the NTFS time offset. */
 	return (u64) t.tv_sec * 10000000 + t.tv_nsec/100 + NTFS_TIME_OFFSET;
 }
+#endif

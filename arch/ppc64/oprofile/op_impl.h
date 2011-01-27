@@ -52,6 +52,11 @@
 /* enable sampling */
 #define MMCRA_SAMPLE_ENABLE	(1UL << (63 - 63))
 
+/* POWER6 stuff */
+#define MMCRA_POWER6_CLEAR 0x0000002EUL
+#define MMCRA_POWER6_SIHV 0x0000040000000000ULL
+#define MMCRA_POWER6_SIPR 0x0000020000000000ULL
+
 /* Per-counter configuration as set via oprofilefs.  */
 struct op_counter_config {
 	unsigned long valid;

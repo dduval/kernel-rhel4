@@ -321,7 +321,7 @@ config FB_VESA
 
 config VIDEO_SELECT
 	bool
-	depends on FB_VESA
+	depends on FB_VESA && !XEN
 	default y
 
 config FB_HGA

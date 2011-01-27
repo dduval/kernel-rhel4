@@ -9,6 +9,8 @@ extern int pci_bus_alloc_resource(struct pci_bus *bus, struct resource *res,
 				  void (*alignf)(void *, struct resource *,
 					  	 unsigned long, unsigned long),
 				  void *alignf_data);
+extern void disable_msi_mode(struct pci_dev *dev, int pos, int type);
+
 extern int pci_user_read_config_byte(struct pci_dev *dev, int where, u8 *val);
 extern int pci_user_read_config_word(struct pci_dev *dev, int where, u16 *val);
 extern int pci_user_read_config_dword(struct pci_dev *dev, int where, u32 *val);
@@ -36,6 +38,14 @@ extern int pci_remove_device_safe(struct pci_dev *dev);
 extern unsigned char pci_max_busnr(void);
 extern unsigned char pci_bus_max_busnr(struct pci_bus *bus);
 extern int pci_bus_find_capability (struct pci_bus *bus, unsigned int devfn, int cap);
+
+#ifdef CONFIG_PCI_MSI
+extern int pci_msi_quirk;
+#else
+#define pci_msi_quirk 0
+#endif
+
+extern unsigned int pci_pm_d3_delay;
 
 struct pci_dev_wrapped {
 	struct pci_dev	*dev;
@@ -68,5 +78,14 @@ extern int pci_visit_dev(struct pci_visit *fn,
 /* Lock for read/write access to pci device and bus lists */
 extern spinlock_t pci_bus_lock;
 
+static inline int pci_no_d1d2(struct pci_dev *dev)
+{
+	unsigned int parent_dstates = 0;
+
+	if (dev->bus->self)
+		parent_dstates = dev->bus->self->no_d1d2;
+	return (dev->no_d1d2 || parent_dstates);
+
+}
 extern int pcie_mch_quirk;
 extern struct device_attribute pci_dev_attrs[];

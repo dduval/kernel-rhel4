@@ -1,5 +1,5 @@
 /* Linux driver for Philips webcam
-   (C) 2004      Luc Saillard (luc@saillard.org)
+   (C) 2004-2006 Luc Saillard (luc@saillard.org)
 
    NOTE: this version of pwc is an unofficial (modified) release of pwc & pcwx
    driver and thus may have bugs that are not present in the original version.
@@ -27,10 +27,17 @@
 #ifndef PWC_DEC1_H
 #define PWC_DEC1_H
 
+#include "pwc.h"
+
+struct pwc_dec1_private
+{
+	int version;
+
+};
+
+int  pwc_dec1_alloc(struct pwc_device *pwc);
 void pwc_dec1_init(int type, int release, void *buffer, void *private_data);
 void pwc_dec1_exit(void);
 
 #endif
-
-
 

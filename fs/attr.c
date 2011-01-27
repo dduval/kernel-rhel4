@@ -72,18 +72,11 @@ int inode_setattr(struct inode * inode, struct iattr * attr)
 
 	audit_notify_watch(inode, MAY_WRITE);	
 
-	if (ia_valid & ATTR_SIZE) {
-		if (attr->ia_size != i_size_read(inode)) {
-			error = vmtruncate(inode, attr->ia_size);
-			if (error || (ia_valid == ATTR_SIZE))
-				goto out;
-		} else {
-			/*
-			 * We skipped the truncate but must still update
-			 * timestamps
-			 */
-			ia_valid |= ATTR_MTIME|ATTR_CTIME;
-		}
+	if (ia_valid & ATTR_SIZE &&
+	    attr->ia_size != i_size_read(inode)) {
+		error = vmtruncate(inode, attr->ia_size);
+		if (error || (ia_valid == ATTR_SIZE))
+			goto out;
 	}
 
 	if (ia_valid & ATTR_UID)
@@ -177,6 +170,9 @@ int notify_change(struct dentry * dentry, struct iattr * attr)
 	if (!attr->ia_valid)
 		return 0;
 
+        if (ia_valid & ATTR_SIZE)
+                down_write(&dentry->d_inode->i_alloc_sem);
+
 	if (inode->i_op && inode->i_op->setattr) {
 		audit_notify_watch(inode, MAY_WRITE);
 		error = security_inode_setattr(dentry, attr);
@@ -194,6 +190,10 @@ int notify_change(struct dentry * dentry, struct iattr * attr)
 				error = inode_setattr(inode, attr);
 		}
 	}
+
+        if (ia_valid & ATTR_SIZE)
+                up_write(&dentry->d_inode->i_alloc_sem);
+
 	if (!error) {
 		unsigned long dn_mask = setattr_mask(ia_valid);
 		if (dn_mask)

@@ -69,6 +69,8 @@ struct sctp_association *__sctp_rcv_lookup(struct sk_buff *skb,
 				      struct sctp_transport **transportp);
 struct sctp_endpoint *__sctp_rcv_lookup_endpoint(const union sctp_addr *laddr);
 
+static void sctp_add_backlog(struct sock *sk, struct sctp_chunk *chunk);
+
 
 /* Calculate the SCTP checksum of an SCTP packet.  */
 static inline int sctp_rcv_checksum(struct sk_buff *skb)
@@ -119,6 +121,11 @@ int sctp_rcv(struct sk_buff *skb)
 
 	SCTP_INC_STATS_BH(SCTP_MIB_INSCTPPACKS);
 
+	if (skb_is_nonlinear(skb)) {
+		if (skb_linearize(skb, GFP_ATOMIC))
+			goto discard_it;
+	}
+
 	sh = (struct sctphdr *) skb->h.raw;
 
 	/* Pull up the IP and SCTP headers. */
@@ -168,7 +175,6 @@ int sctp_rcv(struct sk_buff *skb)
 	 */
 	if (sk->sk_bound_dev_if && (sk->sk_bound_dev_if != af->skb_iif(skb)))
 	{
-		sock_put(sk);
 		if (asoc) {
 			sctp_association_put(asoc);
 			asoc = NULL;
@@ -179,7 +185,6 @@ int sctp_rcv(struct sk_buff *skb)
 		sk = sctp_get_ctl_sock();
 		ep = sctp_sk(sk)->ep;
 		sctp_endpoint_hold(ep);
-		sock_hold(sk);
 		rcvr = &ep->base;
 	}
 
@@ -238,19 +243,16 @@ int sctp_rcv(struct sk_buff *skb)
 	sctp_bh_lock_sock(sk);
 
 	if (sock_owned_by_user(sk))
-		sk_add_backlog(sk, (struct sk_buff *) chunk);
+		sctp_add_backlog(sk, chunk);
 	else
-		sctp_backlog_rcv(sk, (struct sk_buff *) chunk);
+		sctp_inq_push(&chunk->rcvr->inqueue, chunk);
 
-	/* Release the sock and any reference counts we took in the
-	 * lookup calls.
-	 */
 	sctp_bh_unlock_sock(sk);
 	if (asoc)
 		sctp_association_put(asoc);
 	else
 		sctp_endpoint_put(ep);
-	sock_put(sk);
+
 	return ret;
 
 discard_it:
@@ -258,7 +260,6 @@ discard_it:
 	return ret;
 
 discard_release:
-	sock_put(sk);
 	/* Release any structures we may be holding. */
 	if (asoc) {
 		sctp_association_put(asoc);
@@ -278,16 +279,83 @@ int sctp_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 {
 	struct sctp_chunk *chunk;
 	struct sctp_inq *inqueue;
-
+	struct sctp_ep_common *rcvr = NULL;
+	int backloged = 0;
 	/* One day chunk will live inside the skb, but for
 	 * now this works.
 	 */
 	chunk = (struct sctp_chunk *) skb;
 	inqueue = &chunk->rcvr->inqueue;
+	rcvr = chunk->rcvr;
 
-	sctp_inq_push(inqueue, chunk);
-        return 0;
+	/* If the rcvr is dead then the association or endpoint
+	 * has been deleted and we can safely drop the chunk
+	 * and refs that we are holding.
+	 */
+	if (rcvr->dead) {
+		sctp_chunk_free(chunk);
+		goto done;
+	}
+ 
+	if (unlikely(rcvr->sk != sk)) {
+		/* In this case, the association moved from one socket to
+		 * another.  We are currently sitting on the backlog of the
+		 * old socket, so we need to move.
+		 * However, since we are here in the process context we
+		 * need to take make sure that the user doesn't own
+		 * the new socket when we process the packet.
+		 * If the new socket is user-owned, queue the chunk to the
+		 * backlog of the new socket without dropping any refs.
+		 * Otherwise, we can safely push the chunk on the inqueue.
+		 */
+ 
+		sk = rcvr->sk;
+		sctp_bh_lock_sock(sk);
+
+		if (sock_owned_by_user(sk)) {
+			sk_add_backlog(sk, skb);
+			backloged = 1;
+		} else
+			sctp_inq_push(inqueue, chunk);
+ 
+		sctp_bh_unlock_sock(sk);
+ 
+		/* If the chunk was backloged again, don't drop refs */
+		if (backloged)
+			return 0;
+	} else {
+		sctp_inq_push(inqueue, chunk);
+	}
+ 
+ done:
+	/* Release the refs we took in sctp_add_backlog */
+	if (SCTP_EP_TYPE_ASSOCIATION == rcvr->type)
+		sctp_association_put(sctp_assoc(rcvr));
+	else if (SCTP_EP_TYPE_SOCKET == rcvr->type)
+		sctp_endpoint_put(sctp_ep(rcvr));
+	else
+		BUG();
+
+	return 0;
 }
+
+static void sctp_add_backlog(struct sock *sk, struct sctp_chunk *chunk)
+{
+	struct sctp_ep_common *rcvr = chunk->rcvr;
+
+	/* Hold the assoc/ep while hanging on the backlog queue.
+	* This way, we know structures we need will not disappear from us
+	*/
+	if (SCTP_EP_TYPE_ASSOCIATION == rcvr->type)
+		sctp_association_hold(sctp_assoc(rcvr));
+	else if (SCTP_EP_TYPE_SOCKET == rcvr->type)
+		sctp_endpoint_hold(sctp_ep(rcvr));
+	else
+		BUG();
+
+	sk_add_backlog(sk, (struct sk_buff *)chunk);
+}
+
 
 /* Handle icmp frag needed error. */
 void sctp_icmp_frag_needed(struct sock *sk, struct sctp_association *asoc,
@@ -358,7 +426,6 @@ struct sock *sctp_err_lookup(int family, struct sk_buff *skb,
 	return sk;
 
 out:
-	sock_put(sk);
 	if (asoc)
 		sctp_association_put(asoc);
 	return NULL;
@@ -368,7 +435,6 @@ out:
 void sctp_err_finish(struct sock *sk, struct sctp_association *asoc)
 {
 	sctp_bh_unlock_sock(sk);
-	sock_put(sk);
 	if (asoc)
 		sctp_association_put(asoc);
 }
@@ -609,7 +675,6 @@ struct sctp_endpoint *__sctp_rcv_lookup_endpoint(const union sctp_addr *laddr)
 
 hit:
 	sctp_endpoint_hold(ep);
-	sock_hold(epb->sk);
 	read_unlock(&head->lock);
 	return ep;
 }
@@ -711,7 +776,6 @@ struct sctp_association *__sctp_lookup_association(
 hit:
 	*pt = transport;
 	sctp_association_hold(asoc);
-	sock_hold(epb->sk);
 	read_unlock(&head->lock);
 	return asoc;
 }
@@ -738,7 +802,6 @@ int sctp_has_association(const union sctp_addr *laddr,
 	struct sctp_transport *transport;
 
 	if ((asoc = sctp_lookup_association(laddr, paddr, &transport))) {
-		sock_put(asoc->base.sk);
 		sctp_association_put(asoc);
 		return 1;
 	}

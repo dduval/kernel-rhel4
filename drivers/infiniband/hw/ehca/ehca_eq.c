@@ -43,8 +43,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define DEB_PREFIX "e_eq"
-
 #include "ehca_classes.h"
 #include "ehca_irq.h"
 #include "ehca_iverbs.h"
@@ -56,24 +54,21 @@ int ehca_create_eq(struct ehca_shca *shca,
 		   struct ehca_eq *eq,
 		   const enum ehca_eq_type type, const u32 length)
 {
-	u64 ret = H_SUCCESS;
-	u32 nr_pages = 0;
+	u64 ret;
+	u32 nr_pages;
 	u32 i;
-	void *vpage = NULL;
-
-	EDEB_EN(7, "shca=%p eq=%p length=%x", shca, eq, length);
-	EHCA_CHECK_ADR(shca);
-	EHCA_CHECK_ADR(eq);
+	void *vpage;
+	struct ib_device *ib_dev = &shca->ib_device;
 
 	spin_lock_init(&eq->spinlock);
 	eq->is_initialized = 0;
 
 	if (type != EHCA_EQ && type != EHCA_NEQ) {
-		EDEB_ERR(4, "Invalid EQ type %x. eq=%p", type, eq);
+		ehca_err(ib_dev, "Invalid EQ type %x. eq=%p", type, eq);
 		return -EINVAL;
 	}
-	if (length == 0) {
-		EDEB_ERR(4, "EQ length must not be zero. eq=%p", eq);
+	if (!length) {
+		ehca_err(ib_dev, "EQ length must not be zero. eq=%p", eq);
 		return -EINVAL;
 	}
 
@@ -86,14 +81,14 @@ int ehca_create_eq(struct ehca_shca *shca,
 				       &nr_pages, &eq->ist);
 
 	if (ret != H_SUCCESS) {
-		EDEB_ERR(4, "Can't allocate EQ / NEQ. eq=%p", eq);
+		ehca_err(ib_dev, "Can't allocate EQ/NEQ. eq=%p", eq);
 		return -EINVAL;
 	}
 
 	ret = ipz_queue_ctor(&eq->ipz_queue, nr_pages,
 			     EHCA_PAGESIZE, sizeof(struct ehca_eqe), 0);
 	if (!ret) {
-		EDEB_ERR(4, "Can't allocate EQ pages. eq=%p", eq);
+		ehca_err(ib_dev, "Can't allocate EQ pages eq=%p", eq);
 		goto create_eq_exit1;
 	}
 
@@ -130,7 +125,7 @@ int ehca_create_eq(struct ehca_shca *shca,
 					  SA_INTERRUPT, "ehca_eq",
 					  (void *)shca);
 		if (ret < 0)
-			EDEB_ERR(4, "Can't map interrupt handler.");
+			ehca_err(ib_dev, "Can't map interrupt handler.");
 
 		tasklet_init(&eq->interrupt_task, ehca_tasklet_eq, (long)shca);
 	} else if (type == EHCA_NEQ) {
@@ -138,14 +133,12 @@ int ehca_create_eq(struct ehca_shca *shca,
 					  SA_INTERRUPT, "ehca_neq",
 					  (void *)shca);
 		if (ret < 0)
-			EDEB_ERR(4, "Can't map interrupt handler.");
+			ehca_err(ib_dev, "Can't map interrupt handler.");
 
 		tasklet_init(&eq->interrupt_task, ehca_tasklet_neq, (long)shca);
 	}
 
 	eq->is_initialized = 1;
-
-	EDEB_EX(7, "ret=%lx", ret);
 
 	return 0;
 
@@ -155,53 +148,25 @@ create_eq_exit2:
 create_eq_exit1:
 	hipz_h_destroy_eq(shca->ipz_hca_handle, eq);
 
-	EDEB_EX(7, "ret=%lx", ret);
-
 	return -EINVAL;
 }
 
 void *ehca_poll_eq(struct ehca_shca *shca, struct ehca_eq *eq)
 {
-	unsigned long flags = 0;
-	void *eqe = NULL;
-
-	EDEB_EN(7, "shca=%p  eq=%p", shca, eq);
-	EHCA_CHECK_ADR_P(shca);
-	EHCA_CHECK_EQ_P(eq);
+	unsigned long flags;
+	void *eqe;
 
 	spin_lock_irqsave(&eq->spinlock, flags);
 	eqe = ipz_eqit_eq_get_inc_valid(&eq->ipz_queue);
 	spin_unlock_irqrestore(&eq->spinlock, flags);
 
-	EDEB_EX(7, "eq=%p eqe=%p", eq, eqe);
-
 	return eqe;
-}
-
-void ehca_poll_eqs(unsigned long data)
-{
-	struct ehca_shca *shca;
-	struct ehca_module *module = (struct ehca_module*)data;
-
-	spin_lock(&module->shca_lock);
-	list_for_each_entry(shca, &module->shca_list, shca_list) {
-		if (shca->eq.is_initialized)
-			ehca_tasklet_eq((unsigned long)(void*)shca);
-	}
-	mod_timer(&module->timer, jiffies + HZ);
-	spin_unlock(&module->shca_lock);
-
-	return;
 }
 
 int ehca_destroy_eq(struct ehca_shca *shca, struct ehca_eq *eq)
 {
-	unsigned long flags = 0;
-	u64 h_ret = H_SUCCESS;
-
-	EDEB_EN(7, "shca=%p  eq=%p", shca, eq);
-	EHCA_CHECK_ADR(shca);
-	EHCA_CHECK_EQ(eq);
+	unsigned long flags;
+	u64 h_ret;
 
 	spin_lock_irqsave(&eq->spinlock, flags);
 	ibmebus_free_irq(NULL, eq->ist, (void *)shca);
@@ -211,12 +176,10 @@ int ehca_destroy_eq(struct ehca_shca *shca, struct ehca_eq *eq)
 	spin_unlock_irqrestore(&eq->spinlock, flags);
 
 	if (h_ret != H_SUCCESS) {
-		EDEB_ERR(4, "Can't free EQ resources.");
+		ehca_err(&shca->ib_device, "Can't free EQ resources.");
 		return -EINVAL;
 	}
 	ipz_queue_dtor(&eq->ipz_queue);
 
-	EDEB_EX(7, "h_ret=%lx", h_ret);
-
-	return h_ret;
+	return 0;
 }

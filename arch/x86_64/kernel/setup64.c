@@ -11,6 +11,7 @@
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/bootmem.h>
+#include <asm/bootsetup.h>
 #include <asm/pda.h>
 #include <asm/pgtable.h>
 #include <asm/processor.h>
@@ -27,7 +28,7 @@
 #include <asm/numa.h>
 #include <asm/setup.h>
 
-char x86_boot_params[COMMAND_LINE_SIZE] __initdata = {0,};
+char x86_boot_params[BOOT_PARAM_SIZE] __initdata = {0,};
 
 unsigned long cpu_initialized __initdata = 0;
 

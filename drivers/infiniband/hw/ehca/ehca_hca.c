@@ -39,36 +39,29 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#undef DEB_PREFIX
-#define DEB_PREFIX "shca"
-
 #include "ehca_tools.h"
-
 #include "hcp_if.h"
 
 int ehca_query_device(struct ib_device *ibdev, struct ib_device_attr *props)
 {
 	int ret = 0;
-	struct ehca_shca *shca;
+	struct ehca_shca *shca = container_of(ibdev, struct ehca_shca,
+					      ib_device);
 	struct hipz_query_hca *rblock;
-
-	EDEB_EN(7, "");
-
-	memset(props, 0, sizeof(struct ib_device_attr));
-	shca = container_of(ibdev, struct ehca_shca, ib_device);
 
 	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
 	if (!rblock) {
-		EDEB_ERR(4, "Can't allocate rblock memory.");
-		ret = -ENOMEM;
-		goto query_device0;
+		ehca_err(&shca->ib_device, "Can't allocate rblock memory.");
+		return -ENOMEM;
 	}
 
 	if (hipz_h_query_hca(shca->ipz_hca_handle, rblock) != H_SUCCESS) {
-		EDEB_ERR(4, "Can't query device properties");
+		ehca_err(&shca->ib_device, "Can't query device properties");
 		ret = -EINVAL;
 		goto query_device1;
 	}
+
+	memset(props, 0, sizeof(struct ib_device_attr));
 	props->fw_ver          = rblock->hw_ver;
 	props->max_mr_size     = rblock->max_mr_size;
 	props->vendor_id       = rblock->vendor_id >> 8;
@@ -105,9 +98,6 @@ int ehca_query_device(struct ib_device *ibdev, struct ib_device_attr *props)
 query_device1:
 	kfree(rblock);
 
-query_device0:
-	EDEB_EX(7, "ret=%x", ret);
-
 	return ret;
 }
 
@@ -115,27 +105,23 @@ int ehca_query_port(struct ib_device *ibdev,
 		    u8 port, struct ib_port_attr *props)
 {
 	int ret = 0;
-	struct ehca_shca *shca;
+	struct ehca_shca *shca = container_of(ibdev, struct ehca_shca,
+					      ib_device);
 	struct hipz_query_port *rblock;
-
-	EDEB_EN(7, "port=%x", port);
-
-	memset(props, 0, sizeof(struct ib_port_attr));
-	shca = container_of(ibdev, struct ehca_shca, ib_device);
 
 	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
 	if (!rblock) {
-		EDEB_ERR(4, "Can't allocate rblock memory.");
-		ret = -ENOMEM;
-		goto query_port0;
+		ehca_err(&shca->ib_device, "Can't allocate rblock memory.");
+		return -ENOMEM;
 	}
 
 	if (hipz_h_query_port(shca->ipz_hca_handle, port, rblock) != H_SUCCESS) {
-		EDEB_ERR(4, "Can't query port properties");
+		ehca_err(&shca->ib_device, "Can't query port properties");
 		ret = -EINVAL;
 		goto query_port1;
 	}
 
+	memset(props, 0, sizeof(struct ib_port_attr));
 	props->state = rblock->state;
 
 	switch (rblock->max_mtu) {
@@ -155,7 +141,9 @@ int ehca_query_port(struct ib_device *ibdev,
 		props->active_mtu = props->max_mtu = IB_MTU_4096;
 		break;
 	default:
-		EDEB_ERR(4, "Unknown MTU size: %x.", rblock->max_mtu);
+		ehca_err(&shca->ib_device, "Unknown MTU size: %x.",
+			 rblock->max_mtu);
+		break;
 	}
 
 	props->gid_tbl_len     = rblock->gid_tbl_len;
@@ -176,37 +164,28 @@ int ehca_query_port(struct ib_device *ibdev,
 query_port1:
 	kfree(rblock);
 
-query_port0:
-	EDEB_EX(7, "ret=%x", ret);
-
 	return ret;
 }
 
 int ehca_query_pkey(struct ib_device *ibdev, u8 port, u16 index, u16 *pkey)
 {
 	int ret = 0;
-	struct ehca_shca *shca;
+	struct ehca_shca *shca = container_of(ibdev, struct ehca_shca, ib_device);
 	struct hipz_query_port *rblock;
 
-	EDEB_EN(7, "port=%x index=%x", port, index);
-
 	if (index > 16) {
-		EDEB_ERR(4, "Invalid index: %x.", index);
-		ret = -EINVAL;
-		goto query_pkey0;
+		ehca_err(&shca->ib_device, "Invalid index: %x.", index);
+		return -EINVAL;
 	}
-
-	shca = container_of(ibdev, struct ehca_shca, ib_device);
 
 	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
 	if (!rblock) {
-		EDEB_ERR(4,  "Can't allocate rblock memory.");
-		ret = -ENOMEM;
-		goto query_pkey0;
+		ehca_err(&shca->ib_device,  "Can't allocate rblock memory.");
+		return -ENOMEM;
 	}
 
 	if (hipz_h_query_port(shca->ipz_hca_handle, port, rblock) != H_SUCCESS) {
-		EDEB_ERR(4, "Can't query port properties");
+		ehca_err(&shca->ib_device, "Can't query port properties");
 		ret = -EINVAL;
 		goto query_pkey1;
 	}
@@ -216,9 +195,6 @@ int ehca_query_pkey(struct ib_device *ibdev, u8 port, u16 index, u16 *pkey)
 query_pkey1:
 	kfree(rblock);
 
-query_pkey0:
-	EDEB_EX(7, "ret=%x", ret);
-
 	return ret;
 }
 
@@ -226,28 +202,23 @@ int ehca_query_gid(struct ib_device *ibdev, u8 port,
 		   int index, union ib_gid *gid)
 {
 	int ret = 0;
-	struct ehca_shca *shca;
+	struct ehca_shca *shca = container_of(ibdev, struct ehca_shca,
+					      ib_device);
 	struct hipz_query_port *rblock;
 
-	EDEB_EN(7, "port=%x index=%x", port, index);
-
 	if (index > 255) {
-		EDEB_ERR(4, "Invalid index: %x.", index);
-		ret = -EINVAL;
-		goto query_gid0;
+		ehca_err(&shca->ib_device, "Invalid index: %x.", index);
+		return -EINVAL;
 	}
-
-	shca = container_of(ibdev, struct ehca_shca, ib_device);
 
 	rblock = kzalloc(H_CB_ALIGNMENT, GFP_KERNEL);
 	if (!rblock) {
-		EDEB_ERR(4, "Can't allocate rblock memory.");
-		ret = -ENOMEM;
-		goto query_gid0;
+		ehca_err(&shca->ib_device, "Can't allocate rblock memory.");
+		return -ENOMEM;
 	}
 
 	if (hipz_h_query_port(shca->ipz_hca_handle, port, rblock) != H_SUCCESS) {
-		EDEB_ERR(4, "Can't query port properties");
+		ehca_err(&shca->ib_device, "Can't query port properties");
 		ret = -EINVAL;
 		goto query_gid1;
 	}
@@ -258,11 +229,6 @@ int ehca_query_gid(struct ib_device *ibdev, u8 port,
 query_gid1:
 	kfree(rblock);
 
-query_gid0:
-	EDEB_EX(7, "ret=%x GID=%lx%lx", ret,
-		*(u64 *) & gid->raw[0],
-		*(u64 *) & gid->raw[8]);
-
 	return ret;
 }
 
@@ -270,13 +236,6 @@ int ehca_modify_port(struct ib_device *ibdev,
 		     u8 port, int port_modify_mask,
 		     struct ib_port_modify *props)
 {
-	int ret = 0;
-
-	EDEB_EN(7, "port=%x", port);
-
-	/* Not implemented yet. */
-
-	EDEB_EX(7, "ret=%x", ret);
-
-	return ret;
+	/* Not implemented yet */
+	return -EFAULT;
 }

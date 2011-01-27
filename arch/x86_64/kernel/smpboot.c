@@ -721,6 +721,15 @@ static void __init do_boot_cpu (int apicid)
 cycles_t cacheflush_time;
 unsigned long cache_decay_ticks;
 
+static int __init decay (char *str)
+{
+	int ticks;
+	get_option (&str, &ticks);
+	cache_decay_ticks = ticks;
+	return 1;
+}
+__setup("decay=", decay);
+
 static void smp_tune_scheduling (void)
 {
 	int cachesize;       /* kB   */
@@ -750,16 +759,18 @@ static void smp_tune_scheduling (void)
 			bandwidth = 100;
 		}
 
-		cacheflush_time = (cpu_khz>>10) * (cachesize<<10) / bandwidth;
+		cacheflush_time = (unsigned long long) (cpu_khz>>10) *
+				  (cachesize<<10) / bandwidth;
 	}
 
-	cache_decay_ticks = (long)cacheflush_time/cpu_khz * HZ / 1000;
+	if (!cache_decay_ticks)
+		cache_decay_ticks = (long)cacheflush_time/cpu_khz;
 
 	printk(KERN_INFO "per-CPU timeslice cutoff: %ld.%02ld usecs.\n",
 		(long)cacheflush_time/(cpu_khz/1000),
 		((long)cacheflush_time*100/(cpu_khz/1000)) % 100);
 	printk(KERN_INFO "task migration cache decay timeout: %ld msecs.\n",
-		(cache_decay_ticks + 1) * 1000 / HZ);
+		cache_decay_ticks);
 }
 
 /* maps the cpu to the sched domain representing multi-core */

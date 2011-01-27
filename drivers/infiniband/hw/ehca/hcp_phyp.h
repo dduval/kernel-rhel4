@@ -45,8 +45,9 @@
 #define __HCP_PHYP_H__
 
 
-/* eHCA page (mapped into memory)
-    resource to access eHCA register pages in CPU address space
+/*
+ * eHCA page (mapped into memory)
+ * resource to access eHCA register pages in CPU address space
 */
 struct h_galpa {
 	u64 fw_handle;
@@ -55,8 +56,8 @@ struct h_galpa {
 };
 
 /*
-   resource to access eHCA address space registers, all types
-*/
+ * resource to access eHCA address space registers, all types
+ */
 struct h_galpas {
 	u32 pid;		/*PID of userspace galpa checking */
 	struct h_galpa user;	/* user space accessible resource,
@@ -68,19 +69,13 @@ struct h_galpas {
 static inline u64 hipz_galpa_load(struct h_galpa galpa, u32 offset)
 {
 	u64 addr = galpa.fw_handle + offset;
-	u64 out;
-	EDEB_EN(7, "addr=%lx offset=%x ", addr, offset);
-	out = *(u64 *) addr;
-	EDEB_EX(7, "addr=%lx value=%lx", addr, out);
-	return out;
+	return *(volatile u64 __force *)addr;
 }
 
 static inline void hipz_galpa_store(struct h_galpa galpa, u32 offset, u64 value)
 {
 	u64 addr = galpa.fw_handle + offset;
-	EDEB(7, "addr=%lx offset=%x value=%lx", addr,
-	     offset, value);
-	*(u64 *) addr = value;
+	*(volatile u64 __force *)addr = value;
 }
 
 int hcp_galpas_ctor(struct h_galpas *galpas,

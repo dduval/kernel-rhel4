@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -30,7 +31,6 @@
  * SOFTWARE.
  */
 
-#include <linux/version.h>
 #include <linux/spinlock.h>
 #include <linux/idr.h>
 #include <linux/pci.h>
@@ -38,9 +38,18 @@
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
 
+/*
+ * InfiniPath only supports message-based interrupts.  It has no interrupt
+ * pins.   Therefore we require CONFIG_PCI_MSI be enabled.  We want a
+ * very visible failure if the support isn't present.
+ */
+#ifndef CONFIG_PCI_MSI
+#warning "Without CONFIG_PCI_MSI, interrupts will be faked"
+#endif
+
 #include "ipath_kernel.h"
-#include "ips_common.h"
-#include "ipath_layer.h"
+#include "ipath_verbs.h"
+#include "ipath_common.h"
 
 static void ipath_update_pio_bufs(struct ipath_devdata *);
 
@@ -51,22 +60,20 @@ const char *ipath_get_unit_name(int unit)
 	return iname;
 }
 
-EXPORT_SYMBOL_GPL(ipath_get_unit_name);
-
-#define DRIVER_LOAD_MSG "PathScale " IPATH_DRV_NAME " loaded: "
+#define DRIVER_LOAD_MSG "QLogic " IPATH_DRV_NAME " loaded: "
 #define PFX IPATH_DRV_NAME ": "
 
 /*
  * The size has to be longer than this string, so we can append
  * board/chip information to it in the init code.
  */
-const char ipath_core_version[] = IPATH_IDSTR "\n";
+const char ib_ipath_version[] = IPATH_IDSTR "\n";
 
 static struct idr unit_table;
 DEFINE_SPINLOCK(ipath_devs_lock);
 LIST_HEAD(ipath_dev_list);
 
-wait_queue_head_t ipath_sma_state_wait;
+wait_queue_head_t ipath_state_wait;
 
 unsigned ipath_debug = __IPATH_INFO;
 
@@ -75,8 +82,8 @@ MODULE_PARM_DESC(debug, "mask for debug prints");
 EXPORT_SYMBOL_GPL(ipath_debug);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("PathScale <support@pathscale.com>");
-MODULE_DESCRIPTION("Pathscale InfiniPath driver");
+MODULE_AUTHOR("QLogic <support@pathscale.com>");
+MODULE_DESCRIPTION("QLogic InfiniPath driver");
 
 const char *ipath_ibcstatus_str[] = {
 	"Disabled",
@@ -116,12 +123,17 @@ static int __devinit ipath_init_one(struct pci_dev *,
 #define PCI_DEVICE_ID_INFINIPATH_HT 0xd
 #define PCI_DEVICE_ID_INFINIPATH_PE800 0x10
 
+/*
+ * Number of seconds before we complain about not getting a LID
+ * assignment.
+ */
+
+#define LID_TIMEOUT 60
+
 static const struct pci_device_id ipath_pci_tbl[] = {
-	{PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE,
-		    PCI_DEVICE_ID_INFINIPATH_HT)},
-	{PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE,
-		    PCI_DEVICE_ID_INFINIPATH_PE800)},
-	{0}
+	{ PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE, PCI_DEVICE_ID_INFINIPATH_HT) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_PATHSCALE, PCI_DEVICE_ID_INFINIPATH_PE800) },
+	{ 0, }
 };
 
 MODULE_DEVICE_TABLE(pci, ipath_pci_tbl);
@@ -134,10 +146,28 @@ static struct pci_driver ipath_driver = {
 };
 
 
-#if defined (pgprot_writecombine) && defined(_PAGE_MA_WC)
-int remap_area_pages(unsigned long address, unsigned long phys_addr,
-		     unsigned long size, unsigned long flags);
-#endif
+static void check_link_status(void *data)
+{
+	struct ipath_devdata *dd = data;
+
+	/*
+	 * If we're in the NOCABLE state, try again in another minute.
+	 */
+
+	if (dd->ipath_flags & IPATH_STATUS_IB_NOCABLE) {
+		schedule_delayed_work(&dd->link_task, HZ * LID_TIMEOUT);
+		return;
+	}
+
+	/*
+	 * If we don't have a LID, let the user know and don't bother
+	 * checking again.
+	 */
+
+	if (dd->ipath_lid == 0)
+		dev_info(&dd->pcidev->dev,
+			 "We don't have a LID yet (no subnet manager?)");
+}
 
 static inline void read_bars(struct ipath_devdata *dd, struct pci_dev *dev,
 			     u32 *bar0, u32 *bar1)
@@ -190,7 +220,6 @@ static struct ipath_devdata *ipath_alloc_devdata(struct pci_dev *pdev)
 		goto bail;
 	}
 	memset(dd, 0, sizeof(*dd));
-
 	dd->ipath_unit = -1;
 
 	spin_lock_irqsave(&ipath_devs_lock, flags);
@@ -206,6 +235,8 @@ static struct ipath_devdata *ipath_alloc_devdata(struct pci_dev *pdev)
 
 	dd->pcidev = pdev;
 	pci_set_drvdata(pdev, dd);
+
+	INIT_WORK(&dd->link_task, check_link_status, dd);
 
 	list_add(&dd->ipath_list, &ipath_dev_list);
 
@@ -380,7 +411,7 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 		else {
 			ipath_dbg("No 64bit DMA mask, used 32 bit mask\n");
 			ret = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
-			if(ret)
+			if (ret)
 				dev_info(&pdev->dev,
 					"Unable to set DMA consistent mask "
 					"for unit %u: %d\n",
@@ -390,7 +421,7 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	}
 	else {
 		ret = pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK);
-		if(ret)
+		if (ret)
 			dev_info(&pdev->dev,
 				"Unable to set DMA consistent mask "
 				"for unit %u: %d\n",
@@ -411,13 +442,13 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	/* setup the chip-specific functions, as early as possible. */
 	switch (ent->device) {
 	case PCI_DEVICE_ID_INFINIPATH_HT:
-		ipath_init_ht400_funcs(dd);
+		ipath_init_iba6110_funcs(dd);
 		break;
 	case PCI_DEVICE_ID_INFINIPATH_PE800:
-		ipath_init_pe800_funcs(dd);
+		ipath_init_iba6120_funcs(dd);
 		break;
 	default:
-		ipath_dev_err(dd, "Found unknown PathScale deviceid 0x%x, "
+		ipath_dev_err(dd, "Found unknown QLogic deviceid 0x%x, "
 			      "failing\n", ent->device);
 		return -ENODEV;
 	}
@@ -425,10 +456,10 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	for (j = 0; j < 6; j++) {
 		if (!pdev->resource[j].start)
 			continue;
-		ipath_cdbg(VERBOSE, "BAR %d start %lx, end %lx, len %lx\n",
-			   j, pdev->resource[j].start,
-			   pdev->resource[j].end,
-			   pci_resource_len(pdev, j));
+		ipath_cdbg(VERBOSE, "BAR %d start %llx, end %llx, len %llx\n",
+			   j, (unsigned long long)pdev->resource[j].start,
+			   (unsigned long long)pdev->resource[j].end,
+			   (unsigned long long)pci_resource_len(pdev, j));
 	}
 
 	if (!addr) {
@@ -448,14 +479,12 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	}
 	dd->ipath_pcirev = rev;
 
+#if defined(__powerpc__)
+	/* There isn't a generic way to specify writethrough mappings */
+	dd->ipath_kregbase = __ioremap(addr, len,
+		(_PAGE_NO_CACHE|_PAGE_WRITETHRU));
+#else
 	dd->ipath_kregbase = ioremap_nocache(addr, len);
-
-#if defined (pgprot_writecombine) && defined(_PAGE_MA_WC)
-	ipath_cdbg(VERBOSE, "Remapping pages WC\n");
-	remap_area_pages((unsigned long)dd->ipath_kregbase +
-			 1024 * 1024, addr + 1024 * 1024, 1024 * 1024,
-			 _PAGE_MA_WC);
-	/* dd->ipath_kregbase = __ioremap(addr, len, _PAGE_MA_WC); */
 #endif
 
 	if (!dd->ipath_kregbase) {
@@ -468,10 +497,8 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 		((void __iomem *)dd->ipath_kregbase + len);
 	dd->ipath_physaddr = addr;	/* used for io_remap, etc. */
 	/* for user mmap */
-	dd->ipath_kregvirt = (u64 __iomem *) phys_to_virt(addr);
-	ipath_cdbg(VERBOSE, "mapped io addr %llx to kregbase %p "
-		   "kregvirt %p\n", addr, dd->ipath_kregbase,
-		   dd->ipath_kregvirt);
+	ipath_cdbg(VERBOSE, "mapped io addr %llx to kregbase %p\n",
+		   addr, dd->ipath_kregbase);
 
 	/*
 	 * clear ipath_flags here instead of in ipath_init_chip as it is set
@@ -486,7 +513,7 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 			      "continuing anyway\n");
 
 	/*
-	 * set up our interrupt handler; SA_SHIRQ probably not needed,
+	 * set up our interrupt handler; IRQF_SHARED probably not needed,
 	 * since MSI interrupts shouldn't be shared but won't  hurt for now.
 	 * check 0 irq after we return from chip-specific bus setup, since
 	 * that can affect this due to setup
@@ -495,7 +522,7 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 		ipath_dev_err(dd, "irq is 0, BIOS error?  Interrupts won't "
 			      "work\n");
 	else {
-		ret = request_irq(pdev->irq, ipath_intr, SA_SHIRQ,
+		ret = request_irq(pdev->irq, ipath_intr, IRQF_SHARED,
 				  IPATH_DRV_NAME, dd);
 		if (ret) {
 			ipath_dev_err(dd, "Couldn't setup irq handler, "
@@ -521,7 +548,11 @@ static int __devinit ipath_init_one(struct pci_dev *pdev,
 	ipathfs_add_device(dd);
 	ipath_user_add(dd);
 	ipath_diag_add(dd);
-	ipath_layer_add(dd);
+	ipath_diagpkt_add();
+	ipath_register_ib_device(dd);
+
+	/* Check that we have a LID in LID_TIMEOUT seconds. */
+	schedule_delayed_work(&dd->link_task, HZ * LID_TIMEOUT);
 
 	goto bail;
 
@@ -555,7 +586,11 @@ static void __devexit ipath_remove_one(struct pci_dev *pdev)
 		return;
 
 	dd = pci_get_drvdata(pdev);
-	ipath_layer_remove(dd);
+
+	cancel_delayed_work(&dd->link_task);
+
+	ipath_unregister_ib_device(dd->verbs_dev);
+	ipath_diagpkt_remove();
 	ipath_diag_remove(dd);
 	ipath_user_remove(dd);
 	ipathfs_remove_device(dd);
@@ -635,21 +670,23 @@ void ipath_disarm_piobufs(struct ipath_devdata *dd, unsigned first,
  *
  * wait up to msecs milliseconds for IB link state change to occur for
  * now, take the easy polling route.  Currently used only by
- * ipath_layer_set_linkstate.  Returns 0 if state reached, otherwise
+ * ipath_set_linkstate.  Returns 0 if state reached, otherwise
  * -ETIMEDOUT state can have multiple states set, for any of several
  * transitions.
  */
-int ipath_wait_linkstate(struct ipath_devdata *dd, u32 state, int msecs)
+static int ipath_wait_linkstate(struct ipath_devdata *dd, u32 state,
+				int msecs)
 {
-	dd->ipath_sma_state_wanted = state;
-	wait_event_interruptible_timeout(ipath_sma_state_wait,
+	dd->ipath_state_wanted = state;
+	wait_event_interruptible_timeout(ipath_state_wait,
 					 (dd->ipath_flags & state),
 					 msecs_to_jiffies(msecs));
-	dd->ipath_sma_state_wanted = 0;
+	dd->ipath_state_wanted = 0;
 
 	if (!(dd->ipath_flags & state)) {
 		u64 val;
-		ipath_cdbg(SMA, "Didn't reach linkstate %s within %u ms\n",
+		ipath_cdbg(VERBOSE, "Didn't reach linkstate %s within %u"
+			   " ms\n",
 			   /* test INIT ahead of DOWN, both can be set */
 			   (state & IPATH_LINKINIT) ? "INIT" :
 			   ((state & IPATH_LINKDOWN) ? "DOWN" :
@@ -835,55 +872,36 @@ bail:
 	return skb;
 }
 
-/**
- * ipath_rcv_layer - receive a packet for the layered (ethernet) driver
- * @dd: the infinipath device
- * @etail: the sk_buff number
- * @tlen: the total packet length
- * @hdr: the ethernet header
- *
- * Separate routine for better overall optimization
- */
-static void ipath_rcv_layer(struct ipath_devdata *dd, u32 etail,
-			    u32 tlen, struct ether_header *hdr)
+static void ipath_rcv_hdrerr(struct ipath_devdata *dd,
+			     u32 eflags,
+			     u32 l,
+			     u32 etail,
+			     u64 *rc)
 {
-	u32 elen;
-	u8 pad, *bthbytes;
-	struct sk_buff *skb, *nskb;
+	char emsg[128];
+	struct ipath_message_header *hdr;
 
-	if (dd->ipath_port0_skbs && hdr->sub_opcode == OPCODE_ENCAP) {
-		/*
-		 * Allocate a new sk_buff to replace the one we give
-		 * to the network stack.
-		 */
-		nskb = ipath_alloc_skb(dd, GFP_ATOMIC);
-		if (!nskb) {
-			/* count OK packets that we drop */
-			ipath_stats.sps_krdrops++;
-			return;
+	get_rhf_errstring(eflags, emsg, sizeof emsg);
+	hdr = (struct ipath_message_header *)&rc[1];
+	ipath_cdbg(PKT, "RHFerrs %x hdrqtail=%x typ=%u "
+		   "tlen=%x opcode=%x egridx=%x: %s\n",
+		   eflags, l,
+		   ipath_hdrget_rcv_type((__le32 *) rc),
+		   ipath_hdrget_length_in_bytes((__le32 *) rc),
+		   be32_to_cpu(hdr->bth[0]) >> 24,
+		   etail, emsg);
+
+	/* Count local link integrity errors. */
+	if (eflags & (INFINIPATH_RHF_H_ICRCERR | INFINIPATH_RHF_H_VCRCERR)) {
+		u8 n = (dd->ipath_ibcctrl >>
+			INFINIPATH_IBCC_PHYERRTHRESHOLD_SHIFT) &
+			INFINIPATH_IBCC_PHYERRTHRESHOLD_MASK;
+
+		if (++dd->ipath_lli_counter > n) {
+			dd->ipath_lli_counter = 0;
+			dd->ipath_lli_errors++;
 		}
-
-		bthbytes = (u8 *) hdr->bth;
-		pad = (bthbytes[1] >> 4) & 3;
-		/* +CRC32 */
-		elen = tlen - (sizeof(*hdr) + pad + sizeof(u32));
-
-		skb = dd->ipath_port0_skbs[etail];
-		dd->ipath_port0_skbs[etail] = nskb;
-		skb_put(skb, elen);
-
-		dd->ipath_f_put_tid(dd, etail + (u64 __iomem *)
-				    ((char __iomem *) dd->ipath_kregbase
-				     + dd->ipath_rcvegrbase), 0,
-				    virt_to_phys(nskb->data));
-
-		__ipath_layer_rcv(dd, hdr, skb);
-
-		/* another ether packet received */
-		ipath_stats.sps_ether_rpkts++;
 	}
-	else if (hdr->sub_opcode == OPCODE_LID_ARP)
-		__ipath_layer_rcv_lid(dd, hdr);
 }
 
 /*
@@ -899,10 +917,9 @@ void ipath_kreceive(struct ipath_devdata *dd)
 	const u32 rsize = dd->ipath_rcvhdrentsize;	/* words */
 	const u32 maxcnt = dd->ipath_rcvhdrcnt * rsize;	/* words */
 	u32 etail = -1, l, hdrqtail;
-	struct ips_message_header *hdr;
+	struct ipath_message_header *hdr;
 	u32 eflags, i, etype, tlen, pkttot = 0, updegr=0, reloop=0;
 	static u64 totcalls;	/* stats, may eventually remove */
-	char emsg[128];
 
 	if (!dd->ipath_hdrqtailptr) {
 		ipath_dev_err(dd,
@@ -915,8 +932,8 @@ void ipath_kreceive(struct ipath_devdata *dd)
 		goto bail;
 
 	l = dd->ipath_port0head;
-	hdrqtail = (u32)le64_to_cpu(*dd->ipath_hdrqtailptr);
-	if(l == hdrqtail)
+	hdrqtail = (u32) le64_to_cpu(*dd->ipath_hdrqtailptr);
+	if (l == hdrqtail)
 		goto done;
 
 reloop:
@@ -925,7 +942,7 @@ reloop:
 		u8 *bthbytes;
 
 		rc = (u64 *) (dd->ipath_pd[0]->port_rcvhdrq + (l << 2));
-		hdr = (struct ips_message_header *)&rc[1];
+		hdr = (struct ipath_message_header *)&rc[1];
 		/*
 		 * could make a network order version of IPATH_KD_QP, and
 		 * do the obvious shift before masking to speed this up.
@@ -933,10 +950,10 @@ reloop:
 		qp = ntohl(hdr->bth[1]) & 0xffffff;
 		bthbytes = (u8 *) hdr->bth;
 
-		eflags = ips_get_hdr_err_flags((__le32 *) rc);
-		etype = ips_get_rcv_type((__le32 *) rc);
+		eflags = ipath_hdrget_err_flags((__le32 *) rc);
+		etype = ipath_hdrget_rcv_type((__le32 *) rc);
 		/* total length */
-		tlen = ips_get_length_in_bytes((__le32 *) rc);
+		tlen = ipath_hdrget_length_in_bytes((__le32 *) rc);
 		ebuf = NULL;
 		if (etype != RCVHQ_RCV_TYPE_EXPECTED) {
 			/*
@@ -946,7 +963,7 @@ reloop:
 			 * set ebuf (so we try to copy data) unless the
 			 * length requires it.
 			 */
-			etail = ips_get_index((__le32 *) rc);
+			etail = ipath_hdrget_index((__le32 *) rc);
 			if (tlen > sizeof(*hdr) ||
 			    etype == RCVHQ_RCV_TYPE_NON_KD)
 				ebuf = ipath_get_egrbuf(dd, etail, 0);
@@ -958,74 +975,31 @@ reloop:
 		 */
 
 		if (etype != RCVHQ_RCV_TYPE_NON_KD && etype !=
-		    RCVHQ_RCV_TYPE_ERROR && ips_get_ipath_ver(
+		    RCVHQ_RCV_TYPE_ERROR && ipath_hdrget_ipath_ver(
 			    hdr->iph.ver_port_tid_offset) !=
 		    IPS_PROTO_VERSION) {
 			ipath_cdbg(PKT, "Bad InfiniPath protocol version "
 				   "%x\n", etype);
 		}
 
-		if (eflags & ~(INFINIPATH_RHF_H_TIDERR |
-			       INFINIPATH_RHF_H_IHDRERR)) {
-			get_rhf_errstring(eflags, emsg, sizeof emsg);
-			ipath_cdbg(PKT, "RHFerrs %x hdrqtail=%x typ=%u "
-				   "tlen=%x opcode=%x egridx=%x: %s\n",
-				   eflags, l, etype, tlen, bthbytes[0],
-				   ips_get_index((__le32 *) rc), emsg);
-			/* Count local link integrity errors. */
-			if (eflags & (INFINIPATH_RHF_H_ICRCERR |
-				      INFINIPATH_RHF_H_VCRCERR)) {
-				u8 n = (dd->ipath_ibcctrl >>
-					INFINIPATH_IBCC_PHYERRTHRESHOLD_SHIFT) &
-					INFINIPATH_IBCC_PHYERRTHRESHOLD_MASK;
-
-				if (++dd->ipath_lli_counter > n) {
-					dd->ipath_lli_counter = 0;
-					dd->ipath_lli_errors++;
-				}
-			}
-		} else if (etype == RCVHQ_RCV_TYPE_NON_KD) {
-				int ret = __ipath_verbs_rcv(dd, rc + 1,
-							    ebuf, tlen);
-				if (ret == -ENODEV)
-					ipath_cdbg(VERBOSE,
-						   "received IB packet, "
-						   "not SMA (QP=%x)\n", qp);
-				if (dd->ipath_lli_counter)
-					dd->ipath_lli_counter--;
-		} else if (etype == RCVHQ_RCV_TYPE_EAGER) {
-			if (qp == IPATH_KD_QP &&
-			    bthbytes[0] == ipath_layer_rcv_opcode &&
-			    ebuf)
-				ipath_rcv_layer(dd, etail, tlen,
-						(struct ether_header *)hdr);
-			else
-				ipath_cdbg(PKT, "typ %x, opcode %x (eager, "
-					   "qp=%x), len %x; ignored\n",
-					   etype, bthbytes[0], qp, tlen);
+		if (unlikely(eflags))
+			ipath_rcv_hdrerr(dd, eflags, l, etail, rc);
+		else if (etype == RCVHQ_RCV_TYPE_NON_KD) {
+			ipath_ib_rcv(dd->verbs_dev, rc + 1, ebuf, tlen);
+			if (dd->ipath_lli_counter)
+				dd->ipath_lli_counter--;
+			ipath_cdbg(PKT, "typ %x, opcode %x (eager, "
+				   "qp=%x), len %x; ignored\n",
+				   etype, bthbytes[0], qp, tlen);
 		}
+		else if (etype == RCVHQ_RCV_TYPE_EAGER)
+			ipath_cdbg(PKT, "typ %x, opcode %x (eager, "
+				   "qp=%x), len %x; ignored\n",
+				   etype, bthbytes[0], qp, tlen);
 		else if (etype == RCVHQ_RCV_TYPE_EXPECTED)
 			ipath_dbg("Bug: Expected TID, opcode %x; ignored\n",
 				  be32_to_cpu(hdr->bth[0]) & 0xff);
-		else if (eflags & (INFINIPATH_RHF_H_TIDERR |
-				   INFINIPATH_RHF_H_IHDRERR)) {
-			/*
-			 * This is a type 3 packet, only the LRH is in the
-			 * rcvhdrq, the rest of the header is in the eager
-			 * buffer.
-			 */
-			u8 opcode;
-			if (ebuf) {
-				bthbytes = (u8 *) ebuf;
-				opcode = *bthbytes;
-			}
-			else
-				opcode = 0;
-			get_rhf_errstring(eflags, emsg, sizeof emsg);
-			ipath_dbg("Err %x (%s), opcode %x, egrbuf %x, "
-				  "len %x\n", eflags, emsg, opcode, etail,
-				  tlen);
-		} else {
+		else {
 			/*
 			 * error packet, type of error	unknown.
 			 * Probably type 3, but we don't know, so don't
@@ -1052,24 +1026,24 @@ reloop:
 		 * Reduce bus traffic, while still trying to prevent
 		 * rcvhdrq overflows, for when the queue is nearly full
 		 */
-		if(l == hdrqtail || (i && !(i&0xf))) {
+		if (l == hdrqtail || (i && !(i&0xf))) {
 			u64 lval;
-			if(l == hdrqtail) {
-				/* PE-800 interrupt only on last */
+			if (l == hdrqtail)
+				/* request IBA6120 interrupt only on last */
 				lval = dd->ipath_rhdrhead_intr_off | l;
-			}
 			else
 				lval = l;
 			(void)ipath_write_ureg(dd, ur_rcvhdrhead, lval, 0);
-			if(updegr) {
-				ipath_write_ureg(dd, ur_rcvegrindexhead,
+			if (updegr) {
+				(void)ipath_write_ureg(dd, ur_rcvegrindexhead,
 						       etail, 0);
 				updegr = 0;
 			}
 		}
 	}
-	if(!dd->ipath_rhdrhead_intr_off && !reloop) {
-		/* HT-400 workaround; we can have a race clearing chip
+
+	if (!dd->ipath_rhdrhead_intr_off && !reloop) {
+		/* IBA6110 workaround; we can have a race clearing chip
 		 * interrupt with another interrupt about to be delivered,
 		 * and can clear it before it is delivered on the GPIO
 		 * workaround.  By doing the extra check here for the
@@ -1078,8 +1052,8 @@ reloop:
 		 * that case.
 		 */
 		u32 hqtail = (u32)le64_to_cpu(*dd->ipath_hdrqtailptr);
-		if(hqtail != hdrqtail) {
-		    	hdrqtail = hqtail;
+		if (hqtail != hdrqtail) {
+			hdrqtail = hqtail;
 			reloop = 1; /* loop 1 extra time at most */
 			goto reloop;
 		}
@@ -1242,7 +1216,7 @@ int ipath_setrcvhdrsize(struct ipath_devdata *dd, unsigned rhdrsize)
  *
  * do appropriate marking as busy, etc.
  * returns buffer number if one found (>=0), negative number is error.
- * Used by ipath_sma_send_pkt and ipath_layer_send
+ * Used by ipath_layer_send
  */
 u32 __iomem *ipath_getpiobuf(struct ipath_devdata *dd, u32 * pbufnum)
 {
@@ -1347,13 +1321,6 @@ rescan:
 		buf = NULL;
 		goto bail;
 	}
-
-	if (updated)
-		/*
-		 * ran out of bufs, now some (at least this one we just
-		 * got) are now available, so tell the layered driver.
-		 */
-		__ipath_layer_intr(dd, IPATH_LAYER_INT_SEND_CONTINUE);
 
 	/*
 	 * set next starting place.  Since it's just an optimization,
@@ -1549,7 +1516,7 @@ int ipath_waitfor_mdio_cmdready(struct ipath_devdata *dd)
 	return ret;
 }
 
-void ipath_set_ib_lstate(struct ipath_devdata *dd, int which)
+static void ipath_set_ib_lstate(struct ipath_devdata *dd, int which)
 {
 	static const char *what[4] = {
 		[0] = "DOWN",
@@ -1560,7 +1527,7 @@ void ipath_set_ib_lstate(struct ipath_devdata *dd, int which)
 	int linkcmd = (which >> INFINIPATH_IBCC_LINKCMD_SHIFT) &
 			INFINIPATH_IBCC_LINKCMD_MASK;
 
-	ipath_cdbg(SMA, "Trying to move unit %u to %s, current ltstate "
+	ipath_cdbg(VERBOSE, "Trying to move unit %u to %s, current ltstate "
 		   "is %s\n", dd->ipath_unit,
 		   what[linkcmd],
 		   ipath_ibcstatus_str[
@@ -1569,8 +1536,8 @@ void ipath_set_ib_lstate(struct ipath_devdata *dd, int which)
 			    INFINIPATH_IBCS_LINKTRAININGSTATE_SHIFT) &
 			   INFINIPATH_IBCS_LINKTRAININGSTATE_MASK]);
 	/* flush all queued sends when going to DOWN or INIT, to be sure that
-	 * they don't block SMA and other MAD packets */
-	if(!linkcmd || linkcmd == INFINIPATH_IBCC_LINKCMD_INIT) {
+	 * they don't block MAD packets */
+	if (!linkcmd || linkcmd == INFINIPATH_IBCC_LINKCMD_INIT) {
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_sendctrl,
 				 INFINIPATH_S_ABORT);
 		ipath_disarm_piobufs(dd, dd->ipath_lastport_piobuf,
@@ -1581,6 +1548,182 @@ void ipath_set_ib_lstate(struct ipath_devdata *dd, int which)
 
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
 			 dd->ipath_ibcctrl | which);
+}
+
+int ipath_set_linkstate(struct ipath_devdata *dd, u8 newstate)
+{
+	u32 lstate;
+	int ret;
+
+	switch (newstate) {
+	case IPATH_IB_LINKDOWN:
+		ipath_set_ib_lstate(dd, INFINIPATH_IBCC_LINKINITCMD_POLL <<
+				    INFINIPATH_IBCC_LINKINITCMD_SHIFT);
+		/* don't wait */
+		ret = 0;
+		goto bail;
+
+	case IPATH_IB_LINKDOWN_SLEEP:
+		ipath_set_ib_lstate(dd, INFINIPATH_IBCC_LINKINITCMD_SLEEP <<
+				    INFINIPATH_IBCC_LINKINITCMD_SHIFT);
+		/* don't wait */
+		ret = 0;
+		goto bail;
+
+	case IPATH_IB_LINKDOWN_DISABLE:
+		ipath_set_ib_lstate(dd,
+				    INFINIPATH_IBCC_LINKINITCMD_DISABLE <<
+				    INFINIPATH_IBCC_LINKINITCMD_SHIFT);
+		/* don't wait */
+		ret = 0;
+		goto bail;
+
+	case IPATH_IB_LINKINIT:
+		if (dd->ipath_flags & IPATH_LINKINIT) {
+			ret = 0;
+			goto bail;
+		}
+		ipath_set_ib_lstate(dd, INFINIPATH_IBCC_LINKCMD_INIT <<
+				    INFINIPATH_IBCC_LINKCMD_SHIFT);
+		lstate = IPATH_LINKINIT;
+		break;
+
+	case IPATH_IB_LINKARM:
+		if (dd->ipath_flags & IPATH_LINKARMED) {
+			ret = 0;
+			goto bail;
+		}
+		if (!(dd->ipath_flags &
+		      (IPATH_LINKINIT | IPATH_LINKACTIVE))) {
+			ret = -EINVAL;
+			goto bail;
+		}
+		ipath_set_ib_lstate(dd, INFINIPATH_IBCC_LINKCMD_ARMED <<
+				    INFINIPATH_IBCC_LINKCMD_SHIFT);
+		/*
+		 * Since the port can transition to ACTIVE by receiving
+		 * a non VL 15 packet, wait for either state.
+		 */
+		lstate = IPATH_LINKARMED | IPATH_LINKACTIVE;
+		break;
+
+	case IPATH_IB_LINKACTIVE:
+		if (dd->ipath_flags & IPATH_LINKACTIVE) {
+			ret = 0;
+			goto bail;
+		}
+		if (!(dd->ipath_flags & IPATH_LINKARMED)) {
+			ret = -EINVAL;
+			goto bail;
+		}
+		ipath_set_ib_lstate(dd, INFINIPATH_IBCC_LINKCMD_ACTIVE <<
+				    INFINIPATH_IBCC_LINKCMD_SHIFT);
+		lstate = IPATH_LINKACTIVE;
+		break;
+
+	default:
+		ipath_dbg("Invalid linkstate 0x%x requested\n", newstate);
+		ret = -EINVAL;
+		goto bail;
+	}
+	ret = ipath_wait_linkstate(dd, lstate, 2000);
+
+bail:
+	return ret;
+}
+
+/**
+ * ipath_set_mtu - set the MTU
+ * @dd: the infinipath device
+ * @arg: the new MTU
+ *
+ * we can handle "any" incoming size, the issue here is whether we
+ * need to restrict our outgoing size.   For now, we don't do any
+ * sanity checking on this, and we don't deal with what happens to
+ * programs that are already running when the size changes.
+ * NOTE: changing the MTU will usually cause the IBC to go back to
+ * link initialize (IPATH_IBSTATE_INIT) state...
+ */
+int ipath_set_mtu(struct ipath_devdata *dd, u16 arg)
+{
+	u32 piosize;
+	int changed = 0;
+	int ret;
+
+	/*
+	 * mtu is IB data payload max.  It's the largest power of 2 less
+	 * than piosize (or even larger, since it only really controls the
+	 * largest we can receive; we can send the max of the mtu and
+	 * piosize).  We check that it's one of the valid IB sizes.
+	 */
+	if (arg != 256 && arg != 512 && arg != 1024 && arg != 2048 &&
+	    arg != 4096) {
+		ipath_dbg("Trying to set invalid mtu %u, failing\n", arg);
+		ret = -EINVAL;
+		goto bail;
+	}
+	if (dd->ipath_ibmtu == arg) {
+		ret = 0;        /* same as current */
+		goto bail;
+	}
+
+	piosize = dd->ipath_ibmaxlen;
+	dd->ipath_ibmtu = arg;
+
+	if (arg >= (piosize - IPATH_PIO_MAXIBHDR)) {
+		/* Only if it's not the initial value (or reset to it) */
+		if (piosize != dd->ipath_init_ibmaxlen) {
+			dd->ipath_ibmaxlen = piosize;
+			changed = 1;
+		}
+	} else if ((arg + IPATH_PIO_MAXIBHDR) != dd->ipath_ibmaxlen) {
+		piosize = arg + IPATH_PIO_MAXIBHDR;
+		ipath_cdbg(VERBOSE, "ibmaxlen was 0x%x, setting to 0x%x "
+			   "(mtu 0x%x)\n", dd->ipath_ibmaxlen, piosize,
+			   arg);
+		dd->ipath_ibmaxlen = piosize;
+		changed = 1;
+	}
+
+	if (changed) {
+		/*
+		 * set the IBC maxpktlength to the size of our pio
+		 * buffers in words
+		 */
+		u64 ibc = dd->ipath_ibcctrl;
+		ibc &= ~(INFINIPATH_IBCC_MAXPKTLEN_MASK <<
+			 INFINIPATH_IBCC_MAXPKTLEN_SHIFT);
+
+		piosize = piosize - 2 * sizeof(u32);    /* ignore pbc */
+		dd->ipath_ibmaxlen = piosize;
+		piosize /= sizeof(u32); /* in words */
+		/*
+		 * for ICRC, which we only send in diag test pkt mode, and
+		 * we don't need to worry about that for mtu
+		 */
+		piosize += 1;
+
+		ibc |= piosize << INFINIPATH_IBCC_MAXPKTLEN_SHIFT;
+		dd->ipath_ibcctrl = ibc;
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_ibcctrl,
+				 dd->ipath_ibcctrl);
+		dd->ipath_f_tidtemplate(dd);
+	}
+
+	ret = 0;
+
+bail:
+	return ret;
+}
+
+int ipath_set_lid(struct ipath_devdata *dd, u32 arg, u8 lmc)
+{
+	dd->ipath_lid = arg;
+	dd->ipath_lmc = lmc;
+
+	dev_info(&dd->pcidev->dev, "We got a lid: %u\n", arg);
+
+	return 0;
 }
 
 /**
@@ -1686,17 +1829,10 @@ void ipath_shutdown_device(struct ipath_devdata *dd)
 	ipath_set_ib_lstate(dd, INFINIPATH_IBCC_LINKINITCMD_DISABLE <<
 			    INFINIPATH_IBCC_LINKINITCMD_SHIFT);
 
-	/*
-	 * we are shutting down, so tell the layered driver.  We don't do
-	 * this on just a link state change, much like ethernet, a cable
-	 * unplug, etc. doesn't change driver state
-	 */
-	ipath_layer_intr(dd, IPATH_LAYER_INT_IF_DOWN);
-
 	/* disable IBC */
 	dd->ipath_control &= ~INFINIPATH_C_LINKENABLE;
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_control,
-			 dd->ipath_control|INFINIPATH_C_FREEZEMODE);
+			 dd->ipath_control | INFINIPATH_C_FREEZEMODE);
 
 	/*
 	 * clear SerdesEnable and turn the leds off; do this here because
@@ -1755,14 +1891,14 @@ void ipath_free_pddata(struct ipath_devdata *dd, struct ipath_portdata *pd)
 		dma_free_coherent(&dd->pcidev->dev, pd->port_rcvhdrq_size,
 				  pd->port_rcvhdrq, pd->port_rcvhdrq_phys);
 		pd->port_rcvhdrq = NULL;
-		if(pd->port_rcvhdrtail_kvaddr) {
+		if (pd->port_rcvhdrtail_kvaddr) {
 			dma_free_coherent(&dd->pcidev->dev, PAGE_SIZE,
 					 (void *)pd->port_rcvhdrtail_kvaddr,
 					 pd->port_rcvhdrqtailaddr_phys);
 			pd->port_rcvhdrtail_kvaddr = NULL;
 		}
 	}
-	if(pd->port_port && pd->port_rcvegrbuf) {
+	if (pd->port_port && pd->port_rcvegrbuf) {
 		unsigned e;
 
 		for (e = 0; e < pd->port_rcvegrbuf_chunks; e++) {
@@ -1807,7 +1943,7 @@ static int __init infinipath_init(void)
 {
 	int ret;
 
-	ipath_dbg(KERN_INFO DRIVER_LOAD_MSG "%s", ipath_core_version);
+	ipath_dbg(KERN_INFO DRIVER_LOAD_MSG "%s", ib_ipath_version);
 
 	/*
 	 * These must be called before the driver is registered with
@@ -1873,7 +2009,6 @@ static void cleanup_device(struct ipath_devdata *dd)
 			 * re-init
 			 */
 			dd->ipath_kregbase = NULL;
-			dd->ipath_kregvirt = NULL;
 			dd->ipath_uregbase = 0;
 			dd->ipath_sregbase = 0;
 			dd->ipath_cregbase = 0;
@@ -1891,7 +2026,7 @@ static void cleanup_device(struct ipath_devdata *dd)
 				  dd->ipath_pioavailregs_phys);
 		dd->ipath_pioavailregs_dma = NULL;
 	}
-	if(dd->ipath_dummy_hdrq) {
+	if (dd->ipath_dummy_hdrq) {
 		dma_free_coherent(&dd->pcidev->dev,
 			dd->ipath_pd[0]->port_rcvhdrq_size,
 			dd->ipath_dummy_hdrq, dd->ipath_dummy_hdrq_phys);
@@ -1957,6 +2092,8 @@ static void __exit infinipath_cleanup(void)
 {
 	struct ipath_devdata *dd, *tmp;
 	unsigned long flags;
+
+	ipath_diagpkt_remove();
 
 	ipath_exit_ipathfs();
 
@@ -2070,5 +2207,22 @@ bail:
 	return ret;
 }
 
+int ipath_set_rx_pol_inv(struct ipath_devdata *dd, u8 new_pol_inv)
+{
+	u64 val;
+	if ( new_pol_inv > INFINIPATH_XGXS_RX_POL_MASK ) {
+		return -1;
+	}
+	if ( dd->ipath_rx_pol_inv != new_pol_inv ) {
+		dd->ipath_rx_pol_inv = new_pol_inv;
+		val = ipath_read_kreg64(dd, dd->ipath_kregs->kr_xgxsconfig);
+		val &= ~(INFINIPATH_XGXS_RX_POL_MASK <<
+                         INFINIPATH_XGXS_RX_POL_SHIFT);
+                val |= ((u64)dd->ipath_rx_pol_inv) <<
+                        INFINIPATH_XGXS_RX_POL_SHIFT;
+		ipath_write_kreg(dd, dd->ipath_kregs->kr_xgxsconfig, val);
+	}
+	return 0;
+}
 module_init(infinipath_init);
 module_exit(infinipath_cleanup);

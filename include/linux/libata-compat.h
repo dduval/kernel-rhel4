@@ -1,24 +1,17 @@
 #ifndef __LIBATA_COMPAT_H__
 #define __LIBATA_COMPAT_H__
 
-#include <asm/scatterlist.h>
+#define IRQF_SHARED SA_SHIRQ
 
-typedef unsigned int pm_message_t;
+#define PCI_D0			0
+#define PCI_D3hot		3
 
-static inline void sg_set_buf(struct scatterlist *sg, void *buf,
-			      unsigned int buflen)
-{
-	sg->page = virt_to_page(buf);
-	sg->offset = offset_in_page(buf);
-	sg->length = buflen;
-}
+int ata_scsi_error(struct Scsi_Host *host);
+enum scsi_eh_timer_return ata_scsi_timed_out(struct scsi_cmnd *cmd);
 
-static inline void sg_init_one(struct scatterlist *sg, void *buf,
-			       unsigned int buflen)
-{
-	memset(sg, 0, sizeof(*sg));
-	sg_set_buf(sg, buf, buflen);
-}
+typedef u32 pm_message_t;
+
+typedef void (*work_func_t)(void *);
 
 static inline void
 pci_intx(struct pci_dev *pdev, int enable)

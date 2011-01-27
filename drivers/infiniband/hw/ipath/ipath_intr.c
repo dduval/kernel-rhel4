@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -33,8 +34,8 @@
 #include <linux/pci.h>
 
 #include "ipath_kernel.h"
-#include "ips_common.h"
-#include "ipath_layer.h"
+#include "ipath_verbs.h"
+#include "ipath_common.h"
 
 /* These are all rcv-related errors which we want to count for stats */
 #define E_SUM_PKTERRS \
@@ -200,19 +201,19 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 				  ib_linkstate(lstate));
 		}
 		else
-			ipath_cdbg(SMA, "Unit %u link state %s, last "
+			ipath_cdbg(VERBOSE, "Unit %u link state %s, last "
 				   "was %s\n", dd->ipath_unit,
 				   ib_linkstate(lstate),
 				   ib_linkstate((unsigned)
-				   		dd->ipath_lastibcstat
-				   		& IPATH_IBSTATE_MASK));
+						dd->ipath_lastibcstat
+						& IPATH_IBSTATE_MASK));
 	}
 	else {
 		lstate = dd->ipath_lastibcstat & IPATH_IBSTATE_MASK;
 		if (lstate == IPATH_IBSTATE_INIT ||
 		    lstate == IPATH_IBSTATE_ARM ||
 		    lstate == IPATH_IBSTATE_ACTIVE)
-			ipath_cdbg(SMA, "Unit %u link state down"
+			ipath_cdbg(VERBOSE, "Unit %u link state down"
 				   " (state 0x%x), from %s\n",
 				   dd->ipath_unit,
 				   (u32)val & IPATH_IBSTATE_MASK,
@@ -268,7 +269,7 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 			     INFINIPATH_IBCS_LINKSTATE_MASK)
 			    == INFINIPATH_IBCS_L_STATE_ACTIVE)
 				/* if from up to down be more vocal */
-				ipath_cdbg(SMA,
+				ipath_cdbg(VERBOSE,
 					   "Unit %u link now down (%s)\n",
 					   dd->ipath_unit,
 					   ipath_ibcstatus_str[ltstate]);
@@ -288,8 +289,6 @@ static void handle_e_ibstatuschanged(struct ipath_devdata *dd,
 		*dd->ipath_statusp |=
 			IPATH_STATUS_IB_READY | IPATH_STATUS_IB_CONF;
 		dd->ipath_f_setextled(dd, lstate, ltstate);
-
-		__ipath_layer_intr(dd, IPATH_LAYER_INT_IF_UP);
 	} else if ((val & IPATH_IBSTATE_MASK) == IPATH_IBSTATE_INIT) {
 		/*
 		 * set INIT and DOWN.  Down is checked by most of the other
@@ -443,7 +442,7 @@ static int handle_errors(struct ipath_devdata *dd, ipath_err_t errs)
 		if ((dd->ipath_maskederrs & ~dd->ipath_ignorederrs) &
 		    ~(INFINIPATH_E_RRCVEGRFULL | INFINIPATH_E_RRCVHDRFULL))
 			ipath_dev_err(dd, "Disabling error(s) %llx because "
-				      "occuring too frequently (%s)\n",
+				      "occurring too frequently (%s)\n",
 				      (unsigned long long)
 				      (dd->ipath_maskederrs &
 				       ~dd->ipath_ignorederrs), msg);
@@ -597,11 +596,11 @@ static int handle_errors(struct ipath_devdata *dd, ipath_err_t errs)
 
 	if (!noprint && *msg)
 		ipath_dev_err(dd, "%s error\n", msg);
-	if (dd->ipath_sma_state_wanted & dd->ipath_flags) {
-		ipath_cdbg(VERBOSE, "sma wanted state %x, iflags now %x, "
-			   "waking\n", dd->ipath_sma_state_wanted,
+	if (dd->ipath_state_wanted & dd->ipath_flags) {
+		ipath_cdbg(VERBOSE, "driver wanted state %x, iflags now %x, "
+			   "waking\n", dd->ipath_state_wanted,
 			   dd->ipath_flags);
-		wake_up_interruptible(&ipath_sma_state_wait);
+		wake_up_interruptible(&ipath_state_wait);
 	}
 
 	return chkerrpkts;
@@ -707,11 +706,7 @@ static void handle_layer_pioavail(struct ipath_devdata *dd)
 {
 	int ret;
 
-	ret = __ipath_layer_intr(dd, IPATH_LAYER_INT_SEND_CONTINUE);
-	if (ret > 0)
-		goto set;
-
-	ret = __ipath_verbs_piobufavail(dd);
+	ret = ipath_ib_piobufavail(dd->verbs_dev);
 	if (ret > 0)
 		goto set;
 
@@ -760,7 +755,6 @@ static void handle_urcv(struct ipath_devdata *dd, u32 istat)
 	}
 }
 
-
 irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 {
 	struct ipath_devdata *dd = data;
@@ -774,7 +768,7 @@ irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 
 	ipath_stats.sps_ints++;
 
-	if(!(dd->ipath_flags & IPATH_PRESENT)) {
+	if (!(dd->ipath_flags & IPATH_PRESENT)) {
 		/*
 		 * This return value is not great, but we do not want the
 		 * interrupt core code to remove our interrupt handler
@@ -812,7 +806,7 @@ irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 	oldhead = dd->ipath_port0head;
 	curtail = (u32)le64_to_cpu(*dd->ipath_hdrqtailptr);
 	if (oldhead != curtail) {
-		if(dd->ipath_flags & IPATH_GPIO_INTR) {
+		if (dd->ipath_flags & IPATH_GPIO_INTR) {
 			ipath_write_kreg(dd, dd->ipath_kregs->kr_gpio_clear,
 					 (u64) (1 << 2));
 			istat = port0rbits | INFINIPATH_I_GPIO;
@@ -821,7 +815,7 @@ irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 			istat = port0rbits;
 		ipath_write_kreg(dd, dd->ipath_kregs->kr_intclear, istat);
 		ipath_kreceive(dd);
-		if(oldhead != dd->ipath_port0head) {
+		if (oldhead != dd->ipath_port0head) {
 			ipath_stats.sps_fastrcvint++;
 			goto done;
 		}
@@ -844,14 +838,14 @@ irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 	if (unexpected)
 		unexpected = 0;
 
-	if(unlikely(istat & ~infinipath_i_bitsextant))
+	if (unlikely(istat & ~infinipath_i_bitsextant))
 		ipath_dev_err(dd,
 			      "interrupt with unknown interrupts %x set\n",
 			      istat & (u32) ~ infinipath_i_bitsextant);
 	else
 		ipath_cdbg(VERBOSE, "intr stat=0x%x\n", istat);
 
-	if(unlikely(istat & INFINIPATH_I_ERROR)) {
+	if (unlikely(istat & INFINIPATH_I_ERROR)) {
 		ipath_stats.sps_errints++;
 		estat = ipath_read_kreg64(dd,
 					  dd->ipath_kregs->kr_errorstatus);
@@ -866,7 +860,7 @@ irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 			ipath_dev_err(dd, "Read of error status failed "
 				      "(all bits set); ignoring\n");
 		else
-			if(handle_errors(dd, estat))
+			if (handle_errors(dd, estat))
 				/* force calling ipath_kreceive() */
 				chk0rcv = 1;
 	}
@@ -912,7 +906,7 @@ irqreturn_t ipath_intr(int irq, void *data, struct pt_regs *regs)
 	 * extra cycles, since they were waiting anyway, and user's waiting
 	 * for receive are at the bottom.
 	 */
-	if(chk0rcv) {
+	if (chk0rcv) {
 		ipath_kreceive(dd);
 		istat &= ~port0rbits;
 	}

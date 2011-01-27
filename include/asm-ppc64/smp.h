@@ -24,6 +24,7 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/hw_irq.h>
 #include <asm/paca.h>
 
 extern int boot_cpuid;

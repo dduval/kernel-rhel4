@@ -96,6 +96,11 @@ ahd_linux_pci_dev_remove(struct pci_dev *pdev)
 	if (ahd != NULL) {
 		u_long s;
 
+		if (ahd->platform_data && ahd->platform_data->host) {
+			ahd_list_unlock(&l);
+			scsi_remove_host(ahd->platform_data->host);
+			ahd_list_lock(&l);
+		}
 		TAILQ_REMOVE(&ahd_tailq, ahd, links);
 		ahd_list_unlock(&l);
 		ahd_lock(ahd, &s);

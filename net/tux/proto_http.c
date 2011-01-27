@@ -1564,6 +1564,7 @@ static void http_lookup_vhost (tux_req_t *req, int cachemiss)
 
 	base.flags = LOOKUP_FOLLOW|flag;
 	base.last_type = LAST_ROOT;
+	base.depth = 0;
 	base.dentry = dget(req->proto->main_docroot.dentry);
 	base.mnt = mntget(req->proto->main_docroot.mnt);
 

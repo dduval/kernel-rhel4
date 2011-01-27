@@ -60,63 +60,41 @@
 
 static inline void hipz_update_sqa(struct ehca_qp *qp, u16 nr_wqes)
 {
-	struct h_galpa gal;
-
-	EDEB_EN(7, "qp=%p", qp);
-	gal = qp->galpas.kernel;
 	/*  ringing doorbell :-) */
-	hipz_galpa_store_qp(gal, qpx_sqa, EHCA_BMASK_SET(QPX_SQADDER, nr_wqes));
-	EDEB_EX(7, "qp=%p QPx_SQA = %i", qp, nr_wqes);
+	hipz_galpa_store_qp(qp->galpas.kernel, qpx_sqa,
+			    EHCA_BMASK_SET(QPX_SQADDER, nr_wqes));
 }
 
 static inline void hipz_update_rqa(struct ehca_qp *qp, u16 nr_wqes)
 {
-	struct h_galpa gal;
-
-	EDEB_EN(7, "qp=%p", qp);
-	gal = qp->galpas.kernel;
 	/*  ringing doorbell :-) */
-	hipz_galpa_store_qp(gal, qpx_rqa, EHCA_BMASK_SET(QPX_RQADDER, nr_wqes));
-	EDEB_EX(7, "qp=%p QPx_RQA = %i", qp, nr_wqes);
+	hipz_galpa_store_qp(qp->galpas.kernel, qpx_rqa,
+			    EHCA_BMASK_SET(QPX_RQADDER, nr_wqes));
 }
 
 static inline void hipz_update_feca(struct ehca_cq *cq, u32 nr_cqes)
 {
-	struct h_galpa gal;
-
-	EDEB_EN(7, "cq=%p", cq);
-	gal = cq->galpas.kernel;
-	hipz_galpa_store_cq(gal, cqx_feca,
+	hipz_galpa_store_cq(cq->galpas.kernel, cqx_feca,
 			    EHCA_BMASK_SET(CQX_FECADDER, nr_cqes));
-	EDEB_EX(7, "cq=%p CQx_FECA = %i", cq, nr_cqes);
 }
 
 static inline void hipz_set_cqx_n0(struct ehca_cq *cq, u32 value)
 {
-	struct h_galpa gal;
-	u64 CQx_N0_reg = 0;
+	u64 cqx_n0_reg;
 
-	EDEB_EN(7, "cq=%p event on solicited completion -- write CQx_N0", cq);
-	gal = cq->galpas.kernel;
-	hipz_galpa_store_cq(gal, cqx_n0,
+	hipz_galpa_store_cq(cq->galpas.kernel, cqx_n0,
 			    EHCA_BMASK_SET(CQX_N0_GENERATE_SOLICITED_COMP_EVENT,
 					   value));
-	CQx_N0_reg = hipz_galpa_load_cq(gal, cqx_n0);
-	EDEB_EX(7, "cq=%p loaded CQx_N0=%lx", cq, (unsigned long)CQx_N0_reg);
+	cqx_n0_reg = hipz_galpa_load_cq(cq->galpas.kernel, cqx_n0);
 }
 
 static inline void hipz_set_cqx_n1(struct ehca_cq *cq, u32 value)
 {
-	struct h_galpa gal;
-	u64 CQx_N1_reg = 0;
+	u64 cqx_n1_reg;
 
-	EDEB_EN(7, "cq=%p event on completion -- write CQx_N1",
-		cq);
-	gal = cq->galpas.kernel;
-	hipz_galpa_store_cq(gal, cqx_n1,
+	hipz_galpa_store_cq(cq->galpas.kernel, cqx_n1,
 			    EHCA_BMASK_SET(CQX_N1_GENERATE_COMP_EVENT, value));
-	CQx_N1_reg = hipz_galpa_load_cq(gal, cqx_n1);
-	EDEB_EX(7, "cq=%p loaded CQx_N1=%lx", cq, (unsigned long)CQx_N1_reg);
+	cqx_n1_reg = hipz_galpa_load_cq(cq->galpas.kernel, cqx_n1);
 }
 
 #endif /* __HIPZ_FNC_CORE_H__ */

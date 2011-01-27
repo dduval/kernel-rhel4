@@ -59,6 +59,46 @@ resource_show(struct device * dev, char * buf)
 	return (str - buf);
 }
 
+static ssize_t
+msi_bus_show(struct device *dev, char *buf)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	if (!pdev->subordinate)
+		return 0;
+
+	return sprintf (buf, "%u\n",
+			!(pdev->subordinate->pad2 & PCI_BUS_FLAGS_NO_MSI));
+}
+
+static ssize_t
+msi_bus_store(struct device *dev, const char *buf, size_t count)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	/* bad things may happen if the no_msi flag is changed
+	 * while some drivers are loaded */
+	if (!capable(CAP_SYS_ADMIN))
+		return count;
+
+	if (!pdev->subordinate)
+		return count;
+
+	if (*buf == '0') {
+		pdev->subordinate->pad2 |= PCI_BUS_FLAGS_NO_MSI;
+		dev_warn(&pdev->dev, "forced subordinate bus to not support MSI,"
+			 " bad things could happen.\n");
+	}
+
+	if (*buf == '1') {
+		pdev->subordinate->pad2 &= ~PCI_BUS_FLAGS_NO_MSI;
+		dev_warn(&pdev->dev, "forced subordinate bus to support MSI,"
+			 " bad things could happen.\n");
+	}
+
+	return count;
+}
+ 
 struct device_attribute pci_dev_attrs[] = {
 	__ATTR_RO(resource),
 	__ATTR_RO(vendor),
@@ -67,6 +107,7 @@ struct device_attribute pci_dev_attrs[] = {
 	__ATTR_RO(subsystem_device),
 	__ATTR_RO(class),
 	__ATTR_RO(irq),
+	__ATTR(msi_bus, 0644, msi_bus_show, msi_bus_store),
 	__ATTR_NULL,
 };
 

@@ -33,8 +33,6 @@
 #include <asm/processor.h>
 #include <asm/cpufeature.h>
 
-#include "speedstep-est-common.h"
-
 #define PFX		"speedstep-centrino: "
 #define MAINTAINER	"Jeremy Fitzhardinge <jeremy@goop.org>"
 
@@ -45,6 +43,8 @@
 #else
 #define dprintk(msg...) do { } while(0)
 #endif
+
+#define INTEL_MSR_RANGE	(0xffff)
 
 struct cpu_id
 {
@@ -391,8 +391,10 @@ static int centrino_cpu_init_acpi(struct cpufreq_policy *policy)
 	}
 
 	for (i=0; i<p.state_count; i++) {
-		if (p.states[i].control != p.states[i].status) {
-			dprintk(KERN_DEBUG "Different control and status values\n");
+		if ((p.states[i].control & INTEL_MSR_RANGE) != 
+		    (p.states[i].status & INTEL_MSR_RANGE)) {
+			dprintk("Different MSR bits in control (%llu) and status (%llu)\n",
+				p.states[i].control, p.states[i].status);
 			result = -EINVAL;
 			goto err_unreg;
 		}
@@ -427,7 +429,7 @@ static int centrino_cpu_init_acpi(struct cpufreq_policy *policy)
         }
 
         for (i=0; i<p.state_count; i++) {
-		centrino_model[policy->cpu]->op_points[i].index = p.states[i].control;
+		centrino_model[policy->cpu]->op_points[i].index = p.states[i].control & INTEL_MSR_RANGE;
 		centrino_model[policy->cpu]->op_points[i].frequency = p.states[i].core_frequency * 1000;
 	}
 	centrino_model[policy->cpu]->op_points[p.state_count].frequency = CPUFREQ_TABLE_END;
@@ -472,6 +474,7 @@ static int centrino_cpu_init(struct cpufreq_policy *policy)
 	unsigned l, h;
 	int ret;
 	int i;
+	struct cpuinfo_x86 *c = &cpu_data[policy->cpu];
 
 	/* Only Intel makes Enhanced Speedstep-capable CPUs */
 	if (cpu->x86_vendor != X86_VENDOR_INTEL || !cpu_has(cpu, X86_FEATURE_EST))
@@ -484,7 +487,7 @@ static int centrino_cpu_init(struct cpufreq_policy *policy)
 	if (i != N_IDS)
 		centrino_cpu[policy->cpu] = 1;
 
-	if (is_const_loops_cpu(policy->cpu)) {
+	if (cpu_has(c, X86_FEATURE_CONSTANT_TSC)) {
 		centrino_driver.flags |= CPUFREQ_CONST_LOOPS;
 	}
 

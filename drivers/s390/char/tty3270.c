@@ -124,10 +124,8 @@ void
 tty3270_set_timer(struct tty3270 *tp, int expires)
 {
 	if (expires == 0) {
-		if (timer_pending(&tp->timer)) {
+		if (timer_pending(&tp->timer) && del_timer(&tp->timer))
 			raw3270_put_view(&tp->view);
-			del_timer(&tp->timer);
-		}
 		return;
 	}
 	if (timer_pending(&tp->timer)) {
@@ -709,6 +707,7 @@ tty3270_alloc_view(void)
 	if (!tp->freemem_pages)
 		goto out_tp;
 	INIT_LIST_HEAD(&tp->freemem);
+	init_timer(&tp->timer);
 	for (pages = 0; pages < TTY3270_STRING_PAGES; pages++) {
 		tp->freemem_pages[pages] = (void *)
 			__get_free_pages(GFP_KERNEL|GFP_DMA, 0);

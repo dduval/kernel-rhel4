@@ -27,6 +27,7 @@ EXPORT_SYMBOL(pci_root_buses);
 
 LIST_HEAD(pci_devices);
 
+extern spinlock_t pci_bus_lock;
 /*
  * PCI Bus Class
  */
@@ -136,23 +137,31 @@ static void pci_read_bases(struct pci_dev *dev, unsigned int howmany, int rom)
 		res->flags |= pci_calc_resource_flags(l);
 		if ((l & (PCI_BASE_ADDRESS_SPACE | PCI_BASE_ADDRESS_MEM_TYPE_MASK))
 		    == (PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64)) {
-			pci_read_config_dword(dev, reg+4, &l);
+			u32 szhi, lhi;
+			pci_read_config_dword(dev, reg+4, &lhi);
+			pci_write_config_dword(dev, reg+4, ~0);
+			pci_read_config_dword(dev, reg+4, &szhi);
+			pci_write_config_dword(dev, reg+4, lhi);
+			szhi = pci_size(lhi, szhi, 0xffffffff);
 			next++;
 #if BITS_PER_LONG == 64
-			res->start |= ((unsigned long) l) << 32;
+			res->start |= ((unsigned long) lhi) << 32;
 			res->end = res->start + sz;
-			pci_write_config_dword(dev, reg+4, ~0);
-			pci_read_config_dword(dev, reg+4, &sz);
-			pci_write_config_dword(dev, reg+4, l);
-			if (~sz)
-				res->end = res->start + 0xffffffff +
-						(((unsigned long) ~sz) << 32);
+			if (szhi) {
+				/* This BAR needs > 4GB?  Wow. */
+				res->end |= (unsigned long)szhi<<32;
+			}
 #else
-			if (l) {
-				printk(KERN_ERR "PCI: Unable to handle 64-bit address for device %s\n", pci_name(dev));
+			if (szhi) {
+				printk(KERN_ERR "PCI: Unable to handle 64-bit BAR for device %s\n", pci_name(dev));
 				res->start = 0;
 				res->flags = 0;
-				continue;
+			} else if (lhi) {
+				/* 64-bit wide address, treat as disabled */
+				pci_write_config_dword(dev, reg, l & ~(u32)PCI_BASE_ADDRESS_MEM_MASK);
+				pci_write_config_dword(dev, reg+4, 0);
+				res->start = 0;
+				res->end = sz;
 			}
 #endif
 		}
@@ -291,6 +300,7 @@ pci_alloc_child_bus(struct pci_bus *parent, struct pci_dev *bridge, int busnr)
 	child->parent = parent;
 	child->ops = parent->ops;
 	child->sysdata = parent->sysdata;
+	child->pad2 = parent->pad2;
 	child->bridge = get_device(&bridge->dev);
 
 	child->class_dev.class = &pcibus_class;
@@ -388,7 +398,11 @@ int __devinit pci_scan_bridge(struct pci_bus *bus, struct pci_dev * dev, int max
 		/* Clear errors */
 		pci_write_config_word(dev, PCI_STATUS, 0xffff);
 
-		child = pci_alloc_child_bus(bus, dev, ++max);
+		/* Prevent assigning a bus number that already exists.
+		 * This can happen when a bridge is hot-plugged */
+		if (pci_find_bus(pci_domain_nr(bus), max+1))
+			return max;
+		child = pci_add_new_bus(bus, dev, ++max);
 		buses = (buses & 0xff000000)
 		      | ((unsigned int)(child->primary)     <<  0)
 		      | ((unsigned int)(child->secondary)   <<  8)
@@ -812,3 +826,92 @@ EXPORT_SYMBOL(pci_scan_bridge);
 EXPORT_SYMBOL(pci_scan_single_device);
 EXPORT_SYMBOL_GPL(pci_scan_child_bus);
 #endif
+
+static int __init pci_sort_bf_cmp(const struct pci_dev *a, const struct pci_dev *b)
+{
+	if      (pci_domain_nr(a->bus) < pci_domain_nr(b->bus)) return -1;
+	else if (pci_domain_nr(a->bus) > pci_domain_nr(b->bus)) return  1;
+
+	if      (a->bus->number < b->bus->number) return -1;
+	else if (a->bus->number > b->bus->number) return  1;
+
+	if      (a->devfn < b->devfn) return -1;
+	else if (a->devfn > b->devfn) return  1;
+
+	return 0;
+}
+
+static void __init pci_insertion_sort_devices(struct pci_dev *a, struct list_head *list)
+{
+	struct pci_dev *b;
+	list_for_each_entry(b, list, global_list) {
+		if (pci_sort_bf_cmp(a, b) <= 0) {
+			list_move_tail(&a->global_list, &b->global_list);
+			return;
+		}
+	}
+	list_move_tail(&a->global_list, list);
+}
+
+
+/*
+ * Yes, this forcably breaks the bus_list abstraction temporarily.  It
+ * just wants to sort the bus_list, not change reference counts and
+ * take/drop locks rapidly in the process.  It does all this while
+ * holding the lock for the list, so objects can't otherwise be
+ * added/removed while we're swizzling.
+ */
+
+static void __init pci_insertion_sort_buslist(struct pci_dev *a, struct list_head *list)
+{
+	struct list_head *pos;
+	struct device *dev;
+	struct pci_dev *b;
+
+	list_for_each(pos, list) {
+		dev = container_of(pos, struct device, bus_list);
+		b = to_pci_dev(dev);
+		if (pci_sort_bf_cmp(a, b) <= 0) {
+			list_move_tail(&a->dev.bus_list, &b->dev.bus_list);
+			return;
+		}
+	}
+	list_move_tail(&a->dev.bus_list, list);
+}
+
+static void __init pci_sort_breadthfirst_buslist(void)
+{
+	LIST_HEAD(sorted_devices);
+	struct list_head *pos, *tmp;
+	struct device *dev;
+	struct pci_dev *pdev;
+	down_write(&pci_bus_type.subsys.rwsem);
+	list_for_each_safe(pos, tmp, &pci_bus_type.devices.list) {
+		dev = container_of(pos, struct device, bus_list);
+		pdev = to_pci_dev(dev);
+		pci_insertion_sort_buslist(pdev, &sorted_devices);
+	}
+	list_splice(&sorted_devices, &pci_bus_type.devices.list);
+	up_write(&pci_bus_type.subsys.rwsem);
+}
+
+static void __init pci_sort_breadthfirst_devices(void)
+{
+	LIST_HEAD(sorted_devices);
+	struct pci_dev *dev, *tmp;
+
+	spin_lock(&pci_bus_lock);
+	list_for_each_entry_safe(dev, tmp, &pci_devices, global_list) {
+		pci_insertion_sort_devices(dev, &sorted_devices);
+	}
+	list_splice(&sorted_devices, &pci_devices);
+	spin_unlock(&pci_bus_lock);
+}
+
+void __init pci_sort_breadthfirst(void)
+{
+	pci_sort_breadthfirst_devices();
+	pci_sort_breadthfirst_buslist();
+}
+
+

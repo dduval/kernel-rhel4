@@ -54,6 +54,7 @@ struct autofs_info {
 
 	struct autofs_sb_info *sbi;
 	unsigned long last_used;
+	atomic_t count;
 
 	mode_t	mode;
 	size_t	size;
@@ -71,9 +72,15 @@ struct autofs_wait_queue {
 	struct autofs_wait_queue *next;
 	autofs_wqt_t wait_queue_token;
 	/* We use the following to see what we are waiting for */
-	int hash;
-	int len;
+	unsigned int hash;
+	unsigned int len;
 	char *name;
+	u32 dev;
+	u64 ino;
+	uid_t uid;
+	gid_t gid;
+	pid_t pid;
+	pid_t tgid;
 	/* This is for status reporting upon return */
 	int status;
 	atomic_t wait_ctr;
@@ -81,14 +88,22 @@ struct autofs_wait_queue {
 
 #define AUTOFS_SBI_MAGIC 0x6d4a556d
 
+#define AUTOFS_TYPE_INDIRECT     0x0001
+#define AUTOFS_TYPE_DIRECT       0x0002
+#define AUTOFS_TYPE_OFFSET       0x0004
+
 struct autofs_sb_info {
 	u32 magic;
+	int pipefd;
 	struct file *pipe;
 	pid_t oz_pgrp;
 	int catatonic;
 	int version;
 	int sub_version;
+	int min_proto;
+	int max_proto;
 	unsigned long exp_timeout;
+	unsigned int type;
 	int reghost_enabled;
 	int needs_reghost;
 	struct super_block *sb;
@@ -155,6 +170,8 @@ int autofs4_expire_multi(struct super_block *, struct vfsmount *,
 extern struct inode_operations autofs4_symlink_inode_operations;
 extern struct inode_operations autofs4_dir_inode_operations;
 extern struct inode_operations autofs4_root_inode_operations;
+extern struct inode_operations autofs4_indirect_root_inode_operations;
+extern struct inode_operations autofs4_direct_root_inode_operations;
 extern struct file_operations autofs4_dir_operations;
 extern struct file_operations autofs4_root_operations;
 
@@ -165,16 +182,10 @@ struct autofs_info *autofs4_init_ino(struct autofs_info *, struct autofs_sb_info
 
 /* Queue management functions */
 
-enum autofs_notify
-{
-	NFY_NONE,
-	NFY_MOUNT,
-	NFY_EXPIRE
-};
-
 int autofs4_wait(struct autofs_sb_info *,struct dentry *, enum autofs_notify);
 int autofs4_wait_release(struct autofs_sb_info *,autofs_wqt_t,int);
 void autofs4_catatonic_mode(struct autofs_sb_info *);
+extern void autofs4_kill_sb(struct super_block *);
 
 static inline int autofs4_follow_mount(struct vfsmount **mnt, struct dentry **dentry)
 {
@@ -189,12 +200,22 @@ static inline int autofs4_follow_mount(struct vfsmount **mnt, struct dentry **de
 	return res;
 }
 
+static inline u32 autofs4_get_dev(struct autofs_sb_info *sbi)
+{
+	return new_encode_dev(sbi->sb->s_dev);
+}
+
+static inline u64 autofs4_get_ino(struct autofs_sb_info *sbi)
+{
+	return sbi->sb->s_root->d_inode->i_ino;
+}
+
 static inline int simple_positive(struct dentry *dentry)
 {
 	return dentry->d_inode && !d_unhashed(dentry);
 }
 
-static inline int simple_empty_nolock(struct dentry *dentry)
+static inline int __simple_empty(struct dentry *dentry)
 {
 	struct dentry *child;
 	int ret = 0;
@@ -206,3 +227,6 @@ static inline int simple_empty_nolock(struct dentry *dentry)
 out:
 	return ret;
 }
+
+void autofs4_dentry_release(struct dentry *);
+

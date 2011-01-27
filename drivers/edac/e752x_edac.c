@@ -29,6 +29,7 @@
 
 #include "edac_mc.h"
 
+static int force_function_unhide;
 
 #ifndef PCI_DEVICE_ID_INTEL_7520_0
 #define PCI_DEVICE_ID_INTEL_7520_0      0x3590
@@ -271,10 +272,10 @@ static void do_process_ce(struct mem_ctl_info *mci, u16 error_one,
 
 	if (!pvt->map_type)
 		row = 7 - row;
-	edac_mc_handle_ce(mci, page, 0, sec1_syndrome, row, channel,
-	    "e752x CE");
+	/* e752x mc reads 34:6 of the DRAM linear address */
+	edac_mc_handle_ce(mci, page, offset_in_page(sec1_add << 4),
+			sec1_syndrome, row, channel, "e752x CE");
 }
-
 
 static inline void process_ce(struct mem_ctl_info *mci, u16 error_one,
 		u32 sec1_add, u16 sec1_syndrome, int *error_found,
@@ -303,8 +304,10 @@ static void do_process_ue(struct mem_ctl_info *mci, u16 error_one, u32 ded_add,
 		    /* chip select are bits 14 & 13 */
 		    ((block_page >> 1) & 3) :
 		    edac_mc_find_csrow_by_page(mci, block_page);
-		edac_mc_handle_ue(mci, block_page, 0, row,
-				       "e752x UE from Read");
+		/* e752x mc reads 34:6 of the DRAM linear address */
+		edac_mc_handle_ue(mci, block_page,
+					offset_in_page(error_2b << 4),
+					row, "e752x UE from Read");
 	}
 	if (error_one & 0x0404) {
 		error_2b = scrb_add;
@@ -314,8 +317,10 @@ static void do_process_ue(struct mem_ctl_info *mci, u16 error_one, u32 ded_add,
 		    /* chip select are bits 14 & 13 */
 		    ((block_page >> 1) & 3) :
 		    edac_mc_find_csrow_by_page(mci, block_page);
-		edac_mc_handle_ue(mci, block_page, 0, row,
-				       "e752x UE from Scruber");
+		/* e752x mc reads 34:6 of the DRAM linear address */
+		edac_mc_handle_ue(mci, block_page,
+					offset_in_page(error_2b << 4),
+					row, "e752x UE from Scruber");
 	}
 }
 
@@ -736,7 +741,6 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	int index;
 	u16 pci_data, stat;
 	u32 stat32;
-	u16 stat16;
 	u8 stat8;
 	struct mem_ctl_info *mci = NULL;
 	struct e752x_pvt *pvt = NULL;
@@ -749,12 +753,21 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	unsigned long last_cumul_size;
 	struct pci_dev *pres_dev;
 	struct pci_dev *dev = NULL;
+	struct e752x_error_info discard;
 
 	debugf0("MC: " __FILE__ ": %s(): mci\n", __func__);
 	debugf0("Starting Probe1\n");
 
-	/* enable device 0 function 1 */
+	/* check to see if device 0 function 1 is enabled; if it isn't, we
+	 * assume the BIOS has reserved it for a reason and is expecting
+	 * exclusive access, we take care not to violate that assumption and
+	 * fail the probe. */
 	pci_read_config_byte(pdev, E752X_DEVPRES1, &stat8);
+	if (!force_function_unhide && !(stat8 & (1 << 5))) {
+		printk(KERN_INFO "Contact your BIOS vendor to see if the "
+			"E752x error registers can be safely un-hidden\n");
+		goto fail;
+	}
 	stat8 |= (1 << 5);
 	pci_write_config_byte(pdev, E752X_DEVPRES1, stat8);
 
@@ -953,24 +966,7 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	pci_write_config_byte(dev, E752X_DRAM_ERRMASK, 0x00);
 	pci_write_config_byte(dev, E752X_DRAM_SMICMD, 0x00);
 	/* clear other MCH errors */
-	pci_read_config_dword(dev, E752X_FERR_GLOBAL, &stat32);
-	pci_write_config_dword(dev, E752X_FERR_GLOBAL, stat32);
-	pci_read_config_dword(dev, E752X_NERR_GLOBAL, &stat32);
-	pci_write_config_dword(dev, E752X_NERR_GLOBAL, stat32);
-	pci_read_config_byte(dev, E752X_HI_FERR, &stat8);
-	pci_write_config_byte(dev, E752X_HI_FERR, stat8);
-	pci_read_config_byte(dev, E752X_HI_NERR, &stat8);
-	pci_write_config_byte(dev, E752X_HI_NERR, stat8);
-	pci_read_config_dword(dev, E752X_SYSBUS_FERR, &stat32);
-	pci_write_config_dword(dev, E752X_SYSBUS_FERR, stat32);
-	pci_read_config_byte(dev, E752X_BUF_FERR, &stat8);
-	pci_write_config_byte(dev, E752X_BUF_FERR, stat8);
-	pci_read_config_byte(dev, E752X_BUF_NERR, &stat8);
-	pci_write_config_byte(dev, E752X_BUF_NERR, stat8);
-	pci_read_config_word(dev, E752X_DRAM_FERR, &stat16);
-	pci_write_config_word(dev, E752X_DRAM_FERR, stat16);
-	pci_read_config_word(dev, E752X_DRAM_NERR, &stat16);
-	pci_write_config_word(dev, E752X_DRAM_NERR, stat16);
+	e752x_get_error_info(mci, &discard);
 
 	/* get this far and it's successful */
 	debugf3("MC: " __FILE__ ": %s(): success\n", __func__);
@@ -1009,10 +1005,7 @@ static void __devexit e752x_remove_one(struct pci_dev *pdev)
 
 	debugf0(__FILE__ ": %s()\n", __func__);
 
-	if ((mci = edac_mc_find_mci_by_pdev(pdev)) == NULL)
-		return;
-
-	if (edac_mc_del_mc(mci))
+	if ((mci = edac_mc_del_mc(pdev)) == NULL)
 		return;
 
 	pvt = (struct e752x_pvt *) mci->pvt_info;
@@ -1067,3 +1060,8 @@ module_exit(e752x_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Linux Networx (http://lnxi.com) Tom Zimmerman\n");
 MODULE_DESCRIPTION("MC support for Intel e752x memory controllers");
+
+module_param(force_function_unhide, int, 0444);
+MODULE_PARM_DESC(force_function_unhide, "if BIOS sets Dev0:Fun1 up as hidden:"
+" 1=force unhide and hope BIOS doesn't fight driver for Dev0:Fun1 access");
+

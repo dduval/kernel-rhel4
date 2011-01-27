@@ -635,6 +635,7 @@ void zap_page_range(struct vm_area_struct *vma, unsigned long address,
 	tlb_finish_mmu(tlb, address, end);
 	spin_unlock(&mm->page_table_lock);
 }
+EXPORT_SYMBOL(zap_page_range);
 
 /*
  * Do a quick page-table lookup for a single page.
@@ -837,6 +838,24 @@ int get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
 			len--;
 			continue;
 		}
+
+#ifdef CONFIG_XEN
+		if (vma && (vma->vm_flags & VM_FOREIGN)) {
+			struct page **map = vma->vm_private_data;
+			int offset = (start - vma->vm_start) >> PAGE_SHIFT;
+
+			if (map[offset] != NULL) {
+				if (pages)
+					pages[i] = map[offset];
+				if (vmas)
+					vmas[i] = vma;
+				i++;
+				start += PAGE_SIZE;
+				len--;
+				continue;
+			}
+		}
+#endif
 
 		if (!vma || (vma->vm_flags & VM_IO)
 				|| !(flags & vma->vm_flags))
@@ -1116,16 +1135,11 @@ static inline void break_cow(struct vm_area_struct * vma, struct page * new_page
 	pte_t entry;
 
 	flush_cache_page(vma, address);
-#ifdef CONFIG_IA64
-	if (vma->vm_flags & VM_EXEC) {
-		flush_icache_user_range(vma, new_page, 0, PAGE_SIZE);
-	}
-#endif
 	entry = maybe_mkwrite(pte_mkdirty(mk_pte(new_page, vma->vm_page_prot)),
 			      vma);
+	lazy_mmu_prot_update(entry);
 	ptep_establish(vma, address, page_table, entry);
 	update_mmu_cache(vma, address, entry);
-	lazy_mmu_prot_update(entry);
 }
 
 /*
@@ -1174,11 +1188,6 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct * vma,
 		unlock_page(old_page);
 		if (reuse) {
 			flush_cache_page(vma, address);
-#ifdef CONFIG_IA64
-			if (vma->vm_flags & VM_EXEC) {
-				flush_icache_user_range(vma, old_page, 0, PAGE_SIZE);
-			}
-#endif
 			entry = maybe_mkwrite(pte_mkyoung(pte_mkdirty(pte)),
 					      vma);
 			ptep_set_access_flags(vma, address, page_table, entry, 1);
@@ -1431,6 +1440,107 @@ void swapin_readahead(swp_entry_t entry, unsigned long addr,struct vm_area_struc
 	lru_add_drain();	/* Push any new pages onto the LRU now */
 }
 
+#ifdef CONFIG_XEN
+#ifndef pgd_addr_end
+#define pgd_addr_end(addr, end)						\
+({	unsigned long __boundary = ((addr) + PGDIR_SIZE) & PGDIR_MASK;	\
+	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
+})
+#endif
+
+#ifndef pmd_addr_end
+#define pmd_addr_end(addr, end)						\
+({	unsigned long __boundary = ((addr) + PMD_SIZE) & PMD_MASK;	\
+	(__boundary - 1 < (end) - 1)? __boundary: (end);		\
+})
+#endif
+
+
+static inline int apply_to_pte_range(struct mm_struct *mm, pmd_t *pmd,
+				     unsigned long addr, unsigned long end,
+				     pte_fn_t fn, void *data)
+{
+	pte_t *pte;
+	int err;
+	struct page *pmd_page;
+
+	if (mm == &init_mm)
+		pte = pte_alloc_kernel(mm, pmd, addr);
+	else
+		pte = pte_alloc_map(mm, pmd, addr);
+
+	if (!pte)
+		return -ENOMEM;
+
+	BUG_ON(pmd_huge(*pmd));
+
+	pmd_page = pmd_page(*pmd);
+
+	do {
+		err = fn(pte, pmd_page, addr, data);
+		if (err)
+			break;
+	} while (pte++, addr += PAGE_SIZE, addr != end);
+
+	if (mm != &init_mm)
+		pte_unmap(pte);
+	return err;
+}
+
+static inline int apply_to_pmd_range(struct mm_struct *mm, pgd_t *pgd,
+				     unsigned long addr, unsigned long end,
+				     pte_fn_t fn, void *data)
+{
+	pmd_t *pmd;
+	unsigned long next;
+	int err;
+
+	pmd = pmd_alloc(mm, pgd, addr);
+	if (!pmd)
+		return -ENOMEM;
+	do {
+		next = pmd_addr_end(addr, end);
+		err = apply_to_pte_range(mm, pmd, addr, next, fn, data);
+		if (err)
+			break;
+	} while (pmd++, addr = next, addr != end);
+	return err;
+}
+
+/*
+ * Scan a region of virtual memory, filling in page tables as necessary
+ * and calling a provided function on each leaf page table.
+ */
+int apply_to_page_range(struct mm_struct *mm, unsigned long addr,
+			unsigned long size, pte_fn_t fn, void *data)
+{
+	pgd_t *pgd;
+	unsigned long next;
+	unsigned long end = addr + size;
+	int err;
+
+	BUG_ON(addr >= end);
+#ifdef __x86_64__
+	if (mm == &init_mm)
+		pgd = pgd_offset_k(addr);
+	else
+#endif
+		pgd = pgd_offset(mm, addr);
+	spin_lock(&mm->page_table_lock);
+	do {
+		next = pgd_addr_end(addr, end);
+		err = apply_to_pmd_range(mm, pgd, addr, next, fn, data);
+		if (err)
+			break;
+	} while (pgd++, addr = next, addr != end);
+	spin_unlock(&mm->page_table_lock);
+	return err;
+}
+EXPORT_SYMBOL_GPL(apply_to_page_range);
+#undef pgd_addr_end
+#undef pmd_addr_end
+#endif /* CONFIG_XEN */
+
 /*
  * We hold the mm semaphore and the page_table_lock on entry and
  * should release the pagetable lock on exit..
@@ -1482,12 +1592,13 @@ static int do_swap_page(struct mm_struct * mm,
 	spin_lock(&mm->page_table_lock);
 	page_table = pte_offset_map(pmd, address);
 	if (unlikely(!pte_same(*page_table, orig_pte))) {
-		pte_unmap(page_table);
-		spin_unlock(&mm->page_table_lock);
-		unlock_page(page);
-		page_cache_release(page);
 		ret = VM_FAULT_MINOR;
-		goto out;
+		goto out_nomap;
+	}
+
+	if (unlikely(!PageUptodate(page))) {
+		ret = VM_FAULT_SIGBUS;
+		goto out_nomap;
 	}
 
 	/* The page isn't present yet, go ahead with the fault. */
@@ -1522,6 +1633,13 @@ static int do_swap_page(struct mm_struct * mm,
 	spin_unlock(&mm->page_table_lock);
 out:
 	return ret;
+out_nomap:
+	pte_unmap(page_table);
+	spin_unlock(&mm->page_table_lock);
+	unlock_page(page);
+	page_cache_release(page);
+	goto out;
+
 }
 
 /*

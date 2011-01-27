@@ -77,6 +77,6 @@ extern inline void pte_free(struct page *pte)
 } 
 
 #define __pte_free_tlb(tlb,pte) tlb_remove_page((tlb),(pte))
-#define __pmd_free_tlb(tlb,x)   pmd_free(x)
+#define __pmd_free_tlb(tlb,x)   tlb_remove_page((tlb),virt_to_page(x))
 
 #endif /* _X86_64_PGALLOC_H */

@@ -127,6 +127,9 @@ extern struct file_operations proc_kcore_operations;
 extern struct file_operations proc_kmsg_operations;
 extern struct file_operations ppc_htab_operations;
 
+extern struct mm_struct *mm_for_maps(struct task_struct *);
+extern int __may_ptrace_attach(struct task_struct *task);
+
 /*
  * proc_tty.c
  */
@@ -265,5 +268,10 @@ static inline struct proc_dir_entry *PDE(const struct inode *inode)
 {
 	return PROC_I(inode)->pde;
 }
+
+struct proc_maps_private {
+	struct task_struct *task;
+	struct vm_area_struct *tail_vma;
+};
 
 #endif /* _LINUX_PROC_FS_H */

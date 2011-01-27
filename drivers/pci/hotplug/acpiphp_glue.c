@@ -771,6 +771,66 @@ static int power_off_slot(struct acpiphp_slot *slot)
 	return retval;
 }
 
+static void program_hpp(struct pci_dev *dev, struct acpiphp_bridge *bridge)
+{
+	u16 pci_cmd, pci_bctl;
+	struct pci_dev *cdev;
+
+	/* Program hpp values for this device */
+	if (!(dev->hdr_type == PCI_HEADER_TYPE_NORMAL ||
+			(dev->hdr_type == PCI_HEADER_TYPE_BRIDGE &&
+			(dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)))
+		return;
+	pci_write_config_byte(dev, PCI_CACHE_LINE_SIZE,
+			bridge->hpp.cache_line_size);
+	pci_write_config_byte(dev, PCI_LATENCY_TIMER,
+			bridge->hpp.latency_timer);
+	pci_read_config_word(dev, PCI_COMMAND, &pci_cmd);
+	if (bridge->hpp.enable_SERR)
+		pci_cmd |= PCI_COMMAND_SERR;
+	else
+		pci_cmd &= ~PCI_COMMAND_SERR;
+	if (bridge->hpp.enable_PERR)
+		pci_cmd |= PCI_COMMAND_PARITY;
+	else
+		pci_cmd &= ~PCI_COMMAND_PARITY;
+	pci_write_config_word(dev, PCI_COMMAND, pci_cmd);
+
+	/* Program bridge control value and child devices */
+	if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
+		pci_write_config_byte(dev, PCI_SEC_LATENCY_TIMER,
+				bridge->hpp.latency_timer);
+		pci_read_config_word(dev, PCI_BRIDGE_CONTROL, &pci_bctl);
+		if (bridge->hpp.enable_SERR)
+			pci_bctl |= PCI_BRIDGE_CTL_SERR;
+		else
+			pci_bctl &= ~PCI_BRIDGE_CTL_SERR;
+		if (bridge->hpp.enable_PERR)
+			pci_bctl |= PCI_BRIDGE_CTL_PARITY;
+		else
+			pci_bctl &= ~PCI_BRIDGE_CTL_PARITY;
+		pci_write_config_word(dev, PCI_BRIDGE_CONTROL, pci_bctl);
+		if (dev->subordinate) {
+			list_for_each_entry(cdev, &dev->subordinate->devices,
+					bus_list)
+				program_hpp(cdev, bridge);
+		}
+	}
+}
+
+static void acpiphp_set_hpp_values(acpi_handle handle, struct pci_bus *bus)
+{
+	struct acpiphp_bridge bridge;
+	struct pci_dev *dev;
+
+	memset(&bridge, 0, sizeof(bridge));
+	bridge.handle = handle;
+	bridge.pci_dev = bus->self;
+	decode_hpp(&bridge);
+	list_for_each_entry(dev, &bus->devices, bus_list)
+		program_hpp(dev, &bridge);
+
+}
 
 /**
  * enable_device - enable, configure a slot
@@ -782,69 +842,60 @@ static int power_off_slot(struct acpiphp_slot *slot)
  */
 static int enable_device(struct acpiphp_slot *slot)
 {
-	u8 bus;
 	struct pci_dev *dev;
-	struct pci_bus *child;
+	struct pci_bus *bus = slot->bridge->pci_bus;
 	struct list_head *l;
 	struct acpiphp_func *func;
 	int retval = 0;
-	int num;
+	int num, max, pass;
 
 	if (slot->flags & SLOT_ENABLED)
 		goto err_exit;
 
 	/* sanity check: dev should be NULL when hot-plugged in */
-	dev = pci_find_slot(slot->bridge->bus, PCI_DEVFN(slot->device, 0));
+	dev = pci_get_slot(bus, PCI_DEVFN(slot->device, 0));
 	if (dev) {
 		/* This case shouldn't happen */
 		err("pci_dev structure already exists.\n");
+		pci_dev_put(dev);
 		retval = -1;
 		goto err_exit;
 	}
 
-	/* allocate resources to device */
-	retval = acpiphp_configure_slot(slot);
-	if (retval)
-		goto err_exit;
-
-	/* returned `dev' is the *first function* only! */
-	num = pci_scan_slot(slot->bridge->pci_bus, PCI_DEVFN(slot->device, 0));
-	if (num)
-		pci_bus_add_devices(slot->bridge->pci_bus);
-	dev = pci_find_slot(slot->bridge->bus, PCI_DEVFN(slot->device, 0));
-
-	if (!dev) {
+	num = pci_scan_slot(bus, PCI_DEVFN(slot->device, 0));
+	if (num == 0) {
 		err("No new device found\n");
 		retval = -1;
 		goto err_exit;
 	}
 
-	if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE) {
-		pci_read_config_byte(dev, PCI_SECONDARY_BUS, &bus);
-		child = (struct pci_bus*) pci_add_new_bus(dev->bus, dev, bus);
-		pci_do_scan_bus(child);
+	max = bus->secondary;
+	for (pass = 0; pass < 2; pass++) {
+		list_for_each_entry(dev, &bus->devices, bus_list) {
+			if (PCI_SLOT(dev->devfn) != slot->device)
+				continue;
+			if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE ||
+			    dev->hdr_type == PCI_HEADER_TYPE_CARDBUS) {
+				max = pci_scan_bridge(bus, dev, max, pass);
+				if (pass && dev->subordinate)
+					pci_bus_size_bridges(dev->subordinate);
+			}
+		}
 	}
+
+	pci_bus_assign_resources(bus);
+	pci_enable_bridges(bus);
+	pci_bus_add_devices(bus);
 
 	/* associate pci_dev to our representation */
 	list_for_each (l, &slot->funcs) {
 		func = list_entry(l, struct acpiphp_func, sibling);
-
-		func->pci_dev = pci_find_slot(slot->bridge->bus,
-					      PCI_DEVFN(slot->device,
+		func->pci_dev = pci_get_slot(bus, PCI_DEVFN(slot->device,
 							func->function));
-		if (!func->pci_dev)
-			continue;
-
-		/* configure device */
-		retval = acpiphp_configure_function(func);
-		if (retval)
-			goto err_exit;
+		acpiphp_set_hpp_values(func->handle, slot->bridge->pci_bus);
 	}
 
 	slot->flags |= SLOT_ENABLED;
-
-	dbg("Available resources:\n");
-	acpiphp_dump_resource(slot->bridge);
 
  err_exit:
 	return retval;

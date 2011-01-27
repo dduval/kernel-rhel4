@@ -73,6 +73,25 @@ boot := arch/x86_64/boot
 .PHONY: bzImage bzlilo install archmrproper \
 	fdimage fdimage144 fdimage288 archclean
 
+ifdef CONFIG_XEN
+CPPFLAGS := -D__KERNEL__ -Iinclude$(if $(KBUILD_SRC),2)/asm/mach-xen $(LINUXINCLUDE)
+head-y := arch/x86_64/kernel/head-xen.o arch/x86_64/kernel/head64-xen.o arch/x86_64/kernel/init_task.o
+LDFLAGS_vmlinux := -e _start
+boot := arch/i386/boot-xen
+.PHONY: vmlinuz
+#Default target when executing "make"
+all: vmlinuz
+
+vmlinuz: vmlinux
+	$(Q)$(MAKE) $(build)=$(boot) $@
+
+install:
+	$(Q)$(MAKE) $(build)=$(boot) XENGUEST=$(XENGUEST) $@
+
+bzImage: vmlinuz
+	$(Q)mkdir -p arch/x86_64/boot
+	$(Q)ln -sf ../../../vmlinuz arch/x86_64/boot/bzImage
+else
 #Default target when executing "make"
 all: bzImage
 
@@ -90,6 +109,7 @@ bzdisk: vmlinux
 
 install fdimage fdimage144 fdimage288: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) BOOTIMAGE=$(BOOTIMAGE) $@
+endif
 
 archclean:
 	$(Q)$(MAKE) $(clean)=$(boot)

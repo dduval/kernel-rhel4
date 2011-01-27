@@ -138,6 +138,9 @@ static int get_nodes(unsigned long *nodes, unsigned long __user *nmask,
 		return 0;
 
 	nlongs = BITS_TO_LONGS(maxnode);
+	if (nlongs == 0)
+		return -EINVAL;
+
 	if ((maxnode % BITS_PER_LONG) == 0)
 		endmask = ~0UL;
 	else

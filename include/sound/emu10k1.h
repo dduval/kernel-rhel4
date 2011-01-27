@@ -937,7 +937,8 @@ struct _snd_emu10k1 {
 	    no_ac97: 1,				/* no AC'97 */
 	    tos_link: 1,			/* tos link detected */
 	    rear_ac97: 1,			/* rear channels are on AC'97 */
-	    spk71:1;				/* 7.1 configuration (Audigy 2 ZS) */
+	    spk71:1,				/* 7.1 configuration (Audigy 2 ZS) */
+	    spi_dac:1;				/* SPI interface for DAC */
 	unsigned int audigy;			/* is Audigy? */
 	unsigned int revision;			/* chip revision */
 	unsigned int serial;			/* serial number */
@@ -1029,6 +1030,11 @@ int snd_emu10k1_fx8010_tram_setup(emu10k1_t *emu, u32 size);
 /* I/O functions */
 unsigned int snd_emu10k1_ptr_read(emu10k1_t * emu, unsigned int reg, unsigned int chn);
 void snd_emu10k1_ptr_write(emu10k1_t *emu, unsigned int reg, unsigned int chn, unsigned int data);
+unsigned int snd_emu10k1_ptr20_read(emu10k1_t *emu, unsigned int reg,
+				    unsigned int chn);
+void snd_emu10k1_ptr20_write(emu10k1_t *emu, unsigned int reg,
+			     unsigned int chn, unsigned int data);
+int snd_emu10k1_spi_write(emu10k1_t *emu, unsigned int data);
 void snd_emu10k1_efx_write(emu10k1_t *emu, unsigned int pc, unsigned int data);
 unsigned int snd_emu10k1_efx_read(emu10k1_t *emu, unsigned int pc);
 void snd_emu10k1_intr_enable(emu10k1_t *emu, unsigned int intrenb);

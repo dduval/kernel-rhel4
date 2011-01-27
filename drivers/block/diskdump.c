@@ -1512,6 +1512,9 @@ static int diskdump_compress_page(char *addr, struct page *page)
 	dp.page_flags = page->flags;
 	buf += sizeof(dp);
 
+	if (PageAnon(page))
+		dp.flags |= DUMP_DH_MAPPING_ANON;
+
 	size = bytes = len;
 	/* check for compression */
 	size = diskdump_compress_gzip(addr, bytes, buf, DUMP_DPC_PAGE_SIZE);

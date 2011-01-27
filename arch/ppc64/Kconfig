@@ -221,6 +221,13 @@ config RTAS_FLASH
 	tristate "Firmware flash interface"
 	depends on PPC_RTAS
 
+config IBMEBUS
+	depends on PPC_MULTIPLATFORM && PPC64
+	bool "Support for GX bus based adapters"
+	help
+	  Bus device driver for GX bus based adapters.
+	default y
+					  
 config SCANLOG
 	tristate "Scanlog dump interface"
 	depends on PPC_RTAS

@@ -115,7 +115,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 			return addr;
 	}
 	/* free_area_cache is not really optimized for 32 bit apps */
-	if (sysctl_legacy_va_layout && (flags & MAP_32BIT) || test_thread_flag(TIF_IA32))
+	if (sysctl_legacy_va_layout && ((flags & MAP_32BIT) || test_thread_flag(TIF_IA32)))
 		addr = mm->mmap_base;
 	else
 		addr = mm->free_area_cache;
@@ -178,7 +178,7 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 			return addr;
 	}
 	/* free_area_cache is not really optimized for 32 bit apps */
-	if (sysctl_legacy_va_layout && (flags & MAP_32BIT) || test_thread_flag(TIF_IA32))
+	if (sysctl_legacy_va_layout && ((flags & MAP_32BIT) || test_thread_flag(TIF_IA32)))
 		goto fail;
 
 try_again:

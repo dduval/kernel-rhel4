@@ -57,6 +57,11 @@ static pidmap_t *map_limit = pidmap_array + PIDMAP_ENTRIES;
 
 static spinlock_t pidmap_lock __cacheline_aligned_in_smp = SPIN_LOCK_UNLOCKED;
 
+static inline int mk_pid(struct pidmap *map, int off)
+{
+	return (map - pidmap_array)*BITS_PER_PAGE + off;
+}
+
 fastcall void free_pidmap(int pid)
 {
 	pidmap_t *map = pidmap_array + pid / BITS_PER_PAGE;
@@ -143,6 +148,23 @@ scan_more:
 	goto return_pid;
 
 failure:
+	return -1;
+}
+
+static int next_pidmap(int last)
+{
+	int offset;
+	pidmap_t *map;
+
+	offset = (last + 1) & BITS_PER_PAGE_MASK;
+	map = &pidmap_array[(last + 1)/BITS_PER_PAGE];
+	for (; map < &pidmap_array[PIDMAP_ENTRIES]; map++, offset = 0) {
+		if (unlikely(!map->page))
+			continue;
+		offset = find_next_bit(map->page, BITS_PER_PAGE, offset);
+		if (offset < BITS_PER_PAGE)
+			return mk_pid(map, offset);
+	}
 	return -1;
 }
 
@@ -269,6 +291,28 @@ void switch_exec_pids(task_t *leader, task_t *thread)
 int pid_alive(struct task_struct *p)
 {
 	return p->pids[PIDTYPE_PID].nr != 0;
+}
+
+/*
+ * Used by proc to find the first pid that is greater then or equal to nr.
+ *
+ * If there is a pid at nr this function is exactly the same as find_pid.
+ */
+struct pid *find_ge_pid(int nr)
+{
+	struct pid *pid;
+
+	if (nr == 0)
+		nr = 1;
+
+	do {
+		pid = find_pid(PIDTYPE_PID, nr);
+		if (pid)
+			break;
+		nr = next_pidmap(nr);
+	} while (nr > 0);
+
+	return pid;
 }
 
 /*

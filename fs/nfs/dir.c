@@ -33,6 +33,14 @@
 #include <linux/namei.h>
 
 #include "delegation.h"
+#include "iostat.h"
+
+extern int sysctl_vfs_cache_pressure;
+
+#ifndef  RB_CLEAR_NODE
+/* Special initialization for the rb-tree node to detect linkage */
+#define RB_CLEAR_NODE(n) (n)->rb_parent = (n)
+#endif
 
 #define NFS_PARANOIA 1
 /* #define NFS_DEBUG_VERBOSE 1 */
@@ -507,6 +515,8 @@ static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 	struct nfs_fattr fattr;
 	long		res;
 
+	nfs_inc_stats(inode, NFSIOS_VFSGETDENTS);
+
 	lock_kernel();
 
 	res = nfs_revalidate_inode(NFS_SERVER(inode), inode);
@@ -699,6 +709,7 @@ static int nfs_lookup_revalidate(struct dentry * dentry, struct nameidata *nd)
 	parent = dget_parent(dentry);
 	lock_kernel();
 	dir = parent->d_inode;
+	nfs_inc_stats(dir, NFSIOS_DENTRYREVALIDATE);
 	inode = dentry->d_inode;
 
 	if (!inode) {
@@ -803,6 +814,7 @@ static int nfs_dentry_delete(struct dentry *dentry)
  */
 static void nfs_dentry_iput(struct dentry *dentry, struct inode *inode)
 {
+	nfs_inode_return_delegation(inode);
 	if (dentry->d_flags & DCACHE_NFSFS_RENAMED) {
 		lock_kernel();
 		inode->i_nlink--;
@@ -839,6 +851,7 @@ static struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, stru
 
 	dfprintk(VFS, "NFS: lookup(%s/%s)\n",
 		dentry->d_parent->d_name.name, dentry->d_name.name);
+	nfs_inc_stats(dir, NFSIOS_VFSLOOKUP);
 
 	error = -ENAMETOOLONG;
 	if (dentry->d_name.len > NFS_SERVER(dir)->namelen)
@@ -1323,6 +1336,7 @@ static int nfs_sillyrename(struct inode *dir, struct dentry *dentry)
 	dfprintk(VFS, "NFS: silly-rename(%s/%s, ct=%d)\n",
 		dentry->d_parent->d_name.name, dentry->d_name.name, 
 		atomic_read(&dentry->d_count));
+	nfs_inc_stats(dir, NFSIOS_SILLYRENAME);
 
 #ifdef NFS_PARANOIA
 if (!dentry->d_inode)
@@ -1338,6 +1352,9 @@ dentry->d_parent->d_name.name, dentry->d_name.name);
 
 	sprintf(silly, ".nfs%*.*lx",
 		i_inosize, i_inosize, dentry->d_inode->i_ino);
+
+	/* Return delegation in anticipation of the rename */
+	nfs_inode_return_delegation(dentry->d_inode);
 
 	sdentry = NULL;
 	do {
@@ -1407,6 +1424,7 @@ static int nfs_safe_remove(struct dentry *dentry)
 
 	nfs_begin_data_update(dir);
 	if (inode != NULL) {
+		nfs_inode_return_delegation(inode);
 		nfs_begin_data_update(inode);
 		error = NFS_PROTO(dir)->remove(dir, &dentry->d_name);
 		/* The VFS may want to delete this inode */
@@ -1626,9 +1644,12 @@ go_ahead:
 		nfs_wb_all(old_inode);
 		shrink_dcache_parent(old_dentry);
 	}
+	nfs_inode_return_delegation(old_inode);
 
-	if (new_inode)
+	if (new_inode != NULL) {
+		nfs_inode_return_delegation(new_inode);
 		d_delete(new_dentry);
+	}
 
 	nfs_begin_data_update(old_dir);
 	nfs_begin_data_update(new_dir);
@@ -1655,35 +1676,211 @@ out:
 	return error;
 }
 
+static DEFINE_SPINLOCK(nfs_access_lru_lock);
+static LIST_HEAD(nfs_access_lru_list);
+static atomic_t nfs_access_nr_entries;
+
+static void nfs_access_free_entry(struct nfs_access_entry *entry)
+{
+	put_rpccred(entry->cred);
+	kfree(entry);
+	smp_mb__before_atomic_dec();
+	atomic_dec(&nfs_access_nr_entries);
+	smp_mb__after_atomic_dec();
+}
+
+int nfs_access_cache_shrinker(int nr_to_scan, gfp_t gfp_mask)
+{
+	LIST_HEAD(head);
+	struct nfs_inode *nfsi;
+	struct nfs_access_entry *cache;
+
+	spin_lock(&nfs_access_lru_lock);
+restart:
+	list_for_each_entry(nfsi, &nfs_access_lru_list, access_cache_inode_lru) {
+		struct inode *inode;
+
+		if (nr_to_scan-- == 0)
+			break;
+		inode = igrab(&nfsi->vfs_inode);
+		if (inode == NULL)
+			continue;
+		spin_lock(&inode->i_lock);
+		if (list_empty(&nfsi->access_cache_entry_lru))
+			goto remove_lru_entry;
+		cache = list_entry(nfsi->access_cache_entry_lru.next,
+				struct nfs_access_entry, lru);
+		list_move(&cache->lru, &head);
+		rb_erase(&cache->rb_node, &nfsi->access_cache);
+		if (!list_empty(&nfsi->access_cache_entry_lru))
+			list_move_tail(&nfsi->access_cache_inode_lru,
+					&nfs_access_lru_list);
+		else {
+remove_lru_entry:
+			list_del_init(&nfsi->access_cache_inode_lru);
+			clear_bit(NFS_INO_ACL_LRU_SET, &nfsi->flags);
+		}
+		spin_unlock(&inode->i_lock);
+		iput(inode);
+		goto restart;
+	}
+	spin_unlock(&nfs_access_lru_lock);
+	while (!list_empty(&head)) {
+		cache = list_entry(head.next, struct nfs_access_entry, lru);
+		list_del(&cache->lru);
+		nfs_access_free_entry(cache);
+	}
+	return (atomic_read(&nfs_access_nr_entries) / 100) * sysctl_vfs_cache_pressure;
+}
+
+static void __nfs_access_zap_cache(struct inode *inode)
+{
+	struct nfs_inode *nfsi = NFS_I(inode);
+	struct rb_root *root_node = &nfsi->access_cache;
+	struct rb_node *n, *dispose = NULL;
+	struct nfs_access_entry *entry;
+
+	/* Unhook entries from the cache */
+	while ((n = rb_first(root_node)) != NULL) {
+		entry = rb_entry(n, struct nfs_access_entry, rb_node);
+		rb_erase(n, root_node);
+		list_del(&entry->lru);
+		n->rb_left = dispose;
+		dispose = n;
+	}
+	nfsi->cache_validity &= ~NFS_INO_INVALID_ACCESS;
+	spin_unlock(&inode->i_lock);
+
+	/* Now kill them all! */
+	while (dispose != NULL) {
+		n = dispose;
+		dispose = n->rb_left;
+		nfs_access_free_entry(rb_entry(n, struct nfs_access_entry, rb_node));
+	}
+}
+
+void nfs_access_zap_cache(struct inode *inode)
+{
+	/* Remove from global LRU init */
+	if (test_and_clear_bit(NFS_INO_ACL_LRU_SET, &NFS_FLAGS(inode))) {
+		spin_lock(&nfs_access_lru_lock);
+		list_del_init(&NFS_I(inode)->access_cache_inode_lru);
+		spin_unlock(&nfs_access_lru_lock);
+	}
+
+	spin_lock(&inode->i_lock);
+	/* This will release the spinlock */
+	__nfs_access_zap_cache(inode);
+}
+
+static struct nfs_access_entry *nfs_access_search_rbtree(struct inode *inode, struct rpc_cred *cred)
+{
+	struct rb_node *n = NFS_I(inode)->access_cache.rb_node;
+	struct nfs_access_entry *entry;
+
+	while (n != NULL) {
+		entry = rb_entry(n, struct nfs_access_entry, rb_node);
+
+		if (cred < entry->cred)
+			n = n->rb_left;
+		else if (cred > entry->cred)
+			n = n->rb_right;
+		else
+			return entry;
+	}
+	return NULL;
+}
+
 int nfs_access_get_cached(struct inode *inode, struct rpc_cred *cred, struct nfs_access_entry *res)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
-	struct nfs_access_entry *cache = &nfsi->cache_access;
+	struct nfs_access_entry *cache;
+	int err = -ENOENT;
 
-	if (cache->cred != cred
-			|| time_after(jiffies, cache->jiffies + NFS_ATTRTIMEO(inode))
-			|| (nfsi->cache_validity & NFS_INO_INVALID_ACCESS))
-		return -ENOENT;
-	memcpy(res, cache, sizeof(*res));
-	return 0;
+	spin_lock(&inode->i_lock);
+	if (nfsi->cache_validity & NFS_INO_INVALID_ACCESS)
+		goto out_zap;
+	cache = nfs_access_search_rbtree(inode, cred);
+	if (cache == NULL)
+		goto out;
+	if (time_after(jiffies, cache->jiffies + NFS_ATTRTIMEO(inode)))
+		goto out_stale;
+	res->jiffies = cache->jiffies;
+	res->cred = cache->cred;
+	res->mask = cache->mask;
+	list_move_tail(&cache->lru, &nfsi->access_cache_entry_lru);
+	err = 0;
+out:
+	spin_unlock(&inode->i_lock);
+	return err;
+out_stale:
+	rb_erase(&cache->rb_node, &nfsi->access_cache);
+	list_del(&cache->lru);
+	spin_unlock(&inode->i_lock);
+	nfs_access_free_entry(cache);
+	return -ENOENT;
+out_zap:
+	/* This will release the spinlock */
+	__nfs_access_zap_cache(inode);
+	return -ENOENT;
+}
+
+static void nfs_access_add_rbtree(struct inode *inode, struct nfs_access_entry *set)
+{
+	struct nfs_inode *nfsi = NFS_I(inode);
+	struct rb_root *root_node = &nfsi->access_cache;
+	struct rb_node **p = &root_node->rb_node;
+	struct rb_node *parent = NULL;
+	struct nfs_access_entry *entry;
+
+	spin_lock(&inode->i_lock);
+	while (*p != NULL) {
+		parent = *p;
+		entry = rb_entry(parent, struct nfs_access_entry, rb_node);
+
+		if (set->cred < entry->cred)
+			p = &parent->rb_left;
+		else if (set->cred > entry->cred)
+			p = &parent->rb_right;
+		else
+			goto found;
+	}
+	rb_link_node(&set->rb_node, parent, p);
+	rb_insert_color(&set->rb_node, root_node);
+	list_add_tail(&set->lru, &nfsi->access_cache_entry_lru);
+	spin_unlock(&inode->i_lock);
+	return;
+found:
+	rb_replace_node(parent, &set->rb_node, root_node);
+	list_add_tail(&set->lru, &nfsi->access_cache_entry_lru);
+	list_del(&entry->lru);
+	spin_unlock(&inode->i_lock);
+	nfs_access_free_entry(entry);
 }
 
 void nfs_access_add_cache(struct inode *inode, struct nfs_access_entry *set)
 {
-	struct nfs_inode *nfsi = NFS_I(inode);
-	struct nfs_access_entry *cache = &nfsi->cache_access;
-
-	if (cache->cred != set->cred) {
-		if (cache->cred)
-			put_rpccred(cache->cred);
-		cache->cred = get_rpccred(set->cred);
-	}
-	/* FIXME: replace current access_cache BKL reliance with inode->i_lock */
-	spin_lock(&inode->i_lock);
-	nfsi->cache_validity &= ~NFS_INO_INVALID_ACCESS;
-	spin_unlock(&inode->i_lock);
+	struct nfs_access_entry *cache = kmalloc(sizeof(*cache), GFP_KERNEL);
+	if (cache == NULL)
+		return;
+	RB_CLEAR_NODE(&cache->rb_node);
 	cache->jiffies = set->jiffies;
+	cache->cred = get_rpccred(set->cred);
 	cache->mask = set->mask;
+
+	nfs_access_add_rbtree(inode, cache);
+
+	/* Update accounting */
+	smp_mb__before_atomic_inc();
+	atomic_inc(&nfs_access_nr_entries);
+	smp_mb__after_atomic_inc();
+
+	/* Add inode to global LRU list */
+	if (!test_and_set_bit(NFS_INO_ACL_LRU_SET, &NFS_FLAGS(inode))) {
+		spin_lock(&nfs_access_lru_lock);
+		list_add_tail(&NFS_I(inode)->access_cache_inode_lru, &nfs_access_lru_list);
+		spin_unlock(&nfs_access_lru_lock);
+	}
 }
 
 static int nfs_do_access(struct inode *inode, struct rpc_cred *cred, int mask)
@@ -1714,6 +1911,8 @@ int nfs_permission(struct inode *inode, int mask, struct nameidata *nd)
 	struct rpc_cred *cred;
 	int mode = inode->i_mode;
 	int res;
+
+	nfs_inc_stats(inode, NFSIOS_VFSACCESS);
 
 	if (mask == 0)
 		return 0;

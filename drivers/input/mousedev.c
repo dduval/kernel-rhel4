@@ -335,7 +335,7 @@ static void mousedev_free(struct mousedev *mousedev)
 	kfree(mousedev);
 }
 
-static int mixdev_release(void)
+static void mixdev_release(void)
 {
 	struct input_handle *handle;
 
@@ -349,8 +349,6 @@ static int mixdev_release(void)
 				mousedev_free(mousedev);
 		}
 	}
-
-	return 0;
 }
 
 static int mousedev_release(struct inode * inode, struct file * file)
@@ -362,8 +360,11 @@ static int mousedev_release(struct inode * inode, struct file * file)
 	list_del(&list->node);
 
 	if (!--list->mousedev->open) {
-		if (list->mousedev->minor == MOUSEDEV_MIX)
-			return mixdev_release();
+		if (list->mousedev->minor == MOUSEDEV_MIX) {
+			mixdev_release();
+			kfree(list);
+			return 0;
+		}
 
 		if (!mousedev_mix.open) {
 			if (list->mousedev->exist)
@@ -581,9 +582,8 @@ static unsigned int mousedev_poll(struct file *file, poll_table *wait)
 {
 	struct mousedev_list *list = file->private_data;
 	poll_wait(file, &list->mousedev->wait, wait);
-	if (list->ready || list->buffer)
-		return POLLIN | POLLRDNORM;
-	return 0;
+	return ((list->ready || list->buffer) ? (POLLIN | POLLRDNORM) : 0) |
+		(list->mousedev->exist ? 0 : (POLLHUP | POLLERR));
 }
 
 struct file_operations mousedev_fops = {
@@ -639,11 +639,15 @@ static struct input_handle *mousedev_connect(struct input_handler *handler, stru
 static void mousedev_disconnect(struct input_handle *handle)
 {
 	struct mousedev *mousedev = handle->private;
+	struct mousedev_list *list;
 
 	mousedev->exist = 0;
 
 	if (mousedev->open) {
 		input_close_device(handle);
+		wake_up_interruptible(&mousedev->wait);
+		list_for_each_entry(list, &mousedev->list, node)
+			kill_fasync(&list->fasync, SIGIO, POLL_HUP);
 	} else {
 		if (mousedev_mix.open)
 			input_close_device(handle);

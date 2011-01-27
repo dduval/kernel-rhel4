@@ -125,6 +125,7 @@ void skb_under_panic(struct sk_buff *skb, int sz, void *here)
  *	Buffers may only be allocated from interrupts using a @gfp_mask of
  *	%GFP_ATOMIC.
  */
+#ifndef CONFIG_HAVE_ARCH_ALLOC_SKB
 struct sk_buff *alloc_skb(unsigned int size, int gfp_mask)
 {
 	struct sk_buff *skb;
@@ -159,6 +160,70 @@ out:
 	return skb;
 nodata:
 	kmem_cache_free(skbuff_head_cache, skb);
+	skb = NULL;
+	goto out;
+}
+#endif /* !CONFIG_HAVE_ARCH_ALLOC_SKB */
+
+/**
+ *	alloc_skb_from_cache	-	allocate a network buffer
+ *	@cp: kmem_cache from which to allocate the data area
+ *           (object size must be big enough for @size bytes + skb overheads)
+ *	@size: size to allocate
+ *	@gfp_mask: allocation mask
+ *
+ *	Allocate a new &sk_buff. The returned buffer has no headroom and
+ *	tail room of size bytes. The object has a reference count of one.
+ *	The return is the buffer. On a failure the return is %NULL.
+ *
+ *	Buffers may only be allocated from interrupts using a @gfp_mask of
+ *	%GFP_ATOMIC.
+ *
+ * Backported from 2.6.16 for use by drivers/xen/core/skbuff.c
+ * 
+ */
+struct sk_buff *alloc_skb_from_cache(kmem_cache_t *cp,
+				     unsigned int size,
+				     int gfp_mask,
+				     int fclone)
+{
+	kmem_cache_t *cache;
+	struct skb_shared_info *shinfo;
+	struct sk_buff *skb;
+	u8 *data;
+
+	cache = skbuff_head_cache;
+
+	/* Get the HEAD */
+	skb = kmem_cache_alloc(cache, gfp_mask & ~__GFP_DMA);
+	if (!skb)
+		goto out;
+
+	/* Get the DATA. */
+	size = SKB_DATA_ALIGN(size);
+	data = kmem_cache_alloc(cp, gfp_mask);
+	if (!data)
+		goto nodata;
+
+	memset(skb, 0, offsetof(struct sk_buff, truesize));
+	skb->truesize = size + sizeof(struct sk_buff);
+	atomic_set(&skb->users, 1);
+	skb->head = data;
+	skb->data = data;
+	skb->tail = data;
+	skb->end  = data + size;
+	/* make sure we initialize shinfo sequentially */
+	shinfo = skb_shinfo(skb);
+	atomic_set(&shinfo->dataref, 1);
+	shinfo->nr_frags  = 0;
+	shinfo->tso_size = 0;
+	shinfo->tso_segs = 0;
+	shinfo->frag_list = NULL;
+
+out:
+	return skb;
+nodata:
+	kmem_cache_free(cache, skb);
 	skb = NULL;
 	goto out;
 }
@@ -300,6 +365,10 @@ struct sk_buff *skb_clone(struct sk_buff *skb, int gfp_mask)
 	C(csum);
 	C(local_df);
 	n->cloned = 1;
+#ifdef CONFIG_XEN
+	C(proto_csum_valid);
+	C(proto_csum_blank);
+#endif
 	C(pkt_type);
 	C(ip_summed);
 	C(priority);

@@ -386,15 +386,46 @@ static inline ulong round_up(ulong n, ulong size)
 	return (n + size) & ~size;
 }
 
-static void read_snapshot_metadata(struct dm_snapshot *s)
+static int set_chunk_size(struct dm_snapshot *s, const char *chunk_size_arg,
+			  char **error)
 {
-	if (s->store.read_metadata(&s->store)) {
-		down_write(&s->lock);
-		s->valid = 0;
-		up_write(&s->lock);
+	unsigned long chunk_size;
+	char *value;
 
-		dm_table_event(s->table);
+	chunk_size = simple_strtoul(chunk_size_arg, &value, 10);
+	if (*chunk_size_arg == '\0' || *value != '\0') {
+		*error = "Invalid chunk size";
+		return -EINVAL;
 	}
+
+	if (!chunk_size) {
+		s->chunk_size = s->chunk_mask = s->chunk_shift = 0;
+		return 0;
+	}
+
+	/*
+	 * Chunk size must be multiple of page size.  Silently
+	 * round up if it's not.
+	 */
+	chunk_size = round_up(chunk_size, PAGE_SIZE >> 9);
+
+	/* Check chunk_size is a power of 2 */
+	if (chunk_size & (chunk_size - 1)) {
+		*error = "Chunk size is not a power of 2";
+		return -EINVAL;
+	}
+
+	/* Validate the chunk size against the device block size */
+	if (chunk_size % (bdev_hardsect_size(s->cow->bdev) >> 9)) {
+		*error = "Chunk size is not a multiple of device blocksize";
+		return -EINVAL;
+	}
+
+	s->chunk_size = chunk_size;
+	s->chunk_mask = chunk_size - 1;
+	s->chunk_shift = ffs(chunk_size) - 1;
+
+	return 0;
 }
 
 /*
@@ -403,15 +434,12 @@ static void read_snapshot_metadata(struct dm_snapshot *s)
 static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct dm_snapshot *s;
-	unsigned long chunk_size;
 	int r = -EINVAL;
 	char persistent;
 	char *origin_path;
 	char *cow_path;
-	char *value;
-	int blocksize;
 
-	if (argc < 4) {
+	if (argc != 4) {
 		ti->error = "dm-snapshot: requires exactly 4 arguments";
 		r = -EINVAL;
 		goto bad1;
@@ -423,13 +451,6 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	if (persistent != 'P' && persistent != 'N') {
 		ti->error = "Persistent flag is not P or N";
-		r = -EINVAL;
-		goto bad1;
-	}
-
-	chunk_size = simple_strtoul(argv[3], &value, 10);
-	if (chunk_size == 0 || value == NULL) {
-		ti->error = "Invalid chunk size";
 		r = -EINVAL;
 		goto bad1;
 	}
@@ -456,31 +477,11 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad2;
 	}
 
-	/*
-	 * Chunk size must be multiple of page size.  Silently
-	 * round up if it's not.
-	 */
-	chunk_size = round_up(chunk_size, PAGE_SIZE >> 9);
-
-	/* Validate the chunk size against the device block size */
-	blocksize = s->cow->bdev->bd_disk->queue->hardsect_size;
-	if (chunk_size % (blocksize >> 9)) {
-		ti->error = "Chunk size is not a multiple of device blocksize";
-		r = -EINVAL;
+	r = set_chunk_size(s, argv[3], &ti->error);
+	if (r)
 		goto bad3;
-	}
 
-	/* Check chunk_size is a power of 2 */
-	if (chunk_size & (chunk_size - 1)) {
-		ti->error = "Chunk size is not a power of 2";
-		r = -EINVAL;
-		goto bad3;
-	}
-
-	s->chunk_size = chunk_size;
-	s->chunk_mask = chunk_size - 1;
 	s->type = persistent;
-	s->chunk_shift = ffs(chunk_size) - 1;
 
 	s->valid = 1;
 	s->active = 0;
@@ -495,16 +496,12 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad3;
 	}
 
-	/*
-	 * Check the persistent flag - done here because we need the iobuf
-	 * to check the LV header
-	 */
 	s->store.snap = s;
 
 	if (persistent == 'P')
-		r = dm_create_persistent(&s->store, chunk_size);
+		r = dm_create_persistent(&s->store);
 	else
-		r = dm_create_transient(&s->store, s, blocksize);
+		r = dm_create_transient(&s->store);
 
 	if (r) {
 		ti->error = "Couldn't create exception store";
@@ -519,7 +516,11 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	/* Metadata must only be loaded into one table at once */
-	read_snapshot_metadata(s);
+	r = s->store.read_metadata(&s->store);
+	if (r) {
+		ti->error = "Failed to read snapshot metadata";
+		goto bad6;
+	}
 
 	/* Add snapshot to the list of snapshots for this origin */
 	/* Exceptions aren't triggered till snapshot_resume() is called */
@@ -607,27 +608,7 @@ static void error_bios(struct bio *bio)
 	}
 }
 
-static inline void error_snapshot_bios(struct pending_exception *pe)
-{
-	error_bios(bio_list_get(&pe->snapshot_bios));
-}
-
-static struct bio *__flush_bios(struct pending_exception *pe)
-{
-	/*
-	 * If this pe is involved in a write to the origin and
-	 * it is the last sibling to complete then release
-	 * the bios for the original write to the origin.
-	 */
-
-	if (pe->primary_pe &&
-	    atomic_dec_and_test(&pe->primary_pe->sibling_count))
-		return bio_list_get(&pe->primary_pe->origin_bios);
-
-	return NULL;
-}
-
-static void __invalidate_snapshot(struct dm_snapshot *s, struct pending_exception *pe, int err)
+static void __invalidate_snapshot(struct dm_snapshot *s, int err)
 {
 	if (!s->valid)
 		return;
@@ -636,9 +617,6 @@ static void __invalidate_snapshot(struct dm_snapshot *s, struct pending_exceptio
 		DMERR("Invalidating snapshot: Error reading/writing.");
 	else if (err == -ENOMEM)
 		DMERR("Invalidating snapshot: Unable to allocate exception.");
-
-	if (pe)
-		remove_exception(&pe->e);
 
 	if (s->store.drop_snapshot)
 		s->store.drop_snapshot(&s->store);
@@ -653,57 +631,54 @@ static void pending_complete(struct pending_exception *pe, int success)
 	struct exception *e;
 	struct pending_exception *primary_pe;
 	struct dm_snapshot *s = pe->snap;
-	struct bio *flush = NULL;
+	struct bio *origin_bios = NULL;
+	struct bio *snapshot_bios = NULL;
+	int error = 0;
 
 	if (!success) {
 		/* Read/write error - snapshot is unusable */
 		down_write(&s->lock);
-		__invalidate_snapshot(s, pe, -EIO);
-		flush = __flush_bios(pe);
-		up_write(&s->lock);
-
-		error_snapshot_bios(pe);
+		__invalidate_snapshot(s, -EIO);
+		error = 1;
 		goto out;
 	}
 
 	e = alloc_exception();
 	if (!e) {
 		down_write(&s->lock);
-		__invalidate_snapshot(s, pe, -ENOMEM);
-		flush = __flush_bios(pe);
-		up_write(&s->lock);
-
-		error_snapshot_bios(pe);
+		__invalidate_snapshot(s, -ENOMEM);
+		error = 1;
 		goto out;
 	}
 	*e = pe->e;
+
+	down_write(&s->lock);
+	if (!s->valid) {
+		free_exception(e);
+		error = 1;
+		goto out;
+	}
 
 	/*
 	 * Add a proper exception, and remove the
 	 * in-flight exception from the list.
 	 */
-	down_write(&s->lock);
-	if (!s->valid) {
-		flush = __flush_bios(pe);
-		up_write(&s->lock);
-
-		free_exception(e);
-
-		error_snapshot_bios(pe);
-		goto out;
-	}
-
 	insert_exception(&s->complete, e);
-	remove_exception(&pe->e);
-	flush = __flush_bios(pe);
-
-	up_write(&s->lock);
-
-	/* Submit any pending write bios */
-	flush_bios(bio_list_get(&pe->snapshot_bios));
 
  out:
+	remove_exception(&pe->e);
+	snapshot_bios = bio_list_get(&pe->snapshot_bios);
+
 	primary_pe = pe->primary_pe;
+
+	/*
+	 * If this pe is involved in a write to the origin and
+	 * it is the last sibling to complete then release
+	 * the bios for the original write to the origin.
+	 */
+	if (primary_pe &&
+	    atomic_dec_and_test(&primary_pe->sibling_count))
+		origin_bios = bio_list_get(&primary_pe->origin_bios);
 
 	/*
 	 * Free the pe if it's not linked to an origin write or if
@@ -718,8 +693,15 @@ static void pending_complete(struct pending_exception *pe, int success)
 	if (primary_pe && !atomic_read(&primary_pe->sibling_count))
 		free_pending_exception(primary_pe);
 
-	if (flush)
-		flush_bios(flush);
+	up_write(&s->lock);
+
+	/* Submit any pending write bios */
+	if (error)
+		error_bios(snapshot_bios);
+	else
+		flush_bios(snapshot_bios);
+
+	flush_bios(origin_bios);
 }
 
 static void commit_callback(void *context, int success)
@@ -849,7 +831,7 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio,
 	struct exception *e;
 	struct dm_snapshot *s = (struct dm_snapshot *) ti->private;
 	int copy_needed = 0;
-	int r = 1;
+	int r = DM_MAPIO_REMAPPED;
 	chunk_t chunk;
 	struct pending_exception *pe = NULL;
 
@@ -888,7 +870,7 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio,
 
 		pe = __find_pending_exception(s, bio);
 		if (!pe) {
-			__invalidate_snapshot(s, pe, -ENOMEM);
+			__invalidate_snapshot(s, -ENOMEM);
 			r = -EIO;
 			goto out_unlock;
 		}
@@ -902,7 +884,7 @@ static int snapshot_map(struct dm_target *ti, struct bio *bio,
 			copy_needed = 1;
 		}
 
-		r = 0;
+		r = DM_MAPIO_SUBMITTED;
 
  out_unlock:
 		up_write(&s->lock);
@@ -991,7 +973,7 @@ static int snapshot_status(struct dm_target *ti, status_type_t type,
  *---------------------------------------------------------------*/
 static int __origin_write(struct list_head *snapshots, struct bio *bio)
 {
-	int r = 1, first = 0;
+	int r = DM_MAPIO_REMAPPED, first = 0;
 	struct dm_snapshot *snap;
 	struct exception *e;
 	struct pending_exception *pe, *next_pe, *primary_pe = NULL;
@@ -1031,7 +1013,7 @@ static int __origin_write(struct list_head *snapshots, struct bio *bio)
 
 		pe = __find_pending_exception(snap, bio);
 		if (!pe) {
-			__invalidate_snapshot(snap, pe, ENOMEM);
+			__invalidate_snapshot(snap, -ENOMEM);
 			goto next_snapshot;
 		}
 
@@ -1049,7 +1031,7 @@ static int __origin_write(struct list_head *snapshots, struct bio *bio)
 
 			bio_list_add(&primary_pe->origin_bios, bio);
 
-			r = 0;
+			r = DM_MAPIO_SUBMITTED;
 		}
 
 		if (!pe->primary_pe) {
@@ -1099,7 +1081,7 @@ static int __origin_write(struct list_head *snapshots, struct bio *bio)
 static int do_origin(struct dm_dev *origin, struct bio *bio)
 {
 	struct origin *o;
-	int r = 1;
+	int r = DM_MAPIO_REMAPPED;
 
 	down_read(&_origins_lock);
 	o = __lookup_origin(origin->bdev);
@@ -1156,7 +1138,7 @@ static int origin_map(struct dm_target *ti, struct bio *bio,
 		return -EOPNOTSUPP;
 
 	/* Only tell snapshots if this is a write */
-	return (bio_rw(bio) == WRITE) ? do_origin(dev, bio) : 1;
+	return (bio_rw(bio) == WRITE) ? do_origin(dev, bio) : DM_MAPIO_REMAPPED;
 }
 
 #define min_not_zero(l, r) (l == 0) ? r : ((r == 0) ? l : min(l, r))
@@ -1202,7 +1184,7 @@ static int origin_status(struct dm_target *ti, status_type_t type, char *result,
 
 static struct target_type origin_target = {
 	.name    = "snapshot-origin",
-	.version = {1, 4, 0},
+	.version = {1, 5, 0},
 	.module  = THIS_MODULE,
 	.ctr     = origin_ctr,
 	.dtr     = origin_dtr,
@@ -1213,7 +1195,7 @@ static struct target_type origin_target = {
 
 static struct target_type snapshot_target = {
 	.name    = "snapshot",
-	.version = {1, 3, 0},
+	.version = {1, 5, 0},
 	.module  = THIS_MODULE,
 	.ctr     = snapshot_ctr,
 	.dtr     = snapshot_dtr,

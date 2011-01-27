@@ -85,6 +85,10 @@ mcore-$(CONFIG_X86_BIGSMP)	:= mach-default
 mflags-$(CONFIG_X86_SUMMIT) := -Iinclude/asm-i386/mach-summit
 mcore-$(CONFIG_X86_SUMMIT)  := mach-default
 
+# Xen subarch support
+mflags-$(CONFIG_X86_XEN)	:= -Iinclude/asm-i386/mach-xen
+mcore-$(CONFIG_X86_XEN)		:= mach-xen
+
 # generic subarchitecture
 mflags-$(CONFIG_X86_GENERICARCH) := -Iinclude/asm-i386/mach-generic
 mcore-$(CONFIG_X86_GENERICARCH) := mach-default
@@ -119,6 +123,23 @@ boot := arch/i386/boot
 .PHONY: zImage bzImage compressed zlilo bzlilo \
 	zdisk bzdisk fdimage fdimage144 fdimage288 install
 
+ifdef CONFIG_XEN
+CPPFLAGS        := -Iinclude$(if $(KBUILD_SRC),2)/asm/mach-xen $(CPPFLAGS)
+head-y := arch/i386/kernel/head-xen.o arch/i386/kernel/init_task-xen.o
+boot := arch/i386/boot-xen
+.PHONY: vmlinuz
+all: vmlinuz
+
+vmlinuz: vmlinux
+	$(Q)$(MAKE) $(build)=$(boot) $@
+
+install: vmlinux
+	$(Q)$(MAKE) $(build)=$(boot) XENGUEST=$(XENGUEST) $@
+
+bzImage: vmlinuz
+	$(Q)mkdir -p arch/i386/boot
+	$(Q)ln -sf ../../../vmlinuz arch/i386/boot/bzImage
+else
 all: bzImage
 
 # KBUILD_IMAGE specify target image being built
@@ -138,6 +159,7 @@ zdisk bzdisk: vmlinux
 
 install fdimage fdimage144 fdimage288: vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) BOOTIMAGE=$(KBUILD_IMAGE) $@
+endif
 
 prepare: include/asm-$(ARCH)/asm_offsets.h
 CLEAN_FILES += include/asm-$(ARCH)/asm_offsets.h

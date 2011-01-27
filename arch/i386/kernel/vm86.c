@@ -96,7 +96,9 @@
 struct pt_regs * FASTCALL(save_v86_state(struct kernel_vm86_regs * regs));
 struct pt_regs * fastcall save_v86_state(struct kernel_vm86_regs * regs)
 {
+#ifndef CONFIG_X86_NO_TSS
 	struct tss_struct *tss;
+#endif
 	struct pt_regs *ret;
 	unsigned long tmp;
 
@@ -121,12 +123,21 @@ struct pt_regs * fastcall save_v86_state(struct kernel_vm86_regs * regs)
 		do_exit(SIGSEGV);
 	}
 
+#ifndef CONFIG_X86_NO_TSS
 	tss = init_tss + get_cpu();
+#endif
 	current->thread.esp0 = current->thread.saved_esp0;
 	current->thread.sysenter_cs = __KERNEL_CS;
+#ifdef CONFIG_XEN
+	load_esp0(tss, &current->thread);
+#endif
+#ifndef CONFIG_X86_NO_TSS
 	load_virtual_esp0(tss, current);
+#endif
 	current->thread.saved_esp0 = 0;
+#ifndef CONFIG_X86_NO_TSS
 	put_cpu();
+#endif
 
 	loadsegment(fs, current->thread.saved_fs);
 	loadsegment(gs, current->thread.saved_gs);
@@ -259,7 +270,9 @@ out:
 
 static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk)
 {
+#ifndef CONFIG_X86_NO_TSS
 	struct tss_struct *tss;
+#endif
 /*
  * make sure the vm86() system call doesn't try to do anything silly
  */
@@ -303,12 +316,19 @@ static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk
 	asm volatile("movl %%fs,%0":"=m" (tsk->thread.saved_fs));
 	asm volatile("movl %%gs,%0":"=m" (tsk->thread.saved_gs));
 
+#ifndef CONFIG_X86_NO_TSS
 	tss = init_tss + get_cpu();
+#endif
 	tsk->thread.esp0 = (unsigned long) &info->VM86_TSS_ESP0;
 	if (cpu_has_sep)
 		tsk->thread.sysenter_cs = 0;
+#ifdef CONFIG_XEN
+	load_esp0(tss, &tsk->thread);
+#endif
+#ifndef CONFIG_X86_NO_TSS
 	load_virtual_esp0(tss, tsk);
 	put_cpu();
+#endif
 
 	tsk->thread.screen_bitmap = info->screen_bitmap;
 	if (info->flags & VM86_SCREEN_BITMAP)

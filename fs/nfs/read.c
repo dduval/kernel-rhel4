@@ -31,6 +31,8 @@
 
 #include <asm/system.h>
 
+#include "iostat.h"
+
 #define NFSDBG_FACILITY		NFSDBG_PAGECACHE
 
 static int nfs_pagein_one(struct list_head *, struct inode *);
@@ -134,6 +136,8 @@ static int nfs_readpage_sync(struct nfs_open_context *ctx, struct inode *inode,
 		}
 		count -= result;
 		rdata->args.pgbase += result;
+		nfs_add_stats(inode, NFSIOS_SERVERREADBYTES, result);
+
 		/* Note: result == 0 should only happen if we're caching
 		 * a write that extends the file and punches a hole.
 		 */
@@ -466,8 +470,11 @@ void nfs_readpage_result(struct rpc_task *task)
 	dprintk("NFS: %4d nfs_readpage_result, (status %d)\n",
 		task->tk_pid, status);
 
+	nfs_add_stats(data->inode, NFSIOS_SERVERREADBYTES, resp->count);
+
 	/* Is this a short read? */
 	if (task->tk_status >= 0 && resp->count < argp->count && !resp->eof) {
+		nfs_inc_stats(data->inode, NFSIOS_SHORTREAD);
 		/* Has the server at least made some progress? */
 		if (resp->count != 0) {
 			/* Yes, so retry the read at the end of the data */
@@ -499,6 +506,9 @@ int nfs_readpage(struct file *file, struct page *page)
 
 	dprintk("NFS: nfs_readpage (%p %ld@%lu)\n",
 		page, PAGE_CACHE_SIZE, page->index);
+	nfs_inc_stats(inode, NFSIOS_VFSREADPAGE);
+	nfs_add_stats(inode, NFSIOS_READPAGES, 1);
+
 	/*
 	 * Try to flush any pending writes to the file..
 	 *
@@ -579,6 +589,7 @@ int nfs_readpages(struct file *filp, struct address_space *mapping,
 			inode->i_sb->s_id,
 			(long long)NFS_FILEID(inode),
 			nr_pages);
+	nfs_inc_stats(inode, NFSIOS_VFSREADPAGES);
 
 	if (filp == NULL) {
 		desc.ctx = nfs_find_open_context(inode, FMODE_READ);
@@ -591,6 +602,7 @@ int nfs_readpages(struct file *filp, struct address_space *mapping,
 	if (!list_empty(&head)) {
 		int err = nfs_pagein_list(&head, server->rpages);
 		if (!ret)
+			nfs_add_stats(inode, NFSIOS_READPAGES, err);
 			ret = err;
 	}
 	put_nfs_open_context(desc.ctx);

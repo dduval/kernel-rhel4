@@ -839,6 +839,7 @@ static int __init early_init_dt_scan_cpus(unsigned long node,
 					  const char *full_path, void *data)
 {
 	char *type = get_flat_dt_prop(node, "device_type", NULL);
+	u32 *prop;
 
 	/* We are scanning "cpu" nodes only */
 	if (type == NULL || strcmp(type, "cpu") != 0)
@@ -859,6 +860,20 @@ static int __init early_init_dt_scan_cpus(unsigned long node,
 	if (get_flat_dt_prop(node, "linux,boot-cpu", NULL) != NULL) {
 		u32 *prop = get_flat_dt_prop(node, "reg", NULL);
 		paca[0].hw_cpu_id = prop == NULL ? 0 : *prop;
+	}
+
+	/* Check if we have a VMX and eventually update CPU features */
+	prop = (u32 *)get_flat_dt_prop(node, "ibm,vmx", NULL);
+	if (prop && (*prop) > 0) {
+		cur_cpu_spec->cpu_features |= CPU_FTR_ALTIVEC;
+		cur_cpu_spec->cpu_user_features |= PPC_FEATURE_HAS_ALTIVEC;
+	}
+
+	/* Same goes for Apple's "altivec" property */
+	prop = (u32 *)get_flat_dt_prop(node, "altivec", NULL);
+	if (prop) {
+		cur_cpu_spec->cpu_features |= CPU_FTR_ALTIVEC;
+		cur_cpu_spec->cpu_user_features |= PPC_FEATURE_HAS_ALTIVEC;
 	}
 
 	return 0;
@@ -1033,7 +1048,9 @@ void __init early_init_devtree(void *params)
 
 	DBG("Scanning CPUs ...\n");
 
-	/* Retreive hash table size from flattened tree */
+	/* Retreive hash table size from flattened tree plus other
+	 * CPU related informations (altivec support, boot CPU ID, ...)
+	 */
 	scan_flat_dt(early_init_dt_scan_cpus, NULL);
 
 	/* If hash size wasn't obtained above, we calculate it now based on

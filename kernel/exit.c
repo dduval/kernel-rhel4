@@ -25,6 +25,7 @@
 #include <linux/mount.h>
 #include <linux/proc_fs.h>
 #include <linux/mempolicy.h>
+#include <linux/audit.h> /* for audit_free() */
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -812,8 +813,7 @@ asmlinkage NORET_TYPE void do_exit(long code)
 				preempt_count());
 
 	group_dead = atomic_dec_and_test(&tsk->signal->live);
-	if (group_dead) 
-		acct_process(code);
+	acct_process(code);
 
 	if (current->tux_info) {
 #ifdef CONFIG_TUX_DEBUG
@@ -822,6 +822,9 @@ asmlinkage NORET_TYPE void do_exit(long code)
 #endif
 		current->tux_exit();
 	}
+
+	if (unlikely(tsk->audit_context))
+		audit_free(tsk);
 	__exit_mm(tsk);
 
 	exit_sem(tsk);

@@ -243,7 +243,7 @@ void unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start, unsig
 
 	for (address = start; address < end; address += HPAGE_SIZE) {
 		pte = huge_pte_offset(mm, address);
-		if (pte_none(*pte))
+		if (!pte || pte_none(*pte))
 			continue;
 		page = pte_page(*pte);
 		put_page(page);

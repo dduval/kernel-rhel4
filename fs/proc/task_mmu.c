@@ -1,6 +1,7 @@
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
 #include <linux/seq_file.h>
+#include <linux/proc_fs.h>
 #include <asm/elf.h>
 #include <asm/uaccess.h>
 
@@ -97,32 +98,46 @@ static int show_map(struct seq_file *m, void *v)
 
 static void *m_start(struct seq_file *m, loff_t *pos)
 {
-	struct task_struct *task = m->private;
-	struct mm_struct *mm = get_task_mm(task);
-	struct vm_area_struct * map;
+	struct proc_maps_private *priv = m->private;
+	struct task_struct *task = priv->task;
+	struct mm_struct *mm;
+	struct vm_area_struct * map, *tail_vma = NULL;
 	loff_t l = *pos;
 
+	priv->tail_vma = NULL;
+
+	mm = mm_for_maps(task);
 	if (!mm)
 		return NULL;
 
-	down_read(&mm->mmap_sem);
-	map = mm->mmap;
-	while (l-- && map)
-		map = map->vm_next;
-	if (!map) {
-		up_read(&mm->mmap_sem);
-		mmput(mm);
-		if (l == -1)
-			map = get_gate_vma(task);
+	priv->tail_vma = tail_vma = get_gate_vma(priv->task);
+
+	map = NULL;
+	if ((unsigned long)l < mm->map_count) {
+		map = mm->mmap;
+		while (l-- && map)
+			map = map->vm_next;
+		goto out;
 	}
-	return map;
+
+	if (l != mm->map_count)
+		tail_vma = NULL;
+
+out:
+	if (map)
+		return map;
+
+	up_read(&mm->mmap_sem);
+	mmput(mm);
+	return tail_vma;
 }
 
 static void m_stop(struct seq_file *m, void *v)
 {
-	struct task_struct *task = m->private;
+	struct proc_maps_private *priv = m->private;
 	struct vm_area_struct *map = v;
-	if (map && map != get_gate_vma(task)) {
+
+	if (map && map != priv->tail_vma) {
 		struct mm_struct *mm = map->vm_mm;
 		up_read(&mm->mmap_sem);
 		mmput(mm);
@@ -131,15 +146,15 @@ static void m_stop(struct seq_file *m, void *v)
 
 static void *m_next(struct seq_file *m, void *v, loff_t *pos)
 {
-	struct task_struct *task = m->private;
+	struct proc_maps_private *priv = m->private;
 	struct vm_area_struct *map = v;
+	struct vm_area_struct *tail_vma = priv->tail_vma;
+
 	(*pos)++;
-	if (map->vm_next)
+	if (map && (map != tail_vma) && map->vm_next)
 		return map->vm_next;
 	m_stop(m, v);
-	if (map != get_gate_vma(task))
-		return get_gate_vma(task);
-	return NULL;
+	return (map != tail_vma)? tail_vma: NULL;
 }
 
 struct seq_operations proc_pid_maps_op = {
@@ -148,3 +163,24 @@ struct seq_operations proc_pid_maps_op = {
 	.stop	= m_stop,
 	.show	= show_map
 };
+
+struct mm_struct *mm_for_maps(struct task_struct *task)
+{
+	struct mm_struct *mm = get_task_mm(task);
+	if (!mm)
+		return NULL;
+	down_read(&mm->mmap_sem);
+	task_lock(task);
+	if (task->mm != mm)
+		goto out;
+	if (task->mm != current->mm && !__may_ptrace_attach(task))
+		goto out;
+	task_unlock(task);
+	return mm;
+out:
+	task_unlock(task);
+	up_read(&mm->mmap_sem);
+	mmput(mm);
+	return NULL;
+}
+

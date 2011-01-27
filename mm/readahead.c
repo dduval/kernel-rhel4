@@ -340,6 +340,34 @@ check_ra_success(struct file_ra_state *ra, pgoff_t attempt,
 }
 
 /*
+ * Move towards, or away from, re-enabling readahead.
+ *
+ * For sequential IOs, move ra->size towards re-enabling
+ * readahead by the number of sequential pages read.
+ * Non-sequential IOs will move away from re-enabling
+ * readahead, by decreasing ra->size.
+ */
+
+static inline void
+check_ra_reenable(struct file_ra_state *ra, unsigned long offset,
+		  const unsigned long max, unsigned long nr_read)
+{
+	if (offset != ra->prev_page + 1) {	/* Not sequential */
+		ra->size = ra->size?ra->size-1:0;
+	} else {				/* A sequential read */
+		ra->size += nr_read;
+		if (ra->size >= max) {		/* Resume readahead */
+			ra->start = offset - max;
+			ra->next_size = max;
+			ra->size = max;
+			ra->ahead_start = 0;
+			ra->ahead_size = 0;
+			ra->average = max / 2;
+		}
+	}
+}
+
+/*
  * page_cache_readahead is the main function.  If performs the adaptive
  * readahead window size management and submits the readahead I/O.
  */
@@ -527,10 +555,10 @@ ra_off:
 	 * complete as much of the read as we can.
 	 */
 	if (nr_to_read > 1) {
-		ra->size = min(nr_to_read, (unsigned long) max);
-		ra->prev_page = offset + ra->size - 1;
-		do_page_cache_readahead(mapping, filp, offset,
-					ra->size);
+		nr_to_read = min(nr_to_read, (unsigned long) max);
+		check_ra_reenable(ra, offset, max, nr_to_read);
+		ra->prev_page = offset + nr_to_read - 1;
+		do_page_cache_readahead(mapping, filp, offset, nr_to_read);
 	}
 	goto out;
 }
@@ -557,19 +585,7 @@ void handle_ra_miss(struct address_space *mapping,
 	if (ra->next_size == -1UL) {
 		const unsigned long max = get_max_readahead(ra);
 
-		if (offset != ra->prev_page + 1) {
-			ra->size = ra->size?ra->size-1:0; /* Not sequential */
-		} else {
-			ra->size++;			/* A sequential read */
-			if (ra->size >= max) {		/* Resume readahead */
-				ra->start = offset - max;
-				ra->next_size = max;
-				ra->size = max;
-				ra->ahead_start = 0;
-				ra->ahead_size = 0;
-				ra->average = max / 2;
-			}
-		}
+		check_ra_reenable(ra, offset, max, 1);
 		ra->prev_page = offset;
 	} else {
 		const unsigned long min = get_min_readahead(ra);

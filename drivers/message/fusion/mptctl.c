@@ -57,6 +57,9 @@
 #include <linux/miscdevice.h>
 #include <linux/smp_lock.h>
 #include <linux/compat.h>
+#if defined(CPQ_CIM)
+#include "csmisas.h"
+#endif // CPQ_CIM
 
 #include <asm/io.h>
 #include <asm/uaccess.h>
@@ -121,6 +124,29 @@ static int mptctl_release_diag_buffer(unsigned long arg);
 static int mptctl_unregister_diag_buffer(unsigned long arg);
 static int mptctl_query_diag_buffer(unsigned long arg);
 static int mptctl_read_diag_buffer(unsigned long arg);
+#if defined(CPQ_CIM)
+static int mptctl_csmi_sas_get_driver_info(unsigned long arg);
+static int mptctl_csmi_sas_get_cntlr_status(unsigned long arg);
+static int mptctl_csmi_sas_get_cntlr_config(unsigned long arg);
+static int mptctl_csmi_sas_get_phy_info(unsigned long arg);
+static int mptctl_csmi_sas_get_scsi_address(unsigned long arg);
+static int mptctl_csmi_sas_get_link_errors(unsigned long arg);
+static int mptctl_csmi_sas_smp_passthru(unsigned long arg);
+static int mptctl_csmi_sas_firmware_download(unsigned long arg);
+static int mptctl_csmi_sas_get_raid_info(unsigned long arg);
+static int mptctl_csmi_sas_get_raid_config(unsigned long arg);
+static int mptctl_csmi_sas_get_raid_features(unsigned long arg);
+static int mptctl_csmi_sas_get_raid_control(unsigned long arg);
+static int mptctl_csmi_sas_set_phy_info(unsigned long arg);
+static int mptctl_csmi_sas_ssp_passthru(unsigned long arg);
+static int mptctl_csmi_sas_stp_passthru(unsigned long arg);
+static int mptctl_csmi_sas_get_sata_signature(unsigned long arg);
+static int mptctl_csmi_sas_get_device_address(unsigned long arg);
+static int mptctl_csmi_sas_task_managment(unsigned long arg);
+static int mptctl_csmi_sas_phy_control(unsigned long arg);
+static int mptctl_csmi_sas_get_connector_info(unsigned long arg);
+static int mptctl_csmi_sas_get_location(unsigned long arg);
+#endif // CPQ_CIM
 
 static int  mptctl_probe(struct pci_dev *, const struct pci_device_id *);
 static void mptctl_remove(struct pci_dev *);
@@ -424,7 +450,7 @@ mptctl_bus_reset(MPT_IOCTL *ioctl)
 	}
 
 	/* Now wait for the command to complete */
-	ii = wait_event_interruptible_timeout(mptctl_wait,
+	ii = wait_event_timeout(mptctl_wait,
 	     ioctl->wait_done == 1,
 	     HZ*5 /* 5 second timeout */);
 
@@ -567,6 +593,15 @@ mptctl_fasync(int fd, struct file *filep, int mode)
 	return fasync_helper(fd, filep, mode, &async_queue);
 }
 
+static int mptctl_open(struct inode *inode, struct file *file)
+{
+	dctlprintk(("%s() called\n", __FUNCTION__));
+	/*
+	 * Should support multiple management users
+	 */
+	return 0;
+}
+
 static int
 mptctl_release(struct inode *inode, struct file *filep)
 {
@@ -642,6 +677,20 @@ __mptctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return mptctl_unregister_diag_buffer(arg);
 	}
 
+#if defined(CPQ_CIM)
+	else if (cmd == CC_CSMI_SAS_GET_DRIVER_INFO) {
+		return mptctl_csmi_sas_get_driver_info(arg);
+	} else if (cmd == CC_CSMI_SAS_GET_CNTLR_CONFIG) {
+		return mptctl_csmi_sas_get_cntlr_config(arg);
+	} else if (cmd == CC_CSMI_SAS_GET_CNTLR_STATUS) {
+		return mptctl_csmi_sas_get_cntlr_status(arg);
+	} else if (cmd == CC_CSMI_SAS_GET_SCSI_ADDRESS) {
+		return mptctl_csmi_sas_get_scsi_address(arg);
+	} else if (cmd == CC_CSMI_SAS_GET_DEVICE_ADDRESS){
+		return mptctl_csmi_sas_get_device_address(arg);
+	}
+#endif // CPQ_CIM
+
 	/* All of these commands require an interrupt or
 	 * are unknown/illegal.
 	 */
@@ -666,6 +715,40 @@ __mptctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		ret = mptctl_release_diag_buffer(arg);
 	else if (cmd == MPTDIAGREADBUFFER)
 		ret = mptctl_read_diag_buffer(arg);
+#if defined(CPQ_CIM)
+	else if (cmd == CC_CSMI_SAS_GET_PHY_INFO)
+		ret = mptctl_csmi_sas_get_phy_info(arg);
+	else if (cmd == CC_CSMI_SAS_GET_SATA_SIGNATURE)
+		ret = mptctl_csmi_sas_get_sata_signature(arg);
+	else if (cmd == CC_CSMI_SAS_GET_LINK_ERRORS)
+		ret = mptctl_csmi_sas_get_link_errors(arg);
+	else if (cmd == CC_CSMI_SAS_SMP_PASSTHRU)
+		ret = mptctl_csmi_sas_smp_passthru(arg);
+	else if (cmd == CC_CSMI_SAS_SSP_PASSTHRU)
+		ret = mptctl_csmi_sas_ssp_passthru(arg);
+	else if (cmd == CC_CSMI_SAS_FIRMWARE_DOWNLOAD)
+		ret = mptctl_csmi_sas_firmware_download(arg);
+	else if (cmd == CC_CSMI_SAS_GET_RAID_INFO)
+		ret = mptctl_csmi_sas_get_raid_info(arg);
+	else if (cmd == CC_CSMI_SAS_GET_RAID_CONFIG)
+		ret = mptctl_csmi_sas_get_raid_config(arg);
+    else if (cmd == CC_CSMI_SAS_GET_RAID_FEATURES)
+		ret = mptctl_csmi_sas_get_raid_features(arg);
+    else if (cmd == CC_CSMI_SAS_SET_RAID_CONTROL)
+		ret = mptctl_csmi_sas_get_raid_control(arg);
+	else if (cmd == CC_CSMI_SAS_SET_PHY_INFO)
+		ret = mptctl_csmi_sas_set_phy_info(arg);
+	else if (cmd == CC_CSMI_SAS_STP_PASSTHRU)
+		ret = mptctl_csmi_sas_stp_passthru(arg);
+	else if (cmd == CC_CSMI_SAS_TASK_MANAGEMENT)
+		ret = mptctl_csmi_sas_task_managment(arg);
+	else if (cmd == CC_CSMI_SAS_PHY_CONTROL)
+		ret = mptctl_csmi_sas_phy_control(arg);
+	else if (cmd == CC_CSMI_SAS_GET_CONNECTOR_INFO)
+		ret = mptctl_csmi_sas_get_connector_info(arg);
+	else if (cmd == CC_CSMI_SAS_GET_LOCATION)
+		ret = mptctl_csmi_sas_get_location(arg);
+#endif // CPQ_CIM
 	else {
 		dctlprintk(("mptctl_ioctl() cmd=%x not found\n", cmd));
 		ret = -EINVAL;
@@ -927,7 +1010,7 @@ mptctl_do_fw_download(int ioc, char __user *ufwbuf, size_t fwlen)
 	mpt_put_msg_frame(mptctl_id, iocp, mf);
 
 	/* Now wait for the command to complete */
-	ret = wait_event_interruptible_timeout(mptctl_wait,
+	ret = wait_event_timeout(mptctl_wait,
 	     iocp->ioctl->wait_done == 1,
 	     HZ*60);
 
@@ -2383,7 +2466,7 @@ mptctl_do_mpt_command (struct mpt_ioctl_command karg, void __user *mfPtr)
 
 	/* Now wait for the command to complete */
 	timeout = (karg.timeout > 0) ? karg.timeout : MPT_IOCTL_DEFAULT_TIMEOUT;
-	timeout = wait_event_interruptible_timeout(mptctl_wait,
+	timeout = wait_event_timeout(mptctl_wait,
 	     ioc->ioctl->wait_done == 1,
 	     HZ*timeout);
 
@@ -2483,7 +2566,7 @@ done_free_mem:
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
-/* Prototype Routine for the HP HOST INFO command.
+/* Prototype Routine for the HOST INFO command.
  *
  * Outputs:	None.
  * Return:	0 if successful
@@ -2613,7 +2696,7 @@ mptctl_hp_hostinfo(unsigned long arg, unsigned int data_size)
 		}
 	}
 
-	/* HP - Gather ISTWI(Industry Standard Two Wire Interface) Data */
+	/* Gather ISTWI(Industry Standard Two Wire Interface) Data */
 	if ((mf = mpt_get_msg_frame(mptctl_id, ioc)) == NULL) {
 		dfailprintk((MYIOC_s_WARN_FMT "%s, no msg frames!!\n",
 		    ioc->name,__FUNCTION__));
@@ -2643,7 +2726,7 @@ mptctl_hp_hostinfo(unsigned long arg, unsigned int data_size)
 	ioc->ioctl->wait_done = 0;
 	mpt_put_msg_frame(mptctl_id, ioc, mf);
 
-	rc = wait_event_interruptible_timeout(mptctl_wait,
+	rc = wait_event_timeout(mptctl_wait,
 	     ioc->ioctl->wait_done == 1,
 	     HZ*MPT_IOCTL_DEFAULT_TIMEOUT /* 10 sec */);
 
@@ -2683,7 +2766,7 @@ mptctl_hp_hostinfo(unsigned long arg, unsigned int data_size)
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
-/* Prototype Routine for the HP TARGET INFO command.
+/* Prototype Routine for the TARGET INFO command.
  *
  * Outputs:	None.
  * Return:	0 if successful
@@ -2959,7 +3042,7 @@ allocDiagBuffer:
 	mpt_put_msg_frame(mptctl_id, ioc, mf);
 
 	/* Now wait for the command to complete */
-	ii = wait_event_interruptible_timeout(mptctl_wait,
+	ii = wait_event_timeout(mptctl_wait,
 	     ioc->ioctl->wait_done == 1,
 	     HZ*MPT_IOCTL_DEFAULT_TIMEOUT /* 10 sec */);
 
@@ -3101,7 +3184,7 @@ mptctl_release_diag_buffer (unsigned long arg)
 	mpt_put_msg_frame(mptctl_id, ioc, mf);
 
 	/* Now wait for the command to complete */
-	ii = wait_event_interruptible_timeout(mptctl_wait,
+	ii = wait_event_timeout(mptctl_wait,
 	     ioc->ioctl->wait_done == 1,
 	     HZ*MPT_IOCTL_DEFAULT_TIMEOUT /* 10 sec */);
 
@@ -3438,7 +3521,7 @@ mptctl_read_diag_buffer (unsigned long arg)
 		mpt_put_msg_frame(mptctl_id, ioc, mf);
 
 		/* Now wait for the command to complete */
-		ii = wait_event_interruptible_timeout(mptctl_wait,
+		ii = wait_event_timeout(mptctl_wait,
 		     ioc->ioctl->wait_done == 1,
 		     HZ*MPT_IOCTL_DEFAULT_TIMEOUT /* 10 sec */);
 
@@ -3489,6 +3572,7 @@ mptctl_read_diag_buffer_out:
 static struct file_operations mptctl_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	no_llseek,
+	.open =		mptctl_open,
 	.release =	mptctl_release,
 	.fasync = 	mptctl_fasync,
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11))
@@ -3792,6 +3876,46 @@ static int __init mptctl_init(void)
 	if (++where && err) goto out_fail;
 	err = register_ioctl32_conversion(MPTDIAGREADBUFFER, compat_mptctl_ioctl);
 	if (++where && err) goto out_fail;
+#if defined(CPQ_CIM)
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_DRIVER_INFO, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_CNTLR_CONFIG, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_CNTLR_STATUS, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_SCSI_ADDRESS, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_DEVICE_ADDRESS, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_PHY_INFO, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_SATA_SIGNATURE, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_LINK_ERRORS, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_SMP_PASSTHRU, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_SSP_PASSTHRU, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_FIRMWARE_DOWNLOAD, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_RAID_INFO, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_RAID_CONFIG, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_SET_PHY_INFO, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_STP_PASSTHRU, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_TASK_MANAGEMENT, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_PHY_CONTROL, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_CONNECTOR_INFO, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+	err = register_ioctl32_conversion(CC_CSMI_SAS_GET_LOCATION, compat_mptctl_ioctl);
+	if (++where && err) goto out_fail;
+#endif /* CPQ_CIM */
 #endif /* CONFIG_COMPAT */
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)) */
 
@@ -3855,6 +3979,27 @@ out_fail:
 	unregister_ioctl32_conversion(MPTDIAGUNREGISTER);
 	unregister_ioctl32_conversion(MPTDIAGQUERY);
 	unregister_ioctl32_conversion(MPTDIAGREADBUFFER);
+#if defined(CPQ_CIM)
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_DRIVER_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_CNTLR_CONFIG);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_CNTLR_STATUS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_SCSI_ADDRESS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_DEVICE_ADDRESS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_PHY_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_SATA_SIGNATURE);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_LINK_ERRORS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_SMP_PASSTHRU);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_SSP_PASSTHRU);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_FIRMWARE_DOWNLOAD);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_RAID_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_RAID_CONFIG);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_SET_PHY_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_STP_PASSTHRU);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_TASK_MANAGEMENT);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_PHY_CONTROL);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_CONNECTOR_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_LOCATION);
+#endif /* CPQ_CIM */
 #endif /* CONFIG_COMPAT */
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)) */
 
@@ -3905,10 +4050,35 @@ static void mptctl_exit(void)
 	unregister_ioctl32_conversion(MPTDIAGUNREGISTER);
 	unregister_ioctl32_conversion(MPTDIAGQUERY);
 	unregister_ioctl32_conversion(MPTDIAGREADBUFFER);
+#if defined(CPQ_CIM)
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_DRIVER_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_CNTLR_CONFIG);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_CNTLR_STATUS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_SCSI_ADDRESS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_DEVICE_ADDRESS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_PHY_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_SATA_SIGNATURE);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_LINK_ERRORS);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_SMP_PASSTHRU);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_SSP_PASSTHRU);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_FIRMWARE_DOWNLOAD);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_RAID_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_RAID_CONFIG);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_SET_PHY_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_STP_PASSTHRU);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_TASK_MANAGEMENT);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_PHY_CONTROL);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_CONNECTOR_INFO);
+	unregister_ioctl32_conversion(CC_CSMI_SAS_GET_LOCATION);
+#endif /* CPQ_CIM */
 #endif /* CONFIG_COMPAT */
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)) */
 
 }
+
+#if defined(CPQ_CIM)
+#include "csmisas.c"
+#endif // CPQ_CIM
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 

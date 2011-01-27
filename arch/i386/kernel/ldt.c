@@ -56,8 +56,10 @@ static int alloc_ldt(mm_context_t *pc, int mincount, int reload)
 #ifdef CONFIG_SMP
 		cpumask_t mask;
 
-		preempt_disable();
+		local_irq_disable();
 		load_LDT(pc);
+		local_irq_enable();
+		preempt_disable();
 		mask = cpumask_of_cpu(smp_processor_id());
 		if (!cpus_equal(current->mm->cpu_vm_mask, mask))
 			smp_call_function(flush_ldt, NULL, 1, 1);

@@ -276,6 +276,10 @@ extern void wait_cons_dev(void);
 
 extern void clear_all_subchannels(void);
 
+extern void css_schedule_reprobe(void);
+
+extern void cio_reset_channel_paths(void);
+
 #endif
 
 #endif

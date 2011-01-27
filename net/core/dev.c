@@ -126,6 +126,12 @@
  */
 #undef OFFLINE_SAMPLE
 
+#ifdef CONFIG_XEN
+#include <net/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
+#endif
+
 /*
  *	The list of packet types we will receive (as opposed to discard)
  *	and the routines to invoke.
@@ -1219,6 +1225,37 @@ int dev_queue_xmit(struct sk_buff *skb)
 	    __skb_linearize(skb, GFP_ATOMIC))
 		goto out_kfree_skb;
 
+#ifdef CONFIG_XEN
+	/* If a checksum-deferred packet is forwarded to a device that needs a
+	 * checksum, correct the pointers and force checksumming.
+	 */
+	if (skb->proto_csum_blank) {
+		if (skb->protocol != htons(ETH_P_IP))
+			goto out_kfree_skb;
+		skb->h.raw = (unsigned char *)skb->nh.iph + 4*skb->nh.iph->ihl;
+		if (skb->h.raw >= skb->tail)
+			goto out_kfree_skb;
+		switch (skb->nh.iph->protocol) {
+		case IPPROTO_TCP:
+			skb->csum = offsetof(struct tcphdr, check);
+			break;
+		case IPPROTO_UDP:
+			skb->csum = offsetof(struct udphdr, check);
+			break;
+		default:
+			if (net_ratelimit())
+				printk(KERN_ERR "Attempting to checksum a non-"
+				       "TCP/UDP packet, dropping a protocol"
+				       " %d packet", skb->nh.iph->protocol);
+			rc = -EPROTO;
+			goto out_kfree_skb;
+		}
+		if ((skb->h.raw + skb->csum + 2) > skb->tail)
+			goto out_kfree_skb;
+		skb->ip_summed = CHECKSUM_HW;
+	}
+#endif
+
 	/* If packet is not checksummed and device does not support
 	 * checksumming for this protocol, complete checksumming here.
 	 */
@@ -1647,6 +1684,19 @@ int netif_receive_skb(struct sk_buff *skb)
 	if (skb->tc_verd & TC_NCLS) {
 		skb->tc_verd = CLR_TC_NCLS(skb->tc_verd);
 		goto ncls;
+	}
+#endif
+
+#ifdef CONFIG_XEN
+	switch (skb->ip_summed) {
+	case CHECKSUM_UNNECESSARY:
+		skb->proto_csum_valid = 1;
+		break;
+	case CHECKSUM_HW:
+		/* XXX Implement me. */
+	default:
+		skb->proto_csum_valid = 0;
+		break;
 	}
 #endif
 
@@ -2334,10 +2384,11 @@ static int dev_ifsioc(struct ifreq *ifr, unsigned int cmd)
 			return dev_set_mtu(dev, ifr->ifr_mtu);
 
 		case SIOCGIFHWADDR:
-			if ((size_t) dev->addr_len > sizeof ifr->ifr_hwaddr.sa_data)
-				return -EOVERFLOW;
-			memset(ifr->ifr_hwaddr.sa_data, 0, sizeof ifr->ifr_hwaddr.sa_data);
-			memcpy(ifr->ifr_hwaddr.sa_data, dev->dev_addr, dev->addr_len);
+			if (!dev->addr_len)
+				memset(ifr->ifr_hwaddr.sa_data, 0, sizeof ifr->ifr_hwaddr.sa_data);
+			else
+				memcpy(ifr->ifr_hwaddr.sa_data, dev->dev_addr,
+				       min(sizeof ifr->ifr_hwaddr.sa_data, (size_t) dev->addr_len));
 			ifr->ifr_hwaddr.sa_family = dev->type;
 			return 0;
 

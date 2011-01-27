@@ -235,6 +235,8 @@ static struct aac_driver_ident aac_drivers[] = {
 	{ aac_rkt_init, "aacraid", "ADAPTEC ", "RAID            ", 2 } /* Adaptec Rocket Catch All */
 };
 
+static void aac_poll(struct scsi_device *);
+
 #ifdef CONFIG_COMPAT
 /* 
  * Promote 32 bit apps that call get_next_adapter_fib_ioctl to 64 bit version 
@@ -536,6 +538,8 @@ static int aac_eh_reset(struct scsi_cmnd* cmd)
 			return SUCCESS;
 		spin_unlock_irq(host->host_lock);
 		ssleep(1);
+		if (crashdump_mode())
+			aac_poll(dev);
 		spin_lock_irq(host->host_lock);
 	}
 	printk(KERN_ERR "%s: SCSI bus appears hung\n", AAC_DRIVERNAME);

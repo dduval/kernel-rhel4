@@ -12,6 +12,7 @@
 #include <asm/fixmap.h>
 #include <asm/processor.h>
 #include <asm/thread_info.h>
+#include <asm/elf.h>
 
 #define DEFINE(sym, val) \
         asm volatile("\n->" #sym " %0 " #val : : "i" (val))
@@ -58,9 +59,11 @@ void foo(void)
 	OFFSET(EXEC_DOMAIN_handler, exec_domain, handler);
 	OFFSET(RT_SIGFRAME_sigcontext, rt_sigframe, uc.uc_mcontext);
 
+#ifdef CONFIG_X86_SYSENTER
 	/* Offset from the sysenter stack to tss.esp0 */
 	DEFINE(TSS_sysenter_esp0, offsetof(struct tss_struct, esp0) -
 		 sizeof(struct tss_struct));
+#endif
 
 	DEFINE(TI_task, offsetof (struct thread_info, task));
 	DEFINE(TI_exec_domain, offsetof (struct thread_info, exec_domain));
@@ -72,12 +75,13 @@ void foo(void)
 	DEFINE(TI_real_stack, offsetof (struct thread_info, real_stack));
 	DEFINE(TI_virtual_stack, offsetof (struct thread_info, virtual_stack));
 	DEFINE(TI_user_pgd, offsetof (struct thread_info, user_pgd));
-
+#ifndef CONFIG_XEN
 	DEFINE(FIX_ENTRY_TRAMPOLINE_0_addr,
-			__fix_to_virt(FIX_ENTRY_TRAMPOLINE_0));
+			(__fix_to_virt(FIX_ENTRY_TRAMPOLINE_0)));
 	DEFINE(FIX_VSYSCALL_addr, __fix_to_virt(FIX_VSYSCALL));
-	DEFINE(PAGE_SIZE_asm, PAGE_SIZE);
 	DEFINE(VSYSCALL_BASE, __fix_to_virt(FIX_VSYSCALL));
+#endif
+	DEFINE(PAGE_SIZE_asm, PAGE_SIZE);
 	DEFINE(task_thread_db7,
 		offsetof (struct task_struct, thread.debugreg[7]));
 }

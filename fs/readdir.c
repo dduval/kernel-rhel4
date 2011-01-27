@@ -42,6 +42,40 @@ out:
 
 EXPORT_SYMBOL(vfs_readdir);
 
+#if BITS_PER_LONG < 64
+int vfs_readdir64(struct file *file, filldir64_t filler, void *buf)
+{
+	struct file_operations_ext *fxops;
+	struct inode *inode = file->f_dentry->d_inode;
+	int res = -ENOTDIR;
+
+	if (!file->f_op || !file->f_op->readdir)
+		goto out;
+
+	res = -ENOSYS;
+	if (!IS_INO64(inode))
+		goto out;
+
+	res = security_file_permission(file, MAY_READ);
+	if (res)
+		goto out;
+
+	fxops = (struct file_operations_ext *) file->f_op;
+
+	down(&inode->i_sem);
+	res = -ENOENT;
+	if (!IS_DEADDIR(inode)) {
+		res = fxops->readdir64(file, buf, filler);
+		file_accessed(file);
+	}
+	up(&inode->i_sem);
+out:
+	return res;
+}
+
+EXPORT_SYMBOL(vfs_readdir64);
+#endif
+
 /*
  * Traditional linux readdir() handling..
  *
@@ -258,6 +292,46 @@ efault:
 	return -EFAULT;
 }
 
+#if BITS_PER_LONG < 64
+static int filldir6464(void * __buf, const char * name, int namlen, loff_t offset,
+		       unsigned long long ino, unsigned int d_type)
+{
+	struct linux_dirent64 __user *dirent;
+	struct getdents_callback64 * buf = (struct getdents_callback64 *) __buf;
+	int reclen = ROUND_UP64(NAME_OFFSET(dirent) + namlen + 1);
+
+	buf->error = -EINVAL;	/* only used if we fail.. */
+	if (reclen > buf->count)
+		return -EINVAL;
+	dirent = buf->previous;
+	if (dirent) {
+		if (__put_user(offset, &dirent->d_off))
+			goto efault;
+	}
+	dirent = buf->current_dir;
+	if (__put_user(ino, &dirent->d_ino))
+		goto efault;
+	if (__put_user(0, &dirent->d_off))
+		goto efault;
+	if (__put_user(reclen, &dirent->d_reclen))
+		goto efault;
+	if (__put_user(d_type, &dirent->d_type))
+		goto efault;
+	if (copy_to_user(dirent->d_name, name, namlen))
+		goto efault;
+	if (__put_user(0, dirent->d_name + namlen))
+		goto efault;
+	buf->previous = dirent;
+	dirent = (void __user *)dirent + reclen;
+	buf->current_dir = dirent;
+	buf->count -= reclen;
+	return 0;
+efault:
+	buf->error = -EFAULT;
+	return -EFAULT;
+}
+#endif
+
 asmlinkage long sys_getdents64(unsigned int fd, struct linux_dirent64 __user * dirent, unsigned int count)
 {
 	struct file * file;
@@ -279,9 +353,23 @@ asmlinkage long sys_getdents64(unsigned int fd, struct linux_dirent64 __user * d
 	buf.count = count;
 	buf.error = 0;
 
+#if BITS_PER_LONG < 64
+	error = vfs_readdir64(file, filldir6464, &buf);
+	if (error < 0) {
+		if (error != -ENOSYS)
+			goto out_putf;
+		error = vfs_readdir(file, filldir64, &buf);
+		if (error < 0)
+			goto out_putf;
+	}
+#else
+
 	error = vfs_readdir(file, filldir64, &buf);
 	if (error < 0)
 		goto out_putf;
+
+#endif
+
 	error = buf.error;
 	lastdirent = buf.previous;
 	if (lastdirent) {

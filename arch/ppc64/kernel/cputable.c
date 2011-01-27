@@ -153,7 +153,7 @@ struct cpu_spec	cpu_specs[] = {
 		    CPU_FTR_PPCAS_ARCH_V2 | CPU_FTR_MMCRA | CPU_FTR_SMT |
 		    CPU_FTR_COHERENT_ICACHE | CPU_FTR_LOCKLESS_TLBIE |
 		    CPU_FTR_MMCRA_SIHV,
-	    COMMON_USER_PPC64,
+	    COMMON_USER_POWER5,
 	    128, 128,
 	    __setup_cpu_power4,
 	    COMMON_PPC64_FW
@@ -164,7 +164,19 @@ struct cpu_spec	cpu_specs[] = {
 		    CPU_FTR_PPCAS_ARCH_V2 | CPU_FTR_MMCRA | CPU_FTR_SMT |
 		    CPU_FTR_COHERENT_ICACHE | CPU_FTR_LOCKLESS_TLBIE |
 		    CPU_FTR_MMCRA_SIHV,
-	    COMMON_USER_PPC64,
+	    COMMON_USER_POWER5,
+	    128, 128,
+	    __setup_cpu_power4,
+	    COMMON_PPC64_FW
+    },
+    {   /* Power6 */
+	    0xffff0000, 0x003e0000, "POWER6",
+	    CPU_FTR_SPLIT_ID_CACHE | CPU_FTR_USE_TB |
+	            CPU_FTR_HPTE_TABLE | CPU_FTR_PPCAS_ARCH_V2 |
+	            CPU_FTR_MMCRA | CPU_FTR_SMT |
+	            CPU_FTR_COHERENT_ICACHE | CPU_FTR_LOCKLESS_TLBIE |
+	            CPU_FTR_MMCRA_SIHV | CPU_FTR_POWER6_MMCRA | CPU_FTR_REAL_LE,
+	    COMMON_USER_POWER6,
 	    128, 128,
 	    __setup_cpu_power4,
 	    COMMON_PPC64_FW

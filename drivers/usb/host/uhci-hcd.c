@@ -92,7 +92,7 @@ static char *errbuf;
 
 static kmem_cache_t *uhci_up_cachep;	/* urb_priv */
 
-static int uhci_get_current_frame_number(struct uhci_hcd *uhci);
+static void uhci_get_current_frame_number(struct uhci_hcd *uhci);
 static int uhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb);
 static void uhci_unlink_generic(struct uhci_hcd *uhci, struct urb *urb);
 static void uhci_remove_pending_urbps(struct uhci_hcd *uhci);
@@ -377,7 +377,6 @@ static void uhci_remove_qh(struct uhci_hcd *uhci, struct uhci_qh *qh)
 {
 	struct uhci_qh *pqh;
 	__le32 newlink;
-	unsigned int age;
 
 	if (!qh)
 		return;
@@ -430,10 +429,10 @@ static void uhci_remove_qh(struct uhci_hcd *uhci, struct uhci_qh *qh)
 	list_del_init(&qh->urbp->queue_list);
 	qh->urbp = NULL;
 
-	age = uhci_get_current_frame_number(uhci);
-	if (age != uhci->qh_remove_age) {
+	uhci_get_current_frame_number(uhci);
+	if (uhci->frame_number + uhci->is_stopped != uhci->qh_remove_age) {
 		uhci_free_pending_qhs(uhci);
-		uhci->qh_remove_age = age;
+		uhci->qh_remove_age = uhci->frame_number;
 	}
 
 	/* Check to see if the remove list is empty. Set the IOC bit */
@@ -639,7 +638,6 @@ static void uhci_destroy_urb_priv(struct uhci_hcd *uhci, struct urb *urb)
 {
 	struct list_head *head, *tmp;
 	struct urb_priv *urbp;
-	unsigned int age;
 
 	urbp = (struct urb_priv *)urb->hcpriv;
 	if (!urbp)
@@ -649,10 +647,10 @@ static void uhci_destroy_urb_priv(struct uhci_hcd *uhci, struct urb *urb)
 		dev_warn(uhci_dev(uhci), "urb %p still on uhci->urb_list "
 				"or uhci->remove_list!\n", urb);
 
-	age = uhci_get_current_frame_number(uhci);
-	if (age != uhci->td_remove_age) {
+	uhci_get_current_frame_number(uhci);
+	if (uhci->frame_number + uhci->is_stopped != uhci->td_remove_age) {
 		uhci_free_pending_tds(uhci);
-		uhci->td_remove_age = age;
+		uhci->td_remove_age = uhci->frame_number;
 	}
 
 	/* Check to see if the remove list is empty. Set the IOC bit */
@@ -1220,7 +1218,9 @@ static int isochronous_find_start(struct uhci_hcd *uhci, struct urb *urb)
 		if (limits) {
 			int curframe;
 
-			curframe = uhci_get_current_frame_number(uhci) % UHCI_NUMFRAMES;
+			uhci_get_current_frame_number(uhci);
+			curframe = uhci->frame_number % UHCI_NUMFRAMES;
+
 			urb->start_frame = (curframe + 10) % UHCI_NUMFRAMES;
 		} else
 			urb->start_frame = end;
@@ -1527,7 +1527,6 @@ static int uhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb)
 	struct uhci_hcd *uhci = hcd_to_uhci(hcd);
 	unsigned long flags;
 	struct urb_priv *urbp;
-	unsigned int age;
 
 	spin_lock_irqsave(&uhci->schedule_lock, flags);
 	urbp = urb->hcpriv;
@@ -1537,11 +1536,11 @@ static int uhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb)
 
 	uhci_unlink_generic(uhci, urb);
 
-	age = uhci_get_current_frame_number(uhci);
-	if (age != uhci->urb_remove_age) {
+	uhci_get_current_frame_number(uhci);
+	if (uhci->frame_number + uhci->is_stopped != uhci->urb_remove_age) {
 		uhci_remove_pending_urbps(uhci);
-		uhci->urb_remove_age = age;
-	}
+		uhci->urb_remove_age = uhci->frame_number;
+	}        
 
 	/* If we're the first, set the next interrupt bit */
 	if (list_empty(&uhci->urb_remove_list))
@@ -1591,13 +1590,13 @@ static int uhci_fsbr_timeout(struct uhci_hcd *uhci, struct urb *urb)
 }
 
 /*
- * uhci_get_current_frame_number()
- *
- * returns the current frame number for a USB bus/controller.
+ * Store the current frame number in uhci->frame_number if the controller
+ * is runnning
  */
-static int uhci_get_current_frame_number(struct uhci_hcd *uhci)
+static void uhci_get_current_frame_number(struct uhci_hcd *uhci)
 {
-	return inw(uhci->io_addr + USBFRNUM);
+	if (!uhci->is_stopped)
+		uhci->frame_number = inw(uhci->io_addr + USBFRNUM);
 }
 
 static int init_stall_timer(struct usb_hcd *hcd);
@@ -1613,8 +1612,10 @@ static void stall_callback(unsigned long ptr)
 	INIT_LIST_HEAD(&list);
 
 	spin_lock_irqsave(&uhci->schedule_lock, flags);
-	if (!list_empty(&uhci->urb_remove_list) &&
-	    uhci_get_current_frame_number(uhci) != uhci->urb_remove_age) {
+
+	uhci_get_current_frame_number(uhci);
+	if (!list_empty(&uhci->urb_remove_list) && 
+	    (uhci->frame_number + uhci->is_stopped != uhci->urb_remove_age)) {
 		uhci_remove_pending_urbps(uhci);
 		uhci_finish_completion(hcd, NULL);
 		called_uhci_finish_completion = 1;
@@ -1755,7 +1756,6 @@ static irqreturn_t uhci_irq(struct usb_hcd *hcd, struct pt_regs *regs)
 	unsigned long io_addr = uhci->io_addr;
 	unsigned short status;
 	struct list_head *tmp, *head;
-	unsigned int age;
 
 	/*
 	 * Read the interrupt status, and write it back to clear the
@@ -1786,20 +1786,24 @@ static irqreturn_t uhci_irq(struct usb_hcd *hcd, struct pt_regs *regs)
 
 	spin_lock(&uhci->schedule_lock);
 
-	age = uhci_get_current_frame_number(uhci);
-	if (age != uhci->qh_remove_age)
-		uhci_free_pending_qhs(uhci);
-	if (age != uhci->td_remove_age)
-		uhci_free_pending_tds(uhci);
-	if (age != uhci->urb_remove_age)
-		uhci_remove_pending_urbps(uhci);
+	/* Don't allow re-entrant calls */
+	if (uhci->scan_in_progress) {
+		uhci->need_rescan = 1;
+		spin_unlock(&uhci->schedule_lock);
+		return IRQ_HANDLED;
+	}
+	uhci->scan_in_progress = 1;
+ rescan:
+	uhci->need_rescan = 0;
 
-	if (list_empty(&uhci->urb_remove_list) &&
-	    list_empty(&uhci->td_remove_list) &&
-	    list_empty(&uhci->qh_remove_list))
-		uhci_clear_next_interrupt(uhci);
-	else
-		uhci_set_next_interrupt(uhci);
+	uhci_clear_next_interrupt(uhci);
+	uhci_get_current_frame_number(uhci);
+	if (uhci->frame_number + uhci->is_stopped != uhci->qh_remove_age)
+		uhci_free_pending_qhs(uhci);
+	if (uhci->frame_number + uhci->is_stopped != uhci->td_remove_age)
+		uhci_free_pending_tds(uhci);
+	if (uhci->frame_number + uhci->is_stopped != uhci->urb_remove_age)
+		uhci_remove_pending_urbps(uhci);
 
 	/* Walk the list of pending URB's to see which ones completed */
 	head = &uhci->urb_list;
@@ -1814,6 +1818,25 @@ static irqreturn_t uhci_irq(struct usb_hcd *hcd, struct pt_regs *regs)
 		uhci_transfer_result(uhci, urb);
 	}
 	uhci_finish_completion(hcd, regs);
+
+        /* If the controller is stopped, we can finish these off right now */
+	if (uhci->is_stopped) {
+		uhci_free_pending_qhs(uhci);
+		uhci_free_pending_tds(uhci);
+		uhci_remove_pending_urbps(uhci);
+	}
+
+	if (uhci->need_rescan)
+		goto rescan;
+
+	uhci->scan_in_progress = 0;
+
+	if (list_empty(&uhci->urb_remove_list) &&
+	    list_empty(&uhci->td_remove_list) &&
+	    list_empty(&uhci->qh_remove_list))
+		uhci_clear_next_interrupt(uhci);
+	else
+		uhci_set_next_interrupt(uhci);
 
 	spin_unlock(&uhci->schedule_lock);
 
@@ -1842,6 +1865,8 @@ static void reset_hc(struct uhci_hcd *uhci)
 	/* Another 10ms delay */
 	msleep(10);
 	uhci->resume_detect = 0;
+
+	uhci->is_stopped = UHCI_IS_STOPPED;
 }
 
 static void suspend_hc(struct uhci_hcd *uhci)
@@ -1852,6 +1877,8 @@ static void suspend_hc(struct uhci_hcd *uhci)
 	uhci->state = UHCI_SUSPENDED;
 	uhci->resume_detect = 0;
 	outw(USBCMD_EGSM, io_addr + USBCMD);
+
+	uhci->is_stopped = UHCI_IS_STOPPED;
 }
 
 static void wakeup_hc(struct uhci_hcd *uhci)
@@ -1887,6 +1914,8 @@ static void wakeup_hc(struct uhci_hcd *uhci)
 
 		case UHCI_RUNNING_GRACE:	/* Now allowed to suspend */
 			uhci->state = UHCI_RUNNING;
+
+			uhci->is_stopped = 0;
 			break;
 
 		default:
@@ -1942,6 +1971,8 @@ static void hc_state_transitions(struct uhci_hcd *uhci)
 			if (!ports_active(uhci) && suspend_allowed(uhci)) {
 				uhci->state = UHCI_SUSPENDING_GRACE;
 				uhci->state_end = jiffies + HZ;
+
+				uhci->is_stopped = UHCI_IS_STOPPED;
 			}
 			break;
 
@@ -2006,6 +2037,8 @@ static void start_hc(struct uhci_hcd *uhci)
 	outw(USBCMD_RS | USBCMD_CF | USBCMD_MAXP, io_addr + USBCMD);
 
         uhci->hcd.state = USB_STATE_RUNNING;
+
+	uhci->is_stopped = 0;
 }
 
 /*
@@ -2452,7 +2485,20 @@ static void uhci_hcd_endpoint_disable(struct usb_hcd *hcd,
 
 static int uhci_hcd_get_frame_number(struct usb_hcd *hcd)
 {
-	return uhci_get_current_frame_number(hcd_to_uhci(hcd));
+	struct uhci_hcd *uhci = hcd_to_uhci(hcd);
+	unsigned long flags;
+	int is_stopped;
+	int frame_number;
+
+	/* Minimize latency by avoiding the spinlock */
+	local_irq_save(flags);
+	is_stopped = uhci->is_stopped;
+	smp_rmb();
+	frame_number = is_stopped ? uhci->frame_number
+				  : inw(uhci->io_addr + USBFRNUM);
+	local_irq_restore(flags);
+
+	return frame_number;
 }
 
 static const char hcd_name[] = "uhci_hcd";

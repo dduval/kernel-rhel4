@@ -50,6 +50,8 @@ static nasid_t sn_hwperf_master_nasid = INVALID_NASID;
 static int sn_hwperf_init(void);
 static DECLARE_MUTEX(sn_hwperf_init_mutex);
 
+#define cnode_possible(n)	((n) < num_cnodes)
+
 static int sn_hwperf_enum_objects(int *nobj, struct sn_hwperf_object_info **ret)
 {
 	int e;
@@ -109,7 +111,11 @@ static int sn_hwperf_geoid_to_cnode(char *location)
 	if (sn_hwperf_location_to_bpos(location, &rack, &bay, &slot, &slab))
 		return -1;
 
-	for_each_node(cnode) {
+	/*
+	 * FIXME: replace with cleaner for_each_XXX macro which addresses
+	 * both compute and IO nodes once ACPI3.0 is available.
+	 */
+	for (cnode = 0; cnode < num_cnodes; cnode++) {
 		geoid = cnodeid_get_geoid(cnode);
 		module_id = geo_module(geoid);
 		this_rack = MODULE_GET_RACK(module_id);
@@ -122,14 +128,14 @@ static int sn_hwperf_geoid_to_cnode(char *location)
 		}
 	}
 
-	return node_possible(cnode) ? cnode : -1;
+	return cnode_possible(cnode) ? cnode : -1;
 }
 
 static int sn_hwperf_obj_to_cnode(struct sn_hwperf_object_info * obj)
 {
 	if (!SN_HWPERF_IS_NODE(obj) && !SN_HWPERF_IS_IONODE(obj))
 		BUG();
-	if (!obj->sn_hwp_this_part)
+	if (SN_HWPERF_FOREIGN(obj))
 		return -1;
 	return sn_hwperf_geoid_to_cnode(obj->location);
 }
@@ -194,12 +200,12 @@ static void print_pci_topology(struct seq_file *s)
 
 static inline int sn_hwperf_has_cpus(cnodeid_t node)
 {
-	return node_online(node) && nr_cpus_node(node);
+	return node < MAX_NUMNODES && node_online(node) && nr_cpus_node(node);
 }
 
 static inline int sn_hwperf_has_mem(cnodeid_t node)
 {
-	return node_online(node) && NODE_DATA(node)->node_present_pages;
+	return node < MAX_NUMNODES && node_online(node) && NODE_DATA(node)->node_present_pages;
 }
 
 static struct sn_hwperf_object_info *
@@ -232,7 +238,7 @@ static int sn_hwperf_get_nearest_node_objdata(struct sn_hwperf_object_info *objb
 	int found_mem = 0;
 	int found_cpu = 0;
 
-	if (!node_possible(node))
+	if (!cnode_possible(node))
 		return -EINVAL;
 
 	if (sn_hwperf_has_cpus(node)) {
@@ -279,6 +285,8 @@ static int sn_hwperf_get_nearest_node_objdata(struct sn_hwperf_object_info *objb
 	/* find nearest node with cpus and nearest memory */
 	for (router=NULL, j=0; j < op->ports; j++) {
 		dest = sn_hwperf_findobj_id(objbuf, nobj, ptdata[j].conn_id);
+		if (dest && SN_HWPERF_IS_ROUTER(dest))
+			router = dest;
 		if (!dest || SN_HWPERF_FOREIGN(dest) ||
 		    !SN_HWPERF_IS_NODE(dest) || SN_HWPERF_IS_IONODE(dest)) {
 			continue;
@@ -294,8 +302,6 @@ static int sn_hwperf_get_nearest_node_objdata(struct sn_hwperf_object_info *objb
 				*near_mem_node = c;
 			found_mem++;
 		}
-		if (SN_HWPERF_IS_ROUTER(dest))
-			router = dest;
 	}
 
 	if (router && (!found_cpu || !found_mem)) {
@@ -437,7 +443,7 @@ static int sn_topology_show(struct seq_file *s, void *d)
 	seq_printf(s, "%s %d %s %s asic %s", slabname, ordinal, obj->location,
 		obj->sn_hwp_this_part ? "local" : "shared", obj->name);
 
-	if (!SN_HWPERF_IS_NODE(obj) && !SN_HWPERF_IS_IONODE(obj))
+	if (ordinal < 0 || (!SN_HWPERF_IS_NODE(obj) && !SN_HWPERF_IS_IONODE(obj)))
 		seq_putc(s, '\n');
 	else {
 		cnodeid_t near_mem = -1;
@@ -463,22 +469,24 @@ static int sn_topology_show(struct seq_file *s, void *d)
 		/*
 		 * CPUs on this node, if any
 		 */
-		cpumask = node_to_cpumask(ordinal);
-		for_each_online_cpu(i) {
-			if (cpu_isset(i, cpumask)) {
-				slice = 'a' + cpuid_to_slice(i);
-				c = cpu_data(i);
-				seq_printf(s, "cpu %d %s%c local"
-					" freq %luMHz, arch ia64",
-					i, obj->location, slice,
-					c->proc_freq / 1000000);
-				for_each_online_cpu(j) {
-					seq_printf(s, j ? ":%d" : ", dist %d",
-						node_distance(
-						    cpu_to_node(i),
-						    cpu_to_node(j)));
+		if (!SN_HWPERF_IS_IONODE(obj)) {
+			cpumask = node_to_cpumask(ordinal);
+			for_each_online_cpu(i) {
+				if (cpu_isset(i, cpumask)) {
+					slice = 'a' + cpuid_to_slice(i);
+					c = cpu_data(i);
+					seq_printf(s, "cpu %d %s%c local"
+						" freq %luMHz, arch ia64",
+						i, obj->location, slice,
+						c->proc_freq / 1000000);
+					for_each_online_cpu(j) {
+						seq_printf(s, j ? ":%d" : ", dist %d",
+							node_distance(
+						    	cpu_to_node(i),
+						    	cpu_to_node(j)));
+					}
+					seq_putc(s, '\n');
 				}
-				seq_putc(s, '\n');
 			}
 		}
 	}
@@ -488,7 +496,7 @@ static int sn_topology_show(struct seq_file *s, void *d)
 		 * numalink ports
 		 */
 		sz = obj->ports * sizeof(struct sn_hwperf_port_info);
-		if ((ptdata = vmalloc(sz)) == NULL)
+		if ((ptdata = kmalloc(sz, GFP_KERNEL)) == NULL)
 			return -ENOMEM;
 		e = ia64_sn_hwperf_op(sn_hwperf_master_nasid,
 				      SN_HWPERF_ENUM_PORTS, obj->id, sz,
@@ -518,7 +526,7 @@ static int sn_topology_show(struct seq_file *s, void *d)
 			if (obj->sn_hwp_this_part && p->sn_hwp_this_part)
 				/* both ends local to this partition */
 				seq_puts(s, " local");
-			else if (!obj->sn_hwp_this_part && !p->sn_hwp_this_part)
+			else if (SN_HWPERF_FOREIGN(p))
 				/* both ends of the link in foreign partiton */
 				seq_puts(s, " foreign");
 			else
@@ -536,7 +544,7 @@ static int sn_topology_show(struct seq_file *s, void *d)
 				(SN_HWPERF_IS_NL3ROUTER(obj) ||
 				SN_HWPERF_IS_NL3ROUTER(p)) ?  "LLP3" : "LLP4");
 		}
-		vfree(ptdata);
+		kfree(ptdata);
 	}
 
 	return 0;
@@ -604,7 +612,7 @@ static int sn_hwperf_op_cpu(struct sn_hwperf_op_info *op_info)
 	op_info->a->arg &= SN_HWPERF_ARG_OBJID_MASK;
 
 	if (cpu != SN_HWPERF_ARG_ANY_CPU) {
-		if (cpu >= num_online_cpus() || !cpu_online(cpu)) {
+		if (cpu >= NR_CPUS || !cpu_online(cpu)) {
 			r = -EINVAL;
 			goto out;
 		}
@@ -771,7 +779,7 @@ sn_hwperf_ioctl(struct inode *in, struct file *fp, u32 op, u64 arg)
 
 	case SN_HWPERF_GET_NODE_NASID:
 		if (a.sz != sizeof(u64) ||
-		   (node = a.arg) < 0 || !node_possible(node)) {
+		   (node = a.arg) < 0 || !cnode_possible(node)) {
 			r = -EINVAL;
 			goto error;
 		}

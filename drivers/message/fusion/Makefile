@@ -18,8 +18,9 @@
 #CFLAGS_mptbase.o += -DMPT_DEBUG_DL
 #CFLAGS_mptbase.o += -DMPT_DEBUG_IRQ
 #CFLAGS_mptbase.o += -DMPT_DEBUG_RESET
+#CFLAGS_mptbase.o += -DMPT_DEBUG_INIT
 #
-#  For mptscsih:
+#  For mptscsi:
 #CFLAGS_mptscsi.o += -DMPT_DEBUG_DV
 #CFLAGS_mptscsi.o += -DMPT_DEBUG_NEGO
 #CFLAGS_mptscsi.o += -DMPT_DEBUG_TM
@@ -28,7 +29,10 @@
 #
 #  For mptctl:
 #CFLAGS_mptctl.o += -DMPT_DEBUG_IOCTL
+CFLAGS_mptctl.o  += -DCPQ_CIM
 #
+#  For mptsas:
+#CFLAGS_mptsas.o += -DMPT_DEBUG_HOTPLUG
 
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-} LSI_LOGIC
 

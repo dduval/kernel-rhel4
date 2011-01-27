@@ -477,6 +477,56 @@ int get_fpexc_mode(struct task_struct *tsk, unsigned long adr)
 	return put_user(val, (unsigned int __user *) adr);
 }
 
+int set_endian(struct task_struct *tsk, unsigned int val)
+{
+	struct pt_regs *regs = tsk->thread.regs;
+
+	if ((val == PR_ENDIAN_LITTLE) && !(cur_cpu_spec->cpu_features & CPU_FTR_REAL_LE))
+		return -EINVAL;
+
+	if (regs == NULL)
+		return -EINVAL;
+
+	if (val == PR_ENDIAN_BIG)
+		regs->msr &= ~MSR_LE;
+	else if (val == PR_ENDIAN_LITTLE)
+		regs->msr |= MSR_LE;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+int get_endian(struct task_struct *tsk, unsigned long adr)
+{
+	struct pt_regs *regs = tsk->thread.regs;
+	unsigned int val;
+
+	if (!(cur_cpu_spec->cpu_features & CPU_FTR_REAL_LE))
+		return -EINVAL;
+
+	if (regs == NULL)
+		return -EINVAL;
+
+	if (regs->msr & MSR_LE)
+		val = PR_ENDIAN_LITTLE;
+	else
+		val = PR_ENDIAN_BIG;
+
+	return put_user(val, (unsigned int __user *)adr);
+}
+
+int set_unalign_ctl(struct task_struct *tsk, unsigned int val)
+{
+	tsk->thread.align_ctl = val;
+	return 0;
+}
+
+int get_unalign_ctl(struct task_struct *tsk, unsigned long adr)
+{
+	return put_user(tsk->thread.align_ctl, (unsigned int __user *)adr);
+}
+
 int sys_clone(unsigned long clone_flags, unsigned long p2, unsigned long p3,
 	      unsigned long p4, unsigned long p5, unsigned long p6,
 	      struct pt_regs *regs)

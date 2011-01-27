@@ -1481,7 +1481,6 @@ void __init setup_arch(char **cmdline_p)
 
 
 	dmi_scan_machine();
-	check_ioapic();
 
 #ifdef CONFIG_X86_GENERICARCH
 	generic_apic_probe(*cmdline_p);
@@ -1493,6 +1492,7 @@ void __init setup_arch(char **cmdline_p)
 	 * Parse the ACPI tables for possible boot-time SMP configuration.
 	 */
 	acpi_boot_table_init();
+	check_ioapic();
 	acpi_boot_init();
 
 #if defined(CONFIG_SMP) && defined(CONFIG_X86_PC)

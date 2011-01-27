@@ -46,9 +46,7 @@
 
 #include "ehca_tools.h"
 
-/**
- * virtual scatter gather entry to specify remote adresses with length
- */
+/* virtual scatter gather entry to specify remote adresses with length */
 struct ehca_vsgentry {
 	u64 vaddr;
 	u32 lkey;
@@ -63,7 +61,7 @@ struct ehca_vsgentry {
 #define GRH_NEXTHEADER_MASK  EHCA_BMASK_IBM(48,55)
 #define GRH_HOPLIMIT_MASK    EHCA_BMASK_IBM(56,63)
 
-/**
+/*
  * Unreliable Datagram Address Vector Format
  * see IBTA Vol1 chapter 8.3 Global Routing Header
  */
@@ -96,30 +94,17 @@ struct ehca_ud_av {
 			/* DWord_1 --> SGID */
 
 			u32 sgid_wd3;
-			/* bits 127 - 96       */
-
 			u32 sgid_wd2;
-			/* bits  95 - 64 */
-			/* DWord_2 */
 
 			u32 sgid_wd1;
-			/* bits  63 - 32 */
-
 			u32 sgid_wd0;
-			/* bits  31 -  0 */
 			/* DWord_3 --> DGID */
 
 			u32 dgid_wd3;
-			/* bits 127 - 96
-			 **/
 			u32 dgid_wd2;
-			/* bits  95 - 64
-			 DWord_4 */
-			u32 dgid_wd1;
-			/* bits  63 - 32 */
 
+			u32 dgid_wd1;
 			u32 dgid_wd0;
-			/* bits  31 -  0    */
 		} grh_l;
 	};
 };

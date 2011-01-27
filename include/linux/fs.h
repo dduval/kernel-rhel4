@@ -81,6 +81,11 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define FMODE_PREAD	8
 #define FMODE_PWRITE	FMODE_PREAD	/* These go hand in hand */
 
+/* File is being opened for execution. Primary users of this flag are
+   distributed filesystems that can use it to achieve correct ETXTBUSY
+   behavior for cross-node execution/opening_for_writing of files */
+#define FMODE_EXEC	16
+
 #define RW_MASK		1
 #define RWA_MASK	2
 #define READ 0
@@ -122,6 +127,7 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define MS_POSIXACL	(1<<16)	/* VFS does not apply the umask */
 #define MS_ONE_SECOND	(1<<17)	/* fs has 1 sec time resolution (obsolete) */
 #define MS_TIME_GRAN	(1<<18)	/* fs has s_time_gran field */
+#define MS_HAS_INO64	(1<<29)	/* has 64-bit inode numbers */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
 
@@ -178,6 +184,7 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define IS_NODIRATIME(inode)	__IS_FLG(inode, MS_NODIRATIME)
 #define IS_POSIXACL(inode)	__IS_FLG(inode, MS_POSIXACL)
 #define IS_ONE_SECOND(inode)	__IS_FLG(inode, MS_ONE_SECOND)
+#define IS_INO64(inode)		__IS_FLG(inode, MS_HAS_INO64)
 
 #define IS_DEADDIR(inode)	((inode)->i_flags & S_DEAD)
 #define IS_NOCMTIME(inode)	((inode)->i_flags & S_NOCMTIME)
@@ -736,6 +743,8 @@ extern int send_sigurg(struct fown_struct *fown);
 extern struct list_head super_blocks;
 extern spinlock_t sb_lock;
 
+struct seq_file;
+
 #define sb_entry(list)	list_entry((list), struct super_block, s_list)
 #define S_BIAS (1<<30)
 struct super_block {
@@ -789,6 +798,7 @@ struct super_block {
 	   Cannot be worse than a second */
 #ifndef __GENKSYMS__
 	u32		   s_time_gran;
+	int		   (*s_show_stats)(struct seq_file *, struct vfsmount *);
 #endif
 };
 
@@ -881,6 +891,7 @@ int generic_osync_inode(struct inode *, struct address_space *, int);
  * to have different dirent layouts depending on the binary type.
  */
 typedef int (*filldir_t)(void *, const char *, int, loff_t, ino_t, unsigned);
+typedef int (*filldir64_t)(void *, const char *, int, loff_t, unsigned long long, unsigned);
 
 struct block_device_operations {
 	int (*open) (struct inode *, struct file *);
@@ -945,6 +956,13 @@ struct file_operations {
 	int (*flock) (struct file *, int, struct file_lock *);
 };
 
+struct file_operations_ext {
+	struct file_operations f_op_orig;
+
+	/* read dirent with 64-bit inode number if MS_HAS_INO64 is set */
+	int (*readdir64) (struct file *, void *, filldir64_t);
+};
+
 struct inode_operations {
 	int (*create) (struct inode *,struct dentry *,int, struct nameidata *);
 	struct dentry * (*lookup) (struct inode *,struct dentry *, struct nameidata *);
@@ -969,7 +987,12 @@ struct inode_operations {
 	int (*removexattr) (struct dentry *, const char *);
 };
 
-struct seq_file;
+struct inode_operations_ext {
+	struct inode_operations i_op_orig;
+	
+	/* get attributes with 64-bit inode number if MS_HAS_INO64 is set */
+	int (*getattr64)(struct vfsmount *mnt, struct dentry *, struct kstat64 *);
+};
 
 extern ssize_t vfs_read(struct file *, char __user *, size_t, loff_t *);
 extern ssize_t vfs_write(struct file *, const char __user *, size_t, loff_t *);
@@ -1255,7 +1278,7 @@ static inline int break_lease(struct inode *inode, unsigned int mode)
 
 /* fs/open.c */
 
-extern int do_truncate(struct dentry *, loff_t start);
+extern int do_truncate(struct dentry *, loff_t start, unsigned int);
 extern struct file *filp_open(const char *, int, int);
 extern struct file * dentry_open(struct dentry *, struct vfsmount *, int);
 extern int filp_close(struct file *, fl_owner_t id);
@@ -1571,16 +1594,21 @@ extern struct inode_operations page_symlink_inode_operations;
 extern int generic_readlink(struct dentry *, char __user *, int);
 extern void generic_fillattr(struct inode *, struct kstat *);
 extern int vfs_getattr(struct vfsmount *, struct dentry *, struct kstat *);
+extern int vfs_getattr64(struct vfsmount *, struct dentry *, struct kstat64 *);
 void inode_add_bytes(struct inode *inode, loff_t bytes);
 void inode_sub_bytes(struct inode *inode, loff_t bytes);
 loff_t inode_get_bytes(struct inode *inode);
 void inode_set_bytes(struct inode *inode, loff_t bytes);
 
 extern int vfs_readdir(struct file *, filldir_t, void *);
+extern int vfs_readdir64(struct file *, filldir64_t, void *);
 
 extern int vfs_stat(char __user *, struct kstat *);
 extern int vfs_lstat(char __user *, struct kstat *);
 extern int vfs_fstat(unsigned int, struct kstat *);
+extern int vfs_stat64(char __user *, struct kstat64 *);
+extern int vfs_lstat64(char __user *, struct kstat64 *);
+extern int vfs_fstat64(unsigned int, struct kstat64 *);
 
 extern struct file_system_type *get_fs_type(const char *name);
 extern struct super_block *get_super(struct block_device *);

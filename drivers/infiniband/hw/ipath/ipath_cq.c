@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -162,14 +163,9 @@ struct ib_cq *ipath_create_cq(struct ib_device *ibdev, int entries,
 	struct ib_wc *wc;
 	struct ib_cq *ret;
 
-	if (entries > ib_ipath_max_cqes) {
+	if (entries < 1 || entries > ib_ipath_max_cqes) {
 		ret = ERR_PTR(-EINVAL);
-		goto bail;
-	}
-
-	if (dev->n_cqs_allocated == ib_ipath_max_cqs) {
-		ret = ERR_PTR(-ENOMEM);
-		goto bail;
+		goto done;
 	}
 
 	/*
@@ -179,7 +175,7 @@ struct ib_cq *ipath_create_cq(struct ib_device *ibdev, int entries,
 	cq = kmalloc(sizeof(*cq), GFP_KERNEL);
 	if (!cq) {
 		ret = ERR_PTR(-ENOMEM);
-		goto bail;
+		goto done;
 	}
 
 	/*
@@ -187,10 +183,20 @@ struct ib_cq *ipath_create_cq(struct ib_device *ibdev, int entries,
 	 */
 	wc = vmalloc(sizeof(*wc) * (entries + 1));
 	if (!wc) {
-		kfree(cq);
 		ret = ERR_PTR(-ENOMEM);
-		goto bail;
+		goto bail_cq;
 	}
+
+	spin_lock(&dev->n_cqs_lock);
+	if (dev->n_cqs_allocated == ib_ipath_max_cqs) {
+		spin_unlock(&dev->n_cqs_lock);
+		ret = ERR_PTR(-ENOMEM);
+		goto bail_wc;
+	}
+
+	dev->n_cqs_allocated++;
+	spin_unlock(&dev->n_cqs_lock);
+
 	/*
 	 * ib_create_cq() will initialize cq->ibcq except for cq->ibcq.cqe.
 	 * The number of entries should be >= the number requested or return
@@ -207,9 +213,15 @@ struct ib_cq *ipath_create_cq(struct ib_device *ibdev, int entries,
 
 	ret = &cq->ibcq;
 
-	dev->n_cqs_allocated++;
+	goto done;
 
-bail:
+bail_wc:
+	vfree(wc);
+
+bail_cq:
+	kfree(cq);
+
+done:
 	return ret;
 }
 
@@ -227,7 +239,9 @@ int ipath_destroy_cq(struct ib_cq *ibcq)
 	struct ipath_cq *cq = to_icq(ibcq);
 
 	tasklet_kill(&cq->comptask);
+	spin_lock(&dev->n_cqs_lock);
 	dev->n_cqs_allocated--;
+	spin_unlock(&dev->n_cqs_lock);
 	vfree(cq->queue);
 	kfree(cq);
 
@@ -266,6 +280,11 @@ int ipath_resize_cq(struct ib_cq *ibcq, int cqe, struct ib_udata *udata)
 	struct ib_wc *wc, *old_wc;
 	u32 n;
 	int ret;
+
+	if (cqe < 1 || cqe > ib_ipath_max_cqes) {
+		ret = -EINVAL;
+		goto bail;
+	}
 
 	/*
 	 * Need to use vmalloc() if we want to support large #s of entries.

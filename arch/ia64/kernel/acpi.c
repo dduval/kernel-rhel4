@@ -566,10 +566,13 @@ acpi_find_rsdp (void)
 	return rsdp_phys;
 }
 
+int actual_cpus;
+EXPORT_SYMBOL(actual_cpus);
 
 int __init
 acpi_boot_init (void)
 {
+	int count;
 
 	/*
 	 * MADT
@@ -589,8 +592,13 @@ acpi_boot_init (void)
 	if (acpi_table_parse_madt(ACPI_MADT_LAPIC_ADDR_OVR, acpi_parse_lapic_addr_ovr, 0) < 0)
 		printk(KERN_ERR PREFIX "Error parsing LAPIC address override entry\n");
 
-	if (acpi_table_parse_madt(ACPI_MADT_LSAPIC, acpi_parse_lsapic, NR_CPUS) < 1)
+	count = acpi_table_parse_madt(ACPI_MADT_LSAPIC, acpi_parse_lsapic,
+				      NR_CPUS);
+
+	if (count < 1)
 		printk(KERN_ERR PREFIX "Error parsing MADT - no LAPIC entries\n");
+	if (count > 0)
+		actual_cpus = count;
 
 	if (acpi_table_parse_madt(ACPI_MADT_LAPIC_NMI, acpi_parse_lapic_nmi, 0) < 0)
 		printk(KERN_ERR PREFIX "Error parsing LAPIC NMI entry\n");

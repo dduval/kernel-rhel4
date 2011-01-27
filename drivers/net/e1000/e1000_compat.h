@@ -1,6 +1,11 @@
 #ifndef __E1000_COMPAT_H__
 #define __E1000_COMPAT_H__
 
+#define PMSG_SUSPEND 3
+
+#define IRQF_PROBE_SHARED	0
+#define IRQF_SHARED		SA_SHIRQ
+
 #define skb_header_cloned(skb) 0
 
 typedef u32 pm_message_t;

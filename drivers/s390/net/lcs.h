@@ -75,13 +75,17 @@ do {                                       \
 /**
  * LCS sense byte definitions
  */
+#define LCS_SENSE_BYTE_0 		0
+#define LCS_SENSE_BYTE_1 		1
+#define LCS_SENSE_BYTE_2 		2
+#define LCS_SENSE_BYTE_3 		3
 #define LCS_SENSE_INTERFACE_DISCONNECT	0x01
 #define LCS_SENSE_EQUIPMENT_CHECK	0x10
 #define LCS_SENSE_BUS_OUT_CHECK		0x20
 #define LCS_SENSE_INTERVENTION_REQUIRED 0x40
 #define LCS_SENSE_CMD_REJECT		0x80
-#define LCS_SENSE_RESETTING_EVENT	0x0080
-#define LCS_SENSE_DEVICE_ONLINE		0x0020
+#define LCS_SENSE_RESETTING_EVENT	0x80
+#define LCS_SENSE_DEVICE_ONLINE		0x20
 
 /**
  * LCS packet type definitions
@@ -154,10 +158,9 @@ enum lcs_dev_states {
 
 enum lcs_threads {
 	LCS_SET_MC_THREAD 	= 1,
-	LCS_STARTLAN_THREAD	= 2,
-	LCS_STOPLAN_THREAD	= 4,
-	LCS_STARTUP_THREAD	= 8,
+	LCS_RECOVERY_THREAD 	= 2,
 };
+
 /**
  * LCS struct declarations
  */
@@ -227,7 +230,7 @@ struct lcs_cmd {
 				struct lcs_ip_mac_pair
 				ip_mac_pair[32];
 				__u32	  response_data;
-			} lcs_ipass_ctlmsg __attribute ((packed));
+			} lcs_ipass_ctlmsg __attribute__ ((packed));
 		} lcs_qipassist __attribute__ ((packed));
 #endif /*CONFIG_IP_MULTICAST */
 	} cmd __attribute__ ((packed));
@@ -317,5 +320,6 @@ struct lcs_card {
 	u8 max_port_no;
 	u8 hint_port_no;
 	s16 port_protocol_no;
+	struct ccwgroup_device *gdev;
 }  __attribute__ ((aligned(8)));
 

@@ -1371,8 +1371,9 @@ user_write (struct device *dev, const char *buf, size_t count)
 	struct net_device *ndev = priv->conn->netdev;
 	char    *p;
 	char    *tmp;
-	char 	username[10];
+	char 	username[9];
 	int 	i;
+	struct iucv_connection **clist = &iucv_connections;
 
 	IUCV_DBF_TEXT(trace, 3, __FUNCTION__);
 	if (count>9) {
@@ -1385,7 +1386,7 @@ user_write (struct device *dev, const char *buf, size_t count)
 	tmp = strsep((char **) &buf, "\n");
 	for (i=0, p=tmp; i<8 && *p; i++, p++) {
 		if (isalnum(*p) || (*p == '$'))
-			username[i]= *p;
+			username[i]= toupper(*p);
 		else if (*p == '\n') {
 			/* trailing lf, grr */
 			break;
@@ -1398,11 +1399,11 @@ user_write (struct device *dev, const char *buf, size_t count)
 			return -EINVAL;
 		}
 	}
-	while (i<9)
+	while (i<8)
 		username[i++] = ' ';
-	username[9] = '\0';
+	username[8] = '\0';
 
-	if (memcmp(username, priv->conn->userid, 8)) {
+	if (memcmp(username, priv->conn->userid, 9)) {
 		/* username changed */
 		if (ndev->flags & (IFF_UP | IFF_RUNNING)) {
 			PRINT_WARN(
@@ -1413,6 +1414,18 @@ user_write (struct device *dev, const char *buf, size_t count)
 			return -EBUSY;
 		}
 	}
+	while (*clist) {
+		if (!strncmp(username, (*clist)->userid, 9) ||
+		    ((*clist)->netdev != ndev))
+			break;
+		clist = &((*clist)->next);
+	}
+	if (*clist) {
+		PRINT_WARN("netiucv: Connection to %s already exists\n",
+			username);
+		return -EEXIST;
+	}
+
 	memcpy(priv->conn->userid, username, 9);
 
 	return count;
@@ -1953,9 +1966,10 @@ static ssize_t
 conn_write(struct device_driver *drv, const char *buf, size_t count)
 {
 	char *p;
-	char username[10];
+	char username[9];
 	int i, ret;
 	struct net_device *dev;
+	struct iucv_connection **clist = &iucv_connections;
 
 	IUCV_DBF_TEXT(trace, 3, __FUNCTION__);
 	if (count>9) {
@@ -1966,7 +1980,7 @@ conn_write(struct device_driver *drv, const char *buf, size_t count)
 
 	for (i=0, p=(char *)buf; i<8 && *p; i++, p++) {
 		if (isalnum(*p) || (*p == '$'))
-			username[i]= *p;
+			username[i]= toupper(*p);
 		else if (*p == '\n') {
 			/* trailing lf, grr */
 			break;
@@ -1977,9 +1991,20 @@ conn_write(struct device_driver *drv, const char *buf, size_t count)
 			return -EINVAL;
 		}
 	}
-	while (i<9)
+	while (i<8)
 		username[i++] = ' ';
-	username[9] = '\0';
+	username[8] = '\0';
+
+	while (*clist) {
+		if (!strncmp(username, (*clist)->userid, 9))
+			break;
+		clist = &((*clist)->next);
+	}
+	if (*clist) {
+		PRINT_WARN("netiucv: Connection to %s already exists\n",
+			username);
+		return -EEXIST;
+	}
 	dev = netiucv_init_netdevice(username);
 	if (!dev) {
 		PRINT_WARN(

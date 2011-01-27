@@ -139,6 +139,7 @@ enum
 	KERN_SERCONS_ESC=68,	/* int: ascii code of ser-cons "break" or -1 */
 	KERN_PANIC_ON_NMI=69,	/* int: whether we will panic on an unrecovered */
 	KERN_WAKE_BALANCE=70,   /* int: behavior of load balancing on wakeup */
+	KERN_IA64_UNALIGNED=71, /* int: ia64 unaligned userland trap enable */
 };
 
 

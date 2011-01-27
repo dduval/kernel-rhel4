@@ -48,7 +48,7 @@
  */
 
 #define DRV_NAME		"8139cp"
-#define DRV_VERSION		"1.2"
+#define DRV_VERSION		"1.2-rh1"
 #define DRV_RELDATE		"Mar 22, 2004"
 
 
@@ -615,13 +615,14 @@ rx_next:
 	 * this round of polling
 	 */
 	if (rx_work) {
+		unsigned long flags;
 		if (cpr16(IntrStatus) & cp_rx_intr_mask)
 			goto rx_status_loop;
 
-		local_irq_disable();
+		local_irq_save(flags);
 		cpw16_f(IntrMask, cp_intr_mask);
 		__netif_rx_complete(dev);
-		local_irq_enable();
+		local_irq_restore(flags);
 
 		return 0;	/* done */
 	}
@@ -686,6 +687,15 @@ cp_interrupt (int irq, void *dev_instance, struct pt_regs *regs)
 	return IRQ_HANDLED;
 }
 
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void cp_poll_controller(struct net_device *dev)
+{
+	disable_irq(dev->irq);
+	cp_interrupt(dev->irq, dev, NULL);
+	enable_irq(dev->irq); 
+}
+#endif
+
 static void cp_tx (struct cp_private *cp)
 {
 	unsigned tx_head = cp->tx_head;
@@ -747,17 +757,18 @@ static int cp_start_xmit (struct sk_buff *skb, struct net_device *dev)
 {
 	struct cp_private *cp = netdev_priv(dev);
 	unsigned entry;
+	unsigned long flags;
 	u32 eor;
 #if CP_VLAN_TAG_USED
 	u32 vlan_tag = 0;
 #endif
 
-	spin_lock_irq(&cp->lock);
+	spin_lock_irqsave(&cp->lock, flags);
 
 	/* This is a hard error, log it. */
 	if (TX_BUFFS_AVAIL(cp) <= (skb_shinfo(skb)->nr_frags + 1)) {
 		netif_stop_queue(dev);
-		spin_unlock_irq(&cp->lock);
+		spin_unlock_irqrestore(&cp->lock, flags);
 		printk(KERN_ERR PFX "%s: BUG! Tx Ring full when queue awake!\n",
 		       dev->name);
 		return 1;
@@ -890,7 +901,7 @@ static int cp_start_xmit (struct sk_buff *skb, struct net_device *dev)
 	if (TX_BUFFS_AVAIL(cp) <= (MAX_SKB_FRAGS + 1))
 		netif_stop_queue(dev);
 
-	spin_unlock_irq(&cp->lock);
+	spin_unlock_irqrestore(&cp->lock, flags);
 
 	cpw8(TxPoll, NormalTxPoll);
 	dev->trans_start = jiffies;
@@ -911,8 +922,6 @@ static void __cp_set_rx_mode (struct net_device *dev)
 	/* Note: do not reorder, GCC is clever about common statements. */
 	if (dev->flags & IFF_PROMISC) {
 		/* Unconditionally log net taps. */
-		printk (KERN_NOTICE "%s: Promiscuous mode enabled.\n",
-			dev->name);
 		rx_mode =
 		    AcceptBroadcast | AcceptMulticast | AcceptMyPhys |
 		    AcceptAllPhys;
@@ -1747,6 +1756,9 @@ static int cp_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 	dev->get_stats = cp_get_stats;
 	dev->do_ioctl = cp_ioctl;
 	dev->poll = cp_rx_poll;
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	dev->poll_controller = cp_poll_controller;
+#endif
 	dev->weight = 16;	/* arbitrary? from NAPI_HOWTO.txt. */
 #ifdef BROKEN
 	dev->change_mtu = cp_change_mtu;

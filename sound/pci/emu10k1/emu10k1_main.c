@@ -39,6 +39,7 @@
 
 #include <sound/core.h>
 #include <sound/emu10k1.h>
+#include "tina2.h"
 
 #if 0
 MODULE_AUTHOR("Jaroslav Kysela <perex@suse.cz>, Creative Labs, Inc.");
@@ -94,6 +95,30 @@ void snd_emu10k1_voice_init(emu10k1_t * emu, int ch)
 		snd_emu10k1_ptr_write(emu, A_SENDAMOUNTS, ch, 0);
 	}
 }
+
+static unsigned int spi_dac_init[] = {
+		0x00ff,
+		0x02ff,
+		0x0400,
+		0x0520,
+		0x0600,
+		0x08ff,
+		0x0aff,
+		0x0cff,
+		0x0eff,
+		0x10ff,
+		0x1200,
+		0x1400,
+		0x1480,
+		0x1800,
+		0x1aff,
+		0x1cff,
+		0x1e00,
+		0x0530,
+		0x0602,
+		0x0622,
+		0x1400,
+};
 
 static int __devinit snd_emu10k1_init(emu10k1_t * emu, int enable_ir)
 {
@@ -187,8 +212,10 @@ static int __devinit snd_emu10k1_init(emu10k1_t * emu, int enable_ir)
 		outl(0x6E0000, emu->port + 0x20);
 		outl(0xFF00FF00, emu->port + 0x24);
 	}
-	if (emu->audigy && (emu->serial == 0x10011102 ||   /* audigy2 Value */
-	                    emu->serial == 0x10221102) ) { /* audigy4 */
+	if (emu->audigy && (emu->serial == 0x10011102 ||  /* audigy2 Value */
+	                    emu->serial == 0x10221102 ||  /* audigy4 */
+	                    emu->serial == 0x10211102 ||
+			    emu->serial == 0x20011102)) {   /* audigy2zs Cardbus */
 		/* Hacks for Alice3 to work independent of haP16V driver */
 		u32 tmp;
 
@@ -249,6 +276,28 @@ static int __devinit snd_emu10k1_init(emu10k1_t * emu, int enable_ir)
 		// With on-chip joystick
 		outl(HCFG_LOCKTANKCACHE_MASK | HCFG_AUTOMUTE | HCFG_JOYENABLE, emu->port + HCFG);
 
+	if (emu->spi_dac) { /* Audigy 2 ZS Notebook with DAC Wolfson WM8768/WM8568 */
+		int size, n;
+
+		size = ARRAY_SIZE(spi_dac_init);
+		for (n=0; n < size; n++)
+			snd_emu10k1_spi_write(emu, spi_dac_init[n]);
+
+		snd_emu10k1_ptr20_write(emu, 0x60, 0, 0x10);
+		/* Enable GPIOs
+		 * GPIO0: Unknown
+		 * GPIO1: Speakers-enabled.
+		 * GPIO2: Unknown
+		 * GPIO3: Unknown
+		 * GPIO4: IEC958 Output on.
+		 * GPIO5: Unknown
+		 * GPIO6: Unknown
+		 * GPIO7: Unknown
+		 */
+		outl(0x76, emu->port + A_IOCFG); /* Windows uses 0x3f76 */
+
+	}
+
 	if (enable_ir) {	/* enable IR for SB Live */
 		if (emu->audigy) {
 			unsigned int reg = inl(emu->port + A_IOCFG);
@@ -293,7 +342,8 @@ static int __devinit snd_emu10k1_init(emu10k1_t * emu, int enable_ir)
 			 * So, sequence is important. */
 			outl(inl(emu->port + A_IOCFG) | 0x0040, emu->port + A_IOCFG);
 		} else if (emu->serial == 0x10011102 || /* audigy2 value */
-		           emu->serial == 0x10221102) { /* audigy4 */
+		           emu->serial == 0x10221102 || /* audigy4 */
+		           emu->serial == 0x10211102) { /* audigy4 */
 			/* Unmute Analog now. */
 			outl(inl(emu->port + A_IOCFG) | 0x0060, emu->port + A_IOCFG);
 		} else {
@@ -566,6 +616,32 @@ static int __devinit snd_emu10k1_ecard_init(emu10k1_t * emu)
 	return 0;
 }
 
+static int __devinit snd_emu10k1_cardbus_init(emu10k1_t *emu)
+{
+	unsigned long special_port;
+	unsigned int value;
+
+	/* Special initialisation routine
+	* before the rest of the IO-Ports become active.
+	*/
+	special_port = emu->port + 0x38;
+	value = inl(special_port);
+	outl(0x00d00000, special_port);
+	value = inl(special_port);
+	outl(0x00d00001, special_port);
+	value = inl(special_port);
+	outl(0x00d0005f, special_port);
+	value = inl(special_port);
+	outl(0x00d0007f, special_port);
+	value = inl(special_port);
+	outl(0x0090007f, special_port);
+
+	/* attenuate volume output to reduce distortion */
+	snd_emu10k1_ptr20_write(emu, TINA2_VOLUME, 0, 0xfefefefe); /* Defaults to 0x30303030 */
+
+	return 0;
+}
+
 /*
  *  Create the EMU10K1 instance
  */
@@ -712,13 +788,20 @@ int __devinit snd_emu10k1_create(snd_card_t * card,
 		snd_printdd(KERN_INFO "Audigy2 EX is detected. skipping ac97.\n");
 		emu->no_ac97 = 1;	
 	}
-	
+	else if (emu->serial == 0x20011102) {
+		/* Audigy 2 ZS Notebook Cardbus card */
+		snd_printdd(KERN_INFO "Audigy2 ZS Notebook Cardbus detected\n");
+		emu->no_ac97 = 1;
+		emu->spk71 = 1;
+		emu->spi_dac = 1;
+		snd_emu10k1_cardbus_init(emu);
+	}
+
 	if (emu->revision == 4 && emu->model == 0x2002) {
 		/* Audigy 2 ZS */
 		snd_printdd(KERN_INFO "Audigy2 ZS is detected. setting 7.1 mode.\n");
 		emu->spk71 = 1;
 	}
-	
 	
 	emu->fx8010.fxbus_mask = 0x303f;
 	if (extin_mask == 0)

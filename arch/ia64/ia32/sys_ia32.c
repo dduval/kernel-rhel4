@@ -123,7 +123,7 @@ sys32_execve (char __user *name, compat_uptr_t __user *argv, compat_uptr_t __use
 	return error;
 }
 
-int cp_compat_stat(struct kstat *stat, struct compat_stat __user *ubuf)
+int cp_compat_stat(struct kstat64 *stat, struct compat_stat __user *ubuf)
 {
 	int err;
 
@@ -135,8 +135,11 @@ int cp_compat_stat(struct kstat *stat, struct compat_stat __user *ubuf)
 	if (clear_user(ubuf, sizeof(*ubuf)))
 		return -EFAULT;
 
+	if (stat->ino64 != (u32)stat->ino64)
+		return -EOVERFLOW;
+
 	err  = __put_user(old_encode_dev(stat->dev), &ubuf->st_dev);
-	err |= __put_user(stat->ino, &ubuf->st_ino);
+	err |= __put_user(stat->ino64, &ubuf->st_ino);
 	err |= __put_user(stat->mode, &ubuf->st_mode);
 	err |= __put_user(stat->nlink, &ubuf->st_nlink);
 	err |= __put_user(high2lowuid(stat->uid), &ubuf->st_uid);
@@ -1425,27 +1428,6 @@ sys32_ipc(u32 call, int first, int second, int third, u32 ptr, u32 fifth)
 	return -EINVAL;
 }
 
-/*
- * sys_time() can be implemented in user-level using
- * sys_gettimeofday().  IA64 did this but i386 Linux did not
- * so we have to implement this system call here.
- */
-asmlinkage long
-sys32_time (int __user *tloc)
-{
-	int i;
-	struct timeval tv;
-
-	do_gettimeofday(&tv);
-	i = tv.tv_sec;
-
-	if (tloc) {
-		if (put_user(i, tloc))
-			i = -EFAULT;
-	}
-	return i;
-}
-
 asmlinkage long
 compat_sys_wait4 (compat_pid_t pid, compat_uint_t * stat_addr, int options,
 		 struct compat_rusage *ru);
@@ -2182,7 +2164,7 @@ sys32_ftruncate64 (int fd, unsigned int len_lo, unsigned int len_hi)
 }
 
 static int
-putstat64 (struct stat64 __user *ubuf, struct kstat *kbuf)
+putstat64 (struct stat64 __user *ubuf, struct kstat64 *kbuf)
 {
 	int err;
 	u64 hdev;
@@ -2193,9 +2175,9 @@ putstat64 (struct stat64 __user *ubuf, struct kstat *kbuf)
 	hdev = huge_encode_dev(kbuf->dev);
 	err  = __put_user(hdev, (u32 __user*)&ubuf->st_dev);
 	err |= __put_user(hdev >> 32, ((u32 __user*)&ubuf->st_dev) + 1);
-	err |= __put_user(kbuf->ino, &ubuf->__st_ino);
-	err |= __put_user(kbuf->ino, &ubuf->st_ino_lo);
-	err |= __put_user(kbuf->ino >> 32, &ubuf->st_ino_hi);
+	err |= __put_user(kbuf->ino64, &ubuf->__st_ino);
+	err |= __put_user(kbuf->ino64, &ubuf->st_ino_lo);
+	err |= __put_user(kbuf->ino64 >> 32, &ubuf->st_ino_hi);
 	err |= __put_user(kbuf->mode, &ubuf->st_mode);
 	err |= __put_user(kbuf->nlink, &ubuf->st_nlink);
 	err |= __put_user(kbuf->uid, &ubuf->st_uid);
@@ -2219,8 +2201,8 @@ putstat64 (struct stat64 __user *ubuf, struct kstat *kbuf)
 asmlinkage long
 sys32_stat64 (char __user *filename, struct stat64 __user *statbuf)
 {
-	struct kstat s;
-	long ret = vfs_stat(filename, &s);
+	struct kstat64 s;
+	long ret = vfs_stat64(filename, &s);
 	if (!ret)
 		ret = putstat64(statbuf, &s);
 	return ret;
@@ -2229,8 +2211,8 @@ sys32_stat64 (char __user *filename, struct stat64 __user *statbuf)
 asmlinkage long
 sys32_lstat64 (char __user *filename, struct stat64 __user *statbuf)
 {
-	struct kstat s;
-	long ret = vfs_lstat(filename, &s);
+	struct kstat64 s;
+	long ret = vfs_lstat64(filename, &s);
 	if (!ret)
 		ret = putstat64(statbuf, &s);
 	return ret;
@@ -2239,8 +2221,8 @@ sys32_lstat64 (char __user *filename, struct stat64 __user *statbuf)
 asmlinkage long
 sys32_fstat64 (unsigned int fd, struct stat64 __user *statbuf)
 {
-	struct kstat s;
-	long ret = vfs_fstat(fd, &s);
+	struct kstat64 s;
+	long ret = vfs_fstat64(fd, &s);
 	if (!ret)
 		ret = putstat64(statbuf, &s);
 	return ret;

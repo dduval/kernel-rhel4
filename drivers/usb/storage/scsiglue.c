@@ -72,6 +72,7 @@ static const char* host_info(struct Scsi_Host *host)
 
 static int slave_alloc (struct scsi_device *sdev)
 {
+	struct us_data *us = (struct us_data *) sdev->host->hostdata[0];
 	/*
 	 * Set default bflags. These can be overridden for individual
 	 * models and vendors via the scsi devinfo mechanism.  The only
@@ -81,6 +82,17 @@ static int slave_alloc (struct scsi_device *sdev)
 	 */
 	sdev->sdev_bflags = BLIST_INQUIRY_36;
 
+	/*
+	 * IBM BladeCenter H, the MM2, is a multi-LUN USB device. 
+	 * RHEL4 kernel treats SCSI devices as single LUN by default, 
+	 * therefore we will force USB devices on the BladeCenter as multi-LUN.
+	 */
+	if ((us->pusb_dev->descriptor.idVendor == USB_VENDOR_ID_IBM) &&
+		((us->pusb_dev->descriptor.idProduct >= 0x4003) &&
+		 (us->pusb_dev->descriptor.idProduct <= 0x400F)))
+	{
+		sdev->sdev_bflags |= BLIST_FORCELUN;
+	}
 	return 0;
 }
 

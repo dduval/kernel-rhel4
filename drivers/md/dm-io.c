@@ -5,6 +5,7 @@
  */
 
 #include "dm-io.h"
+#include "dm-biosets.h"
 
 #include <linux/bio.h>
 #include <linux/mempool.h>
@@ -12,207 +13,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 
-#define BIO_POOL_SIZE 256
-
-
-/*-----------------------------------------------------------------
- * Bio set, move this to bio.c
- *---------------------------------------------------------------*/
-#define BV_NAME_SIZE 16
-struct biovec_pool {
-	int nr_vecs;
-	char name[BV_NAME_SIZE];
-	kmem_cache_t *slab;
-	mempool_t *pool;
-	atomic_t allocated;	/* FIXME: debug */
-};
-
-#define BIOVEC_NR_POOLS 6
-struct bio_set {
-	char name[BV_NAME_SIZE];
-	kmem_cache_t *bio_slab;
-	mempool_t *bio_pool;
-	struct biovec_pool pools[BIOVEC_NR_POOLS];
-};
-
-static void bio_set_exit(struct bio_set *bs)
-{
-	unsigned i;
-	struct biovec_pool *bp;
-
-	if (bs->bio_pool)
-		mempool_destroy(bs->bio_pool);
-
-	if (bs->bio_slab)
-		kmem_cache_destroy(bs->bio_slab);
-
-	for (i = 0; i < BIOVEC_NR_POOLS; i++) {
-		bp = bs->pools + i;
-		if (bp->pool)
-			mempool_destroy(bp->pool);
-
-		if (bp->slab)
-			kmem_cache_destroy(bp->slab);
-	}
-}
-
-static void mk_name(char *str, size_t len, const char *prefix, unsigned count)
-{
-	snprintf(str, len, "%s-%u", prefix, count);
-}
-
-static int bio_set_init(struct bio_set *bs, const char *slab_prefix,
-			 unsigned pool_entries, unsigned scale)
-{
-	/* FIXME: this must match bvec_index(), why not go the
-	 * whole hog and have a pool per power of 2 ? */
-	static unsigned _vec_lengths[BIOVEC_NR_POOLS] = {
-		1, 4, 16, 64, 128, BIO_MAX_PAGES
-	};
-
-
-	unsigned i, size;
-	struct biovec_pool *bp;
-
-	/* zero the bs so we can tear down properly on error */
-	memset(bs, 0, sizeof(*bs));
-
-	/*
-	 * Set up the bio pool.
-	 */
-	snprintf(bs->name, sizeof(bs->name), "%s-bio", slab_prefix);
-
-	bs->bio_slab = kmem_cache_create(bs->name, sizeof(struct bio), 0,
-					 SLAB_HWCACHE_ALIGN, NULL, NULL);
-	if (!bs->bio_slab) {
-		DMWARN("can't init bio slab");
-		goto bad;
-	}
-
-	bs->bio_pool = mempool_create(pool_entries, mempool_alloc_slab,
-				      mempool_free_slab, bs->bio_slab);
-	if (!bs->bio_pool) {
-		DMWARN("can't init bio pool");
-		goto bad;
-	}
-
-	/*
-	 * Set up the biovec pools.
-	 */
-	for (i = 0; i < BIOVEC_NR_POOLS; i++) {
-		bp = bs->pools + i;
-		bp->nr_vecs = _vec_lengths[i];
-		atomic_set(&bp->allocated, 1); /* FIXME: debug */
-
-
-		size = bp->nr_vecs * sizeof(struct bio_vec);
-
-		mk_name(bp->name, sizeof(bp->name), slab_prefix, i);
-		bp->slab = kmem_cache_create(bp->name, size, 0,
-					     SLAB_HWCACHE_ALIGN, NULL, NULL);
-		if (!bp->slab) {
-			DMWARN("can't init biovec slab cache");
-			goto bad;
-		}
-
-		if (i >= scale)
-			pool_entries >>= 1;
-
-		bp->pool = mempool_create(pool_entries, mempool_alloc_slab,
-					  mempool_free_slab, bp->slab);
-		if (!bp->pool) {
-			DMWARN("can't init biovec mempool");
-			goto bad;
-		}
-	}
-
-	return 0;
-
- bad:
-	bio_set_exit(bs);
-	return -ENOMEM;
-}
-
-/* FIXME: blech */
-static inline unsigned bvec_index(unsigned nr)
-{
-	switch (nr) {
-	case 1:		return 0;
-	case 2 ... 4: 	return 1;
-	case 5 ... 16:	return 2;
-	case 17 ... 64:	return 3;
-	case 65 ... 128:return 4;
-	case 129 ... BIO_MAX_PAGES: return 5;
-	}
-
-	BUG();
-	return 0;
-}
-
-static inline void bs_bio_init(struct bio *bio)
-{
-	bio->bi_next = NULL;
-	bio->bi_flags = 1 << BIO_UPTODATE;
-	bio->bi_rw = 0;
-	bio->bi_vcnt = 0;
-	bio->bi_idx = 0;
-	bio->bi_phys_segments = 0;
-	bio->bi_hw_segments = 0;
-	bio->bi_size = 0;
-	bio->bi_max_vecs = 0;
-	bio->bi_end_io = NULL;
-	atomic_set(&bio->bi_cnt, 1);
-	bio->bi_private = NULL;
-}
-
-static unsigned _bio_count = 0;
-struct bio *bio_set_alloc(struct bio_set *bs, int gfp_mask, int nr_iovecs)
-{
-	struct biovec_pool *bp;
-	struct bio_vec *bv = NULL;
-	unsigned long idx;
-	struct bio *bio;
-
-	bio = mempool_alloc(bs->bio_pool, gfp_mask);
-	if (unlikely(!bio))
-		return NULL;
-
-	bio_init(bio);
-
-	if (likely(nr_iovecs)) {
-		idx = bvec_index(nr_iovecs);
-		bp = bs->pools + idx;
-		bv = mempool_alloc(bp->pool, gfp_mask);
-		if (!bv) {
-			mempool_free(bio, bs->bio_pool);
-			return NULL;
-		}
-
-		memset(bv, 0, bp->nr_vecs * sizeof(*bv));
-		bio->bi_flags |= idx << BIO_POOL_OFFSET;
-		bio->bi_max_vecs = bp->nr_vecs;
-		atomic_inc(&bp->allocated);
-	}
-
-	bio->bi_io_vec = bv;
-	return bio;
-}
-
-static void bio_set_free(struct bio_set *bs, struct bio *bio)
-{
-	struct biovec_pool *bp = bs->pools + BIO_POOL_IDX(bio);
-
-	if (atomic_dec_and_test(&bp->allocated))
-		BUG();
-
-	mempool_free(bio->bi_io_vec, bp->pool);
-	mempool_free(bio, bs->bio_pool);
-}
-
-/*-----------------------------------------------------------------
- * dm-io proper
- *---------------------------------------------------------------*/
-static struct bio_set _bios;
+static struct bio_set *_bios;
 
 /* FIXME: can we shrink this ? */
 struct io {
@@ -256,7 +57,8 @@ static int resize_pool(unsigned int new_ios)
 			/* free off the pool */
 			mempool_destroy(_io_pool);
 			_io_pool = NULL;
-			bio_set_exit(&_bios);
+			bioset_free(_bios);
+			_bios = NULL;
 
 		} else {
 			/* resize the pool */
@@ -269,10 +71,11 @@ static int resize_pool(unsigned int new_ios)
 		if (!_io_pool)
 			return -ENOMEM;
 
-		r = bio_set_init(&_bios, "dm-io", 512, 1);
-		if (r) {
+		_bios = bioset_create(16, 16, 4);
+		if (!_bios) {
 			mempool_destroy(_io_pool);
 			_io_pool = NULL;
+			return -ENOMEM;
 		}
 	}
 
@@ -299,12 +102,12 @@ void dm_io_put(unsigned int num_pages)
  *---------------------------------------------------------------*/
 static inline void bio_set_region(struct bio *bio, unsigned region)
 {
-	bio->bi_io_vec[bio->bi_max_vecs - 1].bv_len = region;
+	bio->bi_io_vec[bio->bi_max_vecs].bv_len = region;
 }
 
 static inline unsigned bio_get_region(struct bio *bio)
 {
-	return bio->bi_io_vec[bio->bi_max_vecs - 1].bv_len;
+	return bio->bi_io_vec[bio->bi_max_vecs].bv_len;
 }
 
 /*-----------------------------------------------------------------
@@ -358,15 +161,10 @@ static int endio(struct bio *bio, unsigned int done, int error)
 		zero_fill_bio(bio);
 
 	dec_count(io, bio_get_region(bio), error);
+	bio->bi_max_vecs++;
 	bio_put(bio);
 
 	return 0;
-}
-
-static void bio_dtr(struct bio *bio)
-{
-	_bio_count--;
-	bio_set_free(&_bios, bio);
 }
 
 /*-----------------------------------------------------------------
@@ -458,6 +256,11 @@ static void vm_dp_init(struct dpages *dp, void *data)
 	dp->context_ptr = data;
 }
 
+static void bio_dtr(struct bio *bio)
+{
+	bio_free(bio, _bios);
+}
+
 /*-----------------------------------------------------------------
  * IO routines that accept a list of pages.
  *---------------------------------------------------------------*/
@@ -473,17 +276,18 @@ static void do_region(int rw, unsigned int region, struct io_region *where,
 
 	while (remaining) {
 		/*
-		 * Allocate a suitably sized bio, we add an extra
-		 * bvec for bio_get/set_region().
+		 * Allocate a suitably sized-bio: we add an extra
+		 * bvec for bio_get/set_region() and decrement bi_max_vecs
+		 * to hide it from bio_add_page().
 		 */
-		num_bvecs = (remaining / (PAGE_SIZE >> 9)) + 2;
-		_bio_count++;
-		bio = bio_set_alloc(&_bios, GFP_NOIO, num_bvecs);
+		num_bvecs = (remaining / (PAGE_SIZE >> SECTOR_SHIFT)) + 2;
+		bio = bio_alloc_bioset(GFP_NOIO, num_bvecs, _bios);
 		bio->bi_sector = where->sector + (where->count - remaining);
 		bio->bi_bdev = where->bdev;
 		bio->bi_end_io = endio;
 		bio->bi_private = io;
 		bio->bi_destructor = bio_dtr;
+		bio->bi_max_vecs--;
 		bio_set_region(bio, region);
 
 		/*

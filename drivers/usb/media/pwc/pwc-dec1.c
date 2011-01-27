@@ -1,6 +1,6 @@
 /* Linux driver for Philips webcam
    Decompression for chipset version 1
-   (C) 2004      Luc Saillard (luc@saillard.org)
+   (C) 2004-2006 Luc Saillard (luc@saillard.org)
 
    NOTE: this version of pwc is an unofficial (modified) release of pwc & pcwx
    driver and thus may have bugs that are not present in the original version.
@@ -38,5 +38,13 @@ void pwc_dec1_exit(void)
 
 
 
+}
+
+int pwc_dec1_alloc(struct pwc_device *pwc)
+{
+	pwc->decompress_data = kmalloc(sizeof(struct pwc_dec1_private), GFP_KERNEL);
+	if (pwc->decompress_data == NULL)
+		return -ENOMEM;
+	return 0;
 }
 

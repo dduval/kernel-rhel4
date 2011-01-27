@@ -344,10 +344,14 @@ static int __init ppro_init(void)
 {
 	__u8 cpu_model = current_cpu_data.x86_model;
 
-	if (cpu_model > 0xd)
+	if (cpu_model > 15)
 		return 0;
 
-	if (cpu_model == 9) {
+	if (cpu_model == 15) {
+		nmi_ops.cpu_type = "i386/core_2";
+	} else if (cpu_model == 14) {
+		nmi_ops.cpu_type = "i386/core";
+	} else if (cpu_model == 9) {
 		nmi_ops.cpu_type = "i386/p6_mobile";
 	} else if (cpu_model > 5) {
 		nmi_ops.cpu_type = "i386/piii";

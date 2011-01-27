@@ -71,7 +71,7 @@ dasd_gendisk_alloc(struct dasd_device *device)
 
  	sprintf(gdp->devfs_name, "dasd/%s", device->cdev->dev.bus_id);
 
-	if (test_bit(DASD_FLAG_RO, &device->flags))
+	if (device->features & DASD_FEATURE_READONLY)
 		set_disk_ro(gdp, 1);
 	gdp->private_data = device;
 	gdp->queue = device->request_queue;
@@ -87,10 +87,12 @@ dasd_gendisk_alloc(struct dasd_device *device)
 void
 dasd_gendisk_free(struct dasd_device *device)
 {
-	del_gendisk(device->gdp);
-	device->gdp->queue = 0;
-	put_disk(device->gdp);
-	device->gdp = 0;
+	if (device->gdp) {
+		del_gendisk(device->gdp);
+		device->gdp->queue = NULL;
+		put_disk(device->gdp);
+		device->gdp = NULL;
+	}
 }
 
 /*
@@ -101,8 +103,6 @@ dasd_scan_partitions(struct dasd_device * device)
 {
 	struct block_device *bdev;
 
-	/* Make the disk known. */
-	set_capacity(device->gdp, device->blocks << device->s2b_shift);
 	bdev = bdget_disk(device->gdp, 0);
 	if (!bdev || blkdev_get(bdev, FMODE_READ, 1) < 0)
 		return -ENODEV;
@@ -142,7 +142,7 @@ dasd_destroy_partitions(struct dasd_device * device)
 	 * device->bdev to lower the offline open_count limit again.
 	 */
 	bdev = device->bdev;
-	device->bdev = 0;
+	device->bdev = NULL;
 
 	/*
 	 * See fs/partition/check.c:delete_partition

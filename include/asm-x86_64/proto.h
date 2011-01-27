@@ -57,7 +57,11 @@ extern void load_gs_index(unsigned gs);
 
 extern unsigned long end_pfn_map; 
 
+#ifdef CONFIG_XEN
+extern cpumask_t cpu_initialized;
+#else
 extern unsigned long cpu_initialized;
+#endif
 
 extern void show_trace(unsigned long * rsp);
 extern void show_registers(struct pt_regs *regs);
@@ -74,8 +78,6 @@ extern void __die(const char * str, struct pt_regs * regs, long err);
 extern void __show_regs(struct pt_regs * regs);
 extern void show_regs(struct pt_regs * regs);
 
-extern int map_syscall32(struct mm_struct *mm, unsigned long address);
-extern int __map_syscall32(struct mm_struct *mm, unsigned long address);
 extern char *syscall32_page;
 extern void syscall32_cpu_init(void);
 

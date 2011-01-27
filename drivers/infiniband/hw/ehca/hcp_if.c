@@ -41,13 +41,12 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define DEB_PREFIX "hcpi"
-
 #include <asm/hvcall.h>
 #include "ehca_tools.h"
 #include "hcp_if.h"
 #include "hcp_phyp.h"
 #include "hipz_fns.h"
+#include "ipz_pt_fn.h"
 
 #define H_ALL_RES_QP_ENHANCED_OPS       EHCA_BMASK_IBM(9,11)
 #define H_ALL_RES_QP_PTE_PIN            EHCA_BMASK_IBM(12,12)
@@ -112,12 +111,12 @@ static long ehca_hcall_7arg_7ret(unsigned long opcode,
 				 unsigned long *out6,
 				 unsigned long *out7)
 {
-	long ret = H_SUCCESS;
+	long ret;
 	int i, sleep_msecs;
 
-	EDEB_EN(7, "opcode=%lx arg1=%lx arg2=%lx arg3=%lx arg4=%lx arg5=%lx"
-	        " arg6=%lx arg7=%lx", opcode, arg1, arg2, arg3, arg4, arg5,
-		arg6, arg7);
+	ehca_gen_dbg("opcode=%lx arg1=%lx arg2=%lx arg3=%lx arg4=%lx arg5=%lx "
+		     "arg6=%lx arg7=%lx", opcode, arg1, arg2, arg3, arg4, arg5,
+		     arg6, arg7);
 
 	for (i = 0; i < 5; i++) {
 		ret = plpar_hcall_7arg_7ret(opcode,
@@ -133,25 +132,23 @@ static long ehca_hcall_7arg_7ret(unsigned long opcode,
 		}
 
 		if (ret < H_SUCCESS)
-			EDEB_ERR(4, "opcode=%lx ret=%lx"
-				 " arg1=%lx arg2=%lx arg3=%lx arg4=%lx"
-				 " arg5=%lx arg6=%lx arg7=%lx"
-				 " out1=%lx out2=%lx out3=%lx out4=%lx"
-				 " out5=%lx out6=%lx out7=%lx",
-				 opcode, ret,
-				 arg1, arg2, arg3, arg4,
-				 arg5, arg6, arg7,
-				 *out1, *out2, *out3, *out4,
-				 *out5, *out6, *out7);
+			ehca_gen_err("opcode=%lx ret=%lx"
+				     " arg1=%lx arg2=%lx arg3=%lx arg4=%lx"
+				     " arg5=%lx arg6=%lx arg7=%lx"
+				     " out1=%lx out2=%lx out3=%lx out4=%lx"
+				     " out5=%lx out6=%lx out7=%lx",
+				     opcode, ret,
+				     arg1, arg2, arg3, arg4,
+				     arg5, arg6, arg7,
+				     *out1, *out2, *out3, *out4,
+				     *out5, *out6, *out7);
 
-		EDEB_EX(7, "opcode=%lx ret=%lx out1=%lx out2=%lx out3=%lx "
-			"out4=%lx out5=%lx out6=%lx out7=%lx",
-			opcode, ret, *out1, *out2, *out3, *out4, *out5,
-			*out6, *out7);
+		ehca_gen_dbg("opcode=%lx ret=%lx out1=%lx out2=%lx out3=%lx "
+			     "out4=%lx out5=%lx out6=%lx out7=%lx",
+			     opcode, ret, *out1, *out2, *out3, *out4, *out5,
+			     *out6, *out7);
 		return ret;
 	}
-
-	EDEB_EX(7, "opcode=%lx ret=H_BUSY", opcode);
 
 	return H_BUSY;
 }
@@ -176,14 +173,13 @@ static long ehca_hcall_9arg_9ret(unsigned long opcode,
 				 unsigned long *out8,
 				 unsigned long *out9)
 {
-	long ret = H_SUCCESS;
+	long ret;
 	int i, sleep_msecs;
 
-	EDEB_EN(7, "opcode=%lx arg1=%lx arg2=%lx arg3=%lx arg4=%lx "
-		"arg5=%lx arg6=%lx arg7=%lx arg8=%lx arg9=%lx",
-		opcode, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
-		arg8, arg9);
-
+	ehca_gen_dbg("opcode=%lx arg1=%lx arg2=%lx arg3=%lx arg4=%lx "
+		     "arg5=%lx arg6=%lx arg7=%lx arg8=%lx arg9=%lx",
+		     opcode, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
+		     arg8, arg9);
 
 	for (i = 0; i < 5; i++) {
 		ret = plpar_hcall_9arg_9ret(opcode,
@@ -201,30 +197,29 @@ static long ehca_hcall_9arg_9ret(unsigned long opcode,
 		}
 
 		if (ret < H_SUCCESS)
-			EDEB_ERR(4, "opcode=%lx ret=%lx"
-				 " arg1=%lx arg2=%lx arg3=%lx arg4=%lx"
-				 " arg5=%lx arg6=%lx arg7=%lx arg8=%lx"
-				 " arg9=%lx"
-				 " out1=%lx out2=%lx out3=%lx out4=%lx"
-				 " out5=%lx out6=%lx out7=%lx out8=%lx"
-				 " out9=%lx",
-				 opcode, ret,
-				 arg1, arg2, arg3, arg4,
-				 arg5, arg6, arg7, arg8,
-				 arg9,
-				 *out1, *out2, *out3, *out4,
-				 *out5, *out6, *out7, *out8,
-				 *out9);
+			ehca_gen_err("opcode=%lx ret=%lx"
+				     " arg1=%lx arg2=%lx arg3=%lx arg4=%lx"
+				     " arg5=%lx arg6=%lx arg7=%lx arg8=%lx"
+				     " arg9=%lx"
+				     " out1=%lx out2=%lx out3=%lx out4=%lx"
+				     " out5=%lx out6=%lx out7=%lx out8=%lx"
+				     " out9=%lx",
+				     opcode, ret,
+				     arg1, arg2, arg3, arg4,
+				     arg5, arg6, arg7, arg8,
+				     arg9,
+				     *out1, *out2, *out3, *out4,
+				     *out5, *out6, *out7, *out8,
+				     *out9);
 
-		EDEB_EX(7, "opcode=%lx ret=%lx out1=%lx out2=%lx out3=%lx "
-			"out4=%lx out5=%lx out6=%lx out7=%lx out8=%lx out9=%lx",
-			opcode, ret,*out1, *out2, *out3, *out4, *out5, *out6,
-			*out7, *out8, *out9);
+		ehca_gen_dbg("opcode=%lx ret=%lx out1=%lx out2=%lx out3=%lx "
+			     "out4=%lx out5=%lx out6=%lx out7=%lx out8=%lx "
+			     "out9=%lx", opcode, ret,*out1, *out2, *out3, *out4,
+			     *out5, *out6, *out7, *out8, *out9);
 		return ret;
 
 	}
 
-	EDEB_EX(7, "opcode=%lx ret=H_BUSY", opcode);
 	return H_BUSY;
 }
 
@@ -237,18 +232,10 @@ u64 hipz_h_alloc_resource_eq(const struct ipz_adapter_handle adapter_handle,
 			     u32 * act_pages,
 			     u32 * eq_ist)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 act_nr_of_entries_out = 0;
-	u64 act_pages_out         = 0;
-	u64 eq_ist_out            = 0;
-	u64 allocate_controls     = 0;
-	u32 x = (u64)(&x);
-
-	EDEB_EN(7, "pfeq=%p adapter_handle=%lx  new_control=%x"
-		" number_of_entries=%x",
-		pfeq, adapter_handle.handle, neq_control,
-		number_of_entries);
+	u64 allocate_controls;
+	u64 act_nr_of_entries_out, act_pages_out, eq_ist_out;
 
 	/* resource type */
 	allocate_controls = 3ULL;
@@ -277,10 +264,7 @@ u64 hipz_h_alloc_resource_eq(const struct ipz_adapter_handle adapter_handle,
 	*eq_ist            = (u32)eq_ist_out;
 
 	if (ret == H_NOT_ENOUGH_RESOURCES)
-		EDEB_ERR(4, "Not enough resource - ret=%lx ", ret);
-
-	EDEB_EX(7, "act_nr_of_entries=%x act_pages=%x eq_ist=%x",
-		*act_nr_of_entries, *act_pages, *eq_ist);
+		ehca_gen_err("Not enough resource - ret=%lx ", ret);
 
 	return ret;
 }
@@ -289,45 +273,30 @@ u64 hipz_h_reset_event(const struct ipz_adapter_handle adapter_handle,
 		       struct ipz_eq_handle eq_handle,
 		       const u64 event_mask)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
 
-	EDEB_EN(7, "eq_handle=%lx, adapter_handle=%lx  event_mask=%lx",
-		eq_handle.handle, adapter_handle.handle, event_mask);
-
-	ret = ehca_hcall_7arg_7ret(H_RESET_EVENTS,
-				   adapter_handle.handle, /* r4 */
-				   eq_handle.handle,      /* r5 */
-				   event_mask,	          /* r6 */
-				   0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_RESET_EVENTS,
+				    adapter_handle.handle, /* r4 */
+				    eq_handle.handle,      /* r5 */
+				    event_mask,	           /* r6 */
+				    0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_alloc_resource_cq(const struct ipz_adapter_handle adapter_handle,
 			     struct ehca_cq *cq,
 			     struct ehca_alloc_cq_parms *param)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 act_nr_of_entries_out;
-	u64 act_pages_out;
-	u64 g_la_privileged_out;
-	u64 g_la_user_out;
-
-	EDEB_EN(7, "Adapter_handle=%lx eq_handle=%lx cq_token=%x"
-		" cq_number_of_entries=%x",
-		adapter_handle.handle, param->eq_handle.handle,
-		cq->token, param->nr_cqe);
+	u64 act_nr_of_entries_out, act_pages_out;
+	u64 g_la_privileged_out, g_la_user_out;
 
 	ret = ehca_hcall_7arg_7ret(H_ALLOC_RESOURCE,
 				   adapter_handle.handle,     /* r4  */
@@ -351,10 +320,7 @@ u64 hipz_h_alloc_resource_cq(const struct ipz_adapter_handle adapter_handle,
 		hcp_galpas_ctor(&cq->galpas, g_la_privileged_out, g_la_user_out);
 
 	if (ret == H_NOT_ENOUGH_RESOURCES)
-		EDEB_ERR(4, "Not enough resources. ret=%lx", ret);
-
-	EDEB_EX(7, "cq_handle=%lx act_nr_of_entries=%x act_pages=%x",
-		cq->ipz_cq_handle.handle, param->act_nr_of_entries, param->act_pages);
+		ehca_gen_err("Not enough resources. ret=%lx", ret);
 
 	return ret;
 }
@@ -363,31 +329,12 @@ u64 hipz_h_alloc_resource_qp(const struct ipz_adapter_handle adapter_handle,
 			     struct ehca_qp *qp,
 			     struct ehca_alloc_qp_parms *parms)
 {
-	u64 ret = H_SUCCESS;
-	u64 allocate_controls;
-	u64 max_r10_reg;
-	u64 dummy         = 0;
-	u64 qp_nr_out     = 0;
-	u64 r6_out        = 0;
-	u64 r7_out        = 0;
-	u64 r8_out        = 0;
-	u64 g_la_user_out = 0;
-	u64 r11_out       = 0;
+	u64 ret;
+	u64 dummy, allocate_controls, max_r10_reg;
+	u64 qp_nr_out, r6_out, r7_out, r8_out, g_la_user_out, r11_out;
 	u16 max_nr_receive_wqes = qp->init_attr.cap.max_recv_wr + 1;
 	u16 max_nr_send_wqes = qp->init_attr.cap.max_send_wr + 1;
 	int daqp_ctrl = parms->daqp_ctrl;
-
-	EDEB_EN(7, "Adapter_handle=%lx servicetype=%x signalingtype=%x"
-		" ud_av_l_key=%x send_cq_handle=%lx receive_cq_handle=%lx"
-		" async_eq_handle=%lx qp_token=%x pd=%x max_nr_send_wqes=%x"
-		" max_nr_receive_wqes=%x max_nr_send_sges=%x"
-		" max_nr_receive_sges=%x ud_av_l_key=%x galpa.pid=%x",
-		adapter_handle.handle, parms->servicetype, parms->sigtype,
-		parms->ud_av_l_key_ctl, qp->send_cq->ipz_cq_handle.handle,
-		qp->recv_cq->ipz_cq_handle.handle, parms->ipz_eq_handle.handle,
-		qp->token, parms->pd.value, max_nr_send_wqes,
-		max_nr_receive_wqes, parms->max_send_sge, parms->max_recv_sge,
-		parms->ud_av_l_key_ctl, qp->galpas.pid);
 
 	allocate_controls =
 		EHCA_BMASK_SET(H_ALL_RES_QP_ENHANCED_OPS,
@@ -454,17 +401,7 @@ u64 hipz_h_alloc_resource_qp(const struct ipz_adapter_handle adapter_handle,
 		hcp_galpas_ctor(&qp->galpas, g_la_user_out, g_la_user_out);
 
 	if (ret == H_NOT_ENOUGH_RESOURCES)
-		EDEB_ERR(4, "Not enough resources. ret=%lx",ret);
-
-	EDEB_EX(7, "qp_nr=%x act_nr_send_wqes=%x"
-		" act_nr_receive_wqes=%x act_nr_send_sges=%x"
-		" act_nr_receive_sges=%x nr_sq_pages=%x"
-		" nr_rq_pages=%x galpa.user=%lx galpa.kernel=%lx",
-		qp->real_qp_num, parms->act_nr_send_wqes,
-		parms->act_nr_recv_wqes, parms->act_nr_send_sges,
-		parms->act_nr_recv_sges, parms->nr_sq_pages,
-		parms->nr_rq_pages, qp->galpas.user.fw_handle,
-		qp->galpas.kernel.fw_handle);
+		ehca_gen_err("Not enough resources. ret=%lx",ret);
 
 	return ret;
 }
@@ -473,20 +410,14 @@ u64 hipz_h_query_port(const struct ipz_adapter_handle adapter_handle,
 		      const u8 port_id,
 		      struct hipz_query_port *query_port_response_block)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 r_cb;
+	u64 r_cb = virt_to_abs(query_port_response_block);
 
-	EDEB_EN(7, "adapter_handle=%lx port_id %x",
-		adapter_handle.handle, port_id);
-
-	if (((u64)query_port_response_block) & 0xfff) {
-		EDEB_ERR(4, "response block not page aligned");
-		ret = H_PARAMETER;
-		return ret;
+	if (r_cb & (EHCA_PAGESIZE-1)) {
+		ehca_gen_err("response block not page aligned");
+		return H_PARAMETER;
 	}
-
-	r_cb = virt_to_abs(query_port_response_block);
 
 	ret = ehca_hcall_7arg_7ret(H_QUERY_PORT,
 				   adapter_handle.handle, /* r4 */
@@ -501,19 +432,8 @@ u64 hipz_h_query_port(const struct ipz_adapter_handle adapter_handle,
 				   &dummy,
 				   &dummy);
 
-	EDEB_DMP(7, query_port_response_block, 64, "query_port_response_block");
-	EDEB(7, "offset31=%x offset35=%x offset36=%x",
-	     ((u32*)query_port_response_block)[32],
-	     ((u32*)query_port_response_block)[36],
-	     ((u32*)query_port_response_block)[37]);
-	EDEB(7, "offset200=%x offset201=%x offset202=%x "
-	     "offset203=%x",
-	     ((u32*)query_port_response_block)[0x200],
-	     ((u32*)query_port_response_block)[0x201],
-	     ((u32*)query_port_response_block)[0x202],
-	     ((u32*)query_port_response_block)[0x203]);
-
-	EDEB_EX(7, "ret=%lx", ret);
+	if (ehca_debug_level)
+		ehca_dmp(query_port_response_block, 64, "response_block");
 
 	return ret;
 }
@@ -521,62 +441,26 @@ u64 hipz_h_query_port(const struct ipz_adapter_handle adapter_handle,
 u64 hipz_h_query_hca(const struct ipz_adapter_handle adapter_handle,
 		     struct hipz_query_hca *query_hca_rblock)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
-	u64 r_cb;
-	EDEB_EN(7, "adapter_handle=%lx", adapter_handle.handle);
+	u64 r_cb = virt_to_abs(query_hca_rblock);
 
-	if (((u64)query_hca_rblock) & 0xfff) {
-		EDEB_ERR(4, "response block not page aligned");
-		ret = H_PARAMETER;
-		return ret;
+	if (r_cb & (EHCA_PAGESIZE-1)) {
+		ehca_gen_err("response_block=%p not page aligned",
+			     query_hca_rblock);
+		return H_PARAMETER;
 	}
 
-	r_cb = virt_to_abs(query_hca_rblock);
-
-	ret = ehca_hcall_7arg_7ret(H_QUERY_HCA,
-				   adapter_handle.handle, /* r4 */
-				   r_cb,                  /* r5 */
-				   0, 0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB(7, "offset0=%x offset1=%x offset2=%x offset3=%x",
-	     ((u32*)query_hca_rblock)[0],
-	     ((u32*)query_hca_rblock)[1],
-	     ((u32*)query_hca_rblock)[2], ((u32*)query_hca_rblock)[3]);
-	EDEB(7, "offset4=%x offset5=%x offset6=%x offset7=%x",
-	     ((u32*)query_hca_rblock)[4],
-	     ((u32*)query_hca_rblock)[5],
-	     ((u32*)query_hca_rblock)[6], ((u32*)query_hca_rblock)[7]);
-	EDEB(7, "offset8=%x offset9=%x offseta=%x offsetb=%x",
-	     ((u32*)query_hca_rblock)[8],
-	     ((u32*)query_hca_rblock)[9],
-	     ((u32*)query_hca_rblock)[10], ((u32*)query_hca_rblock)[11]);
-	EDEB(7, "offsetc=%x offsetd=%x offsete=%x offsetf=%x",
-	     ((u32*)query_hca_rblock)[12],
-	     ((u32*)query_hca_rblock)[13],
-	     ((u32*)query_hca_rblock)[14], ((u32*)query_hca_rblock)[15]);
-	EDEB(7, "offset136=%x offset192=%x offset204=%x",
-	     ((u32*)query_hca_rblock)[32],
-	     ((u32*)query_hca_rblock)[48], ((u32*)query_hca_rblock)[51]);
-	EDEB(7, "offset231=%x offset235=%x",
-	     ((u32*)query_hca_rblock)[57], ((u32*)query_hca_rblock)[58]);
-	EDEB(7, "offset200=%x offset201=%x offset202=%x offset203=%x",
-	     ((u32*)query_hca_rblock)[0x201],
-	     ((u32*)query_hca_rblock)[0x202],
-	     ((u32*)query_hca_rblock)[0x203],
-	     ((u32*)query_hca_rblock)[0x204]);
-
-	EDEB_EX(7, "ret=%lx adapter_handle=%lx",
-		ret, adapter_handle.handle);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_QUERY_HCA,
+				    adapter_handle.handle, /* r4 */
+				    r_cb,                  /* r5 */
+				    0, 0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_register_rpage(const struct ipz_adapter_handle adapter_handle,
@@ -586,32 +470,22 @@ u64 hipz_h_register_rpage(const struct ipz_adapter_handle adapter_handle,
 			  const u64 logical_address_of_page,
 			  u64 count)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
 
-	EDEB_EN(7, "adapter_handle=%lx pagesize=%x queue_type=%x"
-		" resource_handle=%lx logical_address_of_page=%lx count=%lx",
-		adapter_handle.handle, pagesize, queue_type,
-		resource_handle, logical_address_of_page, count);
-
-	ret = ehca_hcall_7arg_7ret(H_REGISTER_RPAGES,
-				   adapter_handle.handle,      /* r4  */
-				   queue_type | pagesize << 8, /* r5  */
-				   resource_handle,	       /* r6  */
-				   logical_address_of_page,    /* r7  */
-				   count,	               /* r8  */
-				   0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_REGISTER_RPAGES,
+				    adapter_handle.handle,      /* r4  */
+				    queue_type | pagesize << 8, /* r5  */
+				    resource_handle,	        /* r6  */
+				    logical_address_of_page,    /* r7  */
+				    count,	                /* r8  */
+				    0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_register_rpage_eq(const struct ipz_adapter_handle adapter_handle,
@@ -622,34 +496,22 @@ u64 hipz_h_register_rpage_eq(const struct ipz_adapter_handle adapter_handle,
 			     const u64 logical_address_of_page,
 			     const u64 count)
 {
-	u64 ret = H_SUCCESS;
-
-	EDEB_EN(7, "pfeq=%p adapter_handle=%lx eq_handle=%lx pagesize=%x"
-		" queue_type=%x logical_address_of_page=%lx count=%lx",
-		pfeq, adapter_handle.handle, eq_handle.handle, pagesize,
-		queue_type,logical_address_of_page, count);
-
 	if (count != 1) {
-		EDEB_ERR(4, "Ppage counter=%lx", count);
+		ehca_gen_err("Ppage counter=%lx", count);
 		return H_PARAMETER;
 	}
-	ret = hipz_h_register_rpage(adapter_handle,
-				    pagesize,
-				    queue_type,
-				    eq_handle.handle,
-				    logical_address_of_page, count);
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return hipz_h_register_rpage(adapter_handle,
+				     pagesize,
+				     queue_type,
+				     eq_handle.handle,
+				     logical_address_of_page, count);
 }
 
 u32 hipz_h_query_int_state(const struct ipz_adapter_handle adapter_handle,
 			   u32 ist)
 {
-	u32 ret = H_SUCCESS;
-	u64 dummy = 0;
-
-	EDEB_EN(7, "ist=%x", ist);
+	u32 ret;
+	u64 dummy;
 
 	ret = ehca_hcall_7arg_7ret(H_QUERY_INT_STATE,
 				   adapter_handle.handle, /* r4 */
@@ -664,9 +526,7 @@ u32 hipz_h_query_int_state(const struct ipz_adapter_handle adapter_handle,
 				   &dummy);
 
 	if (ret != H_SUCCESS && ret != H_BUSY)
-		EDEB_ERR(4, "Could not query interrupt state.");
-
-	EDEB_EX(7, "interrupt state: %x", ret);
+		ehca_gen_err("Could not query interrupt state.");
 
 	return ret;
 }
@@ -680,24 +540,14 @@ u64 hipz_h_register_rpage_cq(const struct ipz_adapter_handle adapter_handle,
 			     const u64 count,
 			     const struct h_galpa gal)
 {
-	u64 ret = H_SUCCESS;
-
-	EDEB_EN(7, "pfcq=%p adapter_handle=%lx cq_handle=%lx pagesize=%x"
-		" queue_type=%x logical_address_of_page=%lx count=%lx",
-		pfcq, adapter_handle.handle, cq_handle.handle, pagesize,
-		queue_type, logical_address_of_page, count);
-
 	if (count != 1) {
-		EDEB_ERR(4, "Page counter=%lx", count);
+		ehca_gen_err("Page counter=%lx", count);
 		return H_PARAMETER;
 	}
 
-	ret = hipz_h_register_rpage(adapter_handle, pagesize, queue_type,
-				    cq_handle.handle, logical_address_of_page,
-				    count);
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return hipz_h_register_rpage(adapter_handle, pagesize, queue_type,
+				     cq_handle.handle, logical_address_of_page,
+				     count);
 }
 
 u64 hipz_h_register_rpage_qp(const struct ipz_adapter_handle adapter_handle,
@@ -709,24 +559,14 @@ u64 hipz_h_register_rpage_qp(const struct ipz_adapter_handle adapter_handle,
 			     const u64 count,
 			     const struct h_galpa galpa)
 {
-	u64 ret = H_SUCCESS;
-
-	EDEB_EN(7, "pfqp=%p adapter_handle=%lx qp_handle=%lx pagesize=%x"
-		" queue_type=%x logical_address_of_page=%lx count=%lx",
-		pfqp, adapter_handle.handle, qp_handle.handle, pagesize,
-		queue_type, logical_address_of_page, count);
-
 	if (count != 1) {
-		EDEB_ERR(4, "Page counter=%lx", count);
+		ehca_gen_err("Page counter=%lx", count);
 		return H_PARAMETER;
 	}
 
-	ret = hipz_h_register_rpage(adapter_handle,pagesize,queue_type,
-				    qp_handle.handle,logical_address_of_page,
-				    count);
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return hipz_h_register_rpage(adapter_handle,pagesize,queue_type,
+				     qp_handle.handle,logical_address_of_page,
+				     count);
 }
 
 u64 hipz_h_disable_and_get_wqe(const struct ipz_adapter_handle adapter_handle,
@@ -736,36 +576,25 @@ u64 hipz_h_disable_and_get_wqe(const struct ipz_adapter_handle adapter_handle,
 			       void **log_addr_next_rq_wqe2processed,
 			       int dis_and_get_function_code)
 {
-	u64 ret = H_SUCCESS;
-	u8 function_code = 1;
 	u64 dummy, dummy1, dummy2;
-
-	EDEB_EN(7, "pfqp=%p adapter_handle=%lx function=%x qp_handle=%lx",
-		pfqp, adapter_handle.handle, function_code, qp_handle.handle);
 
 	if (!log_addr_next_sq_wqe2processed)
 		log_addr_next_sq_wqe2processed = (void**)&dummy1;
 	if (!log_addr_next_rq_wqe2processed)
 		log_addr_next_rq_wqe2processed = (void**)&dummy2;
 
-	ret = ehca_hcall_7arg_7ret(H_DISABLE_AND_GETC,
-				   adapter_handle.handle,     /* r4 */
-				   dis_and_get_function_code, /* r5 */
-				   qp_handle.handle,	      /* r6 */
-				   0, 0, 0, 0,
-				   (void*)log_addr_next_sq_wqe2processed,
-				   (void*)log_addr_next_rq_wqe2processed,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-	EDEB_EX(7, "ret=%lx ladr_next_rq_wqe_out=%p"
-		" ladr_next_sq_wqe_out=%p", ret,
-		*log_addr_next_sq_wqe2processed,
-		*log_addr_next_rq_wqe2processed);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_DISABLE_AND_GETC,
+				    adapter_handle.handle,     /* r4 */
+				    dis_and_get_function_code, /* r5 */
+				    qp_handle.handle,	       /* r6 */
+				    0, 0, 0, 0,
+				    (void*)log_addr_next_sq_wqe2processed,
+				    (void*)log_addr_next_rq_wqe2processed,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_modify_qp(const struct ipz_adapter_handle adapter_handle,
@@ -775,22 +604,15 @@ u64 hipz_h_modify_qp(const struct ipz_adapter_handle adapter_handle,
 		     struct hcp_modify_qp_control_block *mqpcb,
 		     struct h_galpa gal)
 {
-	u64 ret = H_SUCCESS;
-	u64 invalid_attribute_identifier = 0;
-	u64 rc_attrib_mask = 0;
+	u64 ret;
 	u64 dummy;
-	u64 r_cb;
-	EDEB_EN(7, "pfqp=%p adapter_handle=%lx qp_handle=%lx"
-		" update_mask=%lx qp_state=%x mqpcb=%p",
-		pfqp, adapter_handle.handle, qp_handle.handle,
-		update_mask, mqpcb->qp_state, mqpcb);
+	u64 invalid_attribute_identifier, rc_attrib_mask;
 
-	r_cb = virt_to_abs(mqpcb);
 	ret = ehca_hcall_7arg_7ret(H_MODIFY_QP,
 				   adapter_handle.handle,         /* r4 */
 				   qp_handle.handle,	          /* r5 */
 				   update_mask,	                  /* r6 */
-				   r_cb,	                  /* r7 */
+				   virt_to_abs(mqpcb),	          /* r7 */
 				   0, 0, 0,
 				   &invalid_attribute_identifier, /* r4 */
 				   &dummy,	                  /* r5 */
@@ -799,12 +621,9 @@ u64 hipz_h_modify_qp(const struct ipz_adapter_handle adapter_handle,
 				   &dummy,	                  /* r8 */
 				   &rc_attrib_mask,               /* r9 */
 				   &dummy);
-	if (ret == H_NOT_ENOUGH_RESOURCES)
-		EDEB_ERR(4, "Insufficient resources ret=%lx", ret);
 
-	EDEB_EX(7, "ret=%lx invalid_attribute_identifier=%lx"
-		" invalid_attribute_MASK=%lx", ret,
-		invalid_attribute_identifier, rc_attrib_mask);
+	if (ret == H_NOT_ENOUGH_RESOURCES)
+		ehca_gen_err("Insufficient resources ret=%lx", ret);
 
 	return ret;
 }
@@ -815,47 +634,32 @@ u64 hipz_h_query_qp(const struct ipz_adapter_handle adapter_handle,
 		    struct hcp_modify_qp_control_block *qqpcb,
 		    struct h_galpa gal)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
-	u64 r_cb;
-	EDEB_EN(7, "adapter_handle=%lx qp_handle=%lx",
-		adapter_handle.handle, qp_handle.handle);
 
-	r_cb = virt_to_abs(qqpcb);
-	EDEB(7, "r_cb=%lx", r_cb);
-
-	ret = ehca_hcall_7arg_7ret(H_QUERY_QP,
-				   adapter_handle.handle, /* r4 */
-				   qp_handle.handle,      /* r5 */
-				   r_cb,	          /* r6 */
-				   0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_QUERY_QP,
+				    adapter_handle.handle, /* r4 */
+				    qp_handle.handle,      /* r5 */
+				    virt_to_abs(qqpcb),	   /* r6 */
+				    0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_destroy_qp(const struct ipz_adapter_handle adapter_handle,
 		      struct ehca_qp *qp)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 ladr_next_sq_wqe_out;
-	u64 ladr_next_rq_wqe_out;
-
-	EDEB_EN(7, "qp=%p ipz_qp_handle=%lx adapter_handle=%lx",
-		qp, qp->ipz_qp_handle.handle, adapter_handle.handle);
+	u64 ladr_next_sq_wqe_out, ladr_next_rq_wqe_out;
 
 	ret = hcp_galpas_dtor(&qp->galpas);
 	if (ret) {
-		EDEB_ERR(4, "Could not destruct qp->galpas");
+		ehca_gen_err("Could not destruct qp->galpas");
 		return H_RESOURCE;
 	}
 	ret = ehca_hcall_7arg_7ret(H_DISABLE_AND_GETC,
@@ -872,7 +676,7 @@ u64 hipz_h_destroy_qp(const struct ipz_adapter_handle adapter_handle,
 				   &dummy,
 				   &dummy);
 	if (ret == H_HARDWARE)
-		EDEB_ERR(4, "HCA not operational. ret=%lx", ret);
+		ehca_gen_err("HCA not operational. ret=%lx", ret);
 
 	ret = ehca_hcall_7arg_7ret(H_FREE_RESOURCE,
 				   adapter_handle.handle,     /* r4 */
@@ -887,9 +691,7 @@ u64 hipz_h_destroy_qp(const struct ipz_adapter_handle adapter_handle,
 				   &dummy);
 
 	if (ret == H_RESOURCE)
-		EDEB_ERR(4, "Resource still in use. ret=%lx", ret);
-
-	EDEB_EX(7, "ret=%lx", ret);
+		ehca_gen_err("Resource still in use. ret=%lx", ret);
 
 	return ret;
 }
@@ -899,28 +701,20 @@ u64 hipz_h_define_aqp0(const struct ipz_adapter_handle adapter_handle,
 		       struct h_galpa gal,
 		       u32 port)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
 
-	EDEB_EN(7, "port=%x ipz_qp_handle=%lx adapter_handle=%lx",
-		port, qp_handle.handle, adapter_handle.handle);
-
-	ret = ehca_hcall_7arg_7ret(H_DEFINE_AQP0,
-				   adapter_handle.handle, /* r4 */
-				   qp_handle.handle,      /* r5 */
-				   port,                  /* r6 */
-				   0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_DEFINE_AQP0,
+				    adapter_handle.handle, /* r4 */
+				    qp_handle.handle,      /* r5 */
+				    port,                  /* r6 */
+				    0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_define_aqp1(const struct ipz_adapter_handle adapter_handle,
@@ -929,13 +723,9 @@ u64 hipz_h_define_aqp1(const struct ipz_adapter_handle adapter_handle,
 		       u32 port, u32 * pma_qp_nr,
 		       u32 * bma_qp_nr)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 pma_qp_nr_out;
-	u64 bma_qp_nr_out;
-
-	EDEB_EN(7, "port=%x qp_handle=%lx adapter_handle=%lx",
-		port, qp_handle.handle, adapter_handle.handle);
+	u64 pma_qp_nr_out, bma_qp_nr_out;
 
 	ret = ehca_hcall_7arg_7ret(H_DEFINE_AQP1,
 				   adapter_handle.handle, /* r4 */
@@ -954,10 +744,7 @@ u64 hipz_h_define_aqp1(const struct ipz_adapter_handle adapter_handle,
 	*bma_qp_nr = (u32)bma_qp_nr_out;
 
 	if (ret == H_ALIAS_EXIST)
-		EDEB_ERR(4, "AQP1 already exists. ret=%lx", ret);
-
-	EDEB_EX(7, "ret=%lx pma_qp_nr=%i bma_qp_nr=%i",
-		ret, (int)*pma_qp_nr, (int)*bma_qp_nr);
+		ehca_gen_err("AQP1 already exists. ret=%lx", ret);
 
 	return ret;
 }
@@ -968,23 +755,8 @@ u64 hipz_h_attach_mcqp(const struct ipz_adapter_handle adapter_handle,
 		       u16 mcg_dlid,
 		       u64 subnet_prefix, u64 interface_id)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u8 *dgid_sp = (u8*)&subnet_prefix;
-	u8 *dgid_ii = (u8*)&interface_id;
-
-	EDEB_EN(7, "qp_handle=%lx adapter_handle=%lx\nMCG_DGID ="
-		" %d.%d.%d.%d.%d.%d.%d.%d."
-		" %d.%d.%d.%d.%d.%d.%d.%d",
-		qp_handle.handle, adapter_handle.handle,
-		dgid_sp[0], dgid_sp[1],
-		dgid_sp[2], dgid_sp[3],
-		dgid_sp[4], dgid_sp[5],
-		dgid_sp[6], dgid_sp[7],
-		dgid_ii[0], dgid_ii[1],
-		dgid_ii[2], dgid_ii[3],
-		dgid_ii[4], dgid_ii[5],
-		dgid_ii[6], dgid_ii[7]);
 
 	ret = ehca_hcall_7arg_7ret(H_ATTACH_MCQP,
 				   adapter_handle.handle,     /* r4 */
@@ -1002,9 +774,7 @@ u64 hipz_h_attach_mcqp(const struct ipz_adapter_handle adapter_handle,
 				   &dummy);
 
 	if (ret == H_NOT_ENOUGH_RESOURCES)
-		EDEB_ERR(4, "Not enough resources. ret=%lx", ret);
-
-	EDEB_EX(7, "ret=%lx", ret);
+		ehca_gen_err("Not enough resources. ret=%lx", ret);
 
 	return ret;
 }
@@ -1015,56 +785,34 @@ u64 hipz_h_detach_mcqp(const struct ipz_adapter_handle adapter_handle,
 		       u16 mcg_dlid,
 		       u64 subnet_prefix, u64 interface_id)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
-	u8 *dgid_sp = (u8*)&subnet_prefix;
-	u8 *dgid_ii = (u8*)&interface_id;
 
-	EDEB_EN(7, "qp_handle=%lx adapter_handle=%lx\nMCG_DGID ="
-		" %d.%d.%d.%d.%d.%d.%d.%d."
-		" %d.%d.%d.%d.%d.%d.%d.%d",
-		qp_handle.handle, adapter_handle.handle,
-		dgid_sp[0], dgid_sp[1],
-		dgid_sp[2], dgid_sp[3],
-		dgid_sp[4], dgid_sp[5],
-		dgid_sp[6], dgid_sp[7],
-		dgid_ii[0], dgid_ii[1],
-		dgid_ii[2], dgid_ii[3],
-		dgid_ii[4], dgid_ii[5],
-		dgid_ii[6], dgid_ii[7]);
-	ret = ehca_hcall_7arg_7ret(H_DETACH_MCQP,
-				   adapter_handle.handle, /* r4 */
-				   qp_handle.handle,	  /* r5 */
-				   mcg_dlid,	          /* r6 */
-				   interface_id,          /* r7 */
-				   subnet_prefix,         /* r8 */
-				   0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_DETACH_MCQP,
+				    adapter_handle.handle, /* r4 */
+				    qp_handle.handle,	   /* r5 */
+				    mcg_dlid,	           /* r6 */
+				    interface_id,          /* r7 */
+				    subnet_prefix,         /* r8 */
+				    0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_destroy_cq(const struct ipz_adapter_handle adapter_handle,
 		      struct ehca_cq *cq,
 		      u8 force_flag)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-
-	EDEB_EN(7, "cq->pf=%p cq=.%p ipz_cq_handle=%lx adapter_handle=%lx",
-		&cq->pf, cq, cq->ipz_cq_handle.handle, adapter_handle.handle);
 
 	ret = hcp_galpas_dtor(&cq->galpas);
 	if (ret) {
-		EDEB_ERR(4, "Could not destruct cp->galpas");
+		ehca_gen_err("Could not destruct cp->galpas");
 		return H_RESOURCE;
 	}
 
@@ -1082,9 +830,7 @@ u64 hipz_h_destroy_cq(const struct ipz_adapter_handle adapter_handle,
 				   &dummy);
 
 	if (ret == H_RESOURCE)
-		EDEB(4, "ret=%lx ", ret);
-
-	EDEB_EX(7, "ret=%lx", ret);
+		ehca_gen_err("H_FREE_RESOURCE failed ret=%lx ", ret);
 
 	return ret;
 }
@@ -1092,16 +838,12 @@ u64 hipz_h_destroy_cq(const struct ipz_adapter_handle adapter_handle,
 u64 hipz_h_destroy_eq(const struct ipz_adapter_handle adapter_handle,
 		      struct ehca_eq *eq)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-
-	EDEB_EN(7, "eq->pf=%p eq=%p ipz_eq_handle=%lx adapter_handle=%lx",
-		&eq->pf, eq, eq->ipz_eq_handle.handle,
-		adapter_handle.handle);
 
 	ret = hcp_galpas_dtor(&eq->galpas);
 	if (ret) {
-		EDEB_ERR(4, "Could not destruct eq->galpas");
+		ehca_gen_err("Could not destruct eq->galpas");
 		return H_RESOURCE;
 	}
 
@@ -1119,9 +861,7 @@ u64 hipz_h_destroy_eq(const struct ipz_adapter_handle adapter_handle,
 
 
 	if (ret == H_RESOURCE)
-		EDEB_ERR(4, "Resource in use. ret=%lx ", ret);
-
-	EDEB_EX(7, "ret=%lx", ret);
+		ehca_gen_err("Resource in use. ret=%lx ", ret);
 
 	return ret;
 }
@@ -1134,15 +874,10 @@ u64 hipz_h_alloc_resource_mr(const struct ipz_adapter_handle adapter_handle,
 			     const struct ipz_pd pd,
 			     struct ehca_mr_hipzout_parms *outparms)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
 	u64 lkey_out;
 	u64 rkey_out;
-
-	EDEB_EN(7, "adapter_handle=%lx mr=%p vaddr=%lx length=%lx"
-		" access_ctrl=%x pd=%x",
-		adapter_handle.handle, mr, vaddr, length, access_ctrl,
-		pd.value);
 
 	ret = ehca_hcall_7arg_7ret(H_ALLOC_RESOURCE,
 				   adapter_handle.handle,            /* r4 */
@@ -1162,9 +897,6 @@ u64 hipz_h_alloc_resource_mr(const struct ipz_adapter_handle adapter_handle,
 	outparms->lkey = (u32)lkey_out;
 	outparms->rkey = (u32)rkey_out;
 
-	EDEB_EX(7, "ret=%lx mr_handle=%lx lkey=%x rkey=%x",
-		ret, outparms->handle.handle, outparms->lkey, outparms->rkey);
-
 	return ret;
 }
 
@@ -1175,27 +907,22 @@ u64 hipz_h_register_rpage_mr(const struct ipz_adapter_handle adapter_handle,
 			     const u64 logical_address_of_page,
 			     const u64 count)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 
-	EDEB_EN(7, "adapter_handle=%lx mr=%p mr_handle=%lx pagesize=%x"
-		" queue_type=%x logical_address_of_page=%lx count=%lx",
-		adapter_handle.handle, mr, mr->ipz_mr_handle.handle, pagesize,
-		queue_type, logical_address_of_page, count);
-
-	if ((count > 1) && (logical_address_of_page & 0xfff)) {
-		EDEB_ERR(4, "logical_address_of_page not on a 4k boundary "
-			 "adapter_handle=%lx mr=%p mr_handle=%lx "
-			 "pagesize=%x queue_type=%x logical_address_of_page=%lx"
-			 " count=%lx",
-			 adapter_handle.handle, mr, mr->ipz_mr_handle.handle,
-			 pagesize, queue_type, logical_address_of_page, count);
+	if ((count > 1) && (logical_address_of_page & (EHCA_PAGESIZE-1))) {
+		ehca_gen_err("logical_address_of_page not on a 4k boundary "
+			     "adapter_handle=%lx mr=%p mr_handle=%lx "
+			     "pagesize=%x queue_type=%x "
+			     "logical_address_of_page=%lx count=%lx",
+			     adapter_handle.handle, mr,
+			     mr->ipz_mr_handle.handle, pagesize, queue_type,
+			     logical_address_of_page, count);
 		ret = H_PARAMETER;
 	} else
 		ret = hipz_h_register_rpage(adapter_handle, pagesize,
 					    queue_type,
 					    mr->ipz_mr_handle.handle,
 					    logical_address_of_page, count);
-	EDEB_EX(7, "ret=%lx", ret);
 
 	return ret;
 }
@@ -1204,15 +931,9 @@ u64 hipz_h_query_mr(const struct ipz_adapter_handle adapter_handle,
 		    const struct ehca_mr *mr,
 		    struct ehca_mr_hipzout_parms *outparms)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 remote_len_out;
-	u64 remote_vaddr_out;
-	u64 acc_ctrl_pd_out;
-	u64 r9_out;
-
-	EDEB_EN(7, "adapter_handle=%lx mr=%p mr_handle=%lx",
-		adapter_handle.handle, mr, mr->ipz_mr_handle.handle);
+	u64 remote_len_out, remote_vaddr_out, acc_ctrl_pd_out, r9_out;
 
 	ret = ehca_hcall_7arg_7ret(H_QUERY_MR,
 				   adapter_handle.handle,     /* r4 */
@@ -1230,38 +951,25 @@ u64 hipz_h_query_mr(const struct ipz_adapter_handle adapter_handle,
 	outparms->lkey = (u32)(r9_out >> 32);
 	outparms->rkey = (u32)(r9_out & (0xffffffff));
 
-	EDEB_EX(7, "ret=%lx mr_local_length=%lx mr_local_vaddr=%lx "
-		"mr_remote_length=%lx mr_remote_vaddr=%lx access_ctrl=%x "
-		"pd=%x lkey=%x rkey=%x", ret, outparms->len,
-		outparms->vaddr, remote_len_out, remote_vaddr_out,
-		outparms->acl, outparms->acl, outparms->lkey, outparms->rkey);
-
 	return ret;
 }
 
 u64 hipz_h_free_resource_mr(const struct ipz_adapter_handle adapter_handle,
 			    const struct ehca_mr *mr)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
 
-	EDEB_EN(7, "adapter_handle=%lx mr=%p mr_handle=%lx",
-		adapter_handle.handle, mr, mr->ipz_mr_handle.handle);
-
-	ret = ehca_hcall_7arg_7ret(H_FREE_RESOURCE,
-				   adapter_handle.handle,    /* r4 */
-				   mr->ipz_mr_handle.handle, /* r5 */
-				   0, 0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_FREE_RESOURCE,
+				    adapter_handle.handle,    /* r4 */
+				    mr->ipz_mr_handle.handle, /* r5 */
+				    0, 0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_reregister_pmr(const struct ipz_adapter_handle adapter_handle,
@@ -1273,15 +981,9 @@ u64 hipz_h_reregister_pmr(const struct ipz_adapter_handle adapter_handle,
 			  const u64 mr_addr_cb,
 			  struct ehca_mr_hipzout_parms *outparms)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 lkey_out;
-	u64 rkey_out;
-
-	EDEB_EN(7, "adapter_handle=%lx mr=%p mr_handle=%lx vaddr_in=%lx "
-		"length=%lx access_ctrl=%x pd=%x mr_addr_cb=%lx",
-		adapter_handle.handle, mr, mr->ipz_mr_handle.handle, vaddr_in,
-		length, access_ctrl, pd.value, mr_addr_cb);
+	u64 lkey_out, rkey_out;
 
 	ret = ehca_hcall_7arg_7ret(H_REREGISTER_PMR,
 				   adapter_handle.handle,    /* r4 */
@@ -1303,8 +1005,6 @@ u64 hipz_h_reregister_pmr(const struct ipz_adapter_handle adapter_handle,
 	outparms->lkey = (u32)lkey_out;
 	outparms->rkey = (u32)rkey_out;
 
-	EDEB_EX(7, "ret=%lx vaddr=%lx lkey=%x rkey=%x",
-		ret, outparms->vaddr, outparms->lkey, outparms->rkey);
 	return ret;
 }
 
@@ -1316,16 +1016,9 @@ u64 hipz_h_register_smr(const struct ipz_adapter_handle adapter_handle,
 			const struct ipz_pd pd,
 			struct ehca_mr_hipzout_parms *outparms)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 lkey_out;
-	u64 rkey_out;
-
-	EDEB_EN(7, "adapter_handle=%lx orig_mr=%p orig_mr_handle=%lx "
-		"vaddr_in=%lx access_ctrl=%x pd=%x", adapter_handle.handle,
-		orig_mr, orig_mr->ipz_mr_handle.handle, vaddr_in, access_ctrl,
-		pd.value);
-
+	u64 lkey_out, rkey_out;
 
 	ret = ehca_hcall_7arg_7ret(H_REGISTER_SMR,
 				   adapter_handle.handle,            /* r4 */
@@ -1344,9 +1037,6 @@ u64 hipz_h_register_smr(const struct ipz_adapter_handle adapter_handle,
 	outparms->lkey = (u32)lkey_out;
 	outparms->rkey = (u32)rkey_out;
 
-	EDEB_EX(7, "ret=%lx mr_handle=%lx lkey=%x rkey=%x",
-		ret, outparms->handle.handle, outparms->lkey, outparms->rkey);
-
 	return ret;
 }
 
@@ -1355,12 +1045,9 @@ u64 hipz_h_alloc_resource_mw(const struct ipz_adapter_handle adapter_handle,
 			     const struct ipz_pd pd,
 			     struct ehca_mw_hipzout_parms *outparms)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
 	u64 rkey_out;
-
-	EDEB_EN(7, "adapter_handle=%lx mw=%p pd=%x",
-		adapter_handle.handle, mw, pd.value);
 
 	ret = ehca_hcall_7arg_7ret(H_ALLOC_RESOURCE,
 				   adapter_handle.handle,      /* r4 */
@@ -1377,8 +1064,6 @@ u64 hipz_h_alloc_resource_mw(const struct ipz_adapter_handle adapter_handle,
 
 	outparms->rkey = (u32)rkey_out;
 
-	EDEB_EX(7, "ret=%lx mw_handle=%lx rkey=%x",
-		ret, outparms->handle.handle, outparms->rkey);
 	return ret;
 }
 
@@ -1386,13 +1071,9 @@ u64 hipz_h_query_mw(const struct ipz_adapter_handle adapter_handle,
 		    const struct ehca_mw *mw,
 		    struct ehca_mw_hipzout_parms *outparms)
 {
-	u64 ret = H_SUCCESS;
+	u64 ret;
 	u64 dummy;
-	u64 pd_out;
-	u64 rkey_out;
-
-	EDEB_EN(7, "adapter_handle=%lx mw=%p mw_handle=%lx",
-		adapter_handle.handle, mw, mw->ipz_mw_handle.handle);
+	u64 pd_out, rkey_out;
 
 	ret = ehca_hcall_7arg_7ret(H_QUERY_MW,
 				   adapter_handle.handle,    /* r4 */
@@ -1407,34 +1088,25 @@ u64 hipz_h_query_mw(const struct ipz_adapter_handle adapter_handle,
 				   &dummy);
 	outparms->rkey = (u32)rkey_out;
 
-	EDEB_EX(7, "ret=%lx rkey=%x pd=%lx", ret, outparms->rkey, pd_out);
-
 	return ret;
 }
 
 u64 hipz_h_free_resource_mw(const struct ipz_adapter_handle adapter_handle,
 			    const struct ehca_mw *mw)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
 
-	EDEB_EN(7, "adapter_handle=%lx mw=%p mw_handle=%lx",
-		adapter_handle.handle, mw, mw->ipz_mw_handle.handle);
-
-	ret = ehca_hcall_7arg_7ret(H_FREE_RESOURCE,
-				   adapter_handle.handle,    /* r4 */
-				   mw->ipz_mw_handle.handle, /* r5 */
-				   0, 0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_FREE_RESOURCE,
+				    adapter_handle.handle,    /* r4 */
+				    mw->ipz_mw_handle.handle, /* r5 */
+				    0, 0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }
 
 u64 hipz_h_error_data(const struct ipz_adapter_handle adapter_handle,
@@ -1442,35 +1114,24 @@ u64 hipz_h_error_data(const struct ipz_adapter_handle adapter_handle,
 		      void *rblock,
 		      unsigned long *byte_count)
 {
-	u64 ret = H_SUCCESS;
 	u64 dummy;
-	u64 r_cb;
+	u64 r_cb = virt_to_abs(rblock);
 
-	EDEB_EN(7, "adapter_handle=%lx ressource_handle=%lx rblock=%p",
-		adapter_handle.handle, ressource_handle, rblock);
-
-	if (((u64)rblock) & 0xfff) {
-		EDEB_ERR(4, "rblock not page aligned.");
-		ret = H_PARAMETER;
-		return ret;
+	if (r_cb & (EHCA_PAGESIZE-1)) {
+		ehca_gen_err("rblock not page aligned.");
+		return H_PARAMETER;
 	}
 
-	r_cb = virt_to_abs(rblock);
-
-	ret = ehca_hcall_7arg_7ret(H_ERROR_DATA,
-				   adapter_handle.handle,
-				   ressource_handle,
-				   r_cb,
-				   0, 0, 0, 0,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy,
-				   &dummy);
-
-	EDEB_EX(7, "ret=%lx", ret);
-
-	return ret;
+	return ehca_hcall_7arg_7ret(H_ERROR_DATA,
+				    adapter_handle.handle,
+				    ressource_handle,
+				    r_cb,
+				    0, 0, 0, 0,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy,
+				    &dummy);
 }

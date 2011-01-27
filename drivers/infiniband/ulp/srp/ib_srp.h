@@ -29,7 +29,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  *
- * $Id: ib_srp.h 7724 2006-06-06 13:43:20Z tziporet $
+ * $Id: ib_srp.h 3932 2005-11-01 17:19:29Z roland $
  */
 
 #ifndef IB_SRP_H
@@ -37,8 +37,8 @@
 
 #include <linux/types.h>
 #include <linux/list.h>
-#include <linux/scatterlist.h>
 #include <linux/mutex.h>
+#include <linux/scatterlist.h>
 
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
@@ -91,7 +91,6 @@ struct srp_device {
 };
 
 struct srp_host {
-	u8			initiator_port_id[16];
 	struct srp_device      *dev;
 	u8			port;
 	struct class_device	class_dev;
@@ -122,6 +121,7 @@ struct srp_target_port {
 	__be64			id_ext;
 	__be64			ioc_guid;
 	__be64			service_id;
+	__be64			initiator_ext;
 	u16			io_class;
 	struct srp_host	       *srp_host;
 	struct Scsi_Host       *scsi_host;
@@ -158,6 +158,7 @@ struct srp_target_port {
 	struct completion	done;
 	int			status;
 	enum srp_target_state	state;
+	int			need_reset;
 };
 
 struct srp_iu {

@@ -1,7 +1,11 @@
 #ifndef _ASM_X8664_NUMA_H 
 #define _ASM_X8664_NUMA_H 1
 
+#ifdef CONFIG_DISCONTIGMEM
 #include <asm/numnodes.h>
+#else
+#define NODES_SHIFT 0
+#endif
 
 struct node { 
 	u64 start,end; 

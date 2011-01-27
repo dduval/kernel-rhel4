@@ -241,6 +241,16 @@ int rdma_listen(struct rdma_cm_id *id, int backlog);
 int rdma_accept(struct rdma_cm_id *id, struct rdma_conn_param *conn_param);
 
 /**
+ * rdma_establish - Forces a connection state to established.
+ * @id: Connection identifier to transition to established.
+ *
+ * This routine should be invoked by users who receive messages on a
+ * QP before being notified that the connection has been established by the
+ * RDMA CM.
+ */
+int rdma_establish(struct rdma_cm_id *id);
+
+/**
  * rdma_reject - Called to reject a connection request or response.
  */
 int rdma_reject(struct rdma_cm_id *id, const void *private_data,

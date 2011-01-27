@@ -82,6 +82,7 @@ obj-$(CONFIG_SCSI_QLOGIC_ISP)	+= qlogicisp.o
 obj-$(CONFIG_SCSI_QLOGIC_FC)	+= qlogicfc.o 
 obj-$(CONFIG_SCSI_QLOGIC_1280)	+= qla1280.o 
 obj-$(CONFIG_SCSI_QLA2XXX)	+= qla2xxx/
+obj-$(CONFIG_SCSI_QLA4XXX)	+= qla4xxx/
 obj-$(CONFIG_SCSI_PAS16)	+= pas16.o
 obj-$(CONFIG_SCSI_SEAGATE)	+= seagate.o
 obj-$(CONFIG_SCSI_FD_8xx)	+= seagate.o
@@ -125,21 +126,6 @@ obj-$(CONFIG_SCSI_LASI700)	+= 53c700.o lasi700.o
 obj-$(CONFIG_SCSI_NSP32)	+= nsp32.o
 obj-$(CONFIG_SCSI_IPR)		+= ipr.o
 obj-$(CONFIG_SCSI_IBMVSCSI)	+= ibmvscsi/
-obj-$(CONFIG_SCSI_SATA_AHCI)	+= libata.o ahci.o
-obj-$(CONFIG_SCSI_SATA_SVW)	+= libata.o sata_svw.o
-obj-$(CONFIG_SCSI_ATA_PIIX)	+= libata.o ata_piix.o
-obj-$(CONFIG_SCSI_SATA_PROMISE)	+= libata.o sata_promise.o
-obj-$(CONFIG_SCSI_SATA_QSTOR)	+= libata.o sata_qstor.o
-obj-$(CONFIG_SCSI_SATA_SIL)	+= libata.o sata_sil.o
-obj-$(CONFIG_SCSI_SATA_SIL24)	+= libata.o sata_sil24.o
-obj-$(CONFIG_SCSI_SATA_VIA)	+= libata.o sata_via.o
-obj-$(CONFIG_SCSI_SATA_VITESSE)	+= libata.o sata_vsc.o
-obj-$(CONFIG_SCSI_SATA_SIS)	+= libata.o sata_sis.o
-obj-$(CONFIG_SCSI_SATA_SX4)	+= libata.o sata_sx4.o
-obj-$(CONFIG_SCSI_SATA_NV)	+= libata.o sata_nv.o
-obj-$(CONFIG_SCSI_SATA_ULI)	+= libata.o sata_uli.o
-obj-$(CONFIG_SCSI_SATA_MV)	+= libata.o sata_mv.o
-obj-$(CONFIG_SCSI_PDC_ADMA)	+= libata.o pdc_adma.o
 obj-$(CONFIG_SCSI_LPFC)		+= lpfc/
 
 obj-$(CONFIG_ARM)		+= arm/
@@ -171,7 +157,6 @@ zalon7xx-objs	:= zalon.o ncr53c8xx.o
 NCR_Q720_mod-objs	:= NCR_Q720.o ncr53c8xx.o
 cpqfc-objs	:= cpqfcTSinit.o cpqfcTScontrol.o cpqfcTSi2c.o \
 		   cpqfcTSworker.o cpqfcTStrigger.o
-libata-objs	:= libata-core.o libata-scsi.o libata-bmdma.o libata-dump.o
 
 # Files generated that shall be removed upon make clean
 clean-files :=	53c7xx_d.h 53c700_d.h	\

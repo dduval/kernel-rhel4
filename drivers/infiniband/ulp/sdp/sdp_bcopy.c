@@ -37,6 +37,10 @@
 #include <rdma/rdma_cm.h>
 #include "sdp.h"
 
+static int rcvbuf_scale = 0x10;
+module_param_named(rcvbuf_scale, rcvbuf_scale, int, 0644);
+MODULE_PARM_DESC(srcvbuf_scale, "Receive buffer size scale factor.");
+
 /* Like tcp_fin */
 static void sdp_fin(struct sock *sk)
 {
@@ -72,7 +76,10 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 	struct ib_send_wr *bad_wr;
 
 	h->mid = mid;
-	h->flags = 0; /* TODO: OOB */
+	if (unlikely(TCP_SKB_CB(skb)->flags & TCPCB_URG))
+		h->flags = SDP_OOB_PRES | SDP_OOB_PEND;
+	else
+		h->flags = 0;
 	h->bufs = htons(ssk->rx_head - ssk->rx_tail);
 	h->len = htonl(skb->len);
 	h->mseq = htonl(mseq);
@@ -86,7 +93,7 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 			      skb->data, skb->len - skb->data_len,
 			      DMA_TO_DEVICE);
 	tx_req->mapping[0] = addr;
-	
+
 	/* TODO: proper error handling */
 	BUG_ON(dma_mapping_error(addr));
 
@@ -116,10 +123,14 @@ void sdp_post_send(struct sdp_sock *ssk, struct sk_buff *skb, u8 mid)
 	if (unlikely(mid != SDP_MID_DATA))
 		ssk->tx_wr.send_flags |= IB_SEND_SOLICITED;
 	rc = ib_post_send(ssk->qp, &ssk->tx_wr, &bad_wr);
-	BUG_ON(rc);
 	++ssk->tx_head;
 	--ssk->bufs;
 	ssk->remote_credits = ssk->rx_head - ssk->rx_tail;
+	if (unlikely(rc)) {
+		sdp_dbg(&ssk->isk.sk, "ib_post_send failed with status %d.\n", rc);
+		sdp_set_error(&ssk->isk.sk, -ECONNRESET);
+		wake_up(&ssk->wq);
+	}
 }
 
 struct sk_buff *sdp_send_completion(struct sdp_sock *ssk, int mseq)
@@ -174,7 +185,7 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 	BUG_ON(!skb);
 	h = (struct sdp_bsdh *)skb_push(skb, sizeof *h);
 	for (i = 0; i < SDP_MAX_SEND_SKB_FRAGS; ++i) {
-		page = alloc_pages(GFP_KERNEL, 0);
+		page = alloc_pages(GFP_HIGHUSER, 0);
 		BUG_ON(!page);
 		frag = &skb_shinfo(skb)->frags[i];
 		frag->page                = page;
@@ -195,7 +206,7 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 	BUG_ON(dma_mapping_error(addr));
 
 	rx_req->mapping[0] = addr;
-	
+
 	/* TODO: proper error handling */
 	sge->addr = (u64)addr;
 	sge->length = skb_headlen(skb);
@@ -219,22 +230,22 @@ static void sdp_post_recv(struct sdp_sock *ssk)
 	ssk->rx_wr.sg_list = ssk->ibsge;
 	ssk->rx_wr.num_sge = frags + 1;
 	rc = ib_post_recv(ssk->qp, &ssk->rx_wr, &bad_wr);
-	/* TODO */
-	BUG_ON(rc);
 	++ssk->rx_head;
+	if (unlikely(rc)) {
+		sdp_dbg(&ssk->isk.sk, "ib_post_recv failed with status %d\n", rc);
+		sdp_reset(&ssk->isk.sk);
+	}
 }
 
 void sdp_post_recvs(struct sdp_sock *ssk)
 {
-	int rmem = atomic_read(&ssk->isk.sk.sk_rmem_alloc);
-
 	if (unlikely(!ssk->id))
 		return;
 
 	while ((likely(ssk->rx_head - ssk->rx_tail < SDP_RX_SIZE) &&
 		(ssk->rx_head - ssk->rx_tail - SDP_MIN_BUFS) *
-		SDP_MAX_SEND_SKB_FRAGS * PAGE_SIZE + rmem <
-		ssk->isk.sk.sk_rcvbuf * 0x10) ||
+		SDP_MAX_SEND_SKB_FRAGS * PAGE_SIZE + ssk->rcv_nxt - ssk->copied_seq <
+		ssk->isk.sk.sk_rcvbuf * rcvbuf_scale) ||
 	       unlikely(ssk->rx_head - ssk->rx_tail < SDP_MIN_BUFS))
 		sdp_post_recv(ssk);
 }
@@ -271,10 +282,16 @@ struct sk_buff *sdp_recv_completion(struct sdp_sock *ssk, int id)
 static inline int sdp_sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 {
 	int skb_len;
+	struct sdp_sock *ssk = sdp_sk(sk);
 
-	skb_set_owner_r(skb, sk);
+	/* not needed since sk_rmem_alloc is not currently used
+	 * TODO - remove this?
+	skb_set_owner_r(skb, sk); */
 
 	skb_len = skb->len;
+
+	TCP_SKB_CB(skb)->seq = ssk->rcv_nxt;
+	ssk->rcv_nxt += skb_len;
 
 	skb_queue_tail(&sk->sk_receive_queue, skb);
 
@@ -285,23 +302,63 @@ static inline int sdp_sock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 
 static inline void update_send_head(struct sock *sk, struct sk_buff *skb)
 {
+	struct page *page;
 	sk->sk_send_head = skb->next;
-	if (sk->sk_send_head == (struct sk_buff *)&sk->sk_write_queue)
+	if (sk->sk_send_head == (struct sk_buff *)&sk->sk_write_queue) {
 		sk->sk_send_head = NULL;
+		page = sk->sk_sndmsg_page;
+		if (page) {
+			put_page(page);
+			sk->sk_sndmsg_page = NULL;
+		}
+	}
+}
+
+static inline int sdp_nagle_off(struct sdp_sock *ssk, struct sk_buff *skb)
+{
+	return (ssk->nonagle & TCP_NAGLE_OFF) ||
+		skb->next != (struct sk_buff *)&ssk->isk.sk.sk_write_queue ||
+		skb->len + sizeof(struct sdp_bsdh) >= ssk->xmit_size_goal ||
+		(ssk->tx_tail == ssk->tx_head &&
+		 !(ssk->nonagle & TCP_NAGLE_CORK)) ||
+		(TCP_SKB_CB(skb)->flags & TCPCB_FLAG_PSH);
+}
+
+int sdp_post_credits(struct sdp_sock *ssk)
+{
+	if (likely(ssk->bufs > 1) &&
+	    likely(ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE)) {
+		struct sk_buff *skb;
+		skb = sk_stream_alloc_skb(&ssk->isk.sk,
+					  sizeof(struct sdp_bsdh),
+					  GFP_KERNEL);
+		if (!skb)
+			return -ENOMEM;
+		sdp_post_send(ssk, skb, SDP_MID_DATA);
+	}
+	return 0;
 }
 
 void sdp_post_sends(struct sdp_sock *ssk, int nonagle)
 {
-	/* TODO: nonagle */
+	/* TODO: nonagle? */
 	struct sk_buff *skb;
 	int c;
 
-	if (unlikely(!ssk->id))
+	if (unlikely(!ssk->id)) {
+		if (ssk->isk.sk.sk_send_head) {
+			sdp_dbg(&ssk->isk.sk,
+				"Send on socket without cmid ECONNRESET.\n");
+			/* TODO: flush send queue? */
+			sdp_reset(&ssk->isk.sk);
+		}
 		return;
+	}
 
 	while (ssk->bufs > SDP_MIN_BUFS &&
 	       ssk->tx_head - ssk->tx_tail < SDP_TX_SIZE &&
-	       (skb = ssk->isk.sk.sk_send_head)) {
+	       (skb = ssk->isk.sk.sk_send_head) &&
+		sdp_nagle_off(ssk, skb)) {
 		update_send_head(&ssk->isk.sk, skb);
 		__skb_dequeue(&ssk->isk.sk.sk_write_queue);
 		sdp_post_send(ssk, skb, SDP_MID_DATA);
@@ -342,6 +399,7 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 {
 	struct sk_buff *skb;
 	struct sdp_bsdh *h;
+	int pagesz, i;
 
 	if (wc->wr_id & SDP_OP_RECV) {
 		skb = sdp_recv_completion(ssk, wc->wr_id);
@@ -349,18 +407,18 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 			return;
 
 		if (unlikely(wc->status)) {
-			if (wc->status != IB_WC_WR_FLUSH_ERR)
+			if (wc->status != IB_WC_WR_FLUSH_ERR) {
 				sdp_dbg(&ssk->isk.sk,
-					"Recv completion with error. "
-					"Status %d\n", wc->status);
+						"Recv completion with error. "
+						"Status %d\n", wc->status);
+				sdp_reset(&ssk->isk.sk);
+			}
 			__kfree_skb(skb);
-			sdp_set_error(&ssk->isk.sk, -ECONNRESET);
-			wake_up(&ssk->wq);
 		} else {
 			/* TODO: handle msg < bsdh */
-			sdp_dbg(&ssk->isk.sk,
-				"Recv completion. ID %d Length %d\n",
-				(int)wc->wr_id, wc->byte_len);
+			sdp_dbg_data(&ssk->isk.sk,
+				     "Recv completion. ID %d Length %d\n",
+				     (int)wc->wr_id, wc->byte_len);
 			skb->len = wc->byte_len;
 			skb->data_len = wc->byte_len - sizeof(struct sdp_bsdh);
 			if (unlikely(skb->data_len < 0)) {
@@ -375,17 +433,29 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 			ssk->bufs = ntohl(h->mseq_ack) - ssk->tx_head + 1 +
 				ntohs(h->bufs);
 
+			pagesz = PAGE_ALIGN(skb->data_len);
+			skb_shinfo(skb)->nr_frags = pagesz / PAGE_SIZE;
+
+			for (i = skb_shinfo(skb)->nr_frags;
+			     i < SDP_MAX_SEND_SKB_FRAGS; ++i) {
+				put_page(skb_shinfo(skb)->frags[i].page);
+				skb->truesize -= PAGE_SIZE;
+			}
+
+			if (unlikely(h->flags & SDP_OOB_PEND))
+				sk_send_sigurg(&ssk->isk.sk);
+
 			if (likely(h->mid == SDP_MID_DATA) &&
 			    likely(skb->data_len > 0)) {
 				skb_pull(skb, sizeof(struct sdp_bsdh));
 				/* TODO: queue can fail? */
-				/* TODO: free unused fragments */
 				sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
+				if (unlikely(h->flags & SDP_OOB_PRES))
+					sdp_urg(ssk, skb);
 			} else if (likely(h->mid == SDP_MID_DATA)) {
 				__kfree_skb(skb);
 			} else if (h->mid == SDP_MID_DISCONN) {
 				skb_pull(skb, sizeof(struct sdp_bsdh));
-				/* TODO: free unused fragments */
 				/* this will wake recvmsg */
 				sdp_sock_queue_rcv_skb(&ssk->isk.sk, skb);
 				sdp_fin(&ssk->isk.sk);
@@ -402,12 +472,13 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 			return;
 		sk_stream_free_skb(&ssk->isk.sk, skb);
 		if (unlikely(wc->status)) {
-			if (wc->status != IB_WC_WR_FLUSH_ERR)
+			if (wc->status != IB_WC_WR_FLUSH_ERR) {
 				sdp_dbg(&ssk->isk.sk,
-					"Send completion with error. "
-					"Status %d\n", wc->status);
-			sdp_set_error(&ssk->isk.sk, -ECONNRESET);
-			wake_up(&ssk->wq);
+						"Send completion with error. "
+						"Status %d\n", wc->status);
+				sdp_set_error(&ssk->isk.sk, -ECONNRESET);
+				wake_up(&ssk->wq);
+			}
 		}
 
 		sk_stream_write_space(&ssk->isk.sk);
@@ -420,11 +491,9 @@ static void sdp_handle_wc(struct sdp_sock *ssk, struct ib_wc *wc)
 
 	if (ssk->time_wait && !ssk->isk.sk.sk_send_head &&
 	    ssk->tx_head == ssk->tx_tail) {
-		ssk->time_wait = 0;
-		ssk->isk.sk.sk_state = TCP_CLOSE;
 		sdp_dbg(&ssk->isk.sk, "%s: destroy in time wait state\n",
 			__func__);
-		queue_work(sdp_workqueue, &ssk->destroy_work);
+		sdp_time_wait_destroy_sk(ssk);
 	}
 }
 
@@ -435,35 +504,49 @@ void sdp_completion_handler(struct ib_cq *cq, void *cq_context)
 	schedule_work(&ssk->work);
 }
 
+int sdp_poll_cq(struct sdp_sock *ssk, struct ib_cq *cq)
+{
+	int n, i;
+	int ret = -EAGAIN;
+	do {
+		n = ib_poll_cq(cq, SDP_NUM_WC, ssk->ibwc);
+		for (i = 0; i < n; ++i) {
+			sdp_handle_wc(ssk, ssk->ibwc + i);
+			ret = 0;
+		}
+	} while (n == SDP_NUM_WC);
+	return ret;
+}
+
 void sdp_work(void *data)
 {
 	struct sock *sk = (struct sock *)data;
 	struct sdp_sock *ssk = sdp_sk(sk);
 	struct ib_cq *cq;
-	int n, i;
 
-	sdp_dbg(sk, "%s\n", __func__);
+	sdp_dbg_data(sk, "%s\n", __func__);
 
+	lock_sock(sk);
 	cq = ssk->cq;
 	if (unlikely(!cq))
-		return;
+		goto out;
 
-	do {
-		lock_sock(sk);
-		n = ib_poll_cq(cq, SDP_NUM_WC, ssk->ibwc);
-		for (i = 0; i < n; ++i) {
-			sdp_handle_wc(ssk, ssk->ibwc + i);
-		}
-		release_sock(sk);
-	} while (n == SDP_NUM_WC);
+	if (unlikely(!ssk->poll_cq)) {
+		struct rdma_cm_id *id = ssk->id;
+		if (id && id->qp)
+			rdma_establish(id);
+		goto out;
+	}
+
+	sdp_poll_cq(ssk, cq);
+	release_sock(sk);
 	sk_stream_mem_reclaim(sk);
+	lock_sock(sk);
+	cq = ssk->cq;
+	if (unlikely(!cq))
+		goto out;
 	ib_req_notify_cq(cq, IB_CQ_NEXT_COMP);
-	do {
-		lock_sock(sk);
-		n = ib_poll_cq(cq, SDP_NUM_WC, ssk->ibwc);
-		for (i = 0; i < n; ++i) {
-			sdp_handle_wc(ssk, ssk->ibwc + i);
-		}
-		release_sock(sk);
-	} while (n == SDP_NUM_WC);
+	sdp_poll_cq(ssk, cq);
+out:
+	release_sock(sk);
 }

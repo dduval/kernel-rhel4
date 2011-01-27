@@ -123,8 +123,6 @@ typedef struct {
 		(x)->oline = __LINE__; \
 	} while (0)
 
-/* without debugging, spin_is_locked on UP always says
- * FALSE. --> printk if already locked. */
 #define spin_is_locked(x) \
 	({ \
 	 	CHECK_LOCK(x); \
@@ -134,24 +132,24 @@ typedef struct {
 					__FILE__,__LINE__, (x)->module, \
 					(x), (x)->owner, (x)->oline); \
 		} \
-		0; \
+		((x)->lock > 0); \
 	})
 
-/* without debugging, spin_trylock on UP always says
- * TRUE. --> printk if already locked. */
 #define _raw_spin_trylock(x) \
 	({ \
+		int oldlock = (x)->lock; \
 	 	CHECK_LOCK(x); \
 		if ((x)->lock&&(x)->babble) { \
 			(x)->babble--; \
 			printk("%s:%d: spin_trylock(%s:%p) already locked by %s/%d\n", \
 					__FILE__,__LINE__, (x)->module, \
 					(x), (x)->owner, (x)->oline); \
+		} else { \
+			(x)->lock = 1; \
+			(x)->owner = __FILE__; \
+			(x)->oline = __LINE__; \
 		} \
-		(x)->lock = 1; \
-		(x)->owner = __FILE__; \
-		(x)->oline = __LINE__; \
-		1; \
+		(oldlock == 0); \
 	})
 
 #define spin_unlock_wait(x)	\

@@ -210,12 +210,18 @@ static unsigned long get_pc(void)
 
 	/* Were we in the hypervisor? */
 	if ((systemcfg->platform == PLATFORM_PSERIES_LPAR) &&
-	    (mmcra & MMCRA_SIHV))
+	    (((!(cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA)) &&
+	      (mmcra & MMCRA_SIHV)) ||
+	     ((cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA) &&
+	      (mmcra & MMCRA_POWER6_SIHV))))
 		/* function descriptor madness */
 		return *((unsigned long *)hypervisor_bucket);
 
 	/* We were in userspace, nothing to do */
-	if (mmcra & MMCRA_SIPR)
+	if (((!(cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA)) &&
+	     (mmcra & MMCRA_SIPR)) ||
+	    ((cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA) &&
+	     (mmcra & MMCRA_POWER6_SIPR)))
 		return pc;
 
 	/* Were we in our exception vectors? */
@@ -245,7 +251,10 @@ static int get_kernel(unsigned long pc)
 		is_kernel = (pc >= KERNELBASE);
 	} else {
 		unsigned long mmcra = mfspr(SPRN_MMCRA);
-		is_kernel = ((mmcra & MMCRA_SIPR) == 0);
+		is_kernel = ((((!(cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA)) &&
+			       (mmcra & MMCRA_SIPR)) ||
+			      ((cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA) &&
+			       (mmcra & MMCRA_POWER6_SIPR))) == 0);
 	}
 
 	return is_kernel;
@@ -260,6 +269,7 @@ static void power4_handle_interrupt(struct pt_regs *regs,
 	int i;
 	unsigned int cpu = smp_processor_id();
 	unsigned int mmcr0;
+	unsigned long mmcra;
 
 	pc = get_pc();
 	is_kernel = get_kernel(pc);
@@ -289,6 +299,13 @@ static void power4_handle_interrupt(struct pt_regs *regs,
 	 * all the time
 	 */
 	mmcr0 &= ~MMCR0_PMAO;
+
+	/* Clear the appropriate bits in the MMCRA */
+ 	if (cur_cpu_spec->cpu_features & CPU_FTR_POWER6_MMCRA) {
+		mmcra = mfspr(SPRN_MMCRA);
+		mmcra &= ~MMCRA_POWER6_CLEAR;
+		mtspr(SPRN_MMCRA, mmcra);
+	}
 
 	/*
 	 * now clear the freeze bit, counting will not start until we

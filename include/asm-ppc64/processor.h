@@ -546,7 +546,8 @@ struct thread_struct {
 #else
 	unsigned long	start_tb;	/* Start purr when proc switched in */
 	unsigned long	accum_tb;	/* Total accumilated purr for process */
-	unsigned long	pad;		/* was saved_msr, saved_softe */
+	unsigned int	align_ctl;	/* alignment handling control */
+	unsigned int	pad;		/* was saved_msr, saved_softe */
 #endif
 #ifdef CONFIG_ALTIVEC
 	/* Complete AltiVec register set */
@@ -598,6 +599,18 @@ unsigned long get_wchan(struct task_struct *p);
 
 extern int get_fpexc_mode(struct task_struct *tsk, unsigned long adr);
 extern int set_fpexc_mode(struct task_struct *tsk, unsigned int val);
+
+#define GET_ENDIAN(tsk, adr) get_endian((tsk), (adr))
+#define SET_ENDIAN(tsk, val) set_endian((tsk), (val))
+
+extern int get_endian(struct task_struct *tsk, unsigned long adr);
+extern int set_endian(struct task_struct *tsk, unsigned int val);
+
+#define GET_UNALIGN_CTL(tsk, adr)	get_unalign_ctl((tsk), (adr))
+#define SET_UNALIGN_CTL(tsk, val)	set_unalign_ctl((tsk), (val))
+
+extern int get_unalign_ctl(struct task_struct *tsk, unsigned long adr);
+extern int set_unalign_ctl(struct task_struct *tsk, unsigned int val);
 
 static inline unsigned int __unpack_fe01(unsigned long msr_bits)
 {

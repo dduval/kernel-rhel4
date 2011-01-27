@@ -87,7 +87,7 @@ static int init_timeout = 5;
 static int max_requests = 50;
 static int max_sectors = 32 * 8; /* default max I/O 32 pages */
 
-#define IBMVSCSI_VERSION "1.5.6"
+#define IBMVSCSI_VERSION "1.5.7"
 
 MODULE_DESCRIPTION("IBM Virtual SCSI");
 MODULE_AUTHOR("Dave Boutcher");
@@ -1027,6 +1027,28 @@ static int ibmvscsi_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	return SUCCESS;
 }
 
+static int ibmvscsi_sanity_check(struct scsi_device *sdev)
+{
+	struct ibmvscsi_host_data *hostdata;
+
+	if (!sdev->host)
+		return -ENXIO;
+
+	hostdata = (struct ibmvscsi_host_data *)sdev->host->hostdata;
+	if (!hostdata)
+		return -ENXIO;
+	
+	return 0;
+}
+
+static void ibmvscsi_dump_poll(struct scsi_device *sdev)
+{
+	struct ibmvscsi_host_data *hostdata =
+	    (struct ibmvscsi_host_data *)sdev->host->hostdata;
+
+	ibmvscsi_interrupt(hostdata);
+}
+
 /**
  * purge_requests: Our virtual adapter just shut down.  purge any sent requests
  * @hostdata:    the adapter
@@ -1349,6 +1371,8 @@ static struct scsi_host_template driver_template = {
 	.sg_tablesize = MAX_INDIRECT_BUFS,
 	.use_clustering = ENABLE_CLUSTERING,
 	.shost_attrs = ibmvscsi_attrs,
+	.dump_sanity_check = ibmvscsi_sanity_check,
+	.dump_poll = ibmvscsi_dump_poll
 };
 
 /**

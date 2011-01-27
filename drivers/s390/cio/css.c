@@ -20,10 +20,12 @@
 #include "cio_debug.h"
 #include "ioasm.h"
 #include "chsc.h"
+#include "device.h"
 
 unsigned int highest_subchannel;
 int need_rescan = 0;
 int css_init_done = 0;
+static int need_reprobe = 0;
 int cm_enabled = 0;
 DECLARE_MUTEX(cm_sem);
 
@@ -185,10 +187,14 @@ css_evaluate_subchannel(int irq, int slow)
 	unsigned long flags;
 
 	sch = get_subchannel_by_schid(irq);
+	if (sch)
+		spin_lock_irqsave(&sch->lock, flags);
 	disc = sch ? device_is_disconnected(sch) : 0;
 	if (disc && slow) {
-		if (sch)
+		if (sch) {
+			spin_unlock_irqrestore(&sch->lock, flags);
 			put_device(&sch->dev);
+		}
 		return 0; /* Already processed. */
 	}
 	/*
@@ -198,8 +204,10 @@ css_evaluate_subchannel(int irq, int slow)
 	if (sch)
 		device_kill_pending_timer(sch);
 	if (!disc && !slow) {
-		if (sch)
+		if (sch) {
+			spin_unlock_irqrestore(&sch->lock, flags);
 			put_device(&sch->dev);
+		}
 		return -EAGAIN; /* Will be done on the slow path. */
 	}
 	event = css_get_subchannel_status(sch, irq);
@@ -224,29 +232,38 @@ css_evaluate_subchannel(int irq, int slow)
 			 * coming operational again. It won't do harm in real
 			 * no path situations.
 			 */
-			spin_lock_irqsave(&sch->lock, flags);
 			device_trigger_reprobe(sch);
-			spin_unlock_irqrestore(&sch->lock, flags);
 			ret = 0;
 			break;
 		}
-		if (sch->driver && sch->driver->notify &&
-		    sch->driver->notify(&sch->dev, event)) {
-			cio_disable_subchannel(sch);
-			device_set_disconnected(sch);
-			ret = 0;
-			break;
+		/* Set to disconnected now to prevent unwanted effects when
+		 * opening the lock for the notify call. */
+		cio_disable_subchannel(sch);
+		device_set_disconnected(sch);
+		/* If specified, ask driver what to do with device. */
+		if (sch->driver && sch->driver->notify) {
+			spin_unlock_irqrestore(&sch->lock, flags);
+			ret = sch->driver->notify(&sch->dev, event);
+			spin_lock_irqsave(&sch->lock, flags);
+			if (ret) {
+				ret = 0;
+				break;
+			}
 		}
 		/*
 		 * Unregister subchannel.
 		 * The device will be killed automatically.
 		 */
-		cio_disable_subchannel(sch);
+		/* device_unregister calls io_subchannel_shutdown and
+		 * io_subchannel_remove. io_subchannel_remove takes
+		 * ccw_device->lock which is the same as subchannel lock.
+		 * Therefore unlock before call. */
+		spin_unlock_irqrestore(&sch->lock, flags);
 		device_unregister(&sch->dev);
+		spin_lock_irqsave(&sch->lock, flags);
 		/* Reset intparm to zeroes. */
 		sch->schib.pmcw.intparm = 0;
 		cio_modify(sch);
-		put_device(&sch->dev);
 		ret = 0;
 		break;
 	case CIO_REVALIDATE:
@@ -256,35 +273,36 @@ css_evaluate_subchannel(int irq, int slow)
 		 * away in any case.
 		 */
 		if (!disc) {
+			spin_unlock_irqrestore(&sch->lock, flags);
 			device_unregister(&sch->dev);
+			spin_lock_irqsave(&sch->lock, flags);
 			/* Reset intparm to zeroes. */
 			sch->schib.pmcw.intparm = 0;
 			cio_modify(sch);
-			put_device(&sch->dev);
 			ret = css_probe_device(irq);
 		} else {
 			/*
 			 * We can't immediately deregister the disconnected
 			 * device since it might block.
 			 */
-			spin_lock_irqsave(&sch->lock, flags);
 			device_trigger_reprobe(sch);
-			spin_unlock_irqrestore(&sch->lock, flags);
 			ret = 0;
 		}
 		break;
 	case CIO_OPER:
 		if (disc) {
-			spin_lock_irqsave(&sch->lock, flags);
 			/* Get device operational again. */
 			device_trigger_reprobe(sch);
-			spin_unlock_irqrestore(&sch->lock, flags);
 		}
 		ret = sch ? 0 : css_probe_device(irq);
 		break;
 	default:
 		BUG();
 		ret = 0;
+	}
+	if (sch) {
+		spin_unlock_irqrestore(&sch->lock, flags);
+		put_device(&sch->dev);
 	}
 	return ret;
 }
@@ -345,6 +363,52 @@ css_trigger_slow_path(void)
 typedef void (*workfunc)(void *);
 DECLARE_WORK(slow_path_work, (workfunc)css_trigger_slow_path, NULL);
 struct workqueue_struct *slow_path_wq;
+
+/* Work function used to reprobe all unregistered subchannels. */
+static void
+reprobe_all(void *data)
+{
+	unsigned int schid;
+	struct subchannel *sch;
+	int ret;
+
+	CIO_MSG_EVENT(2, "reprobe start\n");
+
+	need_reprobe = 0;
+	/* Make sure initial subchannel scan is done. */
+	wait_event(ccw_device_init_wq,
+		   atomic_read(&ccw_device_init_count) == 0);
+
+	for (schid = 0; schid < __MAX_SUBCHANNELS && !need_reprobe; schid++) {
+		CIO_DEBUG(KERN_INFO, 6, "cio: reprobe %04x\n", schid);
+		sch = get_subchannel_by_schid(schid);
+		if (sch) {
+			/* Already known. */
+			put_device(&sch->dev);
+			continue;
+		}
+
+		ret = css_probe_device(schid);
+		if (ret == -ENXIO || ret == -ENOMEM)
+			/* These should abort looping */
+			break;
+	}	
+
+	CIO_MSG_EVENT(2, "reprobe done (need_reprobe=%d)\n", need_reprobe);
+}
+
+
+DECLARE_WORK(css_reprobe_work, reprobe_all, NULL);
+
+/* Schedule reprobing of all unregistered subchannels. */
+void
+css_schedule_reprobe(void)
+{
+	need_reprobe = 1;
+	queue_work(ccw_device_work, &css_reprobe_work);
+}
+
+EXPORT_SYMBOL_GPL(css_schedule_reprobe);
 
 /*
  * Rescan for new devices. FIXME: This is slow.

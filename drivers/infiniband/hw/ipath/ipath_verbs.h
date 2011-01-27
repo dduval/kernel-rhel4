@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -41,7 +42,6 @@
 
 #include "ipath_backport.h"
 #include "ipath_layer.h"
-#include "verbs_debug.h"
 
 #define QPN_MAX                 (1 << 24)
 #define QPNMAP_ENTRIES          (QPN_MAX / PAGE_SIZE / BITS_PER_BYTE)
@@ -152,19 +152,6 @@ struct ipath_mcast {
 	int n_attached;
 };
 
-/* Memory region */
-struct ipath_mr {
-	struct ib_mr ibmr;
-	struct ipath_mregion mr;	/* must be last */
-};
-
-/* Fast memory region */
-struct ipath_fmr {
-	struct ib_fmr ibfmr;
-	u8 page_shift;
-	struct ipath_mregion mr;	/* must be last */
-};
-
 /* Protection domain */
 struct ipath_pd {
 	struct ib_pd ibpd;
@@ -233,6 +220,54 @@ struct ipath_cq {
 };
 
 /*
+ * A segment is a linear region of low physical memory.
+ * XXX Maybe we should use phys addr here and kmap()/kunmap().
+ * Used by the verbs layer.
+ */
+struct ipath_seg {
+	void *vaddr;
+	size_t length;
+};
+
+/* The number of ipath_segs that fit in a page. */
+#define IPATH_SEGSZ     (PAGE_SIZE / sizeof (struct ipath_seg))
+
+struct ipath_segarray {
+	struct ipath_seg segs[IPATH_SEGSZ];
+};
+
+struct ipath_mregion {
+	u64 user_base;		/* User's address for this region */
+	u64 iova;		/* IB start address of this region */
+	size_t length;
+	u32 lkey;
+	u32 offset;		/* offset (bytes) to start of region */
+	int access_flags;
+	u32 max_segs;		/* number of ipath_segs in all the arrays */
+	u32 mapsz;		/* size of the map array */
+	struct ipath_segarray *map[0];	/* the segments */
+};
+
+/*
+ * These keep track of the copy progress within a memory region.
+ * Used by the verbs layer.
+ */
+struct ipath_sge {
+	struct ipath_mregion *mr;
+	void *vaddr;		/* current pointer into the segment */
+	u32 sge_length;		/* length of the SGE */
+	u32 length;		/* remaining length of the segment */
+	u16 m;			/* current index: mr->map[m] */
+	u16 n;			/* current index: mr->map[m]->segs[n] */
+};
+
+/* Memory region */
+struct ipath_mr {
+	struct ib_mr ibmr;
+	struct ipath_mregion mr;	/* must be last */
+};
+
+/*
  * Send work request queue entry.
  * The size of the sg_list is determined when the QP is created and stored
  * in qp->s_max_sge.
@@ -272,6 +307,12 @@ struct ipath_srq {
 	struct ipath_rq rq;
 	/* send signal when number of RWQEs < limit */
 	u32 limit;
+};
+
+struct ipath_sge_state {
+	struct ipath_sge *sg_list;      /* next SGE to be used if any */
+	struct ipath_sge sge;   /* progress state for the current SGE */
+	u8 num_sge;
 };
 
 /*
@@ -333,7 +374,9 @@ struct ipath_qp {
 	u8 s_rnr_retry_cnt;
 	u8 s_retry;		/* requester retry counter */
 	u8 s_rnr_retry;		/* requester RNR retry counter */
+	u8 s_wait_credit;	/* limit number of unacked packets sent */
 	u8 s_pkey_index;	/* PKEY index to use */
+	u8 timeout;		/* Timeout for this QP */
 	enum ib_mtu path_mtu;
 	u32 remote_qpn;
 	u32 qkey;		/* QKEY for this QP (for UD or RD) */
@@ -353,6 +396,8 @@ struct ipath_qp {
  */
 #define IPATH_S_BUSY		0
 #define IPATH_S_SIGNAL_REQ_WR	1
+
+#define IPATH_PSN_CREDIT	2048
 
 /*
  * Since struct ipath_swqe is not a fixed size, we can't simply index into
@@ -435,11 +480,20 @@ struct ipath_ibdev {
 	__be64 sys_image_guid;	/* in network order */
 	__be64 gid_prefix;	/* in network order */
 	__be64 mkey;
+
 	u32 n_pds_allocated;	/* number of PDs allocated for device */
+	spinlock_t n_pds_lock;
 	u32 n_ahs_allocated;	/* number of AHs allocated for device */
+	spinlock_t n_ahs_lock;
 	u32 n_cqs_allocated;	/* number of CQs allocated for device */
+	spinlock_t n_cqs_lock;
+	u32 n_qps_allocated;	/* number of QPs allocated for device */
+	spinlock_t n_qps_lock;
 	u32 n_srqs_allocated;	/* number of SRQs allocated for device */
+	spinlock_t n_srqs_lock;
 	u32 n_mcast_grps_allocated; /* number of mcast groups allocated */
+	spinlock_t n_mcast_grps_lock;
+
 	u64 ipath_sword;	/* total dwords sent (sample result) */
 	u64 ipath_rword;	/* total dwords received (sample result) */
 	u64 ipath_spkts;	/* total packets sent (sample result) */
@@ -472,6 +526,7 @@ struct ipath_ibdev {
 	u32 n_rnr_naks;
 	u32 n_other_naks;
 	u32 n_timeouts;
+	u32 n_rc_stalls;
 	u32 n_pkt_drops;
 	u32 n_vl15_dropped;
 	u32 n_wqe_errs;
@@ -494,18 +549,24 @@ struct ipath_ibdev {
 	struct ipath_opcode_stats opstats[128];
 };
 
-struct ipath_ucontext {
-	struct ib_ucontext ibucontext;
+struct ipath_verbs_counters {
+	u64 symbol_error_counter;
+	u64 link_error_recovery_counter;
+	u64 link_downed_counter;
+	u64 port_rcv_errors;
+	u64 port_rcv_remphys_errors;
+	u64 port_xmit_discards;
+	u64 port_xmit_data;
+	u64 port_rcv_data;
+	u64 port_xmit_packets;
+	u64 port_rcv_packets;
+	u32 local_link_integrity_errors;
+	u32 excessive_buffer_overrun_errors;
 };
 
 static inline struct ipath_mr *to_imr(struct ib_mr *ibmr)
 {
 	return container_of(ibmr, struct ipath_mr, ibmr);
-}
-
-static inline struct ipath_fmr *to_ifmr(struct ib_fmr *ibfmr)
-{
-	return container_of(ibfmr, struct ipath_fmr, ibfmr);
 }
 
 static inline struct ipath_pd *to_ipd(struct ib_pd *ibpd)
@@ -545,12 +606,6 @@ int ipath_process_mad(struct ib_device *ibdev,
 		      struct ib_grh *in_grh,
 		      struct ib_mad *in_mad, struct ib_mad *out_mad);
 
-static inline struct ipath_ucontext *to_iucontext(struct ib_ucontext
-						  *ibucontext)
-{
-	return container_of(ibucontext, struct ipath_ucontext, ibucontext);
-}
-
 /*
  * Compare the lower 24 bits of the two values.
  * Returns an integer <, ==, or > than zero.
@@ -561,6 +616,13 @@ static inline int ipath_cmp24(u32 a, u32 b)
 }
 
 struct ipath_mcast *ipath_mcast_find(union ib_gid *mgid);
+
+int ipath_snapshot_counters(struct ipath_devdata *dd, u64 *swords,
+			    u64 *rwords, u64 *spkts, u64 *rpkts,
+			    u64 *xmit_wait);
+
+int ipath_get_counters(struct ipath_devdata *dd,
+		       struct ipath_verbs_counters *cntrs);
 
 int ipath_multicast_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid);
 
@@ -591,6 +653,9 @@ int ipath_init_qp_table(struct ipath_ibdev *idev, int size);
 void ipath_sqerror_qp(struct ipath_qp *qp, struct ib_wc *wc);
 
 void ipath_get_credit(struct ipath_qp *qp, u32 aeth);
+
+int ipath_verbs_send(struct ipath_devdata *dd, u32 hdrwords,
+		     u32 *hdr, u32 len, struct ipath_sge_state *ss);
 
 void ipath_cq_enter(struct ipath_cq *cq, struct ib_wc *entry, int sig);
 
@@ -700,6 +765,22 @@ int ipath_make_rc_req(struct ipath_qp *qp, struct ipath_other_headers *ohdr,
 int ipath_make_uc_req(struct ipath_qp *qp, struct ipath_other_headers *ohdr,
 		      u32 pmtu, u32 *bth0p, u32 *bth2p);
 
+int ipath_register_ib_device(struct ipath_devdata *);
+
+void ipath_unregister_ib_device(struct ipath_ibdev *);
+
+void ipath_ib_rcv(struct ipath_ibdev *, void *, void *, u32);
+
+int ipath_ib_piobufavail(struct ipath_ibdev *);
+
+void ipath_ib_timer(struct ipath_ibdev *);
+
+unsigned ipath_get_npkeys(struct ipath_devdata *);
+
+u32 ipath_get_cr_errpkey(struct ipath_devdata *);
+
+unsigned ipath_get_pkey(struct ipath_devdata *, unsigned);
+
 extern const enum ib_wc_opcode ib_ipath_wc_opcode[];
 
 extern const u8 ipath_cvt_physportstate[];
@@ -713,6 +794,8 @@ extern unsigned int ib_ipath_max_cqes;
 extern unsigned int ib_ipath_max_cqs;
 
 extern unsigned int ib_ipath_max_qp_wrs;
+
+extern unsigned int ib_ipath_max_qps;
 
 extern unsigned int ib_ipath_max_sges;
 

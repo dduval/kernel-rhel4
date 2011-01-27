@@ -48,14 +48,9 @@
 #include "ehca_tools.h"
 #include "hipz_hw.h"
 
-/**
- * hipz_h_alloc_resource_eq - Allocate EQ resources in HW and FW, initalize
+/*
+ * hipz_h_alloc_resource_eq allocates EQ resources in HW and FW, initalize
  * resources, create the empty EQPT (ring).
- *
- * @eq_handle:         eq handle for this queue
- * @act_nr_of_entries: actual number of queue entries
- * @act_pages:         actual number of queue pages
- * @eq_ist:            used by hcp_H_XIRR() call
  */
 u64 hipz_h_alloc_resource_eq(const struct ipz_adapter_handle adapter_handle,
 			     struct ehca_pfeq *pfeq,
@@ -69,27 +64,18 @@ u64 hipz_h_alloc_resource_eq(const struct ipz_adapter_handle adapter_handle,
 u64 hipz_h_reset_event(const struct ipz_adapter_handle adapter_handle,
 		       struct ipz_eq_handle eq_handle,
 		       const u64 event_mask);
-/**
- * hipz_h_allocate_resource_cq - Allocate CQ resources in HW and FW, initialize
+/*
+ * hipz_h_allocate_resource_cq allocates CQ resources in HW and FW, initialize
  * resources, create the empty CQPT (ring).
- *
- * @eq_handle:         eq handle to use for this cq
- * @cq_handle:         cq handle for this queue
- * @act_nr_of_entries: actual number of queue entries
- * @act_pages:         actual number of queue pages
- * @galpas:            contain logical adress of priv. storage and
- *                     log_user_storage
  */
 u64 hipz_h_alloc_resource_cq(const struct ipz_adapter_handle adapter_handle,
 			     struct ehca_cq *cq,
 			     struct ehca_alloc_cq_parms *param);
 
 
-/**
- * hipz_h_alloc_resource_qp - Allocate QP resources in HW and FW,
+/*
+ * hipz_h_alloc_resource_qp allocates QP resources in HW and FW,
  * initialize resources, create empty QPPTs (2 rings).
- *
- * @h_galpas to access HCA resident QP attributes
  */
 u64 hipz_h_alloc_resource_qp(const struct ipz_adapter_handle adapter_handle,
 			     struct ehca_qp *qp,
@@ -102,11 +88,9 @@ u64 hipz_h_query_port(const struct ipz_adapter_handle adapter_handle,
 u64 hipz_h_query_hca(const struct ipz_adapter_handle adapter_handle,
 		     struct hipz_query_hca *query_hca_rblock);
 
-/**
- * hipz_h_register_rpage - hcp_if.h internal function for all
+/*
+ * hipz_h_register_rpage internal function in hcp_if.h for all
  * hcp_H_REGISTER_RPAGE calls.
- *
- * @logical_address_of_page: kv transformation to GX address in this routine
  */
 u64 hipz_h_register_rpage(const struct ipz_adapter_handle adapter_handle,
 			  const u8 pagesize,
@@ -203,16 +187,9 @@ u64 hipz_h_destroy_cq(const struct ipz_adapter_handle adapter_handle,
 u64 hipz_h_destroy_eq(const struct ipz_adapter_handle adapter_handle,
 		      struct ehca_eq *eq);
 
-/**
- * hipz_h_alloc_resource_mr - Allocate MR resources in HW and FW, initialize
+/*
+ * hipz_h_alloc_resource_mr allocates MR resources in HW and FW, initialize
  * resources.
- *
- * @mr:          ehca MR
- * @vaddr:       Memory Region I/O Virtual Address
- * @length:      Memory Region Length
- * @access_ctrl: Memory Region Access Controls
- * @pd:          Protection Domain
- * @outparms:    output parameters
  */
 u64 hipz_h_alloc_resource_mr(const struct ipz_adapter_handle adapter_handle,
 			     const struct ehca_mr *mr,
@@ -222,12 +199,7 @@ u64 hipz_h_alloc_resource_mr(const struct ipz_adapter_handle adapter_handle,
 			     const struct ipz_pd pd,
 			     struct ehca_mr_hipzout_parms *outparms);
 
-/**
- * hipz_h_register_rpage_mr - Register MR resource page in HW and FW .
- *
- * @mr:         ehca MR
- * @queue_type: must be zero for MR
- */
+/* hipz_h_register_rpage_mr registers MR resource pages in HW and FW */
 u64 hipz_h_register_rpage_mr(const struct ipz_adapter_handle adapter_handle,
 			     const struct ehca_mr *mr,
 			     const u8 pagesize,
@@ -235,35 +207,16 @@ u64 hipz_h_register_rpage_mr(const struct ipz_adapter_handle adapter_handle,
 			     const u64 logical_address_of_page,
 			     const u64 count);
 
-/**
- * hipz_h_query_mr - Query MR in HW and FW.
- *
- * @mr:       ehca MR
- * @outparms: output parameters
- */
+/* hipz_h_query_mr queries MR in HW and FW */
 u64 hipz_h_query_mr(const struct ipz_adapter_handle adapter_handle,
 		    const struct ehca_mr *mr,
 		    struct ehca_mr_hipzout_parms *outparms);
 
-/**
- * hipz_h_free_resource_mr - Free MR resources in HW and FW.
- *
- * @mr: ehca MR
- */
+/* hipz_h_free_resource_mr frees MR resources in HW and FW */
 u64 hipz_h_free_resource_mr(const struct ipz_adapter_handle adapter_handle,
 			    const struct ehca_mr *mr);
 
-/**
- * hipz_h_reregister_pmr - Reregister MR in HW and FW.
- *
- * @mr:          ehca MR
- * @vaddr_in:    Memory Region I/O Virtual Address
- * @length:      Memory Region Length
- * @access_ctrl: Memory Region Access Controls
- * @pd:          Protection Domain
- * @mr_addr_cb:  Logical Address of MR Control Block
- * @outparms:    output parameters
- */
+/* hipz_h_reregister_pmr reregisters MR in HW and FW */
 u64 hipz_h_reregister_pmr(const struct ipz_adapter_handle adapter_handle,
 			  const struct ehca_mr *mr,
 			  const u64 vaddr_in,
@@ -273,16 +226,7 @@ u64 hipz_h_reregister_pmr(const struct ipz_adapter_handle adapter_handle,
 			  const u64 mr_addr_cb,
 			  struct ehca_mr_hipzout_parms *outparms);
 
-/**
- * hipz_h_register_smr - Register shared MR in HW and FW.
- *
- * @mr:          ehca MR
- * @orig_mr:     original ehca MR
- * @vaddr_in:    Memory Region I/O Virtual Address of new shared MR
- * @access_ctrl: Memory Region Access Controls of new shared MR
- * @pd:          Protection Domain of new shared MR
- * @outparms:    output parameters
- */
+/* hipz_h_register_smr register shared MR in HW and FW */
 u64 hipz_h_register_smr(const struct ipz_adapter_handle adapter_handle,
 			const struct ehca_mr *mr,
 			const struct ehca_mr *orig_mr,
@@ -291,34 +235,21 @@ u64 hipz_h_register_smr(const struct ipz_adapter_handle adapter_handle,
 			const struct ipz_pd pd,
 			struct ehca_mr_hipzout_parms *outparms);
 
-/**
- * hipz_h_alloc_resource_mw - Allocate MR resources in HW and FW, initialize
+/*
+ * hipz_h_alloc_resource_mw allocates MW resources in HW and FW, initialize
  * resources.
- *
- * @mw:       ehca MW
- * @pd:       Protection Domain
- * @outparms: output parameters
  */
 u64 hipz_h_alloc_resource_mw(const struct ipz_adapter_handle adapter_handle,
 			     const struct ehca_mw *mw,
 			     const struct ipz_pd pd,
 			     struct ehca_mw_hipzout_parms *outparms);
 
-/**
- * hipz_h_query_mw - Query MW in HW and FW.
- *
- * @mw:       ehca MW
- * @outparms: output parameters
- */
+/* hipz_h_query_mw queries MW in HW and FW */
 u64 hipz_h_query_mw(const struct ipz_adapter_handle adapter_handle,
 		    const struct ehca_mw *mw,
 		    struct ehca_mw_hipzout_parms *outparms);
 
-/**
- * hipz_h_free_resource_mw - Free MW resources in HW and FW.
- *
- * @mw: ehca MW
- */
+/* hipz_h_free_resource_mw frees MW resources in HW and FW */
 u64 hipz_h_free_resource_mw(const struct ipz_adapter_handle adapter_handle,
 			    const struct ehca_mw *mw);
 

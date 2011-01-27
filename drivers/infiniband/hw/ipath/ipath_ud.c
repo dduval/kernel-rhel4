@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -33,7 +34,8 @@
 #include <rdma/ib_smi.h>
 
 #include "ipath_verbs.h"
-#include "ips_common.h"
+#include "ipath_kernel.h"
+#include "ipath_common.h"
 
 /**
  * ipath_ud_loopback - handle send on loopback QPs
@@ -275,7 +277,7 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 		ss.num_sge++;
 	}
 	/* Check for invalid packet size. */
-	if (len > ipath_layer_get_ibmtu(dev->dd)) {
+	if (len > dev->dd->ipath_ibmtu) {
 		ret = -EINVAL;
 		goto bail;
 	}
@@ -288,8 +290,8 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 		ret = -EINVAL;
 		goto bail;
 	}
-	if (ah_attr->dlid >= IPS_MULTICAST_LID_BASE) {
-		if (ah_attr->dlid != IPS_PERMISSIVE_LID)
+	if (ah_attr->dlid >= IPATH_MULTICAST_LID_BASE) {
+		if (ah_attr->dlid != IPATH_PERMISSIVE_LID)
 			dev->n_multicast_xmit++;
 		else
 			dev->n_unicast_xmit++;
@@ -297,7 +299,7 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 		dev->n_unicast_xmit++;
 		lid = ah_attr->dlid &
 			~((1 << (dev->mkeyprot_resv_lmc & 7)) - 1);
-		if (unlikely(lid == ipath_layer_get_lid(dev->dd))) {
+		if (unlikely(lid == dev->dd->ipath_lid)) {
 			/*
 			 * Pass in an uninitialized ib_wc to save stack
 			 * space.
@@ -309,7 +311,7 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	if (ah_attr->ah_flags & IB_AH_GRH) {
 		/* Header size in 32-bit words. */
 		hwords = 17;
-		lrh0 = IPS_LRH_GRH;
+		lrh0 = IPATH_LRH_GRH;
 		ohdr = &qp->s_hdr.u.l.oth;
 		qp->s_hdr.u.l.grh.version_tclass_flow =
 			cpu_to_be32((6 << 28) |
@@ -326,7 +328,7 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 		qp->s_hdr.u.l.grh.sgid.global.subnet_prefix =
 			dev->gid_prefix;
 		qp->s_hdr.u.l.grh.sgid.global.interface_id =
-			ipath_layer_get_guid(dev->dd);
+			dev->dd->ipath_guid;
 		qp->s_hdr.u.l.grh.dgid = ah_attr->grh.dgid;
 		/*
 		 * Don't worry about sending to locally attached multicast
@@ -335,7 +337,7 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	} else {
 		/* Header size in 32-bit words. */
 		hwords = 7;
-		lrh0 = IPS_LRH_BTH;
+		lrh0 = IPATH_LRH_BTH;
 		ohdr = &qp->s_hdr.u.oth;
 	}
 	if (wr->opcode == IB_WR_SEND_WITH_IMM) {
@@ -356,7 +358,7 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	qp->s_hdr.lrh[0] = cpu_to_be16(lrh0);
 	qp->s_hdr.lrh[1] = cpu_to_be16(ah_attr->dlid);	/* DEST LID */
 	qp->s_hdr.lrh[2] = cpu_to_be16(hwords + nwords + SIZE_OF_CRC);
-	lid = ipath_layer_get_lid(dev->dd);
+	lid = dev->dd->ipath_lid;
 	if (lid) {
 		lid |= ah_attr->src_path_bits &
 			((1 << (dev->mkeyprot_resv_lmc & 7)) - 1);
@@ -366,18 +368,18 @@ int ipath_post_ud_send(struct ipath_qp *qp, struct ib_send_wr *wr)
 	if (wr->send_flags & IB_SEND_SOLICITED)
 		bth0 |= 1 << 23;
 	bth0 |= extra_bytes << 20;
-	bth0 |= qp->ibqp.qp_type == IB_QPT_SMI ? IPS_DEFAULT_P_KEY :
-		ipath_layer_get_pkey(dev->dd, qp->s_pkey_index);
+	bth0 |= qp->ibqp.qp_type == IB_QPT_SMI ? IPATH_DEFAULT_P_KEY :
+		ipath_get_pkey(dev->dd, qp->s_pkey_index);
 	ohdr->bth[0] = cpu_to_be32(bth0);
 	/*
 	 * Use the multicast QP if the destination LID is a multicast LID.
 	 */
-	ohdr->bth[1] = ah_attr->dlid >= IPS_MULTICAST_LID_BASE &&
-		ah_attr->dlid != IPS_PERMISSIVE_LID ?
-		__constant_cpu_to_be32(IPS_MULTICAST_QPN) :
+	ohdr->bth[1] = ah_attr->dlid >= IPATH_MULTICAST_LID_BASE &&
+		ah_attr->dlid != IPATH_PERMISSIVE_LID ?
+		__constant_cpu_to_be32(IPATH_MULTICAST_QPN) :
 		cpu_to_be32(wr->wr.ud.remote_qpn);
 	/* XXX Could lose a PSN count but not worth locking */
-	ohdr->bth[2] = cpu_to_be32(qp->s_next_psn++ & IPS_PSN_MASK);
+	ohdr->bth[2] = cpu_to_be32(qp->s_next_psn++ & IPATH_PSN_MASK);
 	/*
 	 * Qkeys with the high order bit set mean use the
 	 * qkey from the QP context instead of the WR (see 10.2.5).
@@ -457,8 +459,7 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 		 * the eager header buffer size to 56 bytes so the last 12
 		 * bytes of the IB header is in the data buffer.
 		 */
-		header_in_data =
-			ipath_layer_get_rcvhdrentsize(dev->dd) == 16;
+		header_in_data = dev->dd->ipath_rcvhdrentsize == 16;
 		if (header_in_data) {
 			qkey = be32_to_cpu(((__be32 *) data)[1]);
 			src_qp = be32_to_cpu(((__be32 *) data)[2]);
@@ -468,7 +469,7 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 			src_qp = be32_to_cpu(ohdr->u.ud.deth[1]);
 		}
 	}
-	src_qp &= IPS_QPN_MASK;
+	src_qp &= IPATH_QPN_MASK;
 
 	/*
 	 * Check that the permissive LID is only used on QP0
@@ -626,7 +627,7 @@ void ipath_ud_rcv(struct ipath_ibdev *dev, struct ipath_ib_header *hdr,
 	/*
 	 * Save the LMC lower bits if the destination LID is a unicast LID.
 	 */
-	wc.dlid_path_bits = dlid >= IPS_MULTICAST_LID_BASE ? 0 :
+	wc.dlid_path_bits = dlid >= IPATH_MULTICAST_LID_BASE ? 0 :
 		dlid & ((1 << (dev->mkeyprot_resv_lmc & 7)) - 1);
 	/* Signal completion event if the solicited bit is set. */
 	ipath_cq_enter(to_icq(qp->ibqp.recv_cq), &wc,

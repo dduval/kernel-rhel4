@@ -120,6 +120,7 @@ struct dentry * tux_lookup (tux_req_t *req, const char *filename,
 
 	base.flags = LOOKUP_FOLLOW|flag;
 	base.last_type = LAST_ROOT;
+	base.depth = 0;
 	if (req->objectname[0] == '/') {
 		base.dentry = dget(req->docroot_dentry);
 		base.mnt = mntget(req->docroot_mnt);
@@ -128,8 +129,7 @@ struct dentry * tux_lookup (tux_req_t *req, const char *filename,
 			req->cwd_dentry = dget(req->docroot_dentry);
 			req->cwd_mnt = mntget(req->docroot_mnt);
 		}
-		base.dentry = req->cwd_dentry;
-		dget(base.dentry);
+		base.dentry = dget(req->cwd_dentry);
 		base.mnt = mntget(req->cwd_mnt);
 	}
 

@@ -141,8 +141,19 @@ extern void __kernel_vsyscall;
 #define VSYSCALL_ENTRY	(VSYSCALL_BASE + VSYSCALL_OFFSET)
 
 /* kernel-internal fixmap address: */
+#ifdef CONFIG_XEN
+#define __VSYSCALL_BASE	(PAGE_OFFSET - 2*PAGE_SIZE)
+#else
 #define __VSYSCALL_BASE	(__fix_to_virt(FIX_VSYSCALL))
+#endif
 #define __VSYSCALL_EHDR	((const struct elfhdr *) __VSYSCALL_BASE)
+
+#ifdef CONFIG_XEN
+//#define ARCH_HAS_SETUP_ADDITIONAL_PAGES
+struct linux_binprm;
+extern int arch_setup_additional_pages(struct linux_binprm *bprm,
+					int executable_stack);
+#endif
 
 #define ARCH_DLINFO							\
 do {									\

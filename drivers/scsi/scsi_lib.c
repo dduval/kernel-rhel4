@@ -262,6 +262,63 @@ void scsi_wait_req(struct scsi_request *sreq, const void *cmnd, void *buffer,
 	__scsi_release_request(sreq);
 }
 
+/**
+ * scsi_execute - insert request and wait for the result
+ * @sdev:	scsi device
+ * @cmd:	scsi command
+ * @data_direction: data direction
+ * @buffer:	data buffer
+ * @bufflen:	len of buffer
+ * @sense:	optional sense buffer
+ * @timeout:	request timeout in seconds
+ * @retries:	number of times to retry request
+ * @flags:	or into request flags;
+ *
+ * returns the scsi_cmnd result field.
+ **/
+int scsi_execute(struct scsi_device *sdev, const unsigned char *cmd,
+		 int data_direction, void *buffer, unsigned bufflen,
+		 unsigned char *sense, int timeout, int retries, int flags)
+{
+	struct scsi_request *sreq = scsi_allocate_request(sdev, GFP_KERNEL);
+	int res;
+
+	if (!sreq)
+		return -1;
+
+	sreq->sr_data_direction = data_direction;
+
+	scsi_wait_req(sreq, cmd, buffer, bufflen, timeout, retries);
+	memcpy(sense, sreq->sr_sense_buffer, SCSI_SENSE_BUFFERSIZE);
+	res = sreq->sr_result;
+	scsi_release_request(sreq);
+
+	return res;
+}
+EXPORT_SYMBOL(scsi_execute);
+
+int scsi_execute_req(struct scsi_device *sdev, const unsigned char *cmd,
+		     int data_direction, void *buffer, unsigned bufflen,
+		     struct scsi_sense_hdr *sshdr, int timeout, int retries)
+{
+	char *sense = NULL;
+	int result;
+	
+	if (sshdr) {
+		sense = kzalloc(SCSI_SENSE_BUFFERSIZE, GFP_NOIO);
+		if (!sense)
+			return DRIVER_ERROR << 24;
+	}
+	result = scsi_execute(sdev, cmd, data_direction, buffer, bufflen,
+			      sense, timeout, retries, 0);
+	if (sshdr)
+		scsi_normalize_sense(sense, SCSI_SENSE_BUFFERSIZE, sshdr);
+
+	kfree(sense);
+	return result;
+}
+EXPORT_SYMBOL(scsi_execute_req);
+
 /*
  * Function:    scsi_init_cmd_errh()
  *
@@ -430,7 +487,14 @@ static void scsi_run_queue(struct request_queue *q)
 		list_del_init(&sdev->starved_entry);
 		spin_unlock_irqrestore(shost->host_lock, flags);
 
-		blk_run_queue(sdev->request_queue);
+		if (test_bit(QUEUE_FLAG_REENTER, &q->queue_flags) &&
+		    !test_and_set_bit(QUEUE_FLAG_REENTER,
+				      &sdev->request_queue->queue_flags)) {
+			blk_run_queue(sdev->request_queue);
+			clear_bit(QUEUE_FLAG_REENTER,
+				  &sdev->request_queue->queue_flags);
+		} else
+			blk_run_queue(sdev->request_queue);
 
 		spin_lock_irqsave(shost->host_lock, flags);
 		if (unlikely(!list_empty(&sdev->starved_entry)))

@@ -43,22 +43,20 @@
 #ifndef __IPZ_PT_FN_H__
 #define __IPZ_PT_FN_H__
 
-#include "ehca_qes.h"
 #define EHCA_PAGESHIFT   12
 #define EHCA_PAGESIZE   4096UL
+#define EHCA_PAGEMASK   (~(EHCA_PAGESIZE-1))
 #define EHCA_PT_ENTRIES 512UL
 
 #include "ehca_tools.h"
 #include "ehca_qes.h"
 
-/* struct generic ehca page
- */
+/* struct generic ehca page */
 struct ipz_page {
 	u8 entries[EHCA_PAGESIZE];
 };
 
-/* struct generic queue in linux kernel virtual memory (kv)
- */
+/* struct generic queue in linux kernel virtual memory (kv) */
 struct ipz_queue {
 	u64 current_q_offset;	/* current queue entry */
 
@@ -71,45 +69,47 @@ struct ipz_queue {
 	u32 dummy3;		/* 64 bit alignment */
 };
 
-/*  return current Queue Entry for a certain q_offset
- *   returns address (kv) of Queue Entry
+/*
+ * return current Queue Entry for a certain q_offset
+ * returns address (kv) of Queue Entry
  */
 static inline void *ipz_qeit_calc(struct ipz_queue *queue, u64 q_offset)
 {
-	struct ipz_page *current_page = NULL;
+	struct ipz_page *current_page;
 	if (q_offset >= queue->queue_length)
 		return NULL;
 	current_page = (queue->queue_pages)[q_offset >> EHCA_PAGESHIFT];
 	return  &current_page->entries[q_offset & (EHCA_PAGESIZE - 1)];
 }
 
-/*  return current Queue Entry
- *   returns address (kv) of Queue Entry
+/*
+ * return current Queue Entry
+ * returns address (kv) of Queue Entry
  */
 static inline void *ipz_qeit_get(struct ipz_queue *queue)
 {
 	return ipz_qeit_calc(queue, queue->current_q_offset);
 }
 
-/*  return current Queue Page , increment Queue Page iterator from
- *   page to page in struct ipz_queue, last increment will return 0! and
- *   NOT wrap
- *   returns address (kv) of Queue Page
- *   warning don't use in parallel with ipz_QE_get_inc()
+/*
+ * return current Queue Page , increment Queue Page iterator from
+ * page to page in struct ipz_queue, last increment will return 0! and
+ * NOT wrap
+ * returns address (kv) of Queue Page
+ * warning don't use in parallel with ipz_QE_get_inc()
  */
 void *ipz_qpageit_get_inc(struct ipz_queue *queue);
 
-/*  return current Queue Entry, increment Queue Entry iterator by one
- *   step in struct ipz_queue, will wrap in ringbuffer
- *   @returns address (kv) of Queue Entry BEFORE increment
- *   warning don't use in parallel with ipz_qpageit_get_inc()
- *   warning unpredictable results may occur if steps>act_nr_of_queue_entries
+/*
+ * return current Queue Entry, increment Queue Entry iterator by one
+ * step in struct ipz_queue, will wrap in ringbuffer
+ * returns address (kv) of Queue Entry BEFORE increment
+ * warning don't use in parallel with ipz_qpageit_get_inc()
+ * warning unpredictable results may occur if steps>act_nr_of_queue_entries
  */
 static inline void *ipz_qeit_get_inc(struct ipz_queue *queue)
 {
-	void *ret = NULL;
-
-	ret = ipz_qeit_get(queue);
+	void *ret = ipz_qeit_get(queue);
 	queue->current_q_offset += queue->qe_size;
 	if (queue->current_q_offset >= queue->queue_length) {
 		queue->current_q_offset = 0;
@@ -117,18 +117,16 @@ static inline void *ipz_qeit_get_inc(struct ipz_queue *queue)
 		queue->toggle_state = (~queue->toggle_state) & 1;
 	}
 
-	EDEB(7, "queue=%p ret=%p new current_q_addr=%lx qe_size=%x",
-	     queue, ret, queue->current_q_offset, queue->qe_size);
-
 	return ret;
 }
 
-/*  return current Queue Entry, increment Queue Entry iterator by one
- *   step in struct ipz_queue, will wrap in ringbuffer
- *   returns address (kv) of Queue Entry BEFORE increment
- *   returns 0 and does not increment, if wrong valid state
- *   warning don't use in parallel with ipz_qpageit_get_inc()
- *   warning unpredictable results may occur if steps>act_nr_of_queue_entries
+/*
+ * return current Queue Entry, increment Queue Entry iterator by one
+ * step in struct ipz_queue, will wrap in ringbuffer
+ * returns address (kv) of Queue Entry BEFORE increment
+ * returns 0 and does not increment, if wrong valid state
+ * warning don't use in parallel with ipz_qpageit_get_inc()
+ * warning unpredictable results may occur if steps>act_nr_of_queue_entries
  */
 static inline void *ipz_qeit_get_inc_valid(struct ipz_queue *queue)
 {
@@ -142,8 +140,9 @@ static inline void *ipz_qeit_get_inc_valid(struct ipz_queue *queue)
 	return cqe;
 }
 
-/*  returns and resets Queue Entry iterator
- *   returns address (kv) of first Queue Entry
+/*
+ * returns and resets Queue Entry iterator
+ * returns address (kv) of first Queue Entry
  */
 static inline void *ipz_qeit_reset(struct ipz_queue *queue)
 {
@@ -151,83 +150,82 @@ static inline void *ipz_qeit_reset(struct ipz_queue *queue)
 	return ipz_qeit_get(queue);
 }
 
-/** struct generic page table
- */
+/* struct generic page table */
 struct ipz_pt {
 	u64 entries[EHCA_PT_ENTRIES];
 };
 
-/* struct page table for a queue, only to be used in pf
- */
+/* struct page table for a queue, only to be used in pf */
 struct ipz_qpt {
 	/* queue page tables (kv), use u64 because we know the element length */
 	u64 *qpts;
-	u32 allocated_qpts_entries;
-	u32 nr_of_PTEs;		/*  number of page table entries PTE iterators */
+	u32 n_qpts;
+	u32 n_ptes;       /*  number of page table entries */
 	u64 *current_pte_addr;
 };
 
-/* constructor for a ipz_queue_t, placement new for ipz_queue_t,
- *  new for all dependent datastructors
- *
- *  all QP Tables are the same
- *  flow:
- *     allocate+pin queue
- *  see ipz_qpt_ctor()
- *  returns true if ok, false if out of memory
+/*
+ * constructor for a ipz_queue_t, placement new for ipz_queue_t,
+ * new for all dependent datastructors
+ * all QP Tables are the same
+ * flow:
+ *    allocate+pin queue
+ * see ipz_qpt_ctor()
+ * returns true if ok, false if out of memory
  */
 int ipz_queue_ctor(struct ipz_queue *queue, const u32 nr_of_pages,
 		   const u32 pagesize, const u32 qe_size,
 		   const u32 nr_of_sg);
 
-/* destructor for a ipz_queue_t
+/*
+ * destructor for a ipz_queue_t
  *  -# free queue
  *  see ipz_queue_ctor()
  *  returns true if ok, false if queue was NULL-ptr of free failed
  */
 int ipz_queue_dtor(struct ipz_queue *queue);
 
-/* constructor for a ipz_qpt_t,
+/*
+ * constructor for a ipz_qpt_t,
  * placement new for struct ipz_queue, new for all dependent datastructors
- *
- *  all QP Tables are the same,
- *  flow:
- *  -# allocate+pin queue
- *  -# initialise ptcb
- *  -# allocate+pin PTs
- *  -# link PTs to a ring, according to HCA Arch, set bit62 id needed
- *  -# the ring must have room for exactly nr_of_PTEs
- *  see ipz_qpt_ctor()
+ * all QP Tables are the same,
+ * flow:
+ * -# allocate+pin queue
+ * -# initialise ptcb
+ * -# allocate+pin PTs
+ * -# link PTs to a ring, according to HCA Arch, set bit62 id needed
+ * -# the ring must have room for exactly nr_of_PTEs
+ * see ipz_qpt_ctor()
  */
 void ipz_qpt_ctor(struct ipz_qpt *qpt,
-		  const u32 nr_of_QEs,
+		  const u32 nr_of_qes,
 		  const u32 pagesize,
 		  const u32 qe_size,
 		  const u8 lowbyte, const u8 toggle,
 		  u32 * act_nr_of_QEs, u32 * act_nr_of_pages);
 
-/*  return current Queue Entry, increment Queue Entry iterator by one
- *   step in struct ipz_queue, will wrap in ringbuffer
- *   returns address (kv) of Queue Entry BEFORE increment
- *   warning don't use in parallel with ipz_qpageit_get_inc()
- *   warning unpredictable results may occur if steps>act_nr_of_queue_entries
- *
- *   fix EQ page problems
+/*
+ * return current Queue Entry, increment Queue Entry iterator by one
+ * step in struct ipz_queue, will wrap in ringbuffer
+ * returns address (kv) of Queue Entry BEFORE increment
+ * warning don't use in parallel with ipz_qpageit_get_inc()
+ * warning unpredictable results may occur if steps>act_nr_of_queue_entries
+ * fix EQ page problems
  */
 void *ipz_qeit_eq_get_inc(struct ipz_queue *queue);
 
-/*  return current Event Queue Entry, increment Queue Entry iterator
- *   by one step in struct ipz_queue if valid, will wrap in ringbuffer
- *   returns address (kv) of Queue Entry BEFORE increment
- *   returns 0 and does not increment, if wrong valid state
- *   warning don't use in parallel with ipz_queue_QPageit_get_inc()
- *   warning unpredictable results may occur if steps>act_nr_of_queue_entries
+/*
+ * return current Event Queue Entry, increment Queue Entry iterator
+ * by one step in struct ipz_queue if valid, will wrap in ringbuffer
+ * returns address (kv) of Queue Entry BEFORE increment
+ * returns 0 and does not increment, if wrong valid state
+ * warning don't use in parallel with ipz_queue_QPageit_get_inc()
+ * warning unpredictable results may occur if steps>act_nr_of_queue_entries
  */
 static inline void *ipz_eqit_eq_get_inc_valid(struct ipz_queue *queue)
 {
 	void *ret = ipz_qeit_get(queue);
 	u32 qe = *(u8 *) ret;
-	EDEB(7, "ipz_QEit_EQ_get_inc_valid qe=%x", qe);
 	if ((qe >> 7) == (queue->toggle_state & 1))
 		ipz_qeit_eq_get_inc(queue); /* this is a good one */
 	else
@@ -235,17 +233,13 @@ static inline void *ipz_eqit_eq_get_inc_valid(struct ipz_queue *queue)
 	return ret;
 }
 
-/*
- *   returns address (GX) of first queue entry
- */
+/* returns address (GX) of first queue entry */
 static inline u64 ipz_qpt_get_firstpage(struct ipz_qpt *qpt)
 {
 	return be64_to_cpu(qpt->qpts[0]);
 }
 
-/*
- *   returns address (kv) of first page of queue page table
- */
+/* returns address (kv) of first page of queue page table */
 static inline void *ipz_qpt_get_qpt(struct ipz_qpt *qpt)
 {
 	return qpt->qpts;

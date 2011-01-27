@@ -51,6 +51,7 @@ static atomic_t trapped;
 				sizeof(struct iphdr) + sizeof(struct ethhdr))
 
 static void zap_completion_queue(void);
+static void arp_reply(struct sk_buff *skb);
 
 static int checksum_udp(struct sk_buff *skb, struct udphdr *uh,
 			     unsigned short ulen, u32 saddr, u32 daddr)
@@ -107,8 +108,26 @@ static void poll_napi(struct net_device *dev)
 	}
 }
 
+static void service_arp_queue(struct netpoll_info *npi)
+{
+	struct sk_buff *skb;
+ 
+	if(unlikely(!npi))
+		return;
+ 
+	skb = skb_dequeue(&npi->arp_tx);
+ 
+	while (skb != NULL) {
+		arp_reply(skb);
+		skb = skb_dequeue(&npi->arp_tx);                
+	}
+	return;
+}
+
 void netpoll_poll_dev(struct net_device *dev)
 {
+	struct netpoll_info *npi = dev_wrapper(dev)->npinfo;
+
 	if(!netif_running(dev) || !dev->poll_controller)
 		return;
 
@@ -116,6 +135,8 @@ void netpoll_poll_dev(struct net_device *dev)
 	dev->poll_controller(dev);
 	if (dev->poll)
 		poll_napi(dev);
+
+	service_arp_queue(npi);
 
 	zap_completion_queue();
 }
@@ -162,7 +183,10 @@ static void zap_completion_queue(void)
 		while (clist != NULL) {
 			struct sk_buff *skb = clist;
 			clist = clist->next;
-			__kfree_skb(skb);
+			if (skb->destructor)
+				dev_kfree_skb_any(skb); /* put this one back */
+			else
+				__kfree_skb(skb);
 		}
 	}
 
@@ -294,6 +318,12 @@ void netpoll_send_udp(struct netpoll *np, const char *msg, int len)
 	udph->dest = htons(np->remote_port);
 	udph->len = htons(udp_len);
 	udph->check = 0;
+	udph->check = csum_tcpudp_magic(htonl(np->local_ip),
+					htonl(np->remote_ip),
+					udp_len, IPPROTO_UDP,
+					csum_partial((unsigned char *)udph, udp_len, 0));
+	if (udph->check == 0)
+		udph->check = -1;
 
 	iph = (struct iphdr *)skb_push(skb, sizeof(*iph));
 
@@ -328,6 +358,7 @@ static void arp_reply(struct sk_buff *skb)
 	unsigned char *arp_ptr;
 	int size, type = ARPOP_REPLY, ptype = ETH_P_ARP;
 	u32 sip, tip;
+	unsigned char *sha;
 	struct sk_buff *send_skb;
 	struct netpoll *np = NULL;
 
@@ -354,9 +385,14 @@ static void arp_reply(struct sk_buff *skb)
 	    arp->ar_op != htons(ARPOP_REQUEST))
 		return;
 
-	arp_ptr = (unsigned char *)(arp+1) + skb->dev->addr_len;
+	arp_ptr = (unsigned char *)(arp+1);
+	/* save the location of the src hw addr */
+	sha = arp_ptr;
+	arp_ptr += skb->dev->addr_len;
 	memcpy(&sip, arp_ptr, 4);
-	arp_ptr += 4 + skb->dev->addr_len;
+	arp_ptr += 4;
+	/* if we actually cared about dst hw addr, it would get copied here */
+	arp_ptr += skb->dev->addr_len;
 	memcpy(&tip, arp_ptr, 4);
 
 	/* Should we ignore arp? */
@@ -379,7 +415,7 @@ static void arp_reply(struct sk_buff *skb)
 
 	if (np->dev->hard_header &&
 	    np->dev->hard_header(send_skb, skb->dev, ptype,
-				       np->remote_mac, np->local_mac,
+				       sha, np->local_mac,
 				       send_skb->len) < 0) {
 		kfree_skb(send_skb);
 		return;
@@ -403,7 +439,7 @@ static void arp_reply(struct sk_buff *skb)
 	arp_ptr += np->dev->addr_len;
 	memcpy(arp_ptr, &tip, 4);
 	arp_ptr += 4;
-	memcpy(arp_ptr, np->remote_mac, np->dev->addr_len);
+	memcpy(arp_ptr, sha, np->dev->addr_len);
 	arp_ptr += np->dev->addr_len;
 	memcpy(arp_ptr, &sip, 4);
 
@@ -415,7 +451,8 @@ int __netpoll_rx(struct sk_buff *skb)
 	int proto, len, ulen;
 	struct iphdr *iph;
 	struct udphdr *uh;
-	struct netpoll *np = dev_wrapper(skb->dev)->npinfo->rx_np;
+	struct netpoll_info *npi = dev_wrapper(skb->dev)->npinfo;
+	struct netpoll *np = npi->rx_np;
 
 	if (!np)
 		goto out;
@@ -425,7 +462,7 @@ int __netpoll_rx(struct sk_buff *skb)
 	/* check if netpoll clients need ARP */
 	if (skb->protocol == __constant_htons(ETH_P_ARP) &&
 	    atomic_read(&trapped)) {
-		arp_reply(skb);
+		skb_queue_tail(&npi->arp_tx, skb);
 		return 1;
 	}
 
@@ -631,6 +668,7 @@ int netpoll_setup(struct netpoll *np)
 		npinfo->poll_owner = -1;
 		npinfo->tries = MAX_RETRIES;
 		spin_lock_init(&npinfo->rx_lock);
+		skb_queue_head_init(&npinfo->arp_tx);
 	} else
 		npinfo = ndw->npinfo;
 

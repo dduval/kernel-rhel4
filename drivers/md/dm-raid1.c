@@ -21,17 +21,12 @@
 #include <linux/vmalloc.h>
 #include <linux/workqueue.h>
 
-static struct workqueue_struct *_kmirrord_wq;
-static struct work_struct _kmirrord_work;
 DECLARE_WAIT_QUEUE_HEAD(recovery_stopped_event);
 
 static int dm_mirror_error_on_log_failure = 1;
 
-static inline void wake(void)
-{
-	queue_work(_kmirrord_wq, &_kmirrord_work);
-}
-
+struct mirror_set;
+static inline void wake(struct mirror_set *ms);
 /*-----------------------------------------------------------------
  * Region hash
  *
@@ -68,7 +63,6 @@ static inline void wake(void)
  *   'bhs_delayed' fields of the regions.  This is used from irq
  *   context, so all other uses will have to suspend local irqs.
  *---------------------------------------------------------------*/
-struct mirror_set;
 struct region_hash {
 	struct mirror_set *ms;
 	uint32_t region_size;
@@ -335,9 +329,19 @@ static void complete_resync_work(struct region *reg, int success)
 		DMERR("recovery failed on region %lld", reg->key);
 
 	rh->log->type->complete_resync_work(rh->log, reg->key, success);
+
+	/*
+	 * Dispatch the bios before we call 'wake_up_all'.
+	 * This is important because if we are suspending,
+	 * we want to know that recovery is complete and
+	 * the work queue is flushed.  If we wake_up_all
+	 * before we dispatch_bios (queue bios and call wake()),
+	 * then we risk suspending before the work queue
+	 * has been properly flushed.
+	 */
+	dispatch_bios(rh->ms, &reg->delayed_bios);
 	if (atomic_dec_and_test(&rh->recovery_in_flight))
 		wake_up_all(&recovery_stopped_event);
-	dispatch_bios(rh->ms, &reg->delayed_bios);
 	up(&rh->recovery_count);
 }
 
@@ -470,7 +474,7 @@ static void rh_dec(struct region_hash *rh, region_t region)
 	spin_unlock_irqrestore(&rh->region_lock, flags);
 
 	if (should_wake)
-		wake();
+		wake(rh->ms);
 }
 
 /*
@@ -564,7 +568,7 @@ static void rh_recovery_end(struct region *reg, int success)
 	}
 	spin_unlock_irq(&rh->region_lock);
 
-	wake();
+	wake(rh->ms);
 }
 
 static int rh_flush(struct region_hash *rh)
@@ -598,7 +602,7 @@ static void rh_start_recovery(struct region_hash *rh)
 	for (i = 0; i < MAX_RECOVERY; i++)
 		up(&rh->recovery_count);
 
-	wake();
+	wake(rh->ms);
 }
 
 /*-----------------------------------------------------------------
@@ -625,12 +629,16 @@ struct mirror_set {
 	/* recovery */
 	region_t nr_regions;
 	int in_sync;
+	int log_failure;
+	atomic_t suspend;
 
 	unsigned int nr_mirrors;
 	spinlock_t choose_lock;	/* protects select in choose_mirror(). */
 	atomic_t read_count;	/* Read counter for read balancing. */
 	struct mirror *read_mirror;	/* Last mirror read. */
 	struct mirror *default_mirror;	/* Default mirror. */
+	struct workqueue_struct *kmirrord_wq;
+	struct work_struct kmirrord_work;
  	struct mirror mirror[0];
 };
 
@@ -647,6 +655,11 @@ static void *bio_map_info_alloc(int gfp_mask, void *pool_data){
 
 static void bio_map_info_free(void *element, void *pool_data){
 	kfree(element);
+}
+
+static inline void wake(struct mirror_set *ms)
+{
+	queue_work(ms->kmirrord_wq, &ms->kmirrord_work);
 }
 
 /*
@@ -776,19 +789,14 @@ static void do_recovery(struct mirror_set *ms)
 	}
 
 	/*
-	 * Update the in sync flag if necessary.
-	 * Raise an event when the mirror becomes in-sync.
-	 *
-	 * After recovery completes, the mirror becomes in_sync.
-	 * Only an I/O failure can then take it back out-of-sync.
+	 * Update the in sync flag.
 	 */
-	if (log->type->get_sync_count(log) == ms->nr_regions) {
-		if (!ms->in_sync) {
-			dm_table_event(ms->ti->table);
-			ms->in_sync = 1;
-		}
-	} else if (ms->in_sync)
-		ms->in_sync = 0;
+	if (!ms->in_sync &&
+	    (log->type->get_sync_count(log) == ms->nr_regions)) {
+		/* the sync is complete */
+		dm_table_event(ms->ti->table);
+		ms->in_sync = 1;
+	}
 }
 
 /*-----------------------------------------------------------------
@@ -852,7 +860,6 @@ static void fail_mirror(struct mirror *m)
 	struct mirror_set *ms = m->ms;
 	struct mirror *new;
 
-	DMINFO("incrementing error_count on %s", m->dev->name);
 	atomic_inc(&m->error_count);
 
 	/* If the default mirror fails, change it. */
@@ -1016,10 +1023,9 @@ static void __bio_mark_nosync(struct mirror_set *ms,
 	region_t region = bio_to_region(rh, bio);
 	int recovering = 0;
 
-	ms->in_sync = 0;
-
 	/* We must inform the log that the sync count has changed. */
 	log->type->complete_resync_work(log, region, 0);
+	ms->in_sync = 0;
 
 	read_lock(&rh->hash_lock);
 	reg = __rh_find(rh, region);
@@ -1065,8 +1071,6 @@ static void write_callback(unsigned long error, void *context, int log_failure)
 	 * regions with the same code.
 	 */
 	if (unlikely(error)) {
-		DMERR("Error during write occurred.");
-
 		/*
 		 * If the log is intact, we can play around with trying
 		 * to handle the failure.  Otherwise, we have to report
@@ -1093,7 +1097,7 @@ static void write_callback(unsigned long error, void *context, int log_failure)
 			bio_list_add(&ms->failures, bio);
 			spin_unlock(&ms->lock);
 			if (should_wake)
-				wake();
+				wake(ms);
 			return;
 		} else {
 			DMERR("All replicated volumes dead, failing I/O");
@@ -1147,7 +1151,7 @@ static void do_write(struct mirror_set *ms, struct bio *bio, int log_failure)
 
 static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 {
-	int state, r;
+	int state;
 	struct bio *bio;
 	struct bio_list sync, nosync, recover, *this_list = NULL;
 	struct bio_list requeue;
@@ -1209,14 +1213,20 @@ static void do_writes(struct mirror_set *ms, struct bio_list *writes)
 	rh_inc_pending(&ms->rh, &sync);
 	rh_inc_pending(&ms->rh, &nosync);
 
-	r = rh_flush(&ms->rh);
+	ms->log_failure = (rh_flush(&ms->rh)) ? 1 : 0;
 
 	/*
 	 * Dispatch io.
 	 */
 
-	while ((bio = bio_list_pop(&sync)))
-		do_write(ms, bio, r ? 1 : 0);
+	if (ms->log_failure) {
+		spin_lock_irq(&ms->lock);
+		bio_list_merge(&ms->failures, &sync);
+		spin_unlock_irq(&ms->lock);
+	} else {
+		while ((bio = bio_list_pop(&sync)))
+			do_write(ms, bio, 0);
+	}
 
 	while ((bio = bio_list_pop(&recover)))
 		rh_delay(&ms->rh, bio);
@@ -1235,6 +1245,39 @@ static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 	if (!failures->head)
 		return;
 
+	if (ms->log_failure) {
+		/*
+		 * If the log has failed, unattempted writes are being
+		 * put on the failures list.  We can't issue those writes
+		 * until a log has been marked, so we must store them.
+		 *
+		 * If a 'noflush' suspend is in progress, we can requeue
+		 * the I/O's to the core.  This give userspace a chance
+		 * to reconfigure the mirror, at which point the core
+		 * will reissue the writes.  If the 'noflush' flag is
+		 * not set, we have no choice but to return errors.
+		 *
+		 * Some writes on the failures list may have been
+		 * submitted before the log failure and represent a
+		 * failure to write to one of the devices.  It is ok
+		 * for us to treat them the same and requeue them
+		 * as well.
+		 */
+		if (dm_noflush_suspending(ms->ti)) {
+			while ((bio = bio_list_pop(failures)))
+				bio_endio(bio, bio->bi_size, DM_ENDIO_REQUEUE);
+		} else if (atomic_read(&ms->suspend)) {
+			while ((bio = bio_list_pop(failures)))
+				bio_endio(bio, bio->bi_size, -EIO);
+		} else {
+			spin_lock_irq(&ms->lock);
+			bio_list_merge(&ms->failures, failures);
+			spin_unlock_irq(&ms->lock);
+			wake(ms);
+		}
+		return;
+	}
+
 	if (log->type->get_failure_response(log) == DMLOG_IOERR_BLOCK)
 		dm_table_event(ms->ti->table);
 
@@ -1245,9 +1288,6 @@ static void do_failures(struct mirror_set *ms, struct bio_list *failures)
 /*-----------------------------------------------------------------
  * kmirrord
  *---------------------------------------------------------------*/
-static LIST_HEAD(_mirror_sets);
-static DECLARE_RWSEM(_mirror_sets_lock);
-
 static int do_mirror(struct mirror_set *ms)
 {
 	struct bio_list reads, writes, failures;
@@ -1267,25 +1307,12 @@ static int do_mirror(struct mirror_set *ms)
 	do_writes(ms, &writes);
 	do_failures(ms, &failures);
 
-	return (ms->writes.head) ? 1 : 0;
+	return (ms->writes.head || ms->failures.head) ? 1 : 0;
 }
 
-static int _do_work(void)
+static void do_work(void *data)
 {
-	int more_work = 0;
-	struct mirror_set *ms;
-
-	down_read(&_mirror_sets_lock);
-	list_for_each_entry (ms, &_mirror_sets, list)
-		more_work += do_mirror(ms);
-	up_read(&_mirror_sets_lock);
-
-	return more_work;
-}
-
-static void do_work(void *ignored)
-{
-	while (_do_work()) {
+	while (do_mirror(data)) {
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(HZ/5);
 	}
@@ -1321,6 +1348,8 @@ static struct mirror_set *alloc_context(unsigned int nr_mirrors,
 	ms->nr_mirrors = nr_mirrors;
 	ms->nr_regions = dm_sector_div_up(ti->len, region_size);
 	ms->in_sync = 0;
+	ms->log_failure = 0;
+	atomic_set(&ms->suspend, 0);
 	ms->default_mirror = &ms->mirror[DEFAULT_MIRROR];
 	ms->read_mirror = &ms->mirror[DEFAULT_MIRROR];
 
@@ -1374,23 +1403,6 @@ static int get_mirror(struct mirror_set *ms, struct dm_target *ti,
 	ms->mirror[mirror].ms = ms;
 
 	return 0;
-}
-
-static int add_mirror_set(struct mirror_set *ms)
-{
-	down_write(&_mirror_sets_lock);
-	list_add_tail(&ms->list, &_mirror_sets);
-	up_write(&_mirror_sets_lock);
-	wake();
-
-	return 0;
-}
-
-static void del_mirror_set(struct mirror_set *ms)
-{
-	down_write(&_mirror_sets_lock);
-	list_del(&ms->list);
-	up_write(&_mirror_sets_lock);
 }
 
 /*
@@ -1494,13 +1506,22 @@ static int mirror_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->private = ms;
  	ti->split_io = ms->rh.region_size;
 
+	ms->kmirrord_wq = create_singlethread_workqueue("kmirrord");
+	if (!ms->kmirrord_wq) {
+		DMERR("couldn't start kmirrord");
+		free_context(ms, ti, ms->nr_mirrors);
+		return -ENOMEM;
+	}
+	INIT_WORK(&ms->kmirrord_work, do_work, ms);
+
 	r = kcopyd_client_create(DM_IO_PAGES, &ms->kcopyd_client);
 	if (r) {
+		destroy_workqueue(ms->kmirrord_wq);
 		free_context(ms, ti, ms->nr_mirrors);
 		return r;
 	}
 
-	add_mirror_set(ms);
+	wake(ms);
 	return 0;
 }
 
@@ -1508,8 +1529,9 @@ static void mirror_dtr(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 
-	del_mirror_set(ms);
+	flush_workqueue(ms->kmirrord_wq);
 	kcopyd_client_destroy(ms->kcopyd_client);
+	destroy_workqueue(ms->kmirrord_wq);
 	free_context(ms, ti, ms->nr_mirrors);
 }
 
@@ -1526,7 +1548,7 @@ static void queue_bio(struct mirror_set *ms, struct bio *bio, int rw)
 	spin_unlock_irqrestore(&ms->lock, flags);
 
 	if (should_wake)
-		wake();
+		wake(ms);
 }
 
 /*
@@ -1545,7 +1567,7 @@ static int mirror_map(struct dm_target *ti, struct bio *bio,
 		/* Save region for mirror_end_io() handler */
 		map_context->ll = bio_to_region(&ms->rh, bio);
 		queue_bio(ms, bio, rw);
-		return 0;
+		return DM_MAPIO_SUBMITTED;
 	}
 
 	/* It's all about the READs now */
@@ -1556,7 +1578,7 @@ static int mirror_map(struct dm_target *ti, struct bio *bio,
 		return r;
 
 	if (r == -EWOULDBLOCK)
-		r = 0;
+		r = DM_MAPIO_SUBMITTED;
 
 	if (likely(r)) {
 		/*
@@ -1584,7 +1606,7 @@ static int mirror_map(struct dm_target *ti, struct bio *bio,
 			}
 
 			map_bio(m, bio);
-			return 1; /* Mapped -> queue request. */
+			return DM_MAPIO_REMAPPED; /* queue request */
 		} else
 			return -EIO;
 	} else {
@@ -1595,7 +1617,7 @@ static int mirror_map(struct dm_target *ti, struct bio *bio,
 		queue_bio(ms, bio, rw);
 	}
 
-	return 0;
+	return DM_MAPIO_SUBMITTED;
 }
 
 static int mirror_end_io(struct dm_target *ti, struct bio *bio,
@@ -1647,7 +1669,8 @@ static int mirror_end_io(struct dm_target *ti, struct bio *bio,
 			mempool_free(map_context->ptr, bio_map_info_pool);
 			map_context->ptr = NULL;
 			queue_bio(ms, bio, rw);
-			return 1; /* We want another shot on the bio. */
+			/* We want another shot on the bio. */
+			return DM_ENDIO_INCOMPLETE;
 		}
 		DMERR("All replicated volumes dead, failing I/O");
 	}
@@ -1664,6 +1687,25 @@ static void mirror_presuspend(struct dm_target *ti)
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 	struct dirty_log *log = ms->rh.log;
 
+	atomic_set(&ms->suspend, 1);
+
+	/*
+	 * We must finish up all the work that we've
+	 * generated (i.e. recovery work).
+	 */
+	rh_stop_recovery(&ms->rh);
+
+	wait_event(recovery_stopped_event,
+		   !atomic_read(&ms->rh.recovery_in_flight));
+
+	/*
+	 * Now that recovery is complete/stopped and the
+	 * delayed bios are queued, we need to wait for
+	 * the worker thread to complete.  This way,
+	 * we know that all of our I/O has been pushed.
+	 */
+	flush_workqueue(ms->kmirrord_wq);
+
 	if (log->type->presuspend && log->type->presuspend(log))
 		/* FIXME: need better error handling */
 		DMWARN("log presuspend failed");
@@ -1673,11 +1715,6 @@ static void mirror_postsuspend(struct dm_target *ti)
 {
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 	struct dirty_log *log = ms->rh.log;
-
-	rh_stop_recovery(&ms->rh);
-
-	wait_event(recovery_stopped_event,
-		   !atomic_read(&ms->rh.recovery_in_flight));
 
 	if (log->type->postsuspend && log->type->postsuspend(log))
 		/* FIXME: need better error handling */
@@ -1689,6 +1726,7 @@ static void mirror_resume(struct dm_target *ti)
 	struct mirror_set *ms = (struct mirror_set *) ti->private;
 	struct dirty_log *log = ms->rh.log;
 
+	atomic_set(&ms->suspend, 0);
 	if (log->type->resume && log->type->resume(log))
 		/* FIXME: need better error handling */
 		DMWARN("log resume failed");
@@ -1721,10 +1759,10 @@ static int mirror_status(struct dm_target *ti, status_type_t type,
 
 	case STATUSTYPE_TABLE:
 		sz = ms->rh.log->type->status(ms->rh.log, type, result, maxlen);
-		DMEMIT("%d ", ms->nr_mirrors);
+		DMEMIT("%d", ms->nr_mirrors);
 		for (m = 0; m < ms->nr_mirrors; m++)
-			DMEMIT("%s " SECTOR_FORMAT " ",
-			       ms->mirror[m].dev->name, ms->mirror[m].offset);
+			DMEMIT(" %s %llu", ms->mirror[m].dev->name,
+				(unsigned long long)ms->mirror[m].offset);
 	}
 
 	return 0;
@@ -1757,20 +1795,11 @@ static int __init dm_mirror_init(void)
 	if (r)
 		return r;
 
-	_kmirrord_wq = create_singlethread_workqueue("kmirrord");
-	if (!_kmirrord_wq) {
-		DMERR("couldn't start kmirrord");
-		dm_dirty_log_exit();
-		return -ENOMEM;
-	}
-	INIT_WORK(&_kmirrord_work, do_work, NULL);
-
 	r = dm_register_target(&mirror_target);
 	if (r < 0) {
 		DMERR("%s: Failed to register mirror target",
 		      mirror_target.name);
 		dm_dirty_log_exit();
-		destroy_workqueue(_kmirrord_wq);
 	} else if (!dm_mirror_error_on_log_failure) {
 		DMWARN("Warning:: dm_mirror_error_on_log_failure = 0");
 		DMWARN("In this mode, the following steps could cause corruption:");
@@ -1796,7 +1825,6 @@ static void __exit dm_mirror_exit(void)
 	if (r < 0)
 		DMERR("%s: unregister failed %d", mirror_target.name, r);
 
-	destroy_workqueue(_kmirrord_wq);
 	dm_dirty_log_exit();
 }
 

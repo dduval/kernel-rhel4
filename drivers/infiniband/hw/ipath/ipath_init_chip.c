@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -35,7 +36,7 @@
 #include <linux/vmalloc.h>
 
 #include "ipath_kernel.h"
-#include "ips_common.h"
+#include "ipath_common.h"
 
 /*
  * min buffers we want to have per port, after driver
@@ -52,8 +53,8 @@ module_param_named(cfgports, ipath_cfgports, ushort, S_IRUGO);
 MODULE_PARM_DESC(cfgports, "Set max number of ports to use");
 
 /*
- * Number of buffers reserved for driver (layered drivers and SMA
- * send).  Reserved at end of buffer list.   Initialized based on
+ * Number of buffers reserved for driver (verbs and layered drivers.)
+ * Reserved at end of buffer list.   Initialized based on
  * number of PIO buffers if not set via module interface.
  * The problem with this is that it's global, but we'll use different
  * numbers for different chip types.  So the default value is not
@@ -61,7 +62,7 @@ MODULE_PARM_DESC(cfgports, "Set max number of ports to use");
  * zero unless set by the user to something else, in which case we
  * try to respect it.
  */
-ushort ipath_kpiobufs = 0;
+static ushort ipath_kpiobufs;
 
 static int ipath_set_kpiobufs(const char *val, struct kernel_param *kp);
 
@@ -79,7 +80,7 @@ MODULE_PARM_DESC(kpiobufs, "Set number of PIO buffers for driver");
  *
  * Allocate the eager TID buffers and program them into infinipath.
  * We use the network layer alloc_skb() allocator to allocate the
- * memory, and either use the buffers as is for things like SMA
+ * memory, and either use the buffers as is for things like verbs
  * packets, or pass the buffers up to the ipath layered driver and
  * thence the network layer, replacing them as we do so (see
  * ipath_rcv_layer()).
@@ -239,7 +240,11 @@ static int init_chip_first(struct ipath_devdata *dd,
 			  "only supports %u\n", ipath_cfgports,
 			  dd->ipath_portcnt);
 	}
-	dd->ipath_pd = kzalloc(sizeof(*dd->ipath_pd) * dd->ipath_cfgports,
+	/*
+	 * Allocate full portcnt array, rather than just cfgports, because
+	 * cleanup iterates across all possible ports.
+	 */
+	dd->ipath_pd = kzalloc(sizeof(*dd->ipath_pd) * dd->ipath_portcnt,
 			       GFP_KERNEL);
 
 	if (!dd->ipath_pd) {
@@ -276,7 +281,7 @@ static int init_chip_first(struct ipath_devdata *dd,
 	pd->port_port = 0;
 	pd->port_cnt = 1;
 	/* The port 0 pkey table is used by the layer interface. */
-	pd->port_pkeys[0] = IPS_DEFAULT_P_KEY;
+	pd->port_pkeys[0] = IPATH_DEFAULT_P_KEY;
 	dd->ipath_rcvtidcnt =
 		ipath_read_kreg32(dd, dd->ipath_kregs->kr_rcvtidcnt);
 	dd->ipath_rcvtidbase =
@@ -452,9 +457,9 @@ static void enable_chip(struct ipath_devdata *dd,
 	u32 val;
 	int i;
 
-	if (!reinit) {
-		init_waitqueue_head(&ipath_sma_state_wait);
-	}
+	if (!reinit)
+		init_waitqueue_head(&ipath_state_wait);
+
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
 			 dd->ipath_rcvctrl);
 
@@ -692,7 +697,8 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	 */
 	dd->ipath_pioavregs = ALIGN(val, sizeof(u64) * BITS_PER_BYTE / 2)
 		/ (sizeof(u64) * BITS_PER_BYTE / 2);
-	if (ipath_kpiobufs == 0) { /* not set by user, or set explictly to default  */
+	if (ipath_kpiobufs == 0) {
+		/* not set by user (this is default) */
 		if ((dd->ipath_piobcnt2k + dd->ipath_piobcnt4k) > 128)
 			kpiobufs = 32;
 		else
@@ -840,7 +846,8 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 	else
 		enable_chip(dd, pd, reinit);
 
-	if(!ret && !reinit) {
+
+	if (!ret && !reinit) {
 	    /* used when we close a port, for DMA already in flight at close */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,15)
 		gfp_flags &= ~__GFP_COMP;
@@ -852,7 +859,7 @@ int ipath_init_chip(struct ipath_devdata *dd, int reinit)
 			&dd->pcidev->dev, pd->port_rcvhdrq_size,
 			&dd->ipath_dummy_hdrq_phys,
 			gfp_flags);
-		if(!dd->ipath_dummy_hdrq ) {
+		if (!dd->ipath_dummy_hdrq ) {
 			dev_info(&dd->pcidev->dev,
 				"Couldn't allocate 0x%lx bytes for dummy hdrq\n",
 				pd->port_rcvhdrq_size);
@@ -956,6 +963,7 @@ static int ipath_set_kpiobufs(const char *str, struct kernel_param *kp)
 			dd->ipath_piobcnt2k + dd->ipath_piobcnt4k - val;
 	}
 
+	ipath_kpiobufs = val;
 	ret = 0;
 bail:
 	spin_unlock_irqrestore(&ipath_devs_lock, flags);

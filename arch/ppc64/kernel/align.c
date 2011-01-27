@@ -242,6 +242,8 @@ fix_alignment(struct pt_regs *regs)
 	    unsigned int real_instr;
 	    if (__get_user(real_instr, (unsigned int __user *)regs->nip))
 		return 0;
+	    if ((cur_cpu_spec->cpu_features & CPU_FTR_REAL_LE) && (regs->msr & MSR_LE))
+		    real_instr = cpu_to_le32(real_instr);
 	    dsisr = make_dsisr(real_instr);
 	}
 
@@ -254,6 +256,10 @@ fix_alignment(struct pt_regs *regs)
 	/* Lookup the operation in our table */
 	nb = aligninfo[instr].len;
 	flags = aligninfo[instr].flags;
+
+	/* Byteswap little endian loads and stores */
+	if (regs->msr & MSR_LE)
+		flags ^= SW;
 
 	/* DAR has the operand effective address */
 	addr = (unsigned char __user *)regs->dar;
@@ -326,11 +332,20 @@ fix_alignment(struct pt_regs *regs)
 	
 	/* Swap bytes as needed */
 	if (flags & SW) {
-		if (nb == 2)
-			SWAP(data.v[6], data.v[7]);
-		else {	/* nb must be 4 */
+		switch (nb) {
+		case 8:
+			SWAP(data.v[0], data.v[7]);
+			SWAP(data.v[1], data.v[6]);
+			SWAP(data.v[2], data.v[5]);
+			SWAP(data.v[3], data.v[4]);
+			break;
+		case 4:
 			SWAP(data.v[4], data.v[7]);
 			SWAP(data.v[5], data.v[6]);
+			break;
+		case 2:
+			SWAP(data.v[6], data.v[7]);
+			break;
 		}
 	}
 	

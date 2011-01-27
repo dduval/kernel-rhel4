@@ -39,22 +39,17 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define DEB_PREFIX "PHYP"
-
 #include "ehca_classes.h"
 #include "hipz_hw.h"
 
 int hcall_map_page(u64 physaddr, u64 *mapaddr)
 {
 	*mapaddr = (u64)(ioremap(physaddr, EHCA_PAGESIZE));
-
-	EDEB(7, "ioremap physaddr=%lx mapaddr=%lx", physaddr, *mapaddr);
 	return 0;
 }
 
 int hcall_unmap_page(u64 mapaddr)
 {
-	EDEB(7, "mapaddr=%lx", mapaddr);
 	iounmap((volatile void __iomem*)mapaddr);
 	return 0;
 }
@@ -68,25 +63,18 @@ int hcp_galpas_ctor(struct h_galpas *galpas,
 
 	galpas->user.fw_handle = paddr_user;
 
-	EDEB(7, "paddr_kernel=%lx paddr_user=%lx galpas->kernel=%lx"
-	     " galpas->user=%lx",
-	     paddr_kernel, paddr_user, galpas->kernel.fw_handle,
-	     galpas->user.fw_handle);
-
-	return ret;
+	return 0;
 }
 
 int hcp_galpas_dtor(struct h_galpas *galpas)
 {
-	int ret = 0;
-
-	if (galpas->kernel.fw_handle)
-		ret = hcall_unmap_page(galpas->kernel.fw_handle);
-
-	if (ret)
-		return ret;
+	if (galpas->kernel.fw_handle) {
+		int ret = hcall_unmap_page(galpas->kernel.fw_handle);
+		if (ret)
+			return ret;
+	}
 
 	galpas->user.fw_handle = galpas->kernel.fw_handle = 0;
 
-	return ret;
+	return 0;
 }

@@ -132,7 +132,7 @@ int expkey_parse(struct cache_detail *cd, char *mesg, int mlen)
 	if (*ep)
 		goto out;
 	dprintk("found fsidtype %d\n", fsidtype);
-	if (fsidtype > 2)
+	if (key_len(fsidtype) == 0)
 		goto out;
 	if ((len=qword_get(&mesg, buf, PAGE_SIZE)) <= 0)
 		goto out;

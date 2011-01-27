@@ -44,6 +44,12 @@
 
 #include "ucma_ib.h"
 
+enum {
+	RDMA_TRANSPORT_IB
+};
+
+#define rdma_node_get_transport(x) RDMA_TRANSPORT_IB
+
 MODULE_AUTHOR("Sean Hefty");
 MODULE_DESCRIPTION("RDMA Userspace Connection Manager Access");
 MODULE_LICENSE("Dual BSD/GPL");
@@ -429,10 +435,10 @@ static void ucma_copy_ib_route(struct rdma_ucm_query_route_resp *resp,
 	switch (route->num_paths) {
 	case 0:
 		dev_addr = &route->addr.dev_addr;
-		memcpy(&resp->ib_route[0].dgid, ib_addr_get_dgid(dev_addr),
-		       sizeof(union ib_gid));
-		memcpy(&resp->ib_route[0].sgid, ib_addr_get_sgid(dev_addr),
-		       sizeof(union ib_gid));
+		ib_addr_get_dgid(dev_addr,
+				 (union ib_gid *) &resp->ib_route[0].dgid);
+		ib_addr_get_sgid(dev_addr,
+				 (union ib_gid *) &resp->ib_route[0].sgid);
 		resp->ib_route[0].pkey = cpu_to_be16(ib_addr_get_pkey(dev_addr));
 		break;
 	case 2:

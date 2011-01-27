@@ -204,6 +204,8 @@ int __init acpi_parse_mcfg(unsigned long phys_addr, unsigned long size)
 		if (mcfg->config[i].base_reserved) {
 			printk(KERN_ERR PREFIX
 			       "MMCONFIG not in low 4GB of memory\n");
+			kfree(pci_mmcfg_config);
+			pci_mmcfg_config_num = 0;
 			return -ENODEV;
 		}
 	}
@@ -782,7 +784,7 @@ acpi_process_madt(void)
 	int count, error;
 
 	count = acpi_table_parse(ACPI_APIC, acpi_parse_madt);
-	if (count == 1) {
+	if (count >= 1) {
 
 		/*
 		 * Parse MADT LAPIC entries

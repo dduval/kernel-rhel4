@@ -912,6 +912,15 @@ static int __init do_boot_cpu(int apicid)
 cycles_t cacheflush_time;
 unsigned long cache_decay_ticks;
 
+static int __init decay (char *str)
+{
+	int ticks;
+	get_option (&str, &ticks);
+	cache_decay_ticks = ticks;
+	return 1;
+}
+__setup("decay=", decay);
+
 static void smp_tune_scheduling (void)
 {
 	unsigned long cachesize;       /* kB   */
@@ -941,10 +950,12 @@ static void smp_tune_scheduling (void)
 			bandwidth = 100;
 		}
 
-		cacheflush_time = (cpu_khz>>10) * (cachesize<<10) / bandwidth;
+		cacheflush_time = (unsigned long long) (cpu_khz>>10) *
+				  ((cachesize<<10) / bandwidth);
 	}
 
-	cache_decay_ticks = (long)cacheflush_time/cpu_khz + 1;
+	if (!cache_decay_ticks)
+		cache_decay_ticks = (long)cacheflush_time/cpu_khz;
 
 	printk("per-CPU timeslice cutoff: %ld.%02ld usecs.\n",
 		(long)cacheflush_time/(cpu_khz/1000),

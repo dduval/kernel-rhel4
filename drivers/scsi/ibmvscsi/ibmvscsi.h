@@ -106,4 +106,6 @@ void ibmvscsi_handle_crq(struct viosrp_crq *crq,
 int ibmvscsi_send_crq(struct ibmvscsi_host_data *hostdata,
 		      u64 word1, u64 word2);
 
+void ibmvscsi_interrupt(struct ibmvscsi_host_data *hostdata);
+
 #endif				/* IBMVSCSI_H */

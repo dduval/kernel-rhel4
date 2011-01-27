@@ -66,12 +66,6 @@ static int tiocx_match(struct device *dev, struct device_driver *drv)
 
 }
 
-static int tiocx_uevent(struct device *dev, char **envp, int num_envp,
-			 char *buffer, int buffer_size)
-{
-	return -ENODEV;
-}
-
 static int tiocx_hotplug(struct device *dev, char **envp, int num_envp,
 			 char *buffer, int buffer_size)
 {
@@ -168,6 +162,8 @@ int cx_driver_register(struct cx_drv *cx_driver)
 {
 	cx_driver->driver.name = cx_driver->name;
 	cx_driver->driver.bus = &tiocx_bus_type;
+	cx_driver->driver.probe = cx_device_probe;
+	cx_driver->driver.remove = cx_driver_remove;
 
 	return driver_register(&cx_driver->driver);
 }
@@ -373,9 +369,15 @@ static void tio_corelet_reset(nasid_t nasid, int corelet)
 
 static int is_fpga_tio(int nasid, int *bt)
 {
-	int ioboard_type;
+	u16 ioboard_type;
+	s64 rc;
 
-	ioboard_type = ia64_sn_sysctl_ioboard_get(nasid);
+	rc = ia64_sn_sysctl_ioboard_get(nasid, &ioboard_type);
+	if (rc) {
+		printk(KERN_WARNING "ia64_sn_sysctl_ioboard_get failed: %ld\n",
+		       rc);
+		return 0;
+	}
 
 	switch (ioboard_type) {
 	case L1_BRICKTYPE_SA:
@@ -438,7 +440,7 @@ static int tiocx_reload(struct cx_dev *cx_dev)
 	return cx_device_reload(cx_dev);
 }
 
-static ssize_t show_cxdev_control(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_cxdev_control(struct device *dev, char *buf)
 {
 	struct cx_dev *cx_dev = to_cx_dev(dev);
 
@@ -448,7 +450,7 @@ static ssize_t show_cxdev_control(struct device *dev, struct device_attribute *a
 		       cx_dev->bt);
 }
 
-static ssize_t store_cxdev_control(struct device *dev, struct device_attribute *attr, const char *buf,
+static ssize_t store_cxdev_control(struct device *dev, const char *buf,
 				   size_t count)
 {
 	int n;

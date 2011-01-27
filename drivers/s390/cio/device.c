@@ -137,8 +137,8 @@ struct css_driver io_subchannel_driver = {
 
 struct workqueue_struct *ccw_device_work;
 struct workqueue_struct *ccw_device_notify_work;
-static wait_queue_head_t ccw_device_init_wq;
-static atomic_t ccw_device_init_count;
+wait_queue_head_t ccw_device_init_wq;
+atomic_t ccw_device_init_count;
 
 static int __init
 init_ccw_bus_type (void)
@@ -293,6 +293,14 @@ ccw_device_set_offline(struct ccw_device *cdev)
 	cdev->online = 0;
 	spin_lock_irq(cdev->ccwlock);
 	ret = ccw_device_offline(cdev);
+	if (ret == -ENODEV) {
+		if (cdev->private->state != DEV_STATE_NOT_OPER) {
+			cdev->private->state = DEV_STATE_OFFLINE;
+			dev_fsm_event(cdev, DEV_EVENT_NOTOPER);
+		}
+		spin_unlock_irq(cdev->ccwlock);
+		return ret;
+	}
 	spin_unlock_irq(cdev->ccwlock);
 	if (ret == 0)
 		wait_event(cdev->private->wait_q, dev_fsm_final_state(cdev));
@@ -338,7 +346,7 @@ ccw_device_set_online(struct ccw_device *cdev)
 	else 
 		pr_debug("ccw_device_offline returned %d, device %s\n",
 			 ret, cdev->dev.bus_id);
-	return (ret = 0) ? -ENODEV : ret;
+	return (ret == 0) ? -ENODEV : ret;
 }
 
 static ssize_t
@@ -988,7 +996,7 @@ ccw_device_probe_console(void)
 	int ret;
 
 	if (xchg(&console_cdev_in_use, 1) != 0)
-		return NULL;
+		return ERR_PTR(-EBUSY);
 	sch = cio_probe_console();
 	if (IS_ERR(sch)) {
 		console_cdev_in_use = 0;

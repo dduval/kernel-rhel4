@@ -221,18 +221,38 @@ iscsi_target_transport_cp_fn(target_name);
 iscsi_target_transport_cp_fn(target_alias);
 
 static void
+iscsi_copy_addr(struct scsi_target *starget, struct sockaddr *addr)
+{
+	iscsi_addr_type(starget) = addr->sa_family;
+	if (addr->sa_family == AF_INET) {
+		struct sockaddr_in *addr4 = (struct sockaddr_in *)addr;
+
+		memcpy(&iscsi_sin_addr(starget), &addr4->sin_addr,
+		       sizeof(struct in_addr));
+	} else if (addr->sa_family == AF_INET6) {
+		struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)addr;
+
+		memcpy(&iscsi_sin6_addr(starget), &addr6->sin6_addr,
+		       sizeof(struct in6_addr));
+	}
+}
+
+static void
 iscsi_get_ip_address(struct scsi_target *starget)
 {
 	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
 	struct iscsi_session *session = (struct iscsi_session *)shost->hostdata;
-	struct sockaddr_in *addr = (struct sockaddr_in *)&session->addr;
-	/*
-	 * I am pretty sure I messed up the socket data structure
-	 * for ipv6 support. For now just do ipv4 until I can test
-	 */
-	iscsi_addr_type(starget) = addr->sin_family;
-	memcpy(&iscsi_sin_addr(starget), &addr->sin_addr,
-	       sizeof(struct in_addr));
+
+	iscsi_copy_addr(starget, (struct sockaddr *)&session->addr);
+}
+
+ static void
+iscsi_get_portal_ip_address(struct scsi_target *starget)
+{
+	struct Scsi_Host *shost = dev_to_shost(starget->dev.parent);
+	struct iscsi_session *session = (struct iscsi_session *)shost->hostdata;
+
+	iscsi_copy_addr(starget, (struct sockaddr *)&session->portal.addr);
 }
 
 static void
@@ -283,7 +303,9 @@ struct iscsi_function_template iscsi_fnt = {
 	.get_tpgt = iscsi_get_tpgt,
 	.show_tpgt = 1,
 	.get_ip_address = iscsi_get_ip_address,
-	.show_ip_address = 1, 
+	.show_ip_address = 1,
+	.get_portal_ip_address = iscsi_get_portal_ip_address,
+	.show_portal_ip_address = 1,
 	.get_initial_r2t = iscsi_get_initial_r2t,
 	.show_initial_r2t = 1,
 	.get_immediate_data = iscsi_get_immediate_data,

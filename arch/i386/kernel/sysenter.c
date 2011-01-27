@@ -14,6 +14,7 @@
 #include <linux/string.h>
 #include <linux/elf.h>
 #include <linux/mman.h>
+#include <linux/mm.h>
 
 #include <asm/cpufeature.h>
 #include <asm/msr.h>
@@ -25,6 +26,7 @@ extern asmlinkage void sysenter_entry(void);
 
 void enable_sep_cpu(void *info)
 {
+#ifndef CONFIG_X86_NO_TSS
 	int cpu = get_cpu();
 #ifdef CONFIG_X86_HIGH_ENTRY
 	struct tss_struct *tss = (struct tss_struct *) __fix_to_virt(FIX_TSS_0) + cpu;
@@ -38,6 +40,7 @@ void enable_sep_cpu(void *info)
 	wrmsr(MSR_IA32_SYSENTER_ESP, tss->esp1, 0);
 	wrmsr(MSR_IA32_SYSENTER_EIP, (unsigned long) sysenter_entry, 0);
 	put_cpu();	
+#endif
 }
 
 /*
@@ -56,18 +59,19 @@ static int __init sysenter_setup(void)
 	__set_fixmap(FIX_VSYSCALL, __pa(page), PAGE_KERNEL_RO);
 	sysenter_page = virt_to_page(page);
 
-	if (!boot_cpu_has(X86_FEATURE_SEP)) {
+#ifdef CONFIG_X86_SYSENTER
+	if (boot_cpu_has(X86_FEATURE_SEP)) {
 		memcpy(page,
-		       &vsyscall_int80_start,
-		       &vsyscall_int80_end - &vsyscall_int80_start);
+		       &vsyscall_sysenter_start,
+		       &vsyscall_sysenter_end - &vsyscall_sysenter_start);
+		on_each_cpu(enable_sep_cpu, NULL, 1, 1);
 		return 0;
 	}
+#endif
 
 	memcpy(page,
-	       &vsyscall_sysenter_start,
-	       &vsyscall_sysenter_end - &vsyscall_sysenter_start);
-
-	on_each_cpu(enable_sep_cpu, NULL, 1, 1);
+	       &vsyscall_int80_start,
+	       &vsyscall_int80_end - &vsyscall_int80_start);
 
 	return 0;
 }

@@ -1,6 +1,7 @@
 menu "InfiniBand support"
 
 config INFINIBAND
+	depends on PCI || BROKEN
 	tristate "InfiniBand support"
 	---help---
 	  Core support for InfiniBand (IB).  Make sure to also select
@@ -33,20 +34,16 @@ config INFINIBAND_ADDR_TRANS
 	depends on INFINIBAND && INET
 	default y
 
-source "drivers/infiniband/hw/ipath/Kconfig"
-
 source "drivers/infiniband/hw/mthca/Kconfig"
-
+source "drivers/infiniband/hw/ipath/Kconfig"
 source "drivers/infiniband/hw/ehca/Kconfig"
 
 source "drivers/infiniband/ulp/ipoib/Kconfig"
 
-source "drivers/infiniband/ulp/sdp/Kconfig"
-
 source "drivers/infiniband/ulp/srp/Kconfig"
 
-source "drivers/infiniband/ulp/iser/Kconfig"
+source "drivers/infiniband/ulp/sdp/Kconfig"
 
-source "drivers/infiniband/ulp/rds/Kconfig"
+source "drivers/infiniband/util/Kconfig"
 
 endmenu

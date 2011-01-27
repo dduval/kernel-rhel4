@@ -14,6 +14,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/times.h>
 #include <linux/smp_lock.h>
 

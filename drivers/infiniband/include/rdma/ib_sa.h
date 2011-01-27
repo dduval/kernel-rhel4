@@ -79,8 +79,8 @@ enum {
 };
 
 enum ib_sa_selector {
-	IB_SA_GTE  = 0,
-	IB_SA_LTE  = 1,
+	IB_SA_GT   = 0,
+	IB_SA_LT   = 1,
 	IB_SA_EQ   = 2,
 	/*
 	 * The meaning of "best" depends on the attribute: for
@@ -372,21 +372,11 @@ ib_sa_mcmember_rec_delete(struct ib_device *device, u8 port_num,
 }
 
 /**
- * ib_sa_pack_attr - Copy an SA attribute from a host defined structure to
- *   a network packed structure.
- * dst: Destination buffer.
- * src: Source buffer.
- * attr_id: Identifer of SA attribute: IB_SA_ATTR_*.
+ * ib_init_ah_from_path - Initialize address handle attributes based on an SA
+ *   path record.
  */
-int ib_sa_pack_attr(void *dst, void *src, int attr_id);
-
-/**
- * ib_sa_unpack_attr - Copy an SA attribute from a packed network structure
- *   to a host defined structure.
- * dst: Destination buffer.
- * src: Source buffer.
- * attr_id: Identifer of SA attribute: IB_SA_ATTR_*.
- */
-int ib_sa_unpack_attr(void *dst, void *src, int attr_id);
+int ib_init_ah_from_path(struct ib_device *device, u8 port_num,
+			 struct ib_sa_path_rec *rec,
+			 struct ib_ah_attr *ah_attr);
 
 #endif /* IB_SA_H */

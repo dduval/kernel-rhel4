@@ -313,8 +313,26 @@ int kauditd_thread(void *dummy)
 	}
 }
 
-void audit_send_reply(int pid, int seq, int type, int done, int multi,
-		      void *payload, int size)
+int audit_send_list(void *_dest)
+{
+	struct audit_netlink_list *dest = _dest;
+	int pid = dest->pid;
+	struct sk_buff *skb;
+
+	/* wait for parent to finish and send an ACK */
+	down(&audit_netlink_sem);
+	up(&audit_netlink_sem);
+
+	while ((skb = __skb_dequeue(&dest->q)) != NULL)
+		netlink_unicast(audit_sock, skb, pid, 0);
+
+	kfree(dest);
+
+	return 0;
+}
+
+struct sk_buff *audit_make_reply(int pid, int seq, int type, int done,
+				 int multi, void *payload, int size)
 {
 	struct sk_buff	*skb;
 	struct nlmsghdr	*nlh;
@@ -325,21 +343,44 @@ void audit_send_reply(int pid, int seq, int type, int done, int multi,
 
 	skb = alloc_skb(len, GFP_KERNEL);
 	if (!skb)
-		return;
+		return NULL;
 
 	nlh		 = NLMSG_PUT(skb, pid, seq, t, size);
 	nlh->nlmsg_flags = flags;
 	data		 = NLMSG_DATA(nlh);
 	memcpy(data, payload, size);
-
-	/* Ignore failure. It'll only happen if the sender goes away,
-	   because our timeout is set to infinite. */
-	netlink_unicast(audit_sock, skb, pid, 0);
-	return;
+	return skb;
 
 nlmsg_failure:			/* Used by NLMSG_PUT */
 	if (skb)
 		kfree_skb(skb);
+	return NULL;
+}
+
+/**
+ * audit_send_reply - send an audit reply message via netlink
+ * @pid: process id to send reply to
+ * @seq: sequence number
+ * @type: audit message type
+ * @done: done (last) flag
+ * @multi: multi-part message flag
+ * @payload: payload data
+ * @size: payload size
+ *
+ * Allocates an skb, builds the netlink message, and sends it to the pid.
+ * No failure notifications.
+ */
+void audit_send_reply(int pid, int seq, int type, int done, int multi,
+		      void *payload, int size)
+{
+	struct sk_buff	*skb;
+	skb = audit_make_reply(pid, seq, type, done, multi, payload, size);
+	if (!skb)
+		return;
+	/* Ignore failure. It'll only happen if the sender goes away,
+	   because our timeout is set to infinite. */
+	netlink_unicast(audit_sock, skb, pid, 0);
+	return;
 }
 
 /*

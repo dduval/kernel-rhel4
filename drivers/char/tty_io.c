@@ -1151,6 +1151,10 @@ static int init_dev(struct tty_driver *driver, int idx,
 	/* check whether we're reopening an existing tty */
 	if (driver->flags & TTY_DRIVER_DEVPTS_MEM) {
 		tty = devpts_get_tty(idx);
+		if (!tty && driver->subtype == PTY_TYPE_SLAVE) {
+			retval = -EIO;
+			goto end_init;
+		}
 		if (tty && driver->subtype == PTY_TYPE_MASTER)
 			tty = tty->link;
 	} else {
@@ -1884,6 +1888,7 @@ static int ptmx_open(struct inode * inode, struct file * filp)
 		return 0;
 out1:
 	release_dev(filp);
+	return retval;
 out:
 	down(&allocated_ptys_lock);
 	idr_remove(&allocated_ptys, index);

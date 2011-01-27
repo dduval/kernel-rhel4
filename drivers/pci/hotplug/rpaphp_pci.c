@@ -494,10 +494,13 @@ int handle_eeh_events (struct notifier_block *self,
 	struct device_node *bus_dn;
 	struct eeh_cfg_tree * saved_bars;
 
-	BUG_ON(!event->dev);
+	if (!event->dev) {
+		printk (KERN_ERR 
+			"EEH: Cannot find PCI device for EEH error!\n");
+		return 1;
+	}
 	bus = event->dev->bus;
-	if (!bus)
-	{
+	if (!bus) {
 		printk (KERN_ERR 
 			"EEH: Cannot find PCI bus for EEH error! dev=%s\n",
 			pci_name(event->dev));

@@ -142,3 +142,9 @@ int ibmvscsi_send_crq(struct ibmvscsi_host_data *hostdata, u64 word1, u64 word2)
 					     VIOVERSION << 16, word1, word2, 0,
 					     0);
 }
+
+void ibmvscsi_interrupt(struct ibmvscsi_host_data *hostdata)
+{
+	single_host_data = hostdata;
+	/* Stub support for disk dump. Not supported on iSeries */
+}

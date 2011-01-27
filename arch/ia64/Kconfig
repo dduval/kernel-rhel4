@@ -196,6 +196,13 @@ config IOSAPIC
 	depends on !IA64_HP_SIM
 	default y
 
+config IA64_LOCAL_APIC_INFO_MOD
+	tristate
+	depends on ACPI
+	default m
+	help
+	 Output all known local apic information to /proc/lapic.  Module only.
+
 config IA64_SGI_SN_SIM
 	bool "SGI Medusa Simulator Support"
 	depends on IA64_SGI_SN2

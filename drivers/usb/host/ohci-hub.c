@@ -176,7 +176,7 @@ static int ohci_hub_resume (struct usb_hcd *hcd)
 	if (!root->dev.power.power_state)
 		return 0;
 	if (time_before (jiffies, ohci->next_statechange))
-		return -EAGAIN;
+		msleep(5);
 
 	spin_lock_irq (&ohci->lock);
 	ohci->hc_control = ohci_readl (&ohci->regs->control);

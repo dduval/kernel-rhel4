@@ -631,6 +631,7 @@ static sctp_xmit_t sctp_packet_append_data(struct sctp_packet *packet,
 	asoc->outqueue.outstanding_bytes += datasize;
 
 	/* Update our view of the receiver's rwnd. */
+	datasize += sizeof(struct sk_buff);
 	if (datasize < rwnd)
 		rwnd -= datasize;
 	else

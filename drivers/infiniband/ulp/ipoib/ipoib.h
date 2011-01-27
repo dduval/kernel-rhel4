@@ -42,7 +42,6 @@
 #include <linux/netdevice.h>
 #include <linux/workqueue.h>
 #include <linux/pci.h>
-#include <linux/config.h>
 #include <linux/kref.h>
 #include <linux/if_infiniband.h>
 #include <linux/mutex.h>
@@ -215,6 +214,7 @@ struct ipoib_path {
 
 struct ipoib_neigh {
 	struct ipoib_ah    *ah;
+	union ib_gid        dgid;
 	struct sk_buff_head queue;
 
 	struct neighbour   *neighbour;

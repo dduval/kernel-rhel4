@@ -3,12 +3,6 @@
  *                                                                         *
  *  Copyright 2003 LSI Logic Corporation.  All rights reserved.            *
  *                                                                         *
- *  This file is confidential and a trade secret of LSI Logic.  The        *
- *  receipt of or possession of this file does not convey any rights to    *
- *  reproduce or disclose its contents or to manufacture, use, or sell     *
- *  anything it may describe, in whole, or in part, without the specific   *
- *  written consent of LSI Logic Corporation.                              *
- *                                                                         *
  ***************************************************************************
  *
  *           Name:  iopiIocLogInfo.h

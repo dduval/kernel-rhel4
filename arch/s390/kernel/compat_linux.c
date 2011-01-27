@@ -486,15 +486,17 @@ out:
 
 /* end of readdir & getdents */
 
-int cp_compat_stat(struct kstat *stat, struct compat_stat *statbuf)
+int cp_compat_stat(struct kstat64 *stat, struct compat_stat *statbuf)
 {
 	int err;
 
 	if (!old_valid_dev(stat->dev) || !old_valid_dev(stat->rdev))
 		return -EOVERFLOW;
+	if (stat->ino64 != (u32)stat->ino64)
+		return -EOVERFLOW;
 
 	err = put_user(old_encode_dev(stat->dev), &statbuf->st_dev);
-	err |= put_user(stat->ino, &statbuf->st_ino);
+	err |= put_user(stat->ino64, &statbuf->st_ino);
 	err |= put_user(stat->mode, &statbuf->st_mode);
 	err |= put_user(stat->nlink, &statbuf->st_nlink);
 	err |= put_user(high2lowuid(stat->uid), &statbuf->st_uid);
@@ -1064,15 +1066,15 @@ struct stat64_emu31 {
 	unsigned long   st_ino;
 };	
 
-static int cp_stat64(struct stat64_emu31 *ubuf, struct kstat *stat)
+static int cp_stat64(struct stat64_emu31 *ubuf, struct kstat64 *stat)
 {
 	struct stat64_emu31 tmp;
 
 	memset(&tmp, 0, sizeof(tmp));
 
 	tmp.st_dev = huge_encode_dev(stat->dev);
-	tmp.st_ino = stat->ino;
-	tmp.__st_ino = (u32)stat->ino;
+	tmp.st_ino = stat->ino64;
+	tmp.__st_ino = (u32)stat->ino64;
 	tmp.st_mode = stat->mode;
 	tmp.st_nlink = (unsigned int)stat->nlink;
 	tmp.st_uid = stat->uid;
@@ -1090,8 +1092,8 @@ static int cp_stat64(struct stat64_emu31 *ubuf, struct kstat *stat)
 
 asmlinkage long sys32_stat64(char * filename, struct stat64_emu31 * statbuf)
 {
-	struct kstat stat;
-	int ret = vfs_stat(filename, &stat);
+	struct kstat64 stat;
+	int ret = vfs_stat64(filename, &stat);
 	if (!ret)
 		ret = cp_stat64(statbuf, &stat);
 	return ret;
@@ -1099,8 +1101,8 @@ asmlinkage long sys32_stat64(char * filename, struct stat64_emu31 * statbuf)
 
 asmlinkage long sys32_lstat64(char * filename, struct stat64_emu31 * statbuf)
 {
-	struct kstat stat;
-	int ret = vfs_lstat(filename, &stat);
+	struct kstat64 stat;
+	int ret = vfs_lstat64(filename, &stat);
 	if (!ret)
 		ret = cp_stat64(statbuf, &stat);
 	return ret;
@@ -1108,8 +1110,8 @@ asmlinkage long sys32_lstat64(char * filename, struct stat64_emu31 * statbuf)
 
 asmlinkage long sys32_fstat64(unsigned long fd, struct stat64_emu31 * statbuf)
 {
-	struct kstat stat;
-	int ret = vfs_fstat(fd, &stat);
+	struct kstat64 stat;
+	int ret = vfs_fstat64(fd, &stat);
 	if (!ret)
 		ret = cp_stat64(statbuf, &stat);
 	return ret;

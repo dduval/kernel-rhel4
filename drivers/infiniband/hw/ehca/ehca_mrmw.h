@@ -42,9 +42,6 @@
 #ifndef _EHCA_MRMW_H_
 #define _EHCA_MRMW_H_
 
-#undef DEB_PREFIX
-#define DEB_PREFIX "mrmw"
-
 int ehca_reg_mr(struct ehca_shca *shca,
 		struct ehca_mr *e_mr,
 		u64 *iova_start,

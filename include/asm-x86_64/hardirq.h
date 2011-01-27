@@ -21,8 +21,12 @@
  * - bits 0-7 are the preemption count (max preemption depth: 256)
  * - bits 8-15 are the softirq count (max # of softirqs: 256)
  * - bits 16-23 are the hardirq count (max # of hardirqs: 256)
+ * for XEN:
+ * - bits 16-27 are the hardirq count (max # of hardirqs: 4096)
  *
  * - ( bit 26 is the PREEMPT_ACTIVE flag. )
+ * for XEN:
+ * - ( bit 28 is the PREEMPT_ACTIVE flag. )
  *
  * PREEMPT_MASK: 0x000000ff
  * HARDIRQ_MASK: 0x0000ff00
@@ -31,7 +35,11 @@
 
 #define PREEMPT_BITS	8
 #define SOFTIRQ_BITS	8
+#ifndef CONFIG_XEN
 #define HARDIRQ_BITS	8
+#else
+#define HARDIRQ_BITS   12
+#endif
 
 #define PREEMPT_SHIFT	0
 #define SOFTIRQ_SHIFT	(PREEMPT_SHIFT + PREEMPT_BITS)

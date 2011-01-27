@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -130,26 +131,21 @@ struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 	u32 sz;
 	struct ib_srq *ret;
 
-	if (dev->n_srqs_allocated == ib_ipath_max_srqs) {
-		ret = ERR_PTR(-ENOMEM);
-		goto bail;
-	}
-
 	if (srq_init_attr->attr.max_wr == 0) {
 		ret = ERR_PTR(-EINVAL);
-		goto bail;
+		goto done;
 	}
 
 	if ((srq_init_attr->attr.max_sge > ib_ipath_max_srq_sges) ||
 	    (srq_init_attr->attr.max_wr > ib_ipath_max_srq_wrs)) {
 		ret = ERR_PTR(-EINVAL);
-		goto bail;
+		goto done;
 	}
 
 	srq = kmalloc(sizeof(*srq), GFP_KERNEL);
 	if (!srq) {
 		ret = ERR_PTR(-ENOMEM);
-		goto bail;
+		goto done;
 	}
 
 	/*
@@ -160,9 +156,8 @@ struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 		sizeof(struct ipath_rwqe);
 	srq->rq.wq = vmalloc(srq->rq.size * sz);
 	if (!srq->rq.wq) {
-		kfree(srq);
 		ret = ERR_PTR(-ENOMEM);
-		goto bail;
+		goto bail_srq;
 	}
 
 	/*
@@ -176,9 +171,25 @@ struct ib_srq *ipath_create_srq(struct ib_pd *ibpd,
 
 	ret = &srq->ibsrq;
 
-	dev->n_srqs_allocated++;
+	spin_lock(&dev->n_srqs_lock);
+	if (dev->n_srqs_allocated == ib_ipath_max_srqs) {
+		spin_unlock(&dev->n_srqs_lock);
+		ret = ERR_PTR(-ENOMEM);
+		goto bail_wq;
+	}
 
-bail:
+	dev->n_srqs_allocated++;
+	spin_unlock(&dev->n_srqs_lock);
+
+	goto done;
+
+bail_wq:
+	vfree(srq->rq.wq);
+
+bail_srq:
+	kfree(srq);
+
+done:
 	return ret;
 }
 
@@ -288,7 +299,9 @@ int ipath_destroy_srq(struct ib_srq *ibsrq)
 	struct ipath_srq *srq = to_isrq(ibsrq);
 	struct ipath_ibdev *dev = to_idev(ibsrq->device);
 
+	spin_lock(&dev->n_srqs_lock);
 	dev->n_srqs_allocated--;
+	spin_unlock(&dev->n_srqs_lock);
 	vfree(srq->rq.wq);
 	kfree(srq);
 

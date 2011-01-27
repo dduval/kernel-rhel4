@@ -29,6 +29,7 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/prctl.h>
 #include <asm/kdebug.h>
 
 #include <asm/pgtable.h>
@@ -387,7 +388,7 @@ static int emulate_instruction(struct pt_regs *regs)
 {
 	unsigned int instword;
 
-	if (!user_mode(regs))
+	if (!user_mode(regs) || (regs->msr & MSR_LE))
 		return -EINVAL;
 
 	CHECK_FULL_REGS(regs);
@@ -534,14 +535,12 @@ void KernelFPUnavailableException(struct pt_regs *regs)
 
 void AltivecUnavailableException(struct pt_regs *regs)
 {
-#ifndef CONFIG_ALTIVEC
 	if (user_mode(regs)) {
 		/* A user program has executed an altivec instruction,
 		   but this kernel doesn't support altivec. */
 		_exception(SIGILL, regs, ILL_ILLOPC, regs->nip);
 		return;
 	}
-#endif
 	printk(KERN_EMERG "Unrecoverable VMX/Altivec Unavailable Exception "
 			  "%lx at %lx\n", regs->trap, regs->nip);
 	die("Unrecoverable VMX/Altivec Unavailable Exception", regs, SIGABRT);
@@ -572,9 +571,11 @@ PerformanceMonitorException(struct pt_regs *regs)
 void
 AlignmentException(struct pt_regs *regs)
 {
-	int fixed;
+	int fixed = 0;
 
-	fixed = fix_alignment(regs);
+	/* we don't implement logging of alignment exceptions */
+	if (!(current->thread.align_ctl & PR_UNALIGN_SIGBUS))
+		fixed = fix_alignment(regs);
 
 	if (fixed == 1) {
 		regs->nip += 4;	/* skip over emulated instruction */

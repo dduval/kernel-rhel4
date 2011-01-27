@@ -144,6 +144,9 @@ struct vm_area_struct {
 #define VM_ACCOUNT	0x00100000	/* Is a VM accounted object */
 #define VM_HUGETLB	0x00400000	/* Huge TLB Page VM */
 #define VM_NONLINEAR	0x00800000	/* Is non-linear (remap_file_pages) */
+#ifdef CONFIG_XEN
+#define VM_FOREIGN	0x01000000	/* Has pages belonging to another VM */
+#endif
 
 #ifndef VM_STACK_DEFAULT_FLAGS		/* arch can override this */
 #define VM_STACK_DEFAULT_FLAGS VM_DATA_DEFAULT_FLAGS
@@ -403,6 +406,20 @@ static inline void set_page_zone(struct page *page, unsigned long nodezone_num)
 {
 	page->flags &= ~(~0UL << NODEZONE_SHIFT);
 	page->flags |= nodezone_num << NODEZONE_SHIFT;
+}
+
+static inline unsigned long zone_min(struct zone *z, unsigned int gfp_mask, 
+				    int can_try_harder, int alloc_type,
+				    unsigned int order)
+{
+	unsigned long min = z->pages_min;
+	if (gfp_mask & __GFP_HIGH)
+		min /= 2;
+	if (can_try_harder)
+		min -= min / 4;
+	min += (1<<order) + z->protection[alloc_type];
+
+	return min;
 }
 
 #ifndef CONFIG_DISCONTIGMEM
@@ -716,6 +733,8 @@ extern unsigned long do_brk_locked(unsigned long, unsigned long);
 
 /* filemap.c */
 extern unsigned long page_unuse(struct page *);
+extern void truncate_complete_page(struct address_space *mapping,
+				   struct page *page);
 extern void truncate_inode_pages(struct address_space *, loff_t);
 
 /* generic vm_area_ops exported for stackable file systems */
@@ -774,6 +793,13 @@ extern struct page * follow_page_pte(struct mm_struct *mm,
 		unsigned long address, int write, pte_t *pte);
 extern int remap_page_range(struct vm_area_struct *vma, unsigned long from,
 		unsigned long to, unsigned long size, pgprot_t prot);
+
+#ifdef CONFIG_XEN
+typedef int (*pte_fn_t)(pte_t *pte, struct page *pmd_page, unsigned long addr,
+			void *data);
+extern int apply_to_page_range(struct mm_struct *mm, unsigned long address,
+			       unsigned long size, pte_fn_t fn, void *data);
+#endif
 
 #ifdef CONFIG_PROC_FS
 void __vm_stat_account(struct mm_struct *, unsigned long, struct file *, long);

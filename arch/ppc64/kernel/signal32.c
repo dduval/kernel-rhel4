@@ -191,9 +191,7 @@ static long restore_user_regs(struct pt_regs *regs,
 	int i;
 	long err = 0;
 	unsigned int save_r2 = 0;
-#ifdef CONFIG_ALTIVEC
 	unsigned long msr;
-#endif
 
 	/*
 	 * restore general registers but not including MSR or SOFTE. Also
@@ -206,10 +204,15 @@ static long restore_user_regs(struct pt_regs *regs,
 			continue;
 		err |= __get_user(gregs[i], &sr->mc_gregs[i]);
 	}
+	err |= __get_user(msr, &sr->mc_gregs[PT_MSR]);
 	if (!sig)
 		regs->gpr[2] = (unsigned long) save_r2;
 	if (err)
 		return 1;
+
+	/* if doing signal return, restore the previous little-endian mode */
+	if (sig)
+		regs->msr = (regs->msr & ~MSR_LE) | (msr & MSR_LE);
 
 	/* force the process to reload the FP registers from
 	   current->thread when it next does FP instructions */
@@ -222,7 +225,7 @@ static long restore_user_regs(struct pt_regs *regs,
 	/* force the process to reload the altivec registers from
 	   current->thread when it next does altivec instructions */
 	regs->msr &= ~MSR_VEC;
-	if (!__get_user(msr, &sr->mc_gregs[PT_MSR]) && (msr & MSR_VEC) != 0) {
+	if (msr & MSR_VEC) {
 		/* restore altivec registers from the stack */
 		if (__copy_from_user(current->thread.vr, &sr->mc_vregs,
 				     sizeof(sr->mc_vregs)))
@@ -693,6 +696,8 @@ static void handle_rt_signal32(unsigned long sig, struct k_sigaction *ka,
 	regs->gpr[5] = (unsigned long) &rt_sf->uc;
 	regs->gpr[6] = (unsigned long) rt_sf;
 	regs->nip = (unsigned long) ka->sa.sa_handler;
+	/* enter the signal handler in big-endian mode */
+	regs->msr &= ~MSR_LE;
 	regs->link = (unsigned long) frame->tramp;
 	regs->trap = 0;
 	regs->result = 0;
@@ -860,6 +865,8 @@ static void handle_signal32(unsigned long sig, struct k_sigaction *ka,
 	regs->gpr[4] = (unsigned long) sc;
 	regs->nip = (unsigned long) ka->sa.sa_handler;
 	regs->link = (unsigned long) frame->mctx.tramp;
+	/* enter the signal handler in big-endian mode */
+	regs->msr &= ~MSR_LE;
 	regs->trap = 0;
 	regs->result = 0;
 

@@ -141,4 +141,6 @@ out:
 	return newsk;
 }
 
+#define sk_eat_skb(a, b, c) sk_eat_skb(a, b)
+
 #endif

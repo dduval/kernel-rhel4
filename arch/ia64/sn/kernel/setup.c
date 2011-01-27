@@ -3,7 +3,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (C) 1999,2001-2005 Silicon Graphics, Inc. All rights reserved.
+ * Copyright (C) 1999,2001-2006 Silicon Graphics, Inc. All rights reserved.
  */
 
 #include <linux/config.h>
@@ -29,14 +29,12 @@
 #include <linux/sched.h>
 #include <linux/root_dev.h>
 #include <linux/pm.h>
-#include <linux/efi.h>
 
 #include <asm/io.h>
 #include <asm/sal.h>
 #include <asm/machvec.h>
 #include <asm/system.h>
 #include <asm/processor.h>
-#include <asm/vga.h>
 #include <asm/sn/arch.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/pda.h>
@@ -66,7 +64,6 @@ extern unsigned long last_time_offset;
 extern void (*ia64_mark_idle) (int);
 extern void snidle(int);
 extern unsigned char acpi_kbd_controller_present;
-extern unsigned long long (*ia64_printk_clock)(void);
 
 unsigned long sn_rtc_cycles_per_second;
 EXPORT_SYMBOL(sn_rtc_cycles_per_second);
@@ -249,8 +246,14 @@ void __init sn_setup(char **cmdline_p)
 	ia64_sn_set_os_feature(OSF_FEAT_LOG_SBES);
 
 
+	/*
+	 * If the generic code has enabled vga console support - lets
+	 * get rid of it again. This is a kludge for the fact that ACPI
+	 * currtently has no way of informing us if legacy VGA is available
+	 * or not.
+	 */
 #if defined(CONFIG_VT) && defined(CONFIG_VGA_CONSOLE)
- 	if (conswitchp == &vga_con) {
+	if (conswitchp == &vga_con) {
 		printk(KERN_DEBUG "SGI: Disabling VGA console\n");
 #ifdef CONFIG_DUMMY_CONSOLE
 		conswitchp = &dummy_con;
@@ -285,7 +288,7 @@ void __init sn_setup(char **cmdline_p)
 	 * support here so we don't have to listen to failed keyboard probe
 	 * messages.
 	 */
-	if (version <= 0x0209 && acpi_kbd_controller_present) {
+	if (is_shub1() && version <= 0x0209 && acpi_kbd_controller_present) {
 		printk(KERN_INFO "Disabling legacy keyboard support as prom "
 		       "is too old and doesn't provide FADT\n");
 		acpi_kbd_controller_present = 0;
@@ -403,7 +406,8 @@ void __init sn_cpu_init(void)
 	int i;
 	static int wars_have_been_checked;
 
-	if (smp_processor_id() == 0 && IS_MEDUSA()) {
+	cpuid = smp_processor_id();
+	if (cpuid == 0 && IS_MEDUSA()) {
 		if (ia64_sn_is_fake_prom())
 			sn_prom_type = 2;
 		else
@@ -423,6 +427,12 @@ void __init sn_cpu_init(void)
 	sn_hub_info->as_shift = sn_hub_info->nasid_shift - 2;
 
 	/*
+	 * Don't check status. The SAL call is not supported on all PROMs
+	 * but a failure is harmless.
+	 */
+	(void) ia64_sn_set_cpu_number(cpuid);
+
+	/*
 	 * The boot cpu makes this call again after platform initialization is
 	 * complete.
 	 */
@@ -433,7 +443,6 @@ void __init sn_cpu_init(void)
 		if (ia64_sn_get_prom_feature_set(i, &sn_prom_features[i]) != 0)
 			break;
 
-	cpuid = smp_processor_id();
 	cpuphyid = get_sapicid();
 
 	if (ia64_sn_get_sapic_info(cpuphyid, &nasid, &subnode, &slice))

@@ -2,7 +2,7 @@
  * Copyright 2004 James Cleverdon, IBM.
  * Subject to the GNU Public License, v.2
  *
- * Flat APIC subarch code.  Maximum 8 CPUs, logical delivery.
+ * Flat APIC subarch code. 
  *
  * Hacked for x86-64 by James Cleverdon from i386 architecture code by
  * Martin Bligh, Andi Kleen, James Bottomley, John Stultz, and
@@ -116,4 +116,49 @@ struct genapic apic_flat =  {
 	.send_IPI_allbutself = flat_send_IPI_allbutself,
 	.send_IPI_mask = flat_send_IPI_mask,
 	.cpu_mask_to_apicid = flat_cpu_mask_to_apicid,
+};
+
+/* 
+ * Physflat mode is used when there are more than 8 CPUs on a AMD system.
+ * We cannot use logical delivery in this case because the mask
+ * overflows, so use physical mode.
+ */
+
+static cpumask_t physflat_target_cpus(void)
+{
+	return cpumask_of_cpu(0);
+}
+
+static void physflat_send_IPI_mask(cpumask_t cpumask, int vector)
+{
+	send_IPI_mask_sequence(cpumask, vector);
+}
+
+static unsigned int physflat_cpu_mask_to_apicid(cpumask_t cpumask)
+{
+	int cpu;
+
+	/*
+	 * We're using fixed IRQ delivery, can only return one phys APIC ID.
+	 * May as well be the first.
+	 */
+	cpu = first_cpu(cpumask);
+	if ((unsigned)cpu < NR_CPUS)
+		return x86_cpu_to_apicid[cpu];
+	else
+		return BAD_APICID;
+}
+
+struct genapic apic_physflat =  {
+	.name = "physical flat",
+	.int_delivery_mode = dest_LowestPrio,
+	.int_dest_mode = (APIC_DEST_PHYSICAL != 0),
+	.int_delivery_dest = APIC_DEST_PHYSICAL | APIC_DM_LOWEST,
+	.target_cpus = physflat_target_cpus,
+	.apic_id_registered = flat_apic_id_registered,
+	.init_apic_ldr = flat_init_apic_ldr,/*not needed, but shouldn't hurt*/
+	.send_IPI_all = flat_send_IPI_all,
+	.send_IPI_allbutself = flat_send_IPI_allbutself,
+	.send_IPI_mask = physflat_send_IPI_mask,
+	.cpu_mask_to_apicid = physflat_cpu_mask_to_apicid,
 };

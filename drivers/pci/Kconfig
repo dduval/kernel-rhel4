@@ -4,6 +4,7 @@
 config PCI_MSI
 	bool "Message Signaled Interrupts (MSI and MSI-X)"
 	depends on (X86_LOCAL_APIC && X86_IO_APIC) || IA64
+	depends on !XEN
 	default n
 	help
 	   This allows device drivers to enable MSI (Message Signaled

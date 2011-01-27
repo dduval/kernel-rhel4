@@ -93,7 +93,7 @@ MODULE_VERSION(MPT_LINUX_VERSION_COMMON);
 char *mptbase = NULL;
 
 /* Command line args */
-int mpt_can_queue = 127;
+int mpt_can_queue = 128;
 module_param(mpt_can_queue, int, 0);
 MODULE_PARM_DESC(mpt_can_queue, " Max IO depth per controller (default=128)");
 
@@ -483,8 +483,6 @@ mpt_base_reply(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *reply)
 		 */
 		if (pEvReply->MsgFlags & MPI_MSGFLAGS_CONTINUATION_REPLY) {
 			freereq = 0;
-			devtprintk((MYIOC_s_WARN_FMT "EVENT_NOTIFICATION reply %p does not return Request frame\n",
-				ioc->name, pEvReply));
 		} else {
 			devtprintk((MYIOC_s_WARN_FMT "EVENT_NOTIFICATION reply %p returns Request frame\n",
 				ioc->name, pEvReply));
@@ -1104,7 +1102,7 @@ mpt_host_page_alloc(MPT_ADAPTER *ioc, pIOCInit_t ioc_init)
 				    "host_page_buffer @ %p, dma @ %x, sz=%d bytes\n",
 				    ioc->name,
 				    ioc->HostPageBuffer,
-				    ioc->HostPageBuffer_dma,
+				    (u32)ioc->HostPageBuffer_dma,
 				    host_page_buffer_sz));
 				ioc->alloc_total += host_page_buffer_sz;
 				ioc->HostPageBuffer_sz = host_page_buffer_sz;
@@ -1327,32 +1325,28 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 	port = psize = 0;
 	for (ii=0; ii < DEVICE_COUNT_RESOURCE; ii++) {
 		if (pci_resource_flags(pdev, ii) & PCI_BASE_ADDRESS_SPACE_IO) {
+			if (psize)
+				continue;
 			/* Get I/O space! */
 			port = pci_resource_start(pdev, ii);
 			psize = pci_resource_len(pdev,ii);
+			dinitprintk((KERN_INFO MYNAM ": ii=%d port i/o @ %lx, psize=0x%x bytes\n", ii, port, psize));
 		} else {
+			if (msize)
+				continue;
 			/* Get memmap */
 			mem_phys = pci_resource_start(pdev, ii);
 			msize = pci_resource_len(pdev,ii);
-			break;
+			dinitprintk((KERN_INFO MYNAM ": ii=%d MPT adapter @ %lx, msize=0x%x bytes\n", ii, mem_phys, msize));
 		}
 	}
 	ioc->mem_size = msize;
 	ioc->deviceID = pdev->device;
-
-	if (ii == DEVICE_COUNT_RESOURCE) {
-		printk(KERN_ERR MYNAM ": ERROR - MPT adapter has no memory regions defined!\n");
-		kfree(ioc);
-		return -EINVAL;
-	}
-
-	dinitprintk((KERN_INFO MYNAM ": MPT adapter @ %lx, msize=%dd bytes\n", mem_phys, msize));
-	dinitprintk((KERN_INFO MYNAM ": (port i/o @ %lx, psize=%dd bytes)\n", port, psize));
+	ioc->vendorID = pdev->vendor;
 
 	mem = NULL;
 	/* Get logical ptr for PciMem0 space */
-	/*mem = ioremap(mem_phys, msize);*/
-	mem = ioremap(mem_phys, 0x100);
+	mem = ioremap(mem_phys, msize);
 	if (mem == NULL) {
 		printk(KERN_ERR MYNAM ": ERROR - Unable to map adapter memory!\n");
 		kfree(ioc);
@@ -1443,17 +1437,8 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 			pci_write_config_byte(pdev, 0x6a, pcixcmd);
 		}
 	}
-	else if (pdev->device == MPI_MANUFACTPAGE_DEVID_1030_53C1035) {
-		ioc->prod_name = "LSI53C1035";
-		ioc->bus_type = SPI;
-	}
 	else if (pdev->device == MPI_MANUFACTPAGE_DEVID_SAS1064) {
 		ioc->prod_name = "LSISAS1064";
-		ioc->bus_type = SAS;
-		ioc->errata_flag_1064 = 1;
-	}
-	else if (pdev->device == MPI_MANUFACTPAGE_DEVID_SAS1066) {
-		ioc->prod_name = "LSISAS1066";
 		ioc->bus_type = SAS;
 		ioc->errata_flag_1064 = 1;
 	}
@@ -1466,12 +1451,12 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 		ioc->prod_name = "LSISAS1064E";
 		ioc->bus_type = SAS;
 	}
-	else if (pdev->device == MPI_MANUFACTPAGE_DEVID_SAS1066E) {
-		ioc->prod_name = "LSISAS1066E";
-		ioc->bus_type = SAS;
-	}
 	else if (pdev->device == MPI_MANUFACTPAGE_DEVID_SAS1068E) {
 		ioc->prod_name = "LSISAS1068E";
+		ioc->bus_type = SAS;
+	}
+	else if (pdev->device == MPI_MANUFACTPAGE_DEVID_SAS1078) {
+		ioc->prod_name = "LSISAS1078";
 		ioc->bus_type = SAS;
 	}
 
@@ -1544,8 +1529,6 @@ mpt_attach(struct pci_dev *pdev, const struct pci_device_id *id)
 		if (mpt_msi_enable == 1) {
 			pci_disable_msi(pdev);
 		}
-		if (ioc->alt_ioc)
-			ioc->alt_ioc->alt_ioc = NULL;
 		iounmap(mem);
 		kfree(ioc);
 		pci_set_drvdata(pdev, NULL);
@@ -1760,7 +1743,8 @@ mpt_resume(struct pci_dev *pdev)
  *
  *	Returns:
  *		 0 for success
- *		-1 if failed to get board READY
+ *		-1 if failed to get boardMODULE_VERSION(MPT_LINUX_VERSION_COMMON);
+ READY
  *		-2 if READY but IOCFacts Failed
  *		-3 if READY but PrimeIOCFifos Failed
  *		-4 if READY but IOCInit Failed
@@ -1908,9 +1892,9 @@ mpt_do_ioc_recovery(MPT_ADAPTER *ioc, u32 reason, int sleepFlag)
 						 * chips (mpt_adapter_disable,
 						 * mpt_diag_reset)
 						 */
-						ioc->cached_fw = NULL;
 						ddlprintk((MYIOC_s_INFO_FMT ": mpt_upload:  alt_%s has cached_fw=%p \n",
 							ioc->name, ioc->alt_ioc->name, ioc->alt_ioc->cached_fw));
+						ioc->alt_ioc->cached_fw = NULL;
 					}
 				} else {
 					printk(KERN_WARNING MYNAM ": firmware upload failure!\n");
@@ -2327,7 +2311,9 @@ mpt_adapter_dispose(MPT_ADAPTER *ioc)
 
 	sz_last = ioc->alloc_total;
 	dexitprintk((KERN_INFO MYNAM ": %s: free'd %d of %d bytes\n",
-		ioc->name, sz_first-sz_last+(int)sizeof(*ioc), sz_first));
+		ioc->name, sz_first-sz_last+(int)sizeof(MPT_ADAPTER), sz_first));
+	dexitprintk((KERN_INFO MYNAM ": %s: sz_first=%d sz_last=%d sizeof(MPT_ADAPTER)=%d\n",
+		ioc->name, sz_first, sz_last, sizeof(MPT_ADAPTER)));
 
 	if (ioc->alt_ioc)
 		ioc->alt_ioc->alt_ioc = NULL;
@@ -2837,6 +2823,8 @@ SendIocInit(MPT_ADAPTER *ioc, int sleepFlag)
 	else
 		ioc_init.MaxDevices = MPT_MAX_SCSI_DEVICES;
 	ioc_init.MaxBuses = MPT_MAX_BUS;
+	dinitprintk((MYIOC_s_INFO_FMT "ioc_init.MaxDevice=%d\n",
+		   ioc->name, ioc_init.MaxDevices));
 	dinitprintk((MYIOC_s_INFO_FMT "facts.MsgVersion=%x\n",
 		   ioc->name, ioc->facts.MsgVersion));
 /* emoore@lsil.com : Host Page Buffer Suport, start */
@@ -2917,6 +2905,7 @@ SendIocInit(MPT_ADAPTER *ioc, int sleepFlag)
 	dinitprintk((MYIOC_s_INFO_FMT "INFO - Wait IOC_OPERATIONAL state (cnt=%d)\n",
 			ioc->name, count));
 
+        ioc->aen_event_read_flag=0;
 	return r;
 }
 
@@ -2984,6 +2973,8 @@ mpt_alloc_fw_memory(MPT_ADAPTER *ioc, int size)
 	if (ioc->alt_ioc && ioc->alt_ioc->cached_fw) {
 		ioc->cached_fw = ioc->alt_ioc->cached_fw;  /* use alt_ioc's memory */
 		ioc->cached_fw_dma = ioc->alt_ioc->cached_fw_dma;
+		ioc->alloc_total += size;
+		ioc->alt_ioc->alloc_total -= size;
 	} else {
 		if ( (ioc->cached_fw = pci_alloc_consistent(ioc->pcidev, size, &ioc->cached_fw_dma) ) )
 			ioc->alloc_total += size;
@@ -3409,6 +3400,7 @@ KickStart(MPT_ADAPTER *ioc, int force, int sleepFlag)
 static int
 mpt_diag_reset(MPT_ADAPTER *ioc, int ignore, int sleepFlag)
 {
+	MPT_ADAPTER	*iocp=NULL;
 	u32 diag0val;
 	u32 doorbell;
 	int hard_reset_done = 0;
@@ -3416,6 +3408,34 @@ mpt_diag_reset(MPT_ADAPTER *ioc, int ignore, int sleepFlag)
 #ifdef MPT_DEBUG
 	u32 diag1val = 0;
 #endif
+
+	if (ioc->pcidev->device == MPI_MANUFACTPAGE_DEVID_SAS1078) {
+		drsprintk((MYIOC_s_WARN_FMT "%s: Doorbell=%p; 1078 reset address=%p\n",
+			ioc->name, __FUNCTION__, &ioc->chip->Doorbell, &ioc->chip->Reset_1078));
+		CHIPREG_WRITE32(&ioc->chip->Reset_1078, 0x07);
+		if (sleepFlag == CAN_SLEEP)
+			msleep_interruptible(1);
+		else
+			MPT_MDELAY(1);
+
+		for (count = 0; count < 60; count ++) {
+			doorbell = CHIPREG_READ32(&ioc->chip->Doorbell);
+			doorbell &= MPI_IOC_STATE_MASK;
+
+			drsprintk((MYIOC_s_INFO_FMT "looking for READY STATE: doorbell=%x count=%d\n", 
+				ioc->name, doorbell, count));
+			if (doorbell == MPI_IOC_STATE_READY) {
+				return 0;
+			}
+
+			/* wait 1 sec */
+			if (sleepFlag == CAN_SLEEP)
+				msleep_interruptible(1000);
+			else
+				MPT_MDELAY(1000);
+		}
+		return -1;
+	}
 
 	/* Clear any existing interrupts */
 	CHIPREG_WRITE32(&ioc->chip->IntStatus, 0);
@@ -3512,26 +3532,30 @@ mpt_diag_reset(MPT_ADAPTER *ioc, int ignore, int sleepFlag)
 			/* FIXME?  Examine results here? */
 		}
 
-		if (ioc->cached_fw) {
+		if (ioc->cached_fw) 
+			iocp = ioc;
+		else if (ioc->alt_ioc && ioc->alt_ioc->cached_fw)
+			iocp = ioc->alt_ioc;
+		if (iocp) {
 			/* If the DownloadBoot operation fails, the
 			 * IOC will be left unusable. This is a fatal error
 			 * case.  _diag_reset will return < 0
 			 */
 			for (count = 0; count < 30; count ++) {
-				diag0val = CHIPREG_READ32(&ioc->chip->Diagnostic);
+				diag0val = CHIPREG_READ32(&iocp->chip->Diagnostic);
 				if (!(diag0val & MPI_DIAG_RESET_ADAPTER)) {
 					break;
 				}
 
 				dprintk((MYIOC_s_INFO_FMT "cached_fw: diag0val=%x count=%d\n",
-					ioc->name, diag0val, count));
+					iocp->name, diag0val, count));
 				/* wait 1 sec */
 				if (sleepFlag == CAN_SLEEP)
 					msleep_interruptible(1000);
 				else
 					MPT_MDELAY(1000);
 			}
-			if ((count = mpt_downloadboot(ioc, (MpiFwHeader_t *)ioc->cached_fw, sleepFlag)) < 0) {
+			if ((count = mpt_downloadboot(iocp, (MpiFwHeader_t *)iocp->cached_fw, sleepFlag)) < 0) {
 				printk(KERN_WARNING MYNAM
 					": firmware downloadboot failure (%d)!\n", count);
 			}
@@ -3937,8 +3961,8 @@ PrimeIocFifos(MPT_ADAPTER *ioc)
 		for (i=0; i < total_num_chain; i++) {
 			mf = (MPT_FRAME_HDR *) mem;
 			list_add_tail(&mf->u.frame.linkage.list, &ioc->FreeChainQ);
-			dinitprintk((MYIOC_s_INFO_FMT "Adding %p to FreeChainQ at %d\n",
- 				ioc->name, mf, i));
+//			dinitprintk((MYIOC_s_INFO_FMT "Adding %p to FreeChainQ at %d\n",
+ //				ioc->name, mf, i));
 			mem += ioc->req_sz;
 		}
 
@@ -5827,6 +5851,7 @@ mpt_read_ioc_pg_4(MPT_ADAPTER *ioc)
 		pIoc4 = pci_alloc_consistent(ioc->pcidev, iocpage4sz, &ioc4_dma);
 		if (!pIoc4)
 			return;
+		ioc->alloc_total += iocpage4sz;
 	} else {
 		ioc4_dma = ioc->spi_data.IocPg4_dma;
 		iocpage4sz = ioc->spi_data.IocPg4Sz;
@@ -5843,6 +5868,7 @@ mpt_read_ioc_pg_4(MPT_ADAPTER *ioc)
 	} else {
 		pci_free_consistent(ioc->pcidev, iocpage4sz, pIoc4, ioc4_dma);
 		ioc->spi_data.pIocPg4 = NULL;
+		ioc->alloc_total -= iocpage4sz;
 	}
 }
 
@@ -5980,15 +6006,17 @@ SendEventAck(MPT_ADAPTER *ioc, EventNotificationReply_t *evnp)
 		    ioc->name,__FUNCTION__));
 		return -1;
 	}
-	memset(pAck, 0, sizeof(*pAck));
 
-	dprintk((MYIOC_s_INFO_FMT "Sending EventAck\n", ioc->name));
+	devtprintk((MYIOC_s_WARN_FMT "Sending EventAck\n", ioc->name));
 
 	pAck->Function     = MPI_FUNCTION_EVENT_ACK;
 	pAck->ChainOffset  = 0;
+	pAck->Reserved[0]  = pAck->Reserved[1] = 0;
 	pAck->MsgFlags     = 0;
+	pAck->Reserved1[0] = pAck->Reserved1[1] = pAck->Reserved1[2] = 0;
 	pAck->Event        = evnp->Event;
 	pAck->EventContext = evnp->EventContext;
+	DBG_DUMP_EVENT_REQUEST_FRAME(pAck);
 
 	mpt_put_msg_frame(mpt_base_index, ioc, (MPT_FRAME_HDR *)pAck);
 
@@ -6605,11 +6633,13 @@ mpt_HardResetHandler(MPT_ADAPTER *ioc, int sleepFlag)
 	return rc;
 }
 
+# define EVENT_DESCR_STR_SZ		100
+
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 static void
 EventDescriptionStr(u8 event, u32 evData0, char *evStr)
 {
-	char *ds;
+	char *ds = NULL;
 
 	switch(event) {
 	case MPI_EVENT_NONE:
@@ -6655,12 +6685,15 @@ EventDescriptionStr(u8 event, u32 evData0, char *evStr)
 		break;
 	case MPI_EVENT_EVENT_CHANGE:
 		if (evData0)
-			ds = "Events(ON) Change";
+			ds = "Events ON";
 		else
-			ds = "Events(OFF) Change";
+			ds = "Events OFF";
 		break;
 	case MPI_EVENT_INTEGRATED_RAID:
 	{
+#if defined(CPQ_CIM)
+        ioc->csmi_change_count++;
+#endif
 		u8 ReasonCode = (u8)(evData0 >> 16);
 		switch (ReasonCode) {
 		case MPI_EVENT_RAID_RC_VOLUME_CREATED :
@@ -6710,23 +6743,36 @@ EventDescriptionStr(u8 event, u32 evData0, char *evStr)
 		break;
 	case MPI_EVENT_SAS_DEVICE_STATUS_CHANGE:
 	{
+        u8 id = (u8)(evData0);
 		u8 ReasonCode = (u8)(evData0 >> 16);
 		switch (ReasonCode) {
 		case MPI_EVENT_SAS_DEV_STAT_RC_ADDED:
-			ds = "SAS Device Status Change: Added";
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			    "SAS Device Status Change: Added: id=%d", id);
 			break;
 		case MPI_EVENT_SAS_DEV_STAT_RC_NOT_RESPONDING:
-			ds = "SAS Device Status Change: Deleted";
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			    "SAS Device Status Change: Deleted: id=%d", id);
 			break;
 		case MPI_EVENT_SAS_DEV_STAT_RC_SMART_DATA:
-			ds = "SAS Device Status Change: SMART Data";
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			    "SAS Device Status Change: SMART Data: id=%d",
+			    id);
 			break;
 		case MPI_EVENT_SAS_DEV_STAT_RC_NO_PERSIST_ADDED:
-			ds = "SAS Device Status Change: No Persistancy Added";
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			    "SAS Device Status Change: No Persistancy "
+			    "Added: id=%d", id);
 			break;
+        case MPI_EVENT_SAS_DEV_STAT_RC_INTERNAL_DEVICE_RESET:
+            snprintf(evStr, EVENT_DESCR_STR_SZ,
+                "SAS Device Status Change: Internal Device Reset: "
+                "id=%d", id);
+            break;
 		default:
-			ds = "SAS Device Status Change: Unknown";
-		break;
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			    "SAS Device Status Change: Unknown: id=%d", id);
+			break;		
 		}
 		break;
 	}
@@ -6743,10 +6789,99 @@ EventDescriptionStr(u8 event, u32 evData0, char *evStr)
 		ds = "Persistent Table Full";
 		break;
 	case MPI_EVENT_SAS_PHY_LINK_STATUS:
-		ds = "SAS PHY Link Status";
+	{
+		u8 LinkRates = (u8)(evData0 >> 8);
+		u8 PhyNumber = (u8)(evData0);
+		LinkRates = (LinkRates & MPI_EVENT_SAS_PLS_LR_CURRENT_MASK) >>
+			MPI_EVENT_SAS_PLS_LR_CURRENT_SHIFT;
+		switch (LinkRates) {
+		case MPI_EVENT_SAS_PLS_LR_RATE_UNKNOWN:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d:"
+			   " Rate Unknown",PhyNumber);
+			break;
+		case MPI_EVENT_SAS_PLS_LR_RATE_PHY_DISABLED:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d:"
+			   " Phy Disabled",PhyNumber);
+			break;
+		case MPI_EVENT_SAS_PLS_LR_RATE_FAILED_SPEED_NEGOTIATION:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d:"
+			   " Failed Speed Nego",PhyNumber);
+			break;
+		case MPI_EVENT_SAS_PLS_LR_RATE_SATA_OOB_COMPLETE:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d:"
+			   " Sata OOB Completed",PhyNumber);
+			break;
+		case MPI_EVENT_SAS_PLS_LR_RATE_1_5:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d:"
+			   " Rate 1.5 Gbps",PhyNumber);
+			break;
+		case MPI_EVENT_SAS_PLS_LR_RATE_3_0:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d:"
+			   " Rate 3.0 Gpbs",PhyNumber);
+			break;
+		default:
+			snprintf(evStr, EVENT_DESCR_STR_SZ,
+			   "SAS PHY Link Status: Phy=%d", PhyNumber);
+			break;
+		}
 		break;
+	}
 	case MPI_EVENT_SAS_DISCOVERY_ERROR:
 		ds = "SAS Discovery Error";
+		break;
+	case MPI_EVENT_IR_RESYNC_UPDATE:
+	{
+		u8 resync_complete = (u8)(evData0 >> 16);
+		snprintf(evStr, EVENT_DESCR_STR_SZ,
+		    "IR Resync Update: Complete = %d:",resync_complete);
+		break;
+	}
+	case MPI_EVENT_IR2:
+	{
+		u8 ReasonCode = (u8)(evData0 >> 16);
+		switch (ReasonCode) {
+		case MPI_EVENT_IR2_RC_LD_STATE_CHANGED:
+			ds = "IR2: LD State Changed";
+			break;
+		case MPI_EVENT_IR2_RC_PD_STATE_CHANGED:
+			ds = "IR2: PD State Changed";
+			break;
+		case MPI_EVENT_IR2_RC_BAD_BLOCK_TABLE_FULL:
+			ds = "IR2: Bad Block Table Full";
+			break;
+		case MPI_EVENT_IR2_RC_PD_INSERTED:
+			ds = "IR2: PD Inserted";
+			break;
+		case MPI_EVENT_IR2_RC_PD_REMOVED:
+			ds = "IR2: PD Removed";
+			break;
+		case MPI_EVENT_IR2_RC_FOREIGN_CFG_DETECTED:
+			ds = "IR2: Foreign CFG Detected";
+			break;
+		case MPI_EVENT_IR2_RC_REBUILD_MEDIUM_ERROR:
+			ds = "IR2: Rebuild Medium Error";
+			break;
+		default:
+			ds = "IR2";
+		break;
+		}
+		break;
+	}
+	case MPI_EVENT_SAS_DISCOVERY:
+	{
+		char buf[40];
+		sprintf(buf,"SAS Discovery: Condition=0x%x:",evData0);
+		ds = buf;
+		break;
+	}
+	case MPI_EVENT_LOG_ENTRY_ADDED:
+		ds = "SAS Log Entry Added";
 		break;
 
 	/*
@@ -6756,7 +6891,8 @@ EventDescriptionStr(u8 event, u32 evData0, char *evStr)
 		ds = "Unknown";
 		break;
 	}
-	strcpy(evStr,ds);
+	if (ds)
+		strncpy(evStr, ds, EVENT_DESCR_STR_SZ);
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -6792,10 +6928,8 @@ ProcessEventNotification(MPT_ADAPTER *ioc, EventNotificationReply_t *pEventReply
 	}
 
 	EventDescriptionStr(event, evData0, evStr);
-	devtprintk((MYIOC_s_INFO_FMT "MPT event (%s=%02Xh) detected!\n",
-			ioc->name,
-			evStr,
-			event));
+	devtprintk((MYIOC_s_WARN_FMT "MPT Event=%02Xh (%s) detected!\n",
+			ioc->name, event, evStr));
 
 #if defined(MPT_DEBUG) || defined(MPT_DEBUG_EVENTS)
 	printk(KERN_INFO MYNAM ": Event data:\n" KERN_INFO);
@@ -7265,6 +7399,7 @@ EXPORT_SYMBOL(mptbase_sas_persist_operation);
 EXPORT_SYMBOL(mpt_sas_get_info);
 EXPORT_SYMBOL_GPL(mpt_poll_interrupt);
 EXPORT_SYMBOL(mpt_alt_ioc_wait);
+
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*

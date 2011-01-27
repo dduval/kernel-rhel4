@@ -129,9 +129,10 @@ $(obj)/.tmp_qtcheck:
 	  echo "*"; \
 	  false; \
 	fi; \
-	LIBPATH=$$DIR/lib; LIB=qt; \
+	LIBPATH=$$DIR/lib; LIB=qt; osdir=""; \
 	$(HOSTCXX) -print-multi-os-directory > /dev/null 2>&1 && \
-	  LIBPATH=$$DIR/lib/$$($(HOSTCXX) -print-multi-os-directory); \
+	 osdir=$$($(HOSTCXX) -print-multi-os-directory); \
+	if [ -d $$LIBPATH/$$osdir ]; then LIBPATH=$$LIBPATH/$$osdir; fi; \
 	if [ -f $$LIBPATH/libqt-mt.so ]; then LIB=qt-mt; fi; \
 	echo "QTDIR=$$DIR" > $@; echo "QTLIBPATH=$$LIBPATH" >> $@; \
 	echo "QTLIB=$$LIB" >> $@; \

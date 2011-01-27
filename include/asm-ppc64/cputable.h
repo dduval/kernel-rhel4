@@ -26,7 +26,12 @@
 #define PPC_FEATURE_HAS_MMU		0x04000000
 #define PPC_FEATURE_HAS_4xxMAC		0x02000000
 #define PPC_FEATURE_UNIFIED_CACHE	0x01000000
+#define PPC_FEATURE_POWER5		0x00040000
+#define PPC_FEATURE_SMT			0x00004000
+#define PPC_FEATURE_ICACHE_SNOOP	0x00002000
+#define PPC_FEATURE_ARCH_2_05		0x00001000
 
+#define PPC_FEATURE_TRUE_LE		0x00000002
 #ifdef __KERNEL__
 
 #ifndef __ASSEMBLY__
@@ -118,6 +123,7 @@ extern firmware_feature_t firmware_features_table[];
 #define CPU_FTR_L3_DISABLE_NAP		0x0000000000001000
 #define CPU_FTR_NAP_DISABLE_L2_PR	0x0000000000002000
 #define CPU_FTR_DUAL_PLL_750FX		0x0000000000004000
+#define CPU_FTR_REAL_LE			0x0000000000400000
 
 /* Add the 64b processor unique features in the top half of the word */
 #define CPU_FTR_SLB           		0x0000000100000000
@@ -132,6 +138,7 @@ extern firmware_feature_t firmware_features_table[];
 #define CPU_FTR_COHERENT_ICACHE  	0x0000020000000000
 #define CPU_FTR_LOCKLESS_TLBIE		0x0000040000000000
 #define CPU_FTR_MMCRA_SIHV		0x0000080000000000
+#define CPU_FTR_POWER6_MMCRA		0x0000100000000000
 
 /* Platform firmware features */
 #define FW_FTR_                         0x0000000000000001
@@ -139,6 +146,11 @@ extern firmware_feature_t firmware_features_table[];
 #ifndef __ASSEMBLY__
 #define COMMON_USER_PPC64	(PPC_FEATURE_32 | PPC_FEATURE_64 | \
 			         PPC_FEATURE_HAS_FPU | PPC_FEATURE_HAS_MMU)
+#define COMMON_USER_POWER5	(COMMON_USER_PPC64 | PPC_FEATURE_POWER5 |\
+				 PPC_FEATURE_SMT | PPC_FEATURE_ICACHE_SNOOP)
+#define COMMON_USER_POWER6	(COMMON_USER_PPC64 | PPC_FEATURE_ARCH_2_05 |\
+				 PPC_FEATURE_SMT | PPC_FEATURE_ICACHE_SNOOP |\
+				 PPC_FEATURE_TRUE_LE)
 
 #define CPU_FTR_PPCAS_ARCH_V2_BASE (CPU_FTR_SLB | \
                                  CPU_FTR_TLBIEL | CPU_FTR_NOEXECUTE | \

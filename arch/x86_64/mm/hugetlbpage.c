@@ -33,7 +33,8 @@ static pte_t *huge_pte_offset(struct mm_struct *mm, unsigned long addr)
 	pmd_t *pmd = NULL;
 
 	pgd = pgd_offset(mm, addr);
-	pmd = pmd_offset(pgd, addr);
+	if (pgd_present(*pgd))
+		pmd = pmd_offset(pgd, addr);
 	return (pte_t *) pmd;
 }
 

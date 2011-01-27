@@ -387,6 +387,13 @@ static int ohci_get_frame (struct usb_hcd *hcd)
 	return OHCI_FRAME_NO(ohci->hcca);
 }
 
+static void ohci_usb_reset (struct ohci_hcd *ohci)
+{
+	ohci->hc_control = ohci_readl (&ohci->regs->control);
+	ohci->hc_control &= OHCI_CTRL_RWC;
+	writel (ohci->hc_control, &ohci->regs->control);
+}
+
 /*-------------------------------------------------------------------------*
  * HC functions
  *-------------------------------------------------------------------------*/
@@ -620,11 +627,12 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd, struct pt_regs *ptregs)
 		// e.g. due to PCI Master/Target Abort
 
 		ohci_dump (ohci, 1);
-		hc_reset (ohci);
+		ohci_usb_reset (ohci);
 	}
 
 	if (ints & OHCI_INTR_RD) {
 		ohci_vdbg (ohci, "resume detect\n");
+		writel (OHCI_INTR_RD, &regs->intrstatus);
 		schedule_work(&ohci->rh_resume);
 	}
 
@@ -678,7 +686,9 @@ static void ohci_stop (struct usb_hcd *hcd)
 		hc_reset (ohci);
 	else
 		writel (OHCI_INTR_MIE, &ohci->regs->intrdisable);
-	
+	free_irq(hcd->irq, hcd);
+	hcd->irq = -1;
+
 	remove_debug_files (ohci);
 	ohci_mem_cleanup (ohci);
 	if (ohci->hcca) {

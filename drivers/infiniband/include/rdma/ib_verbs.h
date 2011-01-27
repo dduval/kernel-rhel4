@@ -62,31 +62,6 @@ enum ib_node_type {
 	IB_NODE_ROUTER
 };
 
-enum rdma_node_type {
-	/* IB values map to NodeInfo:NodeType. */
-	RDMA_NODE_IB_CA 	= IB_NODE_CA,
-	RDMA_NODE_IB_SWITCH	= IB_NODE_SWITCH,
-	RDMA_NODE_IB_ROUTER	= IB_NODE_ROUTER
-};
-
-enum rdma_transport_type {
-	RDMA_TRANSPORT_IB
-};
-
-static inline enum rdma_transport_type
-rdma_node_get_transport(enum rdma_node_type node_type)
-{
-	switch (node_type) {
-	case RDMA_NODE_IB_CA:
-	case RDMA_NODE_IB_SWITCH:
-	case RDMA_NODE_IB_ROUTER:
-		return RDMA_TRANSPORT_IB;
-	default:
-		BUG();
-		return 0;
-	}
-}
-
 enum ib_device_cap_flags {
 	IB_DEVICE_RESIZE_MAX_WR		= 1,
 	IB_DEVICE_BAD_PKEY_CNTR		= (1<<1),
@@ -285,7 +260,8 @@ enum ib_event_type {
 	IB_EVENT_SM_CHANGE,
 	IB_EVENT_SRQ_ERR,
 	IB_EVENT_SRQ_LIMIT_REACHED,
-	IB_EVENT_QP_LAST_WQE_REACHED
+	IB_EVENT_QP_LAST_WQE_REACHED,
+	IB_EVENT_CLIENT_REREGISTER
 };
 
 struct ib_event {
@@ -721,8 +697,12 @@ struct ib_ucontext {
 struct ib_uobject {
 	u64			user_handle;	/* handle given to us by userspace */
 	struct ib_ucontext     *context;	/* associated user context */
+	void		       *object;		/* containing object */
 	struct list_head	list;		/* link to context's list */
 	u32			id;		/* index into kernel idr */
+	struct kref		ref;
+	struct rw_semaphore	mutex;		/* protects .live */
+	int			live;
 };
 
 struct ib_umem {
@@ -1110,6 +1090,20 @@ int ib_dealloc_pd(struct ib_pd *pd);
  * in all UD QP post sends.
  */
 struct ib_ah *ib_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr);
+
+/**
+ * ib_init_ah_from_wc - Initializes address handle attributes from a
+ *   work completion.
+ * @device: Device on which the received message arrived.
+ * @port_num: Port on which the received message arrived.
+ * @wc: Work completion associated with the received message.
+ * @grh: References the received global route header.  This parameter is
+ *   ignored unless the work completion indicates that the GRH is valid.
+ * @ah_attr: Returned attributes that can be used when creating an address
+ *   handle for replying to the message.
+ */
+int ib_init_ah_from_wc(struct ib_device *device, u8 port_num, struct ib_wc *wc,
+		       struct ib_grh *grh, struct ib_ah_attr *ah_attr);
 
 /**
  * ib_create_ah_from_wc - Creates an address handle associated with the

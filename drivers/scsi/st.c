@@ -261,6 +261,69 @@ static inline char *tape_name(Scsi_Tape *tape)
 	return tape->disk->disk_name;
 }
 
+#define to_scsi_tape(obj) container_of(obj, Scsi_Tape, kref)
+
+/**
+ *	st_tape_release - Called to free the Scsi_Tape structure
+ *	@kref: pointer to embedded kref
+ *
+ *	st_dev_arr_lock must be held when entering this routine.
+ **/
+static void st_tape_release(struct kref *kref)
+{
+	Scsi_Tape *tpnt = to_scsi_tape(kref);
+
+	tpnt->device = NULL;
+	if (tpnt->buffer) {
+		tpnt->buffer->orig_frp_segs = 0;
+		normalize_buffer(tpnt->buffer);
+		kfree(tpnt->buffer);
+	}
+	put_disk(tpnt->disk);
+	kfree(tpnt);
+}
+
+static Scsi_Tape *st_tape_get(int dev)
+{
+	Scsi_Tape *STp;
+	char *name;
+
+	write_lock(&st_dev_arr_lock);
+	if (dev >= st_dev_max || scsi_tapes == NULL ||
+	    ((STp = scsi_tapes[dev]) == NULL)) {
+		write_unlock(&st_dev_arr_lock);
+		return ERR_PTR(-ENXIO);
+	}
+	name = tape_name(STp);
+
+	if (STp->in_use) {
+		write_unlock(&st_dev_arr_lock);
+		DEB( printk(ST_DEB_MSG "%s: Device already in use.\n", name); )
+		return ERR_PTR(-EBUSY);
+	}
+
+	kref_get(&STp->kref);
+
+	if(scsi_device_get(STp->device)) {
+		kref_put(&STp->kref, st_tape_release);
+		write_unlock(&st_dev_arr_lock);
+		return ERR_PTR(-ENXIO);
+	}
+	STp->in_use = 1;
+	write_unlock(&st_dev_arr_lock);
+	return STp;
+}
+
+static void st_tape_put(Scsi_Tape *STp)
+{
+	normalize_buffer(STp->buffer);
+	write_lock(&st_dev_arr_lock);
+	STp->in_use = 0;
+	scsi_device_put(STp->device);
+	kref_put(&STp->kref, st_tape_release);
+	write_unlock(&st_dev_arr_lock);
+}
+
 /* Convert the result to success code */
 static int st_chk_result(Scsi_Tape *STp, Scsi_Request * SRpnt)
 {
@@ -1010,27 +1073,13 @@ static int st_open(struct inode *inode, struct file *filp)
 	 */
 	filp->f_mode &= ~(FMODE_PREAD | FMODE_PWRITE);
 
-	write_lock(&st_dev_arr_lock);
-	if (dev >= st_dev_max || scsi_tapes == NULL ||
-	    ((STp = scsi_tapes[dev]) == NULL)) {
-		write_unlock(&st_dev_arr_lock);
-		return (-ENXIO);
-	}
+	STp = st_tape_get(dev);
+
+	if (IS_ERR(STp))
+		return PTR_ERR(STp);
+
 	filp->private_data = STp;
 	name = tape_name(STp);
-
-	if (STp->in_use) {
-		write_unlock(&st_dev_arr_lock);
-		DEB( printk(ST_DEB_MSG "%s: Device already in use.\n", name); )
-		return (-EBUSY);
-	}
-
-	if(scsi_device_get(STp->device)) {
-		write_unlock(&st_dev_arr_lock);
-		return (-ENXIO);
-	}
-	STp->in_use = 1;
-	write_unlock(&st_dev_arr_lock);
 	STp->rew_at_close = STp->autorew_dev = (iminor(inode) & 0x80) == 0;
 
 	if (!scsi_block_when_processing_errors(STp->device)) {
@@ -1071,9 +1120,7 @@ static int st_open(struct inode *inode, struct file *filp)
 	return 0;
 
  err_out:
-	normalize_buffer(STp->buffer);
-	STp->in_use = 0;
-	scsi_device_put(STp->device);
+	st_tape_put(STp);
 	return retval;
 
 }
@@ -1202,12 +1249,7 @@ static int st_release(struct inode *inode, struct file *filp)
 	if (STp->door_locked == ST_LOCKED_AUTO)
 		do_door_lock(STp, 0);
 
-	normalize_buffer(STp->buffer);
-	write_lock(&st_dev_arr_lock);
-	STp->in_use = 0;
-	write_unlock(&st_dev_arr_lock);
-	scsi_device_put(STp->device);
-
+	st_tape_put(STp);
 	return result;
 }
 
@@ -3823,6 +3865,7 @@ static int st_probe(struct device *dev)
 		goto out_put_disk;
 	}
 	memset(tpnt, 0, sizeof(Scsi_Tape));
+	kref_init(&tpnt->kref);
 	tpnt->disk = disk;
 	sprintf(disk->disk_name, "st%d", i);
 	disk->private_data = &tpnt->driver;
@@ -3982,10 +4025,9 @@ out:
 	return -ENODEV;
 };
 
-
 static int st_remove(struct device *dev)
 {
-	Scsi_Device *SDp = to_scsi_device(dev);
+	struct scsi_device *SDp = to_scsi_device(dev);
 	Scsi_Tape *tpnt;
 	int i, j, mode;
 
@@ -3995,14 +4037,13 @@ static int st_remove(struct device *dev)
 		if (tpnt != NULL && tpnt->device == SDp) {
 			scsi_tapes[i] = NULL;
 			st_nr_dev--;
-			write_unlock(&st_dev_arr_lock);
 			devfs_unregister_tape(tpnt->disk->number);
 			sysfs_remove_link(&tpnt->device->sdev_gendev.kobj,
 					  "tape");
 			for (mode = 0; mode < ST_NBR_MODES; ++mode) {
 				j = mode << (4 - ST_NBR_MODE_BITS);
-				devfs_remove("%s/mt%s", SDp->devfs_name, st_formats[j]);
-				devfs_remove("%s/mt%sn", SDp->devfs_name, st_formats[j]);
+				devfs_remove("%s/mt%s", tpnt->device->devfs_name, st_formats[j]);
+				devfs_remove("%s/mt%sn", tpnt->device->devfs_name, st_formats[j]);
 				for (j=0; j < 2; j++) {
 					class_simple_device_remove(MKDEV(SCSI_TAPE_MAJOR,
 									 TAPE_MINOR(i, mode, j)));
@@ -4010,19 +4051,11 @@ static int st_remove(struct device *dev)
 					tpnt->modes[mode].cdevs[j] = NULL;
 				}
 			}
-			tpnt->device = NULL;
 
-			if (tpnt->buffer) {
-				tpnt->buffer->orig_frp_segs = 0;
-				normalize_buffer(tpnt->buffer);
-				kfree(tpnt->buffer);
-			}
-			put_disk(tpnt->disk);
-			kfree(tpnt);
-			return 0;
+			kref_put(&tpnt->kref, st_tape_release);
+			break;
 		}
 	}
-
 	write_unlock(&st_dev_arr_lock);
 	return 0;
 }

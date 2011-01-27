@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -31,7 +32,8 @@
  */
 
 #include "ipath_verbs.h"
-#include "ips_common.h"
+#include "ipath_kernel.h"
+#include "ipath_common.h"
 
 /*
  * Convert the AETH RNR timeout code into the number of milliseconds.
@@ -120,7 +122,7 @@ int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only)
 	struct ipath_rq *rq;
 	struct ipath_srq *srq;
 	struct ipath_rwqe *wqe;
-	int ret;
+	int ret = 1;
 
 	if (!qp->ibqp.srq) {
 		rq = &qp->r_rq;
@@ -128,7 +130,7 @@ int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only)
 
 		if (unlikely(rq->tail == rq->head)) {
 			ret = 0;
-			goto bail;
+			goto done;
 		}
 		wqe = get_rwqe_ptr(rq, rq->tail);
 		qp->r_wr_id = wqe->wr_id;
@@ -149,7 +151,7 @@ int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only)
 
 	if (unlikely(rq->tail == rq->head)) {
 		ret = 0;
-		goto bail;
+		goto done;
 	}
 	wqe = get_rwqe_ptr(rq, rq->tail);
 	qp->r_wr_id = wqe->wr_id;
@@ -177,14 +179,13 @@ int ipath_get_rwqe(struct ipath_qp *qp, int wr_id_only)
 			ev.event = IB_EVENT_SRQ_LIMIT_REACHED;
 			srq->ibsrq.event_handler(&ev,
 						 srq->ibsrq.srq_context);
-			spin_lock_irqsave(&rq->lock, flags);
+			goto bail;
 		}
 	}
-done:
-	ret = 1;
 
-bail:
+done:
 	spin_unlock_irqrestore(&rq->lock, flags);
+bail:
 	return ret;
 }
 
@@ -422,6 +423,15 @@ done:
 		wake_up(&qp->wait);
 }
 
+static int want_buffer(struct ipath_devdata *dd)
+{
+	set_bit(IPATH_S_PIOINTBUFAVAIL, &dd->ipath_sendctrl);
+	ipath_write_kreg(dd, dd->ipath_kregs->kr_sendctrl,
+			 dd->ipath_sendctrl);
+
+	return 0;
+}
+
 /**
  * ipath_no_bufs_available - tell the layer driver we need buffers
  * @qp: the QP that caused the problem
@@ -438,7 +448,7 @@ void ipath_no_bufs_available(struct ipath_qp *qp, struct ipath_ibdev *dev)
 		list_add_tail(&qp->piowait, &dev->piowait);
 	spin_unlock_irqrestore(&dev->pending_lock, flags);
 	/*
-	 * Note that as soon as ipath_layer_want_buffer() is called and
+	 * Note that as soon as want_buffer() is called and
 	 * possibly before it returns, ipath_ib_piobufavail()
 	 * could be called.  If we are still in the tasklet function,
 	 * tasklet_hi_schedule() will not call us until the next time
@@ -448,7 +458,7 @@ void ipath_no_bufs_available(struct ipath_qp *qp, struct ipath_ibdev *dev)
 	 */
 	clear_bit(IPATH_S_BUSY, &qp->s_flags);
 	tasklet_unlock(&qp->s_task);
-	ipath_layer_want_buffer(dev->dd);
+	want_buffer(dev->dd);
 	dev->n_piowait++;
 }
 
@@ -563,7 +573,7 @@ u32 ipath_make_grh(struct ipath_ibdev *dev, struct ib_grh *hdr,
 	hdr->hop_limit = grh->hop_limit;
 	/* The SGID is 32-bit aligned. */
 	hdr->sgid.global.subnet_prefix = dev->gid_prefix;
-	hdr->sgid.global.interface_id = ipath_layer_get_guid(dev->dd);
+	hdr->sgid.global.interface_id = dev->dd->ipath_guid;
 	hdr->dgid = grh->dgid;
 
 	/* GRH header size in 32-bit words. */
@@ -595,8 +605,7 @@ void ipath_do_ruc_send(unsigned long data)
 	if (test_and_set_bit(IPATH_S_BUSY, &qp->s_flags))
 		goto bail;
 
-	if (unlikely(qp->remote_ah_attr.dlid ==
-		     ipath_layer_get_lid(dev->dd))) {
+	if (unlikely(qp->remote_ah_attr.dlid == dev->dd->ipath_lid)) {
 		ipath_ruc_loopback(qp);
 		goto clear;
 	}
@@ -632,7 +641,7 @@ again:
 	/* Sending responses has higher priority over sending requests. */
 	if (qp->s_ack_state != IB_OPCODE_RC_ACKNOWLEDGE &&
 	    (bth0 = ipath_make_rc_ack(qp, ohdr, pmtu)) != 0)
-		bth2 = qp->s_ack_psn++ & IPS_PSN_MASK;
+		bth2 = qp->s_ack_psn++ & IPATH_PSN_MASK;
 	else if (!((qp->ibqp.qp_type == IB_QPT_RC) ?
 		   ipath_make_rc_req(qp, ohdr, pmtu, &bth0, &bth2) :
 		   ipath_make_uc_req(qp, ohdr, pmtu, &bth0, &bth2))) {
@@ -651,20 +660,20 @@ again:
 	/* Construct the header. */
 	extra_bytes = (4 - qp->s_cur_size) & 3;
 	nwords = (qp->s_cur_size + extra_bytes) >> 2;
-	lrh0 = IPS_LRH_BTH;
+	lrh0 = IPATH_LRH_BTH;
 	if (unlikely(qp->remote_ah_attr.ah_flags & IB_AH_GRH)) {
 		qp->s_hdrwords += ipath_make_grh(dev, &qp->s_hdr.u.l.grh,
 						 &qp->remote_ah_attr.grh,
 						 qp->s_hdrwords, nwords);
-		lrh0 = IPS_LRH_GRH;
+		lrh0 = IPATH_LRH_GRH;
 	}
 	lrh0 |= qp->remote_ah_attr.sl << 4;
 	qp->s_hdr.lrh[0] = cpu_to_be16(lrh0);
 	qp->s_hdr.lrh[1] = cpu_to_be16(qp->remote_ah_attr.dlid);
 	qp->s_hdr.lrh[2] = cpu_to_be16(qp->s_hdrwords + nwords +
 				       SIZE_OF_CRC);
-	qp->s_hdr.lrh[3] = cpu_to_be16(ipath_layer_get_lid(dev->dd));
-	bth0 |= ipath_layer_get_pkey(dev->dd, qp->s_pkey_index);
+	qp->s_hdr.lrh[3] = cpu_to_be16(dev->dd->ipath_lid);
+	bth0 |= ipath_get_pkey(dev->dd, qp->s_pkey_index);
 	bth0 |= extra_bytes << 20;
 	ohdr->bth[0] = cpu_to_be32(bth0);
 	ohdr->bth[1] = cpu_to_be32(qp->remote_qpn);

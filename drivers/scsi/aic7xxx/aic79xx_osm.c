@@ -2296,12 +2296,6 @@ ahd_platform_free(struct ahd_softc *ahd)
 		del_timer_sync(&ahd->platform_data->completeq_timer);
 		ahd_linux_kill_dv_thread(ahd);
 		ahd_teardown_runq_tasklet(ahd);
-		if (ahd->platform_data->host != NULL) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,5,0)
-			scsi_remove_host(ahd->platform_data->host);
-#endif
-			scsi_host_put(ahd->platform_data->host);
-		}
 
 		/* destroy all of the device and target objects */
 		for (i = 0; i < AHD_NUM_TARGETS; i++) {
@@ -2355,6 +2349,9 @@ ahd_platform_free(struct ahd_softc *ahd)
 		if (ahd->dev_softc != NULL)
 			ahd->dev_softc->driver = NULL;
 #endif
+		if (ahd->platform_data->host)
+			scsi_host_put(ahd->platform_data->host);
+		
 		free(ahd->platform_data, M_DEVBUF);
 	}
 }

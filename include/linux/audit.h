@@ -27,6 +27,7 @@
 #ifdef __KERNEL__
 #include <linux/sched.h>
 #include <linux/elf.h>
+#include <linux/skbuff.h>
 
 struct hlist_head;
 struct hlist_node;
@@ -302,6 +303,13 @@ extern int audit_avc_path(struct dentry *dentry, struct vfsmount *mnt);
 extern void audit_signal_info(int sig, struct task_struct *t);
 extern int audit_filter_user(struct netlink_skb_parms *cb, int type);
 extern void audit_panic(const char *);
+struct audit_netlink_list {
+	int pid;
+	struct sk_buff_head q;
+};
+
+int audit_send_list(void *);
+
 #else
 #define audit_alloc(t) ({ 0; })
 #define audit_free(t) do { ; } while (0)
@@ -373,6 +381,10 @@ extern int		    audit_set_enabled(int state, uid_t loginuid);
 extern int		    audit_set_failure(int state, uid_t loginuid);
 
 				/* Private API (for auditsc.c only) */
+extern struct sk_buff *	    audit_make_reply(int pid, int seq, int type,
+					    int done, int multi,
+					    void *payload, int size);
+
 extern void		    audit_send_reply(int pid, int seq, int type,
 					     int done, int multi,
 					     void *payload, int size);

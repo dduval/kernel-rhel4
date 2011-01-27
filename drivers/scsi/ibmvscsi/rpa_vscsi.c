@@ -309,3 +309,10 @@ void ibmvscsi_reset_crq_queue(struct crq_queue *queue,
 		       "ibmvscsi: couldn't register crq--rc 0x%x\n", rc);
 	}
 }
+
+void ibmvscsi_interrupt(struct ibmvscsi_host_data *hostdata)
+{
+	struct vio_dev *vdev = to_vio_dev(hostdata->dev);
+
+	ibmvscsi_handle_event(vdev->irq, hostdata, NULL);
+}

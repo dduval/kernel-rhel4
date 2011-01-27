@@ -571,16 +571,27 @@ struct Scsi_Host {
 #define		transport_class_to_shost(class_dev) \
 	container_of(class_dev, struct Scsi_Host, transport_classdev)
 
+#define shost_printk(prefix, shost, fmt, a...)	\
+	dev_printk(prefix, &(shost)->shost_gendev, fmt, ##a)
+
+static inline int scsi_host_in_recovery(struct Scsi_Host *shost)
+{
+	return test_bit(SHOST_RECOVERY, &shost->shost_state) ||
+		test_bit(SHOST_CANCEL, &shost->shost_state) ||
+		test_bit(SHOST_DEL, &shost->shost_state);
+}
 
 extern struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *, int);
 extern int __must_check scsi_add_host(struct Scsi_Host *, struct device *);
 extern void scsi_scan_host(struct Scsi_Host *);
+extern void scsi_rescan_device(struct device *);
 extern void scsi_scan_target(struct Scsi_Host *, unsigned int channel,
 			     unsigned int id, unsigned int lun, int rescan);
 extern void scsi_remove_host(struct Scsi_Host *);
 extern struct Scsi_Host *scsi_host_get(struct Scsi_Host *);
 extern void scsi_host_put(struct Scsi_Host *t);
 extern struct Scsi_Host *scsi_host_lookup(unsigned short);
+extern const char *scsi_host_state_name(unsigned long);
 
 extern u64 scsi_calculate_bounce_limit(struct Scsi_Host *);
 

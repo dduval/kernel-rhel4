@@ -57,6 +57,15 @@
 #define REST_16VRS(n,b,base)	REST_8VRS(n,b,base); REST_8VRS(n+8,b,base)
 #define REST_32VRS(n,b,base)	REST_16VRS(n,b,base); REST_16VRS(n+16,b,base)
 
+/*
+ * An mtfsf instruction with the L bit set. On CPUs that support this a
+ * full 64bits of FPSCR is restored and on other CPUs it is ignored.
+ *
+ * Until binutils gets the new form of mtfsf, hardwire the instruction.
+ */
+#define MTFSF_L(REG) \
+	.long (0xfc00058e | ((0xff) << 17) | ((REG) << 11) | (1 << 25))
+
 /* Macros to adjust thread priority for Iseries hardware multithreading */
 #define HMT_LOW		or 1,1,1
 #define HMT_MEDIUM	or 2,2,2

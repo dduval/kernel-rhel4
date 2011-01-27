@@ -117,6 +117,7 @@ struct iscsi_function_template {
 	 * the address type
 	 */
 	void (*get_ip_address)(struct scsi_target *);
+	void (*get_portal_ip_address)(struct scsi_target *);
 	/*
 	 * The lld should snprintf the name or alias to the buffer
 	 */
@@ -159,6 +160,7 @@ struct iscsi_function_template {
 	unsigned long show_port:1;
 	unsigned long show_tpgt:1;
 	unsigned long show_ip_address:1;
+	unsigned long show_portal_ip_address:1;
 	unsigned long show_target_name:1;
 	unsigned long show_target_alias:1;
 	unsigned long show_initial_r2t:1;

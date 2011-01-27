@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -38,8 +39,12 @@
 #include <asm/pgtable.h>
 
 #include "ipath_kernel.h"
-#include "ips_common.h"
-#include "ipath_layer.h"
+#include "ipath_common.h"
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,12) && LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,14)
+#define class_device_create(cls, parent, devt, device, fmt, arg...) \
+        class_device_create(cls, devt, device, fmt, ## arg)
+#endif
 
 static int ipath_open(struct inode *, struct file *);
 static int ipath_close(struct inode *, struct file *);
@@ -457,7 +462,7 @@ static int ipath_set_part_key(struct ipath_portdata *pd, u16 key)
 	u16 lkey = key & 0x7FFF;
 	int ret;
 
-	if (lkey == (IPS_DEFAULT_P_KEY & 0x7FFF)) {
+	if (lkey == (IPATH_DEFAULT_P_KEY & 0x7FFF)) {
 		/* nothing to do; this key always valid */
 		ret = 0;
 		goto bail;
@@ -907,10 +912,10 @@ done:
 
 #ifndef io_remap_pfn_range
 #define io_remap_pfn_range(vma, addr, pfn, size, prot) \
-	io_remap_page_range((vma), (addr), (pfn) << PAGE_SHIFT, (size), \
+	io_remap_page_range((vma), (addr), (unsigned long)(pfn) << PAGE_SHIFT, (size), \
 			    (prot))
 #define remap_pfn_range(vma, addr, pfn, size, prot) \
-	remap_page_range((vma), (addr), (pfn) << PAGE_SHIFT, (size), \
+	remap_page_range((vma), (addr), (unsigned long)(pfn) << PAGE_SHIFT, (size), \
 			    (prot))
 #endif
 
@@ -921,7 +926,7 @@ static int ipath_mmap_mem(struct vm_area_struct *vma,
 			     int write_ok, dma_addr_t addr, char *what)
 {
 	struct ipath_devdata *dd = pd->port_dd;
-	unsigned pfn = (unsigned long)addr >> PAGE_SHIFT;
+	unsigned long pfn = (unsigned long)addr >> PAGE_SHIFT;
 	int ret;
 
 	if ((vma->vm_end - vma->vm_start) > len) {
@@ -932,7 +937,7 @@ static int ipath_mmap_mem(struct vm_area_struct *vma,
 		goto bail;
 	}
 
-	if(!write_ok) {
+	if (!write_ok) {
 		if (vma->vm_flags & VM_WRITE) {
 			dev_info(&dd->pcidev->dev,
 				 "%s must be mapped readonly\n", what);
@@ -946,7 +951,7 @@ static int ipath_mmap_mem(struct vm_area_struct *vma,
 
 	ret = remap_pfn_range(vma, vma->vm_start, pfn,
 			      len, vma->vm_page_prot);
-	if(ret)
+	if (ret)
 		dev_info(&dd->pcidev->dev,
 			 "%s port%u mmap of %lx, %x bytes r%c failed: %d\n",
 			 what, pd->port_port, (unsigned long)addr, len,
@@ -1015,20 +1020,18 @@ static int mmap_piobufs(struct vm_area_struct *vma,
 	 * Don't mark this as non-cached, or we don't get the
 	 * write combining behavior we want on the PIO buffers!
 	 */
-#if defined (pgprot_writecombine) && defined(_PAGE_MA_WC)
-	/* Enable WC */
-	vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+
+#if defined(__powerpc__)
+	/* There isn't a generic way to specify writethrough mappings */
+	pgprot_val(vma->vm_page_prot) |= _PAGE_NO_CACHE;
+	pgprot_val(vma->vm_page_prot) |= _PAGE_WRITETHRU;
+	pgprot_val(vma->vm_page_prot) &= ~_PAGE_GUARDED;
 #endif
 
-	if (vma->vm_flags & VM_READ) {
-		dev_info(&dd->pcidev->dev,
-			 "Can't map piobufs as readable (flags=%lx)\n",
-			 vma->vm_flags);
-		ret = -EPERM;
-		goto bail;
-	}
-
-	/* don't allow them to later change to readable with mprotect */
+	/*
+	 * don't allow them to later change to readable with mprotect (for when
+	 * not initially mapped readable, as is normally the case)
+	 */
 	vma->vm_flags &= ~VM_MAYREAD;
 	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND;
 
@@ -1117,22 +1120,21 @@ static int ipath_mmap(struct file *fp, struct vm_area_struct *vma)
 	 * allocations failed, but user called mmap anyway.   We want to catch
 	 * that before it can match.
 	 */
-	if(!pgaddr || pgaddr >= (1ULL<<40))  {
-			ipath_dev_err(dd, "Bad physical address %llx, start %lx, end %lx\n",
-				(unsigned long long)pgaddr, vma->vm_start, vma->vm_end);
-			return -EINVAL;
+	if (!pgaddr || pgaddr >= (1ULL<<40))  {
+		ipath_dev_err(dd, "Bad phys addr %llx, start %lx, end %lx\n",
+			(unsigned long long)pgaddr, vma->vm_start, vma->vm_end);
+		return -EINVAL;
 	}
 
 	/* just the offset of the port user registers, not physical addr */
 	ureg = dd->ipath_uregbase + dd->ipath_palign * pd->port_port;
 
-	ipath_cdbg(MM, "pgaddr %llx vm_start=%lx len %lx port %u:%u\n",
+	ipath_cdbg(MM, "ushare: pgaddr %llx vm_start=%lx, vmlen %lx\n",
 		   (unsigned long long) pgaddr, vma->vm_start,
-		   vma->vm_end - vma->vm_start, dd->ipath_unit,
-		   pd->port_port);
+		   vma->vm_end - vma->vm_start);
 
-	if(vma->vm_start & (PAGE_SIZE-1)) {
-		ipath_dev_err(dd, 
+	if (vma->vm_start & (PAGE_SIZE-1)) {
+		ipath_dev_err(dd,
 			"vm_start not aligned: %lx, end=%lx phys %lx\n",
 			vma->vm_start, vma->vm_end, (unsigned long)pgaddr);
 		ret = -EINVAL;
@@ -1145,7 +1147,7 @@ static int ipath_mmap(struct file *fp, struct vm_area_struct *vma)
 		ret = mmap_rcvegrbufs(vma, pd);
 	else if (pgaddr == (u64) pd->port_rcvhdrq_phys) {
 		/*
-		 * The rcvhdrq itself; readonly except on HT-400 (so have
+		 * The rcvhdrq itself; readonly except on HT (so have
 		 * to allow writable mapping), multiple pages, contiguous
 		 * from an i/o perspective.
 		 */
@@ -1164,7 +1166,7 @@ static int ipath_mmap(struct file *fp, struct vm_area_struct *vma)
 	else if (pgaddr == dd->ipath_pioavailregs_phys)
 		/* in-memory copy of pioavail registers */
 		ret = ipath_mmap_mem(vma, pd, PAGE_SIZE, 0,
-			      	     dd->ipath_pioavailregs_phys,
+				     dd->ipath_pioavailregs_phys,
 				     "pioavail registers");
 	else
 		ret = -EINVAL;
@@ -1185,6 +1187,7 @@ static unsigned int ipath_poll(struct file *fp,
 	struct ipath_portdata *pd;
 	u32 head, tail;
 	int bit;
+	unsigned pollflag = 0;
 	struct ipath_devdata *dd;
 
 	pd = port_fp(fp);
@@ -1221,9 +1224,12 @@ static unsigned int ipath_poll(struct file *fp,
 			clear_bit(IPATH_PORT_WAITING_RCV, &pd->port_flag);
 			pd->port_rcvwait_to++;
 		}
+		else
+			pollflag = POLLIN | POLLRDNORM;
 	}
 	else {
 		/* it's already happened; don't do wait_event overhead */
+		pollflag = POLLIN | POLLRDNORM;
 		pd->port_rcvnowait++;
 	}
 
@@ -1231,7 +1237,7 @@ static unsigned int ipath_poll(struct file *fp,
 	ipath_write_kreg(dd, dd->ipath_kregs->kr_rcvctrl,
 			 dd->ipath_rcvctrl);
 
-	return 0;
+	return pollflag;
 }
 
 static int try_alloc_port(struct ipath_devdata *dd, int port,
@@ -1333,14 +1339,14 @@ static int find_best_unit(struct file *fp)
 	 * This code is present to allow a knowledgeable person to
 	 * specify the layout of processes to processors before opening
 	 * this driver, and then we'll assign the process to the "closest"
-	 * HT-400 to that processor (we assume reasonable connectivity,
+	 * InfiniPath chip to that processor (we assume reasonable connectivity,
 	 * for now).  This code assumes that if affinity has been set
 	 * before this point, that at most one cpu is set; for now this
 	 * is reasonable.  I check for both cpus_empty() and cpus_full(),
 	 * in case some kernel variant sets none of the bits when no
 	 * affinity is set.  2.6.11 and 12 kernels have all present
 	 * cpus set.  Some day we'll have to fix it up further to handle
-	 * a cpu subset.  This algorithm fails for two HT-400's connected
+	 * a cpu subset.  This algorithm fails for two HT chips connected
 	 * in tunnel fashion.  Eventually this needs real topology
 	 * information.  There may be some issues with dual core numbering
 	 * as well.  This needs more work prior to release.
@@ -1535,12 +1541,15 @@ static int ipath_close(struct inode *in, struct file *fp)
 		/* clean up the pkeys for this port user */
 		ipath_clean_part_key(pd, dd);
 
+
 		/*
-		 * be paranoid, and never write 0's to these, just use an unused part of
-		 * the port 0 tail page.  Of course, rcvhdraddr points to a large chunk
-		 * of memory, so this could still trash things, but at least it won't trash
-		 * page 0, and by disabling the port, it should stop "soon", even if a packet
-		 * or two is in already in flight after we disabled the port.
+		 * be paranoid, and never write 0's to these, just use an
+		 * unused part of the port 0 tail page.  Of course,
+		 * rcvhdraddr points to a large chunk of memory, so this
+		 * could still trash things, but at least it won't trash
+		 * page 0, and by disabling the port, it should stop "soon",
+		 * even if a packet or two is in already in flight after we
+		 * disabled the port.
 		 */
 		ipath_write_kreg_port(dd,
 		        dd->ipath_kregs->kr_rcvhdrtailaddr, port,
@@ -1699,6 +1708,8 @@ bail:
 	return ret;
 }
 
+#define NEW_REDHAT
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,9)
 static ssize_t show_dev(struct class_device *class_dev, char *buf)
 {
 	struct cdev *dev= class_get_devdata(class_dev);
@@ -1706,6 +1717,7 @@ static ssize_t show_dev(struct class_device *class_dev, char *buf)
 	return print_dev_t(buf, dev->dev);
 }
 static CLASS_DEVICE_ATTR(dev, S_IRUGO, show_dev, NULL);
+#endif
 
 static struct class *ipath_class;
 
@@ -1738,7 +1750,7 @@ static int init_cdev(int minor, char *name, struct file_operations *fops,
 		goto err_cdev;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,15)
+#if defined(NEW_REDHAT)
 	class_dev = class_device_create(ipath_class, dev, NULL, name);
 #else
 	class_dev = class_device_create(ipath_class, NULL, dev, NULL, name);
@@ -1876,7 +1888,7 @@ int ipath_user_add(struct ipath_devdata *dd)
 		if (ret < 0) {
 			ipath_dev_err(dd, "Could not create wildcard "
 				      "minor: error %d\n", -ret);
-			goto bail_sma;
+			goto bail_user;
 		}
 
 		atomic_set(&user_setup, 1);
@@ -1892,7 +1904,7 @@ int ipath_user_add(struct ipath_devdata *dd)
 
 	goto bail;
 
-bail_sma:
+bail_user:
 	user_cleanup();
 bail:
 	return ret;

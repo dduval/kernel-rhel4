@@ -61,4 +61,8 @@ extern int irqbalance_disable(char *str);
 extern int no_irq_affinity;
 extern int noirqdebug_setup(char *str);
 
+#ifdef CONFIG_HOTPLUG_CPU
+extern void fixup_irqs(cpumask_t map);
+#endif
+
 #endif /* _ASM_IRQ_H */

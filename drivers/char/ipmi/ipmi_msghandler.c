@@ -302,7 +302,7 @@ struct ipmi_smi
 	unsigned int events;
 };
 
-#define MAX_IPMI_INTERFACES 4
+#define MAX_IPMI_INTERFACES 8
 static ipmi_smi_t ipmi_interfaces[MAX_IPMI_INTERFACES];
 
 /* Used to keep interfaces from going away while operations are

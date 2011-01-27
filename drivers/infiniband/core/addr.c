@@ -31,6 +31,9 @@
 #include <linux/netdevice.h>
 #include <linux/timer.h>
 
+/* XXX this define is the same for all architectures in RHAS4.0. */
+#define ECANCELED 125
+
 #include <linux/mutex.h>
 #include <linux/inetdevice.h>
 #include <linux/workqueue.h>
@@ -43,33 +46,6 @@
 MODULE_AUTHOR("Sean Hefty");
 MODULE_DESCRIPTION("IB Address Translation");
 MODULE_LICENSE("Dual BSD/GPL");
-
-static struct net_device *xxx_ip_dev_find(u32 addr)
-{
-	struct net_device *dev;
-	struct in_ifaddr **ifap;
-	struct in_ifaddr *ifa;
-	struct in_device *in_dev;
-
-	read_lock(&dev_base_lock);
-	for (dev = dev_base; dev; dev = dev->next)
-		if ((in_dev = in_dev_get(dev))) {
-			for (ifap = &in_dev->ifa_list; (ifa = *ifap);
-			     ifap = &ifa->ifa_next) {
-				if (addr == ifa->ifa_address) {
-					dev_hold(dev);
-					in_dev_put(in_dev);
-					goto found;
-				}
-			}
-			in_dev_put(in_dev);
-		}
-found:
-	read_unlock(&dev_base_lock);
-	return dev;
-}
-
-#define ip_dev_find xxx_ip_dev_find
 
 struct addr_req {
 	struct list_head list;
@@ -95,7 +71,7 @@ static int copy_addr(struct rdma_dev_addr *dev_addr, struct net_device *dev,
 {
 	switch (dev->type) {
 	case ARPHRD_INFINIBAND:
-		dev_addr->dev_type = RDMA_NODE_IB_CA;
+		dev_addr->dev_type = IB_NODE_CA;
 		break;
 	default:
 		return -EADDRNOTAVAIL;

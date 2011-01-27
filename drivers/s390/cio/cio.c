@@ -68,7 +68,7 @@ cio_debug_init (void)
 		goto out_unregister;
 	debug_register_view (cio_debug_msg_id, &debug_sprintf_view);
 	debug_set_level (cio_debug_msg_id, 2);
-	cio_debug_trace_id = debug_register ("cio_trace", 4, 4, 8);
+	cio_debug_trace_id = debug_register ("cio_trace", 4, 4, 16);
 	if (!cio_debug_trace_id)
 		goto out_unregister;
 	debug_register_view (cio_debug_trace_id, &debug_hex_ascii_view);
@@ -192,7 +192,7 @@ cio_start (struct subchannel *sch,	/* subchannel structure */
 	sch->orb.pfch = sch->options.prefetch == 0;
 	sch->orb.spnd = sch->options.suspend;
 	sch->orb.ssic = sch->options.suspend && sch->options.inter;
-	sch->orb.lpm = (lpm != 0) ? (lpm & sch->opm) : sch->lpm;
+	sch->orb.lpm = (lpm != 0) ? lpm : sch->lpm;
 #ifdef CONFIG_ARCH_S390X
 	/*
 	 * for 64 bit we always support 64 bit IDAWs with 4k page size only
@@ -558,10 +558,7 @@ cio_validate_subchannel (struct subchannel *sch, unsigned int irq)
 	}
 	sch->opm = 0xff;
 	chsc_validate_chpids(sch);
-	sch->lpm = sch->schib.pmcw.pim &
-		sch->schib.pmcw.pam &
-		sch->schib.pmcw.pom &
-		sch->opm;
+	sch->lpm = sch->schib.pmcw.pam & sch->opm;
 
 	CIO_DEBUG(KERN_INFO, 0,
 		  "Detected device %04X on subchannel %04X"
@@ -808,8 +805,9 @@ __clear_subchannel_easy(unsigned int schid)
 		struct tpi_info ti;
 
 		if (tpi(&ti)) {
-			tsch(schid, (struct irb *)__LC_IRB);
-			return 0;
+			tsch(ti.irq, (struct irb *)__LC_IRB);
+			if (ti.irq == schid)
+				return 0;
 		}
 		udelay(100);
 	}
@@ -849,6 +847,7 @@ void
 reipl(unsigned long devno)
 {
 	clear_all_subchannels();
+	cio_reset_channel_paths();
 	do_reipl(devno);
 }
 

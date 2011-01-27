@@ -1931,6 +1931,9 @@ static int hub_resume(struct usb_interface *intf)
 	return 0;
 }
 
+#define _hub_resume		hub_resume
+#define _hub_suspend		hub_suspend
+
 #else	/* !CONFIG_USB_SUSPEND */
 
 int usb_suspend_device(struct usb_device *udev, u32 state)
@@ -1943,8 +1946,8 @@ int usb_resume_device(struct usb_device *udev)
 	return 0;
 }
 
-#define	hub_suspend		NULL
-#define	hub_resume		NULL
+#define	_hub_suspend		NULL
+#define	_hub_resume		NULL
 #define	remote_wakeup(x)	0
 
 #endif	/* CONFIG_USB_SUSPEND */
@@ -2502,6 +2505,13 @@ static void hub_events(void)
 			hub->error = 0;
 		}
 
+		if (hdev->dev.power.power_state) {
+			struct usb_bus *bus = hdev->bus;
+			if (bus && bus->op->hub_resume)
+				(void) bus->op->hub_resume (bus);
+			goto loop;
+		}
+
 		/* deal with port status changes */
 		for (i = 0; i < hub->descriptor->bNbrPorts; i++) {
 			connect_change = test_bit(i, hub->change_bits);
@@ -2645,8 +2655,8 @@ static struct usb_driver hub_driver = {
 	.name =		"hub",
 	.probe =	hub_probe,
 	.disconnect =	hub_disconnect,
-	.suspend =	hub_suspend,
-	.resume =	hub_resume,
+	.suspend =	_hub_suspend,
+	.resume =	_hub_resume,
 	.ioctl =	hub_ioctl,
 	.id_table =	hub_id_table,
 };

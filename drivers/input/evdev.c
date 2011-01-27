@@ -198,9 +198,8 @@ static unsigned int evdev_poll(struct file *file, poll_table *wait)
 {
 	struct evdev_list *list = file->private_data;
 	poll_wait(file, &list->evdev->wait, wait);
-	if (list->head != list->tail)
-		return POLLIN | POLLRDNORM;
-	return 0;
+	return ((list->head == list->tail) ? 0 : (POLLIN | POLLRDNORM)) |
+		(list->evdev->exist ? 0 : (POLLHUP | POLLERR));
 }
 
 static int evdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
@@ -440,12 +439,15 @@ static struct input_handle *evdev_connect(struct input_handler *handler, struct 
 static void evdev_disconnect(struct input_handle *handle)
 {
 	struct evdev *evdev = handle->private;
+	struct evdev_list *list;
 
 	evdev->exist = 0;
 
 	if (evdev->open) {
 		input_close_device(handle);
 		wake_up_interruptible(&evdev->wait);
+		list_for_each_entry(list, &evdev->list, node)
+			kill_fasync(&list->fasync, SIGIO, POLL_HUP);
 	} else
 		evdev_free(evdev);
 }

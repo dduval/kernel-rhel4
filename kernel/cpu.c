@@ -43,6 +43,10 @@ void unregister_cpu_notifier(struct notifier_block *nb)
 EXPORT_SYMBOL(unregister_cpu_notifier);
 
 #ifdef CONFIG_HOTPLUG_CPU
+
+extern int  __cpu_disable(void);
+extern void __cpu_die(unsigned int);
+
 static inline void check_for_tasks(int cpu)
 {
 	struct task_struct *p;

@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   
-  Copyright(c) 1999 - 2005 Intel Corporation. All rights reserved.
+  Copyright(c) 1999 - 2006 Intel Corporation. All rights reserved.
   
   This program is free software; you can redistribute it and/or modify it 
   under the terms of the GNU General Public License as published by the Free 
@@ -22,6 +22,7 @@
   
   Contact Information:
   Linux NICS <linux.nics@intel.com>
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 *******************************************************************************/
@@ -44,6 +45,16 @@
  */
 
 #define E1000_PARAM_INIT { [0 ... E1000_MAX_NIC] = OPTION_UNSET }
+/* Module Parameters are always initialized to -1, so that the driver
+ * can tell the difference between no user specified value or the
+ * user asking for the default value.
+ * The true default values are loaded in when e1000_check_options is called.
+ *
+ * This is a GCC extension to ANSI C.
+ * See the item "Labeled Elements in Initializers" in the section
+ * "Extensions to the C Language Family" of the GCC documentation.
+ */
+
 #define E1000_PARAM(X, desc) \
 	static int __devinitdata X[E1000_MAX_NIC+1] = E1000_PARAM_INIT; \
 	static int num_##X = 0; \
@@ -181,6 +192,24 @@ E1000_PARAM(RxAbsIntDelay, "Receive Absolute Interrupt Delay");
  */
 
 E1000_PARAM(InterruptThrottleRate, "Interrupt Throttling Rate");
+
+/* Enable Smart Power Down of the PHY
+ *
+ * Valid Range: 0, 1
+ *
+ * Default Value: 0 (disabled)
+ */
+
+E1000_PARAM(SmartPowerDownEnable, "Enable PHY smart power down");
+
+/* Enable Kumeran Lock Loss workaround
+ *
+ * Valid Range: 0, 1
+ *
+ * Default Value: 1 (enabled)
+ */
+
+E1000_PARAM(KumeranLockLoss, "Enable Kumeran lock loss workaround");
 
 #define AUTONEG_ADV_DEFAULT  0x2F
 #define AUTONEG_ADV_MASK     0x2F
@@ -404,7 +433,7 @@ e1000_check_options(struct e1000_adapter *adapter)
 		if (num_TxIntDelay > bd) {
 			adapter->tx_int_delay = TxIntDelay[bd];
 			e1000_validate_option(&adapter->tx_int_delay, &opt,
-								adapter);
+			                      adapter);
 		} else {
 			adapter->tx_int_delay = opt.def;
 		}
@@ -422,7 +451,7 @@ e1000_check_options(struct e1000_adapter *adapter)
 		if (num_TxAbsIntDelay > bd) {
 			adapter->tx_abs_int_delay = TxAbsIntDelay[bd];
 			e1000_validate_option(&adapter->tx_abs_int_delay, &opt,
-								adapter);
+			                      adapter);
 		} else {
 			adapter->tx_abs_int_delay = opt.def;
 		}
@@ -440,7 +469,7 @@ e1000_check_options(struct e1000_adapter *adapter)
 		if (num_RxIntDelay > bd) {
 			adapter->rx_int_delay = RxIntDelay[bd];
 			e1000_validate_option(&adapter->rx_int_delay, &opt,
-								adapter);
+			                      adapter);
 		} else {
 			adapter->rx_int_delay = opt.def;
 		}
@@ -458,7 +487,7 @@ e1000_check_options(struct e1000_adapter *adapter)
 		if (num_RxAbsIntDelay > bd) {
 			adapter->rx_abs_int_delay = RxAbsIntDelay[bd];
 			e1000_validate_option(&adapter->rx_abs_int_delay, &opt,
-								adapter);
+			                      adapter);
 		} else {
 			adapter->rx_abs_int_delay = opt.def;
 		}
@@ -478,19 +507,51 @@ e1000_check_options(struct e1000_adapter *adapter)
 			switch (adapter->itr) {
 			case 0:
 				DPRINTK(PROBE, INFO, "%s turned off\n",
-					opt.name);
+				        opt.name);
 				break;
 			case 1:
 				DPRINTK(PROBE, INFO, "%s set to dynamic mode\n",
-					opt.name);
+				        opt.name);
 				break;
 			default:
 				e1000_validate_option(&adapter->itr, &opt,
-					adapter);
+				                      adapter);
 				break;
 			}
 		} else {
 			adapter->itr = opt.def;
+		}
+	}
+	{ /* Smart Power Down */
+		struct e1000_option opt = {
+			.type = enable_option,
+			.name = "PHY Smart Power Down",
+			.err  = "defaulting to Disabled",
+			.def  = OPTION_DISABLED
+		};
+
+		if (num_SmartPowerDownEnable > bd) {
+			int spd = SmartPowerDownEnable[bd];
+			e1000_validate_option(&spd, &opt, adapter);
+			adapter->smart_power_down = spd;
+		} else {
+			adapter->smart_power_down = opt.def;
+		}
+	}
+	{ /* Kumeran Lock Loss Workaround */
+		struct e1000_option opt = {
+			.type = enable_option,
+			.name = "Kumeran Lock Loss Workaround",
+			.err  = "defaulting to Enabled",
+			.def  = OPTION_ENABLED
+		};
+
+		if (num_KumeranLockLoss > bd) {
+			int kmrn_lock_loss = KumeranLockLoss[bd];
+			e1000_validate_option(&kmrn_lock_loss, &opt, adapter);
+			adapter->hw.kmrn_lock_loss_workaround_disabled = !kmrn_lock_loss;
+		} else {
+			adapter->hw.kmrn_lock_loss_workaround_disabled = !opt.def;
 		}
 	}
 

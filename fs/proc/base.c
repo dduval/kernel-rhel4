@@ -60,6 +60,7 @@ enum pid_directory_inos {
 	PROC_TGID_STATM,
 	PROC_TGID_MAPS,
 	PROC_TGID_MOUNTS,
+	PROC_TGID_MOUNTSTATS,
 	PROC_TGID_WCHAN,
 #ifdef CONFIG_SCHEDSTATS
 	PROC_TGID_SCHEDSTAT,
@@ -89,6 +90,7 @@ enum pid_directory_inos {
 	PROC_TID_STATM,
 	PROC_TID_MAPS,
 	PROC_TID_MOUNTS,
+	PROC_TID_MOUNTSTATS,
 	PROC_TID_WCHAN,
 #ifdef CONFIG_SCHEDSTATS
 	PROC_TID_SCHEDSTAT,
@@ -124,12 +126,13 @@ static struct pid_entry tgid_base_stuff[] = {
 	E(PROC_TGID_CMDLINE,   "cmdline", S_IFREG|S_IRUGO),
 	E(PROC_TGID_STAT,      "stat",    S_IFREG|S_IRUGO),
 	E(PROC_TGID_STATM,     "statm",   S_IFREG|S_IRUGO),
-	E(PROC_TGID_MAPS,      "maps",    S_IFREG|S_IRUSR),
+	E(PROC_TGID_MAPS,      "maps",    S_IFREG|S_IRUGO),
 	E(PROC_TGID_MEM,       "mem",     S_IFREG|S_IRUSR|S_IWUSR),
 	E(PROC_TGID_CWD,       "cwd",     S_IFLNK|S_IRWXUGO),
 	E(PROC_TGID_ROOT,      "root",    S_IFLNK|S_IRWXUGO),
 	E(PROC_TGID_EXE,       "exe",     S_IFLNK|S_IRWXUGO),
 	E(PROC_TGID_MOUNTS,    "mounts",  S_IFREG|S_IRUGO),
+	E(PROC_TGID_MOUNTSTATS, "mountstats", S_IFREG|S_IRUSR),
 #ifdef CONFIG_SECURITY
 	E(PROC_TGID_ATTR,      "attr",    S_IFDIR|S_IRUGO|S_IXUGO),
 #endif
@@ -305,11 +308,9 @@ static int proc_root_link(struct inode *inode, struct dentry **dentry, struct vf
 	 (task->state == TASK_STOPPED || task->state == TASK_TRACED) && \
 	 security_ptrace(current,task) == 0))
 
-static int may_ptrace_attach(struct task_struct *task)
+int __may_ptrace_attach(struct task_struct *task)
 {
 	int retval = 0;
-
-	task_lock(task);
 
 	if (!task->mm)
 		goto out;
@@ -328,8 +329,16 @@ static int may_ptrace_attach(struct task_struct *task)
 
 	retval = 1;
 out:
-	task_unlock(task);
 	return retval;
+}
+
+static int may_ptrace_attach(struct task_struct *task)
+{
+	int res;
+	task_lock(task);
+	res = __may_ptrace_attach(task);
+	task_unlock(task);
+	return res;
 }
 
 static int proc_pid_environ(struct task_struct *task, char * buffer)
@@ -494,11 +503,20 @@ static int proc_permission(struct inode *inode, int mask, struct nameidata *nd)
 extern struct seq_operations proc_pid_maps_op;
 static int maps_open(struct inode *inode, struct file *file)
 {
+	struct proc_maps_private *priv;
 	struct task_struct *task = proc_task(inode);
-	int ret = seq_open(file, &proc_pid_maps_op);
-	if (!ret) {
-		struct seq_file *m = file->private_data;
-		m->private = task;
+	int ret = -ENOMEM;
+
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	if (priv) {
+		ret = seq_open(file, &proc_pid_maps_op);
+		if (!ret) {
+			struct seq_file *m = file->private_data;
+			priv->task = task;
+			m->private = priv;
+		} else {
+			kfree(priv);
+		}
 	}
 	return ret;
 }
@@ -507,7 +525,7 @@ static struct file_operations proc_maps_operations = {
 	.open		= maps_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
-	.release	= seq_release,
+	.release	= seq_release_private,
 };
 
 extern struct seq_operations mounts_op;
@@ -545,6 +563,38 @@ static int mounts_release(struct inode *inode, struct file *file)
 
 static struct file_operations proc_mounts_operations = {
 	.open		= mounts_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= mounts_release,
+};
+
+extern struct seq_operations mountstats_op;
+static int mountstats_open(struct inode *inode, struct file *file)
+{
+	struct task_struct *task = proc_task(inode);
+	int ret = seq_open(file, &mountstats_op);
+
+	if (!ret) {
+		struct seq_file *m = file->private_data;
+		struct namespace *namespace;
+		task_lock(task);
+		namespace = task->namespace;
+		if (namespace)
+			get_namespace(namespace);
+		task_unlock(task);
+
+		if (namespace)
+			m->private = namespace;
+		else {
+			seq_release(inode, file);
+			ret = -EINVAL;
+		}
+	}
+	return ret;
+}
+
+static struct file_operations proc_mountstats_operations = {
+	.open		= mountstats_open,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= mounts_release,
@@ -1423,6 +1473,10 @@ static struct dentry *proc_pident_lookup(struct inode *dir,
 		case PROC_TGID_MOUNTS:
 			inode->i_fop = &proc_mounts_operations;
 			break;
+		case PROC_TID_MOUNTSTATS:
+		case PROC_TGID_MOUNTSTATS:
+			inode->i_fop = &proc_mountstats_operations;
+			break;
 #ifdef CONFIG_SECURITY
 		case PROC_TID_ATTR:
 			inode->i_nlink = 2;
@@ -1813,61 +1867,74 @@ static int get_tid_list(int index, unsigned int *tids, struct inode *dir)
 	return nr_tids;
 }
 
+/*
+ * Find the first task with tgid >= tgid
+ *
+ */
+static struct task_struct *next_tgid(unsigned int tgid)
+{
+	struct task_struct *task;
+	struct pid *pid;
+
+	read_lock(&tasklist_lock);
+retry:
+	task = NULL;
+	pid = find_ge_pid(tgid);
+	if (pid) {
+		tgid = pid->nr + 1;
+		task = pid_task(&pid->pid_list, PIDTYPE_PID);
+		/* What we to know is if the pid we have find is the
+		 * pid of a thread_group_leader.  Testing for task
+		 * being a thread_group_leader is the obvious thing
+		 * todo but there is a window when it fails, due to
+		 * the pid transfer logic in de_thread.
+		 *
+		 * So we perform the straight forward test of seeing
+		 * if the pid we have found is the pid of a thread
+		 * group leader, and don't worry if the task we have
+		 * found doesn't happen to be a thread group leader.
+		 * As we don't care in the case of readdir.
+		 */
+		if (!task || !thread_group_leader(task))
+			goto retry;
+		get_task_struct(task);
+	}
+	read_unlock(&tasklist_lock);
+	return task;
+}
+
+#define TGID_OFFSET (FIRST_PROCESS_ENTRY + (1 /* /proc/self */))
+
 /* for the /proc/ directory itself, after non-process stuff has been done */
 int proc_pid_readdir(struct file * filp, void * dirent, filldir_t filldir)
 {
-	unsigned int tgid_array[PROC_MAXPIDS];
 	char buf[PROC_NUMBUF];
 	unsigned int nr = filp->f_pos - FIRST_PROCESS_ENTRY;
-	unsigned int nr_tgids, i;
-	int next_tgid;
+	struct task_struct *task;
+	int tgid;
 
-	if (!nr) {
+	if (nr < 1) {
 		ino_t ino = fake_ino(0,PROC_TGID_INO);
 		if (filldir(dirent, "self", 4, filp->f_pos, ino, DT_LNK) < 0)
 			return 0;
 		filp->f_pos++;
-		nr++;
 	}
 
-	/* f_version caches the tgid value that the last readdir call couldn't
-	 * return. lseek aka telldir automagically resets f_version to 0.
-	 */
-	next_tgid = filp->f_version;
-	filp->f_version = 0;
-	for (;;) {
-		nr_tgids = get_tgid_list(nr, next_tgid, tgid_array);
-		if (!nr_tgids) {
-			/* no more entries ! */
-			break;
+	tgid = filp->f_pos - TGID_OFFSET;
+	for (task = next_tgid(tgid); task; task = next_tgid(tgid + 1)) {
+		int len;
+		ino_t ino;
+		tgid = task->pid;
+		filp->f_pos = tgid + TGID_OFFSET;
+		len = snprintf(buf, sizeof(buf), "%d", tgid);
+		ino = fake_ino(tgid, PROC_TGID_INO);
+		if (filldir(dirent, buf, len, filp->f_pos, ino, DT_DIR) < 0) {
+			put_task_struct(task);
+			goto out;
 		}
-		next_tgid = 0;
-
-		/* do not use the last found pid, reserve it for next_tgid */
-		if (nr_tgids == PROC_MAXPIDS) {
-			nr_tgids--;
-			next_tgid = tgid_array[nr_tgids];
-		}
-
-		for (i=0;i<nr_tgids;i++) {
-			int tgid = tgid_array[i];
-			ino_t ino = fake_ino(tgid,PROC_TGID_INO);
-			unsigned long j = PROC_NUMBUF;
-
-			do
-				buf[--j] = '0' + (tgid % 10);
-			while ((tgid /= 10) != 0);
-
-			if (filldir(dirent, buf+j, PROC_NUMBUF-j, filp->f_pos, ino, DT_DIR) < 0) {
-				/* returning this tgid failed, save it as the first
-				 * pid for the next readir call */
-				filp->f_version = tgid_array[i];
-				goto out;
-			}
-			filp->f_pos++;
-			nr++;
-		}
+		put_task_struct(task);
 	}
+	filp->f_pos = PID_MAX_LIMIT + TGID_OFFSET;
 out:
 	return 0;
 }

@@ -41,6 +41,15 @@ struct early_node_data {
 
 static struct early_node_data mem_data[NR_NODES] __initdata;
 
+static DECLARE_BITMAP(nodes_with_mem, NR_NODES) __initdata;
+
+static int __init find_node_with_mem(unsigned long start, unsigned long len, int node)
+{
+	set_bit(node, (void *)nodes_with_mem);
+	return 0;
+}
+
+
 /**
  * reassign_cpu_only_nodes - called from find_memory to move CPU-only nodes to a memory node
  *
@@ -56,16 +65,16 @@ static void __init reassign_cpu_only_nodes(void)
 	struct node_memblk_s *p;
 	int i, j, k, nnode, nid, cpu, cpunid, pxm;
 	u8 cslit, slit;
-	static DECLARE_BITMAP(nodes_with_mem, NR_NODES) __initdata;
 	static u8 numa_slit_fix[MAX_NUMNODES * MAX_NUMNODES] __initdata;
 	static int node_flip[NR_NODES] __initdata;
 	static int old_nid_map[NR_CPUS] __initdata;
 
-	for (nnode = 0, p = &node_memblk[0]; p < &node_memblk[num_node_memblks]; p++)
-		if (!test_bit(p->nid, (void *) nodes_with_mem)) {
-			set_bit(p->nid, (void *) nodes_with_mem);
+	efi_memmap_walk(filter_rsvd_memory, find_node_with_mem);
+
+	for (nnode = 0,i = 0; i < NR_NODES; i++) {
+		if (test_bit(i, (void *) nodes_with_mem))
 			nnode++;
-		}
+	}
 
 	/*
 	 * All nids with memory.

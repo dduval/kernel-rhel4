@@ -43,6 +43,8 @@
 #include <linux/serial_core.h>
 #include "8250.h"
 
+#include <linux/nmi.h>
+
 /*
  * Configuration:
  *   share_irqs - whether we pass SA_SHIRQ to request_irq().  This option
@@ -952,7 +954,9 @@ receive_chars(struct uart_8250_port *up, int *status, struct pt_regs *regs)
 	ignore_char:
 		*status = serial_inp(up, UART_LSR);
 	} while ((*status & UART_LSR_DR) && (max_count-- > 0));
+	spin_unlock(&up->port.lock);
 	tty_flip_buffer_push(tty);
+	spin_lock(&up->port.lock);
 }
 
 static _INLINE_ void transmit_chars(struct uart_8250_port *up)
@@ -1899,7 +1903,7 @@ static void __init serial8250_register_ports(struct uart_driver *drv)
 /*
  *	Wait for transmitter & holding register to empty
  */
-static inline void wait_for_xmitr(struct uart_8250_port *up)
+static inline void wait_for_xmitr(struct uart_8250_port *up, u8 bit)
 {
 	unsigned int status, tmout = 10000;
 
@@ -1913,14 +1917,15 @@ static inline void wait_for_xmitr(struct uart_8250_port *up)
 		if (--tmout == 0)
 			break;
 		udelay(1);
-	} while ((status & BOTH_EMPTY) != BOTH_EMPTY);
+	} while ((status & bit) != bit);
 
 	/* Wait up to 1s for flow control if necessary */
 	if (up->port.flags & UPF_CONS_FLOW) {
 		tmout = 1000000;
-		while (--tmout &&
-		       ((serial_in(up, UART_MSR) & UART_MSR_CTS) == 0))
+		while (!(serial_in(up, UART_MSR) & UART_MSR_CTS) && --tmout) {
 			udelay(1);
+			touch_nmi_watchdog();
+		}
 	}
 }
 
@@ -1934,8 +1939,20 @@ static void
 serial8250_console_write(struct console *co, const char *s, unsigned int count)
 {
 	struct uart_8250_port *up = &serial8250_ports[co->index];
+	unsigned long flags;
 	unsigned int ier;
-	int i;
+	int i, locked = 1;
+
+	touch_nmi_watchdog();
+
+	local_irq_save(flags);
+	if (up->port.sysrq) {
+		/* serial8250_handle_port() already took the lock */
+		locked = 0;
+	} else if (oops_in_progress) {
+		locked = spin_trylock(&up->port.lock);
+	} else
+		spin_lock(&up->port.lock);
 
 	/*
 	 *	First save the UER then disable the interrupts
@@ -1951,7 +1968,7 @@ serial8250_console_write(struct console *co, const char *s, unsigned int count)
 	 *	Now, do each character
 	 */
 	for (i = 0; i < count; i++, s++) {
-		wait_for_xmitr(up);
+		wait_for_xmitr(up, UART_LSR_THRE);
 
 		/*
 		 *	Send the character out.
@@ -1959,7 +1976,7 @@ serial8250_console_write(struct console *co, const char *s, unsigned int count)
 		 */
 		serial_out(up, UART_TX, *s);
 		if (*s == 10) {
-			wait_for_xmitr(up);
+			wait_for_xmitr(up, UART_LSR_THRE);
 			serial_out(up, UART_TX, 13);
 		}
 	}
@@ -1968,8 +1985,12 @@ serial8250_console_write(struct console *co, const char *s, unsigned int count)
 	 *	Finally, wait for transmitter to become empty
 	 *	and restore the IER
 	 */
-	wait_for_xmitr(up);
+	wait_for_xmitr(up, BOTH_EMPTY);
 	serial_out(up, UART_IER, ier);
+
+	if (locked)
+		spin_unlock(&up->port.lock);
+	local_irq_restore(flags);
 }
 
 static int __init serial8250_console_setup(struct console *co, char *options)

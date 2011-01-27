@@ -29,12 +29,12 @@ fpenable:
 	stfd	fr1,-24(r1)
 	mffs	fr31
 	lfd	fr1,fpzero@toc(r2)
-	mtfsf	0xff,fr1
+	MTFSF_L(fr1)
 	blr
 
 fpdisable:
 	mtlr	r12
-	mtfsf	0xff,fr31
+	MTFSF_L(fr31)
 	lfd	fr1,-24(r1)
 	lfd	fr0,-16(r1)
 	lfd	fr31,-8(r1)

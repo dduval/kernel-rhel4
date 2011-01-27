@@ -213,7 +213,7 @@ static int r82600_probe1(struct pci_dev *pdev, int dev_idx)
 	u32 scrub_disabled;
 	u32 sdram_refresh_rate;
 	u32 row_high_limit_last = 0;
-	u32 eap_init_bits;
+	struct r82600_error_info discard;
 
 	debugf0("MC: " __FILE__ ": %s()\n", __func__);
 
@@ -308,8 +308,7 @@ static int r82600_probe1(struct pci_dev *pdev, int dev_idx)
 		row_high_limit_last = row_high_limit;
 	}
 
-	/* clear counters */
-	/* FIXME should we? */
+	r82600_get_error_info(mci, &discard);  /* clear counters */
 
 	if (edac_mc_add_mc(mci)) {
 		debugf3("MC: " __FILE__
@@ -319,18 +318,11 @@ static int r82600_probe1(struct pci_dev *pdev, int dev_idx)
 
 	/* get this far and it's successful */
 
-	/* Clear error flags to allow next error to be reported [p.62] */
-	/* Test systems seem to always have the UE flag raised on boot */
-
-	eap_init_bits = BIT(0) & BIT(1);
 	if (disable_hardware_scrub) {
-		eap_init_bits |= BIT(31);
 		debugf3("MC: " __FILE__ ": %s(): Disabling Hardware Scrub "
 			"(scrub on error)\n", __func__);
+		pci_write_bits32(mci->pdev, R82600_EAP, BIT(31), BIT(31));
 	}
-
-	pci_write_bits32(mci->pdev, R82600_EAP, eap_init_bits,
-			 eap_init_bits);
 
 	debugf3("MC: " __FILE__ ": %s(): success\n", __func__);
 	return 0;
@@ -359,9 +351,9 @@ static void __devexit r82600_remove_one(struct pci_dev *pdev)
 
 	debugf0(__FILE__ ": %s()\n", __func__);
 
-	if (((mci = edac_mc_find_mci_by_pdev(pdev)) != NULL) &&
-	    !edac_mc_del_mc(mci))
-		edac_mc_free(mci);
+	if ((mci = edac_mc_del_mc(pdev)) == NULL)
+		return;
+	edac_mc_free(mci);
 }
 
 

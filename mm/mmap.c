@@ -809,9 +809,6 @@ unsigned long do_mmap_pgoff(struct file * file, unsigned long addr,
 		if (!(file && (file->f_vfsmnt->mnt_flags & MNT_NOEXEC)))
 			prot |= PROT_EXEC;
 
-	if (prot & PROT_WRITE)
-		prot |= PROT_READ;
-
 	if (!len)
 		return addr;
 
@@ -1750,6 +1747,9 @@ int split_vma(struct mm_struct * mm, struct vm_area_struct * vma,
 	struct mempolicy *pol;
 	struct vm_area_struct *new;
 
+	if (is_vm_hugetlb_page(vma) && (addr & ~HPAGE_MASK))
+		return -EINVAL;
+
 	if (mm->map_count >= sysctl_max_map_count)
 		return -ENOMEM;
 
@@ -1815,13 +1815,6 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
 		return 0;
 	/* we have  start < mpnt->vm_end  */
 
-	if (is_vm_hugetlb_page(mpnt)) {
-		int ret = is_aligned_hugepage_range(start, len);
-
-		if (ret)
-			return ret;
-	}
-
 	/* if it doesn't overlap, we have nothing.. */
 	end = start + len;
 	if (mpnt->vm_start >= end)
@@ -1835,16 +1828,18 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
 	 * places tmp vma above, and higher split_vma places tmp vma below.
 	 */
 	if (start > mpnt->vm_start) {
-		if (split_vma(mm, mpnt, start, 0))
-			return -ENOMEM;
+		int error = split_vma(mm, mpnt, start, 0);
+		if (error)
+			return error;
 		prev = mpnt;
 	}
 
 	/* Does it split the last one? */
 	last = find_vma(mm, end);
 	if (last && end > last->vm_start) {
-		if (split_vma(mm, last, end, 1))
-			return -ENOMEM;
+		int error = split_vma(mm, last, end, 1);
+		if (error)
+			return error;
 	}
 	mpnt = prev? prev->vm_next: mm->mmap;
 
@@ -1991,6 +1986,10 @@ void exit_mmap(struct mm_struct *mm)
 	struct mmu_gather *tlb;
 	struct vm_area_struct *vma;
 	unsigned long nr_accounted = 0;
+
+#ifdef arch_exit_mmap
+	arch_exit_mmap(mm);
+#endif
 
 	lru_add_drain();
 

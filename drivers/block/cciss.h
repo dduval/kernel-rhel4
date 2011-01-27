@@ -6,7 +6,6 @@
 #include "cciss_cmd.h"
 
 
-#define NWD		16
 #define NWD_SHIFT	4
 #define MAX_PART	(1 << NWD_SHIFT)
 
@@ -45,6 +44,14 @@ typedef struct _drive_info_struct
 	struct device *dev_info;
 } drive_info_struct;
 
+#ifdef CONFIG_CISS_SCSI_TAPE
+
+struct sendcmd_reject_list {
+	int ncompletions;
+	unsigned long *complete; /* array of NR_CMDS tags */
+};
+
+#endif
 struct ctlr_info 
 {
 	int	ctlr;
@@ -74,6 +81,8 @@ struct ctlr_info
 	unsigned int intr[4];
 	unsigned int msix_vector;
 	unsigned int msi_vector;
+	BYTE	cciss_read;
+	BYTE	cciss_write;
 
 	// information about each logical volume
 	drive_info_struct drv[CISS_MAX_LUN];
@@ -105,9 +114,12 @@ struct ctlr_info
 	int			next_to_run;
 
 	// Disk structures we need to pass back
-	struct gendisk   *gendisk[NWD];
+	struct gendisk   *gendisk[CISS_MAX_LUN];
 #ifdef CONFIG_CISS_SCSI_TAPE
 	void *scsi_ctlr; /* ptr to structure containing scsi related stuff */
+	/* list of block side commands the scsi error handling sucked up */
+	/* and saved for later processing */
+	struct sendcmd_reject_list scsi_rejects;
 #endif
 	unsigned char alive;
 };

@@ -71,6 +71,9 @@ extern unsigned long io_page_mask;
  * Neither do the standard versions now, these are just here
  * for older code.
  */
+#define insb(port, buf, ns)	_insb((u8 *)((port)+pci_io_base), (buf), (ns))
+#define insw(port, buf, ns)	_insw_ns((u8 *)((port)+pci_io_base), (buf), (ns))
+#define insl(port, buf, nl)	_insl_ns((u8 *)((port)+pci_io_base), (buf), (nl))
 #define insw_ns(port, buf, ns)	_insw_ns((u16 *)((port)+pci_io_base), (buf), (ns))
 #define insl_ns(port, buf, nl)	_insl_ns((u32 *)((port)+pci_io_base), (buf), (nl))
 #else
@@ -136,11 +139,11 @@ static inline void __raw_writeq(unsigned long v, volatile void __iomem *addr)
 #define insw_ns(port, buf, ns)	eeh_insw_ns((port), (buf), (ns))
 #define insl_ns(port, buf, nl)	eeh_insl_ns((port), (buf), (nl))
 
+#endif
+
 #define outsb(port, buf, ns)  _outsb((u8 *)((port)+pci_io_base), (buf), (ns))
 #define outsw(port, buf, ns)  _outsw_ns((u16 *)((port)+pci_io_base), (buf), (ns))
 #define outsl(port, buf, nl)  _outsl_ns((u32 *)((port)+pci_io_base), (buf), (nl))
-
-#endif
 
 #define readb_relaxed(addr) readb(addr)
 #define readw_relaxed(addr) readw(addr)

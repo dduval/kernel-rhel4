@@ -129,6 +129,7 @@ struct dio {
 	/* AIO related stuff */
 	struct kiocb *iocb;		/* kiocb */
 	int is_async;			/* is IO async ? */
+	int io_error;			/* IO error in completion path */
 	ssize_t result;                 /* IO result */
 };
 
@@ -243,9 +244,14 @@ static void finished_one_bio(struct dio *dio)
 			transferred = dio->result;
 			offset = dio->iocb->ki_pos;
 
+			/* this test requires transferred to be non-negative */
 			if ((dio->rw == READ) &&
 			    ((offset + transferred) > dio->i_size))
 				transferred = dio->i_size - offset;
+
+			/* check for error in completion path */
+			if (dio->io_error)
+				transferred = dio->io_error;
 
 			dio_complete(dio, offset, transferred);
 
@@ -403,7 +409,7 @@ static int dio_bio_complete(struct dio *dio, struct bio *bio)
 	int page_no;
 
 	if (!uptodate)
-		dio->result = -EIO;
+		dio->io_error = -EIO;
 
 	if (dio->is_async && dio->rw == READ) {
 		bio_check_pages_dirty(bio);	/* transfers ownership */
@@ -968,6 +974,7 @@ direct_io_worker(int rw, struct kiocb *iocb, struct inode *inode,
 	dio->next_block_for_io = -1;
 
 	dio->page_errors = 0;
+	dio->io_error = 0;
 	dio->result = 0;
 	dio->iocb = iocb;
 	dio->i_size = i_size_read(inode);

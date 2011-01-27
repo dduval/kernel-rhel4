@@ -249,6 +249,7 @@ static __init int disable_acpi_pci(struct dmi_blacklist *d)
 	}
 	return 0;
 }  
+
 static __init int disable_pci_mmconf_seg(struct dmi_blacklist *d)
 {
 	extern char * pcibios_setup(char * str);
@@ -257,6 +258,15 @@ static __init int disable_pci_mmconf_seg(struct dmi_blacklist *d)
 		d->ident);
 	pcibios_setup("nommconf");
 	pcibios_setup("noseg");
+}
+
+static __init int disable_pci_mmconf(struct dmi_blacklist *d)
+{
+	extern char * pcibios_setup(char * str);
+
+	printk(KERN_NOTICE "%s detected, forcing pci=nommconf\n", 
+		d->ident);
+	pcibios_setup("nommconf");
 }
 
 #endif
@@ -466,6 +476,10 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 		MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
+	{ disable_pci_mmconf, "HP DL585 G2", {
+		MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
 #endif
 #ifdef CONFIG_X86_UP_IOAPIC
 	/*
@@ -476,6 +490,26 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 	{ disable_ioapic_on_up, "UNISYS ES7000-ONE", {
  			MATCH(DMI_SYS_VENDOR, "UNISYS"),
  			MATCH(DMI_PRODUCT_NAME, "ES7000-ONE"),
+		 	NO_MATCH, NO_MATCH
+		} },
+	{ disable_ioapic_on_up, "UNISYS ES7000-505", {
+ 			MATCH(DMI_SYS_VENDOR, "Unisys Corporation"),
+ 			MATCH(DMI_PRODUCT_NAME, "ES7000-505-G3"),
+		 	NO_MATCH, NO_MATCH
+		} },
+	{ disable_ioapic_on_up, "UNISYS ES7000-510", {
+ 			MATCH(DMI_SYS_VENDOR, "Unisys Corporation"),
+ 			MATCH(DMI_PRODUCT_NAME, "ES7000-510-G3"),
+		 	NO_MATCH, NO_MATCH
+		} },
+	{ disable_ioapic_on_up, "UNISYS ES7000-520", {
+ 			MATCH(DMI_SYS_VENDOR, "Unisys Corporation"),
+ 			MATCH(DMI_PRODUCT_NAME, "ES7000-520-G3"),
+		 	NO_MATCH, NO_MATCH
+		} },
+	{ disable_ioapic_on_up, "UNISYS ES7000-540", {
+ 			MATCH(DMI_SYS_VENDOR, "Unisys Corporation"),
+ 			MATCH(DMI_PRODUCT_NAME, "ES7000-540-G3"),
 		 	NO_MATCH, NO_MATCH
 		} },
 #endif
@@ -591,3 +625,35 @@ char * dmi_get_system_info(int field)
 }
 
 EXPORT_SYMBOL(dmi_get_system_info);
+
+/**
+ *      dmi_get_year - Return year of a DMI date
+ *      @field: data index (like dmi_get_system_info)
+ *
+ *      Returns -1 when the field doesn't exist. 0 when it is broken.
+ */
+int dmi_get_year(int field)
+{
+        int year;
+        char *s = dmi_get_system_info(field);
+
+        if (!s)
+                return -1;
+        if (*s == '\0')
+                return 0;
+        s = strrchr(s, '/');
+        if (!s)
+                return 0;
+
+        s += 1;
+        year = simple_strtoul(s, NULL, 0);
+        if (year && year < 100) {       /* 2-digit year */
+                year += 1900;
+                if (year < 1996)        /* no dates < spec 1.0 */
+                        year += 100;
+        }
+
+        return year;
+}
+
+EXPORT_SYMBOL(dmi_get_year);

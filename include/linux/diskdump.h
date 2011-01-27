@@ -263,6 +263,7 @@ extern enum disk_dump_states {
 
 /* dump page header flags */
 #define DUMP_DH_COMPRESSED	0x1	/* page is compressed */
+#define DUMP_DH_MAPPING_ANON	0x2	/* page is mapped as anonymous */
 
 /* header associated to each physical page of memory */
 struct dump_page {

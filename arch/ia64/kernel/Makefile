@@ -20,6 +20,7 @@ obj-$(CONFIG_IA64_CYCLONE)	+= cyclone.o
 obj-$(CONFIG_IA64_MCA_RECOVERY)	+= mca_recovery.o
 mca_recovery-y			+= mca_drv.o mca_drv_asm.o
 obj-$(CONFIG_KPROBES)           += kprobes.o jprobes.o
+obj-$(CONFIG_IA64_LOCAL_APIC_INFO_MOD)	+= lapic_status.o
 
 # The gate DSO image is built using a special linker script.
 targets += gate.so gate-syms.o

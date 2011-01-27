@@ -54,8 +54,6 @@ static const struct i82860_dev_info i82860_devs[] = {
 static struct pci_dev *mci_pdev = NULL;	/* init dev: in case that AGP code
 					   has already registered driver */
 
-static int i82860_registered = 1;
-
 static void i82860_get_error_info (struct mem_ctl_info *mci,
 		struct i82860_error_info *info)
 {
@@ -128,6 +126,7 @@ static int i82860_probe1(struct pci_dev *pdev, int dev_idx)
 	int index;
 	struct mem_ctl_info *mci = NULL;
 	unsigned long last_cumul_size;
+	struct i82860_error_info discard;
 
 	u16 mchcfg_ddim;	/* DRAM Data Integrity Mode 0=none,2=edac */
 
@@ -194,8 +193,7 @@ static int i82860_probe1(struct pci_dev *pdev, int dev_idx)
 		csrow->edac_mode = mchcfg_ddim ? EDAC_SECDED : EDAC_NONE;
 	}
 
-	/* clear counters */
-	pci_write_bits16(mci->pdev, I82860_ERRSTS, 0x0003, 0x0003);
+	i82860_get_error_info(mci, &discard);  /* clear counters */
 
 	if (edac_mc_add_mc(mci)) {
 		debugf3("MC: " __FILE__
@@ -233,9 +231,9 @@ static void __devexit i82860_remove_one(struct pci_dev *pdev)
 
 	debugf0(__FILE__ ": %s()\n", __func__);
 
-	mci = edac_mc_find_mci_by_pdev(pdev);
-	if ((mci != NULL) && (edac_mc_del_mc(mci) == 0))
-		edac_mc_free(mci);
+	if ((mci = edac_mc_del_mc(pdev)) == NULL)
+		return;
+	edac_mc_free(mci);
 }
 
 static const struct pci_device_id i82860_pci_tbl[] __devinitdata = {
@@ -259,24 +257,32 @@ int __init i82860_init(void)
 
 	debugf3("MC: " __FILE__ ": %s()\n", __func__);
 	if ((pci_rc = pci_register_driver(&i82860_driver)) < 0)
-		return pci_rc;
+		goto fail0;
 
 	if (!mci_pdev) {
-		i82860_registered = 0;
 		mci_pdev = pci_get_device(PCI_VENDOR_ID_INTEL,
 					  PCI_DEVICE_ID_INTEL_82860_0, NULL);
 		if (mci_pdev == NULL) {
 			debugf0("860 pci_get_device fail\n");
-			return -ENODEV;
+			pci_rc = -ENODEV;
+			goto fail1;
 		}
 		pci_rc = i82860_init_one(mci_pdev, i82860_pci_tbl);
 		if (pci_rc < 0) {
 			debugf0("860 init fail\n");
-			pci_dev_put(mci_pdev);
-			return -ENODEV;
+			pci_rc = -ENODEV;
+			goto fail1;
 		}
 	}
 	return 0;
+
+fail1:
+	pci_unregister_driver(&i82860_driver);
+fail0:
+	if (mci_pdev != NULL)
+		pci_dev_put(mci_pdev);
+
+	return pci_rc;
 }
 
 static void __exit i82860_exit(void)
@@ -284,10 +290,8 @@ static void __exit i82860_exit(void)
 	debugf3("MC: " __FILE__ ": %s()\n", __func__);
 
 	pci_unregister_driver(&i82860_driver);
-	if (!i82860_registered) {
-		i82860_remove_one(mci_pdev);
+	if (mci_pdev != NULL)
 		pci_dev_put(mci_pdev);
-	}
 }
 
 module_init(i82860_init);

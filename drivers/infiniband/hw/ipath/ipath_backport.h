@@ -1,6 +1,7 @@
 #ifndef _IPATH_BACKPORT_H
 #define _IPATH_BACKPORT_H
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -34,13 +35,16 @@
 
 #include <linux/version.h>
 #include <linux/fs.h>
-#include <linux/mutex.h>
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,10)
 #include <linux/pci.h> /* needed to avoid struct pci_dev warnings */
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,14)
 #include <linux/compiler.h>
+#endif
+
+#ifndef __nocast
+#define __nocast
 #endif
 
 /*

@@ -55,6 +55,8 @@ static inline void platform_init_stack(void **stackptr)
 	else
 		printk(KERN_WARNING
 		       "crashdump: unable to allocate separate stack\n");
+#else
+	*stackptr = NULL;
 #endif
 }
 

@@ -81,7 +81,8 @@ ccw_device_start(struct ccw_device *cdev, struct ccw1 *cpa,
 		return -ENODEV;
 	if (cdev->private->state == DEV_STATE_NOT_OPER)
 		return -ENODEV;
-	if (cdev->private->state == DEV_STATE_VERIFY) {
+	if (cdev->private->state == DEV_STATE_VERIFY ||
+	    cdev->private->state == DEV_STATE_CLEAR_VERIFY) {
 		/* Remember to fake irb when finished. */
 		if (!cdev->private->flags.fake_irb) {
 			cdev->private->flags.fake_irb = 1;
@@ -99,6 +100,12 @@ ccw_device_start(struct ccw_device *cdev, struct ccw1 *cpa,
 	ret = cio_set_options (sch, flags);
 	if (ret)
 		return ret;
+	/* Adjust requested path mask to excluded varied off paths. */
+	if (lpm) {
+		lpm &= sch->opm;
+		if (lpm == 0)
+			return -EACCES;
+	}
 	ret = cio_start (sch, cpa, lpm);
 	if (ret == 0)
 		cdev->private->intparm = intparm;
@@ -193,6 +200,9 @@ ccw_device_call_handler(struct ccw_device *cdev)
 	      (stctl & SCSW_STCTL_PRIM_STATUS)))
 		return 0;
 
+	/* Clear pending timers for device driver initiated I/O. */
+	if (ending_status)
+		ccw_device_set_timeout(cdev, 0);
 	/*
 	 * Now we are ready to call the device driver interrupt handler.
 	 */
@@ -233,7 +243,7 @@ ccw_device_get_path_mask(struct ccw_device *cdev)
 	if (!sch)
 		return 0;
 	else
-		return sch->vpm;
+		return sch->lpm;
 }
 
 static void
@@ -253,15 +263,20 @@ ccw_device_wake_up(struct ccw_device *cdev, unsigned long ip, struct irb *irb)
 		 * We didn't get channel end / device end. Check if path
 		 * verification has been started; we can retry after it has
 		 * finished. We also retry unit checks except for command reject
-		 * or intervention required.
+		 * or intervention required. Also check for long busy
+		 * conditions.
 		 */
-		 if (cdev->private->flags.doverify ||
+		if (cdev->private->flags.doverify ||
 			 cdev->private->state == DEV_STATE_VERIFY)
 			 cdev->private->intparm = -EAGAIN;
-		 if ((irb->scsw.dstat & DEV_STAT_UNIT_CHECK) &&
+		else if ((irb->scsw.dstat & DEV_STAT_UNIT_CHECK) &&
 		     !(irb->ecw[0] &
 		       (SNS0_CMD_REJECT | SNS0_INTERVENTION_REQ)))
 			 cdev->private->intparm = -EAGAIN;
+		else if ((irb->scsw.dstat & DEV_STAT_ATTENTION) &&
+			 (irb->scsw.dstat & DEV_STAT_DEV_END) &&
+			 (irb->scsw.dstat & DEV_STAT_UNIT_EXCEP))
+			cdev->private->intparm = -EAGAIN;
 		 else
 			 cdev->private->intparm = -EIO;
 			 
@@ -278,8 +293,11 @@ __ccw_device_retry_loop(struct ccw_device *cdev, struct ccw1 *ccw, long magic, _
 
 	sch = to_subchannel(cdev->dev.parent);
 	do {
+		ccw_device_set_timeout(cdev, 60 * HZ);
 		ret = cio_start (sch, ccw, lpm);
-		if ((ret == -EBUSY) || (ret == -EACCES)) {
+		if (ret != 0)
+			ccw_device_set_timeout(cdev, 0);
+		if (ret == -EBUSY) {
 			/* Try again later. */
 			spin_unlock_irq(&sch->lock);
 			msleep(10);
@@ -408,6 +426,13 @@ read_conf_data_lpm (struct ccw_device *cdev, void **buffer, int *length, __u8 lp
 	ciw = ccw_device_get_ciw(cdev, CIW_TYPE_RCD);
 	if (!ciw || ciw->cmd == 0)
 		return -EOPNOTSUPP;
+
+	/* Adjust requested path mask to excluded varied off paths. */
+	if (lpm) {
+		lpm &= sch->opm;
+		if (lpm == 0)
+			return -EACCES;
+	}
 
 	rcd_ccw = kmalloc(sizeof(struct ccw1), GFP_KERNEL | GFP_DMA);
 	if (!rcd_ccw)

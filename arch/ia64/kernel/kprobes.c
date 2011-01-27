@@ -762,6 +762,13 @@ static int kprobes_fault_handler(struct pt_regs *regs, int trapnr)
 			return 1;
 
 		/*
+		 * In case the user-specified fault handler returned
+		 * zero, try to fix up.
+		 */
+		if (ia64_done_with_exception(regs))
+			return 1;
+
+		/*
 		 * Let ia64_do_page_fault() fix it.
 		 */
 		break;

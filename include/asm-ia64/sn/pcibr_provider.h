@@ -8,6 +8,7 @@
 #ifndef _ASM_IA64_SN_PCI_PCIBR_PROVIDER_H
 #define _ASM_IA64_SN_PCI_PCIBR_PROVIDER_H
 
+#include <linux/pci.h>
 #include <asm/sn/intr.h>
 #include <asm/sn/pcibus_provider_defs.h>
 
@@ -144,4 +145,5 @@ extern int sal_pcibr_slot_enable(struct pcibus_info *soft, int device,
 				 void *resp);
 extern int sal_pcibr_slot_disable(struct pcibus_info *soft, int device,
 				  int action, void *resp);
+extern u16 sn_ioboard_to_pci_bus(struct pci_bus *pci_bus);
 #endif

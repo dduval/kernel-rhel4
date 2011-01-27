@@ -50,4 +50,7 @@ static inline int pci_dev_present(const struct pci_device_id *ids)
 	}
 	return 0;
 }
+
+#define netdev_alloc_skb(dev, len)	dev_alloc_skb(len)
+
 #endif /* __TG3_COMPAT_H__ */

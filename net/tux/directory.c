@@ -125,6 +125,7 @@ static void do_dir_line (tux_req_t *req, int cachemiss)
 
 	base.flags = flag;
 	base.last_type = LAST_ROOT;
+	base.depth = 0;
 	base.dentry = dget(req->dentry);
 	base.mnt = mntget(req->cwd_mnt);
 

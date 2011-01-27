@@ -181,11 +181,12 @@ get_dirty_limits(struct writeback_state *wbs, long *pbackground, long *pdirty, s
 	 */
 	if (vm_max_queue_depth && (vm_max_queue_depth<<(20-PAGE_SHIFT)) < dirty) {
 		dirty = vm_max_queue_depth<<(20-PAGE_SHIFT);
-		if (background > dirty)
+		if (background > dirty) {
 			if (dirty_ratio > background_ratio)
 				background = dirty/2;
 			else
 				background = dirty;
+		}
 	}
 	*pbackground = background;
 	*pdirty = dirty;

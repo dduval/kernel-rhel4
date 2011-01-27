@@ -232,7 +232,7 @@ asmlinkage long ppc32_select(u32 n, compat_ulong_t __user *inp,
 	return compat_sys_select((int)n, inp, outp, exp, compat_ptr(tvp_x));
 }
 
-int cp_compat_stat(struct kstat *stat, struct compat_stat __user *statbuf)
+int cp_compat_stat(struct kstat64 *stat, struct compat_stat __user *statbuf)
 {
 	long err;
 
@@ -240,9 +240,12 @@ int cp_compat_stat(struct kstat *stat, struct compat_stat __user *statbuf)
 	    !new_valid_dev(stat->rdev))
 		return -EOVERFLOW;
 
+	if (stat->ino64 != (u32)stat->ino64)
+		return -EOVERFLOW;
+
 	err  = verify_area(VERIFY_WRITE, statbuf, sizeof(*statbuf));
 	err |= __put_user(new_encode_dev(stat->dev), &statbuf->st_dev);
-	err |= __put_user(stat->ino, &statbuf->st_ino);
+	err |= __put_user(stat->ino64, &statbuf->st_ino);
 	err |= __put_user(stat->mode, &statbuf->st_mode);
 	err |= __put_user(stat->nlink, &statbuf->st_nlink);
 	err |= __put_user(stat->uid, &statbuf->st_uid);
@@ -1151,23 +1154,6 @@ asmlinkage long sys32_sysctl(struct __sysctl_args32 __user *args)
 		copy_to_user(args->__unused, tmp.__unused, sizeof(tmp.__unused));
 	}
 	return error;
-}
-
-asmlinkage long sys32_time(compat_time_t __user * tloc)
-{
-	compat_time_t secs;
-
-	struct timeval tv;
-
-	do_gettimeofday( &tv );
-	secs = tv.tv_sec;
-
-	if (tloc) {
-		if (put_user(secs,tloc))
-			secs = -EFAULT;
-	}
-
-	return secs;
 }
 
 asmlinkage int sys32_olduname(struct oldold_utsname __user * name)

@@ -32,6 +32,7 @@
 #include <asm/system.h>
 
 #include "delegation.h"
+#include "iostat.h"
 
 #define NFSDBG_FACILITY		NFSDBG_FILE
 
@@ -99,18 +100,15 @@ static int nfs_check_flags(int flags)
 static int
 nfs_file_open(struct inode *inode, struct file *filp)
 {
-	struct nfs_server *server = NFS_SERVER(inode);
-	int (*open)(struct inode *, struct file *);
 	int res;
 
 	res = nfs_check_flags(filp->f_flags);
 	if (res)
 		return res;
 
+	nfs_inc_stats(inode, NFSIOS_VFSOPEN);
 	lock_kernel();
-	/* Do NFSv4 open() call */
-	if ((open = server->rpc_ops->file_open) != NULL)
-		res = open(inode, filp);
+	res = NFS_SERVER(inode)->rpc_ops->file_open(inode, filp);
 	unlock_kernel();
 	return res;
 }
@@ -121,6 +119,7 @@ nfs_file_release(struct inode *inode, struct file *filp)
 	/* Ensure that dirty pages are flushed out with the right creds */
 	if (filp->f_mode & FMODE_WRITE)
 		filemap_fdatawrite(filp->f_mapping);
+	nfs_inc_stats(inode, NFSIOS_VFSRELEASE);
 	return NFS_PROTO(inode)->file_release(inode, filp);
 }
 
@@ -196,6 +195,7 @@ nfs_file_flush(struct file *file)
 
 	if ((file->f_mode & FMODE_WRITE) == 0)
 		return 0;
+	nfs_inc_stats(inode, NFSIOS_VFSFLUSH);
 	lock_kernel();
 	/* Ensure that data+attribute caches are up to date after close() */
 	status = nfs_wb_all(inode);
@@ -226,6 +226,7 @@ nfs_file_read(struct kiocb *iocb, char __user * buf, size_t count, loff_t pos)
 		(unsigned long) count, (unsigned long) pos);
 
 	result = nfs_revalidate_file(inode, iocb->ki_filp);
+	nfs_add_stats(inode, NFSIOS_NORMALREADBYTES, count);
 	if (!result)
 		result = generic_file_aio_read(iocb, buf, count, pos);
 	return result;
@@ -279,6 +280,7 @@ nfs_fsync(struct file *file, struct dentry *dentry, int datasync)
 
 	dfprintk(VFS, "nfs: fsync(%s/%ld)\n", inode->i_sb->s_id, inode->i_ino);
 
+	nfs_inc_stats(inode, NFSIOS_VFSFSYNC);
 	lock_kernel();
 	status = nfs_wb_all(inode);
 	if (!status) {
@@ -362,6 +364,7 @@ nfs_file_write(struct kiocb *iocb, const char __user *buf, size_t count, loff_t 
 	if (!count)
 		goto out;
 
+	nfs_add_stats(inode, NFSIOS_NORMALWRITTENBYTES, count);
 	result = generic_file_aio_write(iocb, buf, count, pos);
 out:
 	return result;
@@ -373,22 +376,34 @@ out_swapfile:
 
 static int do_getlk(struct file *filp, int cmd, struct file_lock *fl)
 {
+	struct file_lock *cfl;
 	struct inode *inode = filp->f_mapping->host;
 	int status = 0;
 
 	lock_kernel();
-	/* Use local locking if mounted with "-onolock" */
-	if (!(NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM))
-		status = NFS_PROTO(inode)->lock(filp, cmd, fl);
-	else {
-		struct file_lock *cfl = posix_test_lock(filp, fl);
-
-		fl->fl_type = F_UNLCK;
-		if (cfl != NULL)
-			memcpy(fl, cfl, sizeof(*fl));
+	/* Try local locking first */
+	cfl = posix_test_lock(filp, fl);
+	if (cfl != NULL) {
+		fl->fl_start = cfl->fl_start;
+		fl->fl_end = cfl->fl_end;
+		fl->fl_type = cfl->fl_type;
+		fl->fl_pid = cfl->fl_pid;
+		goto out;
 	}
+
+	if (nfs_have_delegation(inode, FMODE_READ))
+		goto out_noconflict;
+
+	if (NFS_SERVER(inode)->flags & NFS_MOUNT_NONLM)
+		goto out_noconflict;
+
+	status = NFS_PROTO(inode)->lock(filp, cmd, fl);
+out:
 	unlock_kernel();
 	return status;
+out_noconflict:
+	fl->fl_type = F_UNLCK;
+	goto out;
 }
 
 static int do_unlk(struct file *filp, int cmd, struct file_lock *fl)
@@ -486,12 +501,11 @@ nfs_lock(struct file *filp, int cmd, struct file_lock *fl)
 			inode->i_sb->s_id, inode->i_ino,
 			fl->fl_type, fl->fl_flags,
 			(long long)fl->fl_start, (long long)fl->fl_end);
-
-	if (!inode)
-		return -EINVAL;
+	nfs_inc_stats(inode, NFSIOS_VFSLOCK);
 
 	/* No mandatory locks over NFS */
-	if ((inode->i_mode & (S_ISGID | S_IXGRP)) == S_ISGID)
+	if ((inode->i_mode & (S_ISGID | S_IXGRP)) == S_ISGID && 
+		fl->fl_type != F_UNLCK)
 		return -ENOLCK;
 
 	/*

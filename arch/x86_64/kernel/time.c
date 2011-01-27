@@ -25,6 +25,8 @@
 #include <linux/device.h>
 #include <linux/sysdev.h>
 #include <linux/bcd.h>
+#include <linux/notifier.h>
+#include <linux/cpu.h>
 #include <linux/kallsyms.h>
 #include <linux/acpi.h>
 #include <acpi/achware.h>      /* for PM timer frequency */
@@ -336,7 +338,7 @@ static noinline void handle_lost_ticks(int lost, struct pt_regs *regs)
 	    print_symbol("rip %s)\n", regs->rip);
     }
 
-    if (lost_count == 100 && !warned) {
+    if (lost_count == HZ && !warned) {
 	    printk(KERN_WARNING
 		   "warning: many lost ticks.\n"
 		   KERN_WARNING "Your time source seems to be instable or "
@@ -628,6 +630,9 @@ static int time_cpufreq_notifier(struct notifier_block *nb, unsigned long val,
         struct cpufreq_freqs *freq = data;
 	unsigned long *lpj, dummy;
 
+	if (cpu_has(&cpu_data[freq->cpu], X86_FEATURE_CONSTANT_TSC))
+		return 0;
+
 	lpj = &dummy;
 	if (!(freq->flags & CPUFREQ_CONST_LOOPS))
 #ifdef CONFIG_SMP
@@ -824,6 +829,19 @@ static struct irqaction irq0 = {
 
 extern void __init config_acpi_tables(void);
 
+static int __init time_cpu_notifier(struct notifier_block *nb, unsigned long action, void *hcpu)
+{
+	unsigned cpu = (unsigned long) hcpu;
+
+	if (action == CPU_ONLINE && cpu_has(&cpu_data[cpu], X86_FEATURE_RDTSCP)) {
+		unsigned p;
+		p = smp_processor_id() | (cpu_to_node(smp_processor_id())<<12);
+		write_rdtscp_aux(p);
+	}
+
+	return NOTIFY_DONE;	
+}
+
 void __init time_init(void)
 {
 	char *timename;
@@ -852,6 +870,8 @@ void __init time_init(void)
 	if (!hpet_init())
                 vxtime_hz = (1000000000000000L + hpet_period / 2) /
 			hpet_period;
+	else
+		vxtime.hpet_address = 0;
 
 	if (hpet_use_timer) {
 		cpu_khz = hpet_calibrate_tsc();
@@ -881,6 +901,9 @@ void __init time_init(void)
 	setup_irq(0, &irq0);
 
 	set_cyc2ns_scale(cpu_khz / 1000);
+
+	time_cpu_notifier(NULL, CPU_ONLINE, (void *)(long)smp_processor_id());
+
 #ifndef CONFIG_SMP
 	time_init_gtod();
 #endif
@@ -904,6 +927,11 @@ static __init int unsynchronized_tsc(void)
 	/* if (cpus_weight(cpu_core_map[0]) == num_online_cpus())
 		return 0;
 	*/
+
+	/* AMD systems with constant TSCs have synchronized clocks */
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) && 
+		(boot_cpu_has(X86_FEATURE_CONSTANT_TSC)))
+		return 0;
 #endif
 	/* Assume multi socket systems are not synchronized */
 	return num_online_cpus() > 1;
@@ -918,6 +946,7 @@ void __init time_init_gtod(void)
 
 	if (unsynchronized_tsc())
 		notsc = 1;
+
 	if (vxtime.hpet_address && notsc) {
 		timetype = hpet_use_timer ? "HPET" : "PIT/HPET";
 		vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick;

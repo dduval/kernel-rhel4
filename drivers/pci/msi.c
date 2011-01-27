@@ -20,6 +20,7 @@
 #include <asm/io.h>
 #include <asm/smp.h>
 
+#include "pci.h"
 #include "msi.h"
 
 #define MSI_TARGET_CPU		first_cpu(cpu_online_map)
@@ -376,6 +377,13 @@ static int msi_init(void)
 	if (!status)
 		return status;
 
+	if (pci_msi_quirk) {
+		pci_msi_enable = 0;
+		printk(KERN_WARNING "PCI: MSI quirk detected. MSI disabled.\n");
+		status = -EINVAL;
+		return status;
+	}
+
 	if ((status = msi_cache_init()) < 0) {
 		pci_msi_enable = 0;
 		printk(KERN_INFO "WARNING: MSI INIT FAILURE\n");
@@ -460,7 +468,7 @@ static void enable_msi_mode(struct pci_dev *dev, int pos, int type)
 	}
 }
 
-static void disable_msi_mode(struct pci_dev *dev, int pos, int type)
+void disable_msi_mode(struct pci_dev *dev, int pos, int type)
 {
 	u16 control;
 
@@ -695,6 +703,33 @@ static int msix_capability_init(struct pci_dev *dev,
 }
 
 /**
+ * pci_msi_supported - check whether MSI may be enabled on device
+ * @dev: pointer to the pci_dev data structure of MSI device function
+ *
+ * MSI must be globally enabled and supported by the device and its root
+ * bus. But, the root bus is not easy to find since some architectures
+ * have virtual busses on top of the PCI hierarchy (for instance the
+ * hypertransport bus), while the actual bus where MSI must be supported
+ * is below. So we test the MSI flag on all parent busses and assume
+ * that no quirk will ever set the NO_MSI flag on a non-root bus.
+ **/
+static
+int pci_msi_supported(struct pci_dev * dev)
+{
+	struct pci_bus *bus;
+
+	if (!pci_msi_enable || !dev || dev->no_msi)
+		return -EINVAL;
+
+	/* check MSI flags of all parent busses */
+	for (bus = dev->bus; bus; bus = bus->parent)
+		if (bus->pad2 & PCI_BUS_FLAGS_NO_MSI)
+			return -EINVAL;
+
+	return 0;
+}
+
+/**
  * pci_enable_msi - configure device's MSI capability structure
  * @dev: pointer to the pci_dev data structure of MSI device function
  *
@@ -706,11 +741,13 @@ static int msix_capability_init(struct pci_dev *dev,
  **/
 int pci_enable_msi(struct pci_dev* dev)
 {
-	int pos, temp = dev->irq, status = -EINVAL;
+	int pos, temp, status;
 	u16 control;
 
-	if (!pci_msi_enable || !dev)
- 		return status;
+	if (pci_msi_supported(dev) < 0)
+ 		return -EINVAL;
+
+	temp = dev->irq;
 
 	if ((status = msi_init()) < 0)
 		return status;
@@ -944,7 +981,7 @@ int pci_enable_msix(struct pci_dev* dev, struct msix_entry *entries, int nvec)
 	u16 control;
 	unsigned long flags;
 
-	if (!pci_msi_enable || !dev || !entries)
+	if (!entries || pci_msi_supported(dev) < 0)
  		return -EINVAL;
 
 	if ((status = msi_init()) < 0)

@@ -123,6 +123,12 @@ void set_pmd_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
 	__flush_tlb_one(vaddr);
 }
 
+static int nr_fixmaps = 0;
+#ifdef CONFIG_XEN
+unsigned long __FIXADDR_TOP = 0xfffff000;
+EXPORT_SYMBOL(__FIXADDR_TOP);
+#endif
+
 void __set_fixmap (enum fixed_addresses idx, unsigned long phys, pgprot_t flags)
 {
 	unsigned long address = __fix_to_virt(idx);
@@ -132,6 +138,15 @@ void __set_fixmap (enum fixed_addresses idx, unsigned long phys, pgprot_t flags)
 		return;
 	}
 	set_pte_pfn(address, phys >> PAGE_SHIFT, flags);
+	nr_fixmaps++;
+}
+
+void set_fixaddr_top(unsigned long top)
+{
+#ifdef CONFIG_XEN
+	BUG_ON(nr_fixmaps > 0);
+	__FIXADDR_TOP = top - PAGE_SIZE;
+#endif
 }
 
 pte_t *pte_alloc_one_kernel(struct mm_struct *mm, unsigned long address)

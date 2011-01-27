@@ -36,6 +36,7 @@
 /* #define DCACHE_DEBUG 1 */
 
 int sysctl_vfs_cache_pressure = 100;
+EXPORT_SYMBOL_GPL(sysctl_vfs_cache_pressure);
 
 spinlock_t dcache_lock __cacheline_aligned_in_smp = SPIN_LOCK_UNLOCKED;
 seqlock_t rename_lock __cacheline_aligned_in_smp = SEQLOCK_UNLOCKED;

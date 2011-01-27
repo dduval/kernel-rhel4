@@ -16,6 +16,53 @@
 #include <linux/slab.h>
 #include <linux/thread_info.h>
 
+#ifdef CONFIG_XEN
+
+#include <xen/interface/physdev.h>
+
+static int allocate_bitmap(struct thread_struct *t)
+{
+        struct physdev_set_iobitmap set_iobitmap = {0};
+	unsigned long *bitmap = kmalloc(IO_BITMAP_BYTES, GFP_KERNEL);
+	
+	if (!bitmap)
+		return -ENOMEM;
+	memset(bitmap, 0xff, IO_BITMAP_BYTES);
+	t->io_bitmap_ptr = bitmap;
+
+	set_iobitmap.bitmap = (char *)t->io_bitmap_ptr;
+	set_iobitmap.nr_ports = IO_BITMAP_BITS;
+		
+	HYPERVISOR_physdev_op(PHYSDEVOP_set_iobitmap, &set_iobitmap);
+	return 0;
+}
+
+static void sync_bitmap(struct thread_struct *t, int bytes_updated)
+{
+}
+
+#else
+
+static int allocate_bitmap(struct thread_struct *t)
+{
+	unsigned char *bitmap = kmalloc(IO_BITMAP_BYTES, GFP_KERNEL);
+	if (!bitmap)
+		return -ENOMEM;
+	memset(bitmap, 0xff, IO_BITMAP_BYTES);
+	t->io_bitmap_ptr = bitmap;
+	return 0;
+}
+
+static void sync_bitmap(struct thread_struct *t, int bytes_updated)
+{
+	struct tss_struct * tss = &per_cpu(init_tss, get_cpu());
+	/* Update the TSS: */
+	memcpy(tss->io_bitmap, t->io_bitmap_ptr, bytes_updated);
+}
+
+#endif
+
+
 /* Set EXTENT bits starting at BASE in BITMAP to value TURN_ON. */
 static void set_bitmap(unsigned long *bitmap, unsigned int base, unsigned int extent, int new_value)
 {
@@ -35,8 +82,6 @@ asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int turn_on)
 {
 	unsigned int i, max_long, bytes, bytes_updated;
 	struct thread_struct * t = &current->thread;
-	struct tss_struct * tss;
-	unsigned long *bitmap;
 
 	if ((from + num <= from) || (from + num > IO_BITMAP_BITS))
 		return -EINVAL;
@@ -49,12 +94,8 @@ asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int turn_on)
 	 * this is why we delay this operation until now:
 	 */
 	if (!t->io_bitmap_ptr) {
-		bitmap = kmalloc(IO_BITMAP_BYTES, GFP_KERNEL);
-		if (!bitmap)
+		if (allocate_bitmap(t) < 0)
 			return -ENOMEM;
-
-		memset(bitmap, 0xff, IO_BITMAP_BYTES);
-		t->io_bitmap_ptr = bitmap;
 	}
 
 	/*
@@ -64,7 +105,6 @@ asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int turn_on)
 	 * because the ->io_bitmap_max value must match the bitmap
 	 * contents:
 	 */
-	tss = &per_cpu(init_tss, get_cpu());
 
 	set_bitmap(t->io_bitmap_ptr, from, num, !turn_on);
 
@@ -82,8 +122,8 @@ asmlinkage long sys_ioperm(unsigned long from, unsigned long num, int turn_on)
 
 	t->io_bitmap_max = bytes;
 
-	/* Update the TSS: */
-	memcpy(tss->io_bitmap, t->io_bitmap_ptr, bytes_updated);
+	/* The old traditional code path */
+	sync_bitmap(t, bytes_updated);
 
 	put_cpu();
 

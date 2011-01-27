@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -34,7 +35,8 @@
 #include <linux/vmalloc.h>
 
 #include "ipath_verbs.h"
-#include "ips_common.h"
+#include "ipath_kernel.h"
+#include "ipath_common.h"
 
 #define BITS_PER_PAGE		(PAGE_SIZE*BITS_PER_BYTE)
 #define BITS_PER_PAGE_MASK	(BITS_PER_PAGE-1)
@@ -286,7 +288,7 @@ void ipath_free_all_qps(struct ipath_qp_table *qpt)
 				free_qpn(qpt, qp->ibqp.qp_num);
 			if (!atomic_dec_and_test(&qp->refcount) ||
 			    !ipath_destroy_qp(&qp->ibqp))
-				_VERBS_INFO("QP memory leak!\n");
+				ipath_dbg(KERN_INFO "QP memory leak!\n");
 			qp = nqp;
 		}
 	}
@@ -364,7 +366,7 @@ static void ipath_reset_qp(struct ipath_qp *qp)
  * @qp: the QP to put into an error state
  *
  * Flushes both send and receive work queues.
- * QP s_lock should be held.
+ * QP s_lock should be held and interrupts disabled.
  */
 
 void ipath_error_qp(struct ipath_qp *qp)
@@ -372,8 +374,8 @@ void ipath_error_qp(struct ipath_qp *qp)
 	struct ipath_ibdev *dev = to_idev(qp->ibqp.device);
 	struct ib_wc wc;
 
-	_VERBS_INFO("QP%d/%d in error state\n",
-		    qp->ibqp.qp_num, qp->remote_qpn);
+	ipath_dbg(KERN_INFO "QP%d/%d in error state\n",
+		  qp->ibqp.qp_num, qp->remote_qpn);
 
 	spin_lock(&dev->pending_lock);
 	/* XXX What if its already removed by the timeout code? */
@@ -447,19 +449,38 @@ int ipath_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 				attr_mask))
 		goto inval;
 
-	if (attr_mask & IB_QP_AV)
+	if (attr_mask & IB_QP_AV) {
 		if (attr->ah_attr.dlid == 0 ||
-		    attr->ah_attr.dlid >= IPS_MULTICAST_LID_BASE)
+		    attr->ah_attr.dlid >= IPATH_MULTICAST_LID_BASE)
 			goto inval;
 
+		if ((attr->ah_attr.ah_flags & IB_AH_GRH) &&
+		    (attr->ah_attr.grh.sgid_index > 1))
+			goto inval;
+	}
+
 	if (attr_mask & IB_QP_PKEY_INDEX)
-		if (attr->pkey_index >= ipath_layer_get_npkeys(dev->dd))
+		if (attr->pkey_index >= ipath_get_npkeys(dev->dd))
 			goto inval;
 
 	if (attr_mask & IB_QP_MIN_RNR_TIMER)
 		if (attr->min_rnr_timer > 31)
 			goto inval;
 
+	if (attr_mask & IB_QP_PORT)
+		if (attr->port_num == 0 ||
+		    attr->port_num > ibqp->device->phys_port_cnt)
+			goto inval;
+
+	if (attr_mask & IB_QP_PATH_MTU)
+		if (attr->path_mtu > IB_MTU_4096)
+			goto inval;
+
+	if (attr_mask & IB_QP_PATH_MIG_STATE)
+		if (attr->path_mig_state != IB_MIG_MIGRATED &&
+		    attr->path_mig_state != IB_MIG_REARM)
+			goto inval;
+ 
 	switch (new_state) {
 	case IB_QPS_RESET:
 		ipath_reset_qp(qp);
@@ -481,7 +502,7 @@ int ipath_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 		qp->remote_qpn = attr->dest_qp_num;
 
 	if (attr_mask & IB_QP_SQ_PSN) {
-		qp->s_next_psn = attr->sq_psn;
+		qp->s_psn = qp->s_next_psn = attr->sq_psn;
 		qp->s_last_psn = qp->s_next_psn - 1;
 	}
 
@@ -510,11 +531,17 @@ int ipath_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	if (attr_mask & IB_QP_MIN_RNR_TIMER)
 		qp->r_min_rnr_timer = attr->min_rnr_timer;
 
+	if (attr_mask & IB_QP_TIMEOUT)
+		qp->timeout = attr->timeout;
+
 	if (attr_mask & IB_QP_QKEY)
 		qp->qkey = attr->qkey;
 
 	qp->state = new_state;
 	spin_unlock_irqrestore(&qp->s_lock, flags);
+	spin_lock(&dev->n_qps_lock);
+	dev->n_qps_allocated--;
+	spin_unlock(&dev->n_qps_lock);
 
 	ret = 0;
 	goto bail;
@@ -556,7 +583,7 @@ int ipath_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	attr->max_dest_rd_atomic = 1;
 	attr->min_rnr_timer = qp->r_min_rnr_timer;
 	attr->port_num = 1;
-	attr->timeout = 0;
+	attr->timeout = qp->timeout;
 	attr->retry_cnt = qp->s_retry_cnt;
 	attr->rnr_retry = qp->s_rnr_retry;
 	attr->alt_port_num = 0;
@@ -568,9 +595,10 @@ int ipath_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 	init_attr->recv_cq = qp->ibqp.recv_cq;
 	init_attr->srq = qp->ibqp.srq;
 	init_attr->cap = attr->cap;
-	init_attr->sq_sig_type =
-		(qp->s_flags & (1 << IPATH_S_SIGNAL_REQ_WR))
-		? IB_SIGNAL_REQ_WR : 0;
+	if (qp->s_flags & (1 << IPATH_S_SIGNAL_REQ_WR))
+		init_attr->sq_sig_type = IB_SIGNAL_REQ_WR;
+	else
+		init_attr->sq_sig_type = IB_SIGNAL_ALL_WR;
 	init_attr->qp_type = qp->ibqp.qp_type;
 	init_attr->port_num = 1;
 	return 0;
@@ -584,14 +612,14 @@ int ipath_query_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
  */
 __be32 ipath_compute_aeth(struct ipath_qp *qp)
 {
-	u32 aeth = qp->r_msn & IPS_MSN_MASK;
+	u32 aeth = qp->r_msn & IPATH_MSN_MASK;
 
 	if (qp->ibqp.srq) {
 		/*
 		 * Shared receive queues don't generate credits.
 		 * Set the credit field to the invalid value.
 		 */
-		aeth |= IPS_AETH_CREDIT_INVAL << IPS_AETH_CREDIT_SHIFT;
+		aeth |= IPATH_AETH_CREDIT_INVAL << IPATH_AETH_CREDIT_SHIFT;
 	} else {
 		u32 min, max, x;
 		u32 credits;
@@ -621,7 +649,7 @@ __be32 ipath_compute_aeth(struct ipath_qp *qp)
 			else
 				min = x;
 		}
-		aeth |= x << IPS_AETH_CREDIT_SHIFT;
+		aeth |= x << IPATH_AETH_CREDIT_SHIFT;
 	}
 	return cpu_to_be32(aeth);
 }
@@ -718,8 +746,10 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 		qp->s_wq = swq;
 		qp->s_size = init_attr->cap.max_send_wr + 1;
 		qp->s_max_sge = init_attr->cap.max_send_sge;
-		qp->s_flags = init_attr->sq_sig_type == IB_SIGNAL_REQ_WR ?
-			1 << IPATH_S_SIGNAL_REQ_WR : 0;
+		if (init_attr->sq_sig_type == IB_SIGNAL_REQ_WR)
+			qp->s_flags = 1 << IPATH_S_SIGNAL_REQ_WR;
+		else
+			qp->s_flags = 0;
 		dev = to_idev(ibpd->device);
 		err = ipath_alloc_qpn(&dev->qp_table, qp,
 				      init_attr->qp_type);
@@ -731,11 +761,6 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 			goto bail;
 		}
 		ipath_reset_qp(qp);
-
-		/* Tell the core driver that the kernel SMA is present. */
-		if (init_attr->qp_type == IB_QPT_SMI)
-			ipath_layer_set_verbs_flags(dev->dd,
-						    IPATH_VERBS_KERNEL_SMA);
 		break;
 
 	default:
@@ -746,7 +771,24 @@ struct ib_qp *ipath_create_qp(struct ib_pd *ibpd,
 
 	init_attr->cap.max_inline_data = 0;
 
+	spin_lock(&dev->n_qps_lock);
+	if (dev->n_qps_allocated == ib_ipath_max_qps) {
+		spin_unlock(&dev->n_qps_lock);
+		ret = ERR_PTR(-ENOMEM);
+		goto bail_ip;
+	}
+
+	dev->n_qps_allocated++;
+	spin_unlock(&dev->n_qps_lock);
+
 	ret = &qp->ibqp;
+	goto bail;
+
+bail_ip:
+	ipath_free_qp(&dev->qp_table, qp);
+	vfree(swq);
+	vfree(qp->r_rq.wq);
+	kfree(qp);
 
 bail:
 	return ret;
@@ -766,10 +808,6 @@ int ipath_destroy_qp(struct ib_qp *ibqp)
 	struct ipath_qp *qp = to_iqp(ibqp);
 	struct ipath_ibdev *dev = to_idev(ibqp->device);
 	unsigned long flags;
-
-	/* Tell the core driver that the kernel SMA is gone. */
-	if (qp->ibqp.qp_type == IB_QPT_SMI)
-		ipath_layer_set_verbs_flags(dev->dd, 0);
 
 	spin_lock_irqsave(&qp->r_rq.lock, flags);
 	spin_lock(&qp->s_lock);
@@ -849,8 +887,8 @@ void ipath_sqerror_qp(struct ipath_qp *qp, struct ib_wc *wc)
 	struct ipath_ibdev *dev = to_idev(qp->ibqp.device);
 	struct ipath_swqe *wqe = get_swqe_ptr(qp, qp->s_last);
 
-	_VERBS_INFO("Send queue error on QP%d/%d: err: %d\n",
-		    qp->ibqp.qp_num, qp->remote_qpn, wc->status);
+	ipath_dbg(KERN_INFO "Send queue error on QP%d/%d: err: %d\n",
+		  qp->ibqp.qp_num, qp->remote_qpn, wc->status);
 
 	spin_lock(&dev->pending_lock);
 	/* XXX What if its already removed by the timeout code? */
@@ -887,18 +925,18 @@ void ipath_sqerror_qp(struct ipath_qp *qp, struct ib_wc *wc)
  */
 void ipath_get_credit(struct ipath_qp *qp, u32 aeth)
 {
-	u32 credit = (aeth >> IPS_AETH_CREDIT_SHIFT) & IPS_AETH_CREDIT_MASK;
+	u32 credit = (aeth >> IPATH_AETH_CREDIT_SHIFT) & IPATH_AETH_CREDIT_MASK;
 
 	/*
 	 * If the credit is invalid, we can send
 	 * as many packets as we like.  Otherwise, we have to
 	 * honor the credit field.
 	 */
-	if (credit == IPS_AETH_CREDIT_INVAL)
+	if (credit == IPATH_AETH_CREDIT_INVAL)
 		qp->s_lsn = (u32) -1;
 	else if (qp->s_lsn != (u32) -1) {
 		/* Compute new LSN (i.e., MSN + credit) */
-		credit = (aeth + credit_table[credit]) & IPS_MSN_MASK;
+		credit = (aeth + credit_table[credit]) & IPATH_MSN_MASK;
 		if (ipath_cmp24(credit, qp->s_lsn) > 0)
 			qp->s_lsn = credit;
 	}

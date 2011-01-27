@@ -17,6 +17,7 @@
 #include <asm/scatterlist.h>
 
 #include "dm.h"
+#include "dm-biosets.h"
 
 #define PFX	"crypt: "
 
@@ -60,6 +61,7 @@ struct crypt_config {
 	 */
 	mempool_t *io_pool;
 	mempool_t *page_pool;
+	struct bio_set *bs;
 
 	/*
 	 * crypto related data
@@ -72,7 +74,7 @@ struct crypt_config {
 	u8 key[0];
 };
 
-#define MIN_IOS        256
+#define MIN_IOS        16
 #define MIN_POOL_PAGES 32
 #define MIN_BIO_PAGES  8
 
@@ -191,6 +193,14 @@ static int crypt_convert(struct crypt_config *cc,
 	return r;
 }
 
+ static void dm_crypt_bio_destructor(struct bio *bio)
+ {
+	struct crypt_io *io = bio->bi_private;
+	struct crypt_config *cc = io->target->private;
+
+	bio_free(bio, cc->bs);
+ }
+
 /*
  * Generate a new unfragmented bio with the given size
  * This should never violate the device limitations
@@ -213,15 +223,19 @@ crypt_alloc_buffer(struct crypt_config *cc, unsigned int size,
 	 */
 	current->flags &= ~PF_MEMALLOC;
 
-	if (base_bio)
-		bio = bio_clone(base_bio, GFP_NOIO);
-	else
-		bio = bio_alloc(GFP_NOIO, nr_iovecs);
+	if (base_bio) {
+		bio = bio_alloc_bioset(GFP_NOIO, base_bio->bi_max_vecs, cc->bs);
+		__bio_clone(bio, base_bio);
+	} else
+		bio = bio_alloc_bioset(GFP_NOIO, nr_iovecs, cc->bs);
+
 	if (!bio) {
 		if (flags & PF_MEMALLOC)
 			current->flags |= PF_MEMALLOC;
 		return NULL;
 	}
+
+	bio->bi_destructor = dm_crypt_bio_destructor;
 
 	/* if the last bio was not complete, continue where that one ended */
 	bio->bi_idx = *bio_vec_idx;
@@ -384,7 +398,7 @@ static int crypt_decode_key(u8 *key, char *hex, unsigned int size)
 	if (*hex != '\0')
 		return -EINVAL;
 
-	return 0;
+	return DM_MAPIO_SUBMITTED;
 }
 
 /*
@@ -486,6 +500,12 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad3;
 	}
 
+	cc->bs = bioset_create(MIN_IOS, MIN_IOS, 4);
+	if (!cc->bs) {
+		ti->error = "Cannot allocate crypt bioset";
+		goto bad_bs;
+	}
+
 	cc->tfm = tfm;
 	cc->key_size = key_size;
 	if ((key_size == 0 && strcmp(argv[1], "-") != 0)
@@ -519,6 +539,8 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	return 0;
 
 bad4:
+	bioset_free(cc->bs);
+bad_bs:
 	mempool_destroy(cc->page_pool);
 bad3:
 	mempool_destroy(cc->io_pool);
@@ -535,6 +557,7 @@ static void crypt_dtr(struct dm_target *ti)
 {
 	struct crypt_config *cc = (struct crypt_config *) ti->private;
 
+	bioset_free(cc->bs);
 	mempool_destroy(cc->page_pool);
 	mempool_destroy(cc->io_pool);
 
@@ -562,13 +585,15 @@ static int crypt_endio(struct bio *bio, unsigned int done, int error)
 	if (bio->bi_size)
 		return 1;
 
+	if (!bio_flagged(bio, BIO_UPTODATE) && !error)
+		error = -EIO;
+
 	bio_put(bio);
 
 	/*
 	 * successful reads are decrypted by the worker thread
 	 */
-	if ((bio_data_dir(bio) == READ)
-	    && bio_flagged(bio, BIO_UPTODATE)) {
+	if (bio_data_dir(io->bio) == READ && !error) {
 		kcryptd_queue_io(io);
 		return 0;
 	}
@@ -602,8 +627,9 @@ crypt_clone(struct crypt_config *cc, struct crypt_io *io, struct bio *bio,
 		 * copy the required bvecs because we need the original
 		 * one in order to decrypt the whole bio data *afterwards*.
 		 */
-		clone = bio_alloc(GFP_NOIO, bio_segments(bio));
+		clone = bio_alloc_bioset(GFP_NOIO, bio_segments(bio), cc->bs);
 		if (clone) {
+			clone->bi_destructor = dm_crypt_bio_destructor;
 			clone->bi_idx = 0;
 			clone->bi_vcnt = bio_segments(bio);
 			clone->bi_size = bio->bi_size;

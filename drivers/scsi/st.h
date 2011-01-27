@@ -6,6 +6,7 @@
 #include "scsi.h"
 #endif
 #include <linux/completion.h>
+#include <linux/kref.h>
 
 /* The tape buffer descriptor. */
 typedef struct {
@@ -80,6 +81,7 @@ typedef struct {
 	struct semaphore lock;	/* For serialization */
 	struct completion wait;	/* For SCSI commands */
 	ST_buffer *buffer;
+	struct kref	kref;
 
 	/* Drive characteristics */
 	unsigned char omit_blklims;

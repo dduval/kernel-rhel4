@@ -43,11 +43,29 @@
 		     : "c" (msr), "0" ((__u32)val), "d" ((val)>>32), "i" (-EFAULT));\
 	ret__; })
 
+#define rdmsr_safe(msr,a,b) \
+        ({ int ret__;                                           \
+          asm volatile ("1:       rdmsr\n"                      \
+                      "2:\n"                                    \
+                      ".section .fixup,\"ax\"\n"                \
+                      "3:       movl %4,%0\n"                   \
+                      " jmp 2b\n"                               \
+                      ".previous\n"                             \
+                      ".section __ex_table,\"a\"\n"             \
+                      " .align 8\n"                             \
+                      " .quad 1b,3b\n"                          \
+                      ".previous":"=&bDS" (ret__), "=a"(*(a)), "=d"(*(b))\
+                      :"c"(msr), "i"(-EIO), "0"(0));            \
+          ret__; })
+
 #define rdtsc(low,high) \
      __asm__ __volatile__("rdtsc" : "=a" (low), "=d" (high))
 
 #define rdtscl(low) \
      __asm__ __volatile__ ("rdtsc" : "=a" (low) : : "edx")
+
+#define rdtscp(low,high,aux) \
+	asm volatile (".byte 0x0f,0x01,0xf9" : "=a" (low), "=d" (high), "=c" (aux))
 
 #define rdtscll(val) do { \
      unsigned int __a,__d; \
@@ -55,12 +73,20 @@
      (val) = ((unsigned long)__a) | (((unsigned long)__d)<<32); \
 } while(0)
 
+#define rdtscpll(val, aux) do { \
+	unsigned long __a, __d; \
+	asm volatile (".byte 0x0f,0x01,0xf9" : "=a" (__a), "=d" (__d), "=c" (aux)); \
+	(val) = (__d << 32) | __a; \
+} while (0)
+
 #define rdpmc(counter,low,high) \
      __asm__ __volatile__("rdpmc" \
 			  : "=a" (low), "=d" (high) \
 			  : "c" (counter))
 
 #define write_tsc(val1,val2) wrmsr(0x10, val1, val2)
+
+#define write_rdtscp_aux(val) wrmsr(0xc0000103, val, 0)
 
 #define rdpmc(counter,low,high) \
      __asm__ __volatile__("rdpmc" \

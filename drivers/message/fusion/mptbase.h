@@ -55,7 +55,9 @@
 #include <linux/kernel.h>
 #include <linux/pci.h>
 
+#ifndef MPT_APPS
 #include "linux_compat.h"	/* linux-2.6 tweaks */
+#endif
 #include "lsi/mpi_type.h"
 #include "lsi/mpi.h"		/* Fusion MPI(nterface) basic defs */
 #include "lsi/mpi_ioc.h"	/* Fusion MPT IOC(ontroller) defs */
@@ -76,15 +78,15 @@
 #endif
 
 #ifndef COPYRIGHT
-#define COPYRIGHT	"Copyright (c) 1999-2005 " MODULEAUTHOR
+#define COPYRIGHT	"Copyright (c) 1999-2006 " MODULEAUTHOR
 #endif
 
-#define MPT_LINUX_VERSION_COMMON	"3.02.62.01rh"
-#define MPT_LINUX_PACKAGE_NAME		"@(#)mptlinux-3.02.62.01rh"
+#define MPT_LINUX_VERSION_COMMON	"3.02.73rh"
+#define MPT_LINUX_PACKAGE_NAME		"@(#)mptlinux-3.02.73rh"
 #define MPT_LINUX_MAJOR_VERSION		3
 #define MPT_LINUX_MINOR_VERSION		02
-#define MPT_LINUX_BUILD_VERSION		62
-#define MPT_LINUX_RELEASE_VERSION	01
+#define MPT_LINUX_BUILD_VERSION		73
+#define MPT_LINUX_RELEASE_VERSION	00
 #define WHAT_MAGIC_STRING		"@" "(" "#" ")"
 
 #define show_mptmod_ver(s,ver)  \
@@ -156,6 +158,7 @@
 #define C0_1030				0x08
 #define XL_929				0x01
 
+#define SAS_LOGINFO_NEXUS_LOSS          0x31170000
 
 /*
  *	Try to keep these at 2^N-1
@@ -306,7 +309,8 @@ typedef struct _SYSIF_REGS
 	u32	HostIndex;	/* 50     Host Index register        */
 	u32	Reserved4[15];	/* 54-8F                             */
 	u32	Fubar;		/* 90     For Fubar usage            */
-	u32	Reserved5[27];	/* 94-FF                             */
+	u32	Reserved5[1050];/* 94-10F8                           */
+	u32	Reset_1078;	/* 10FC   Reset 1078                 */
 } SYSIF_REGS;
 
 /*
@@ -330,7 +334,7 @@ typedef struct _SYSIF_REGS
  */
 typedef struct _VirtDevice {
 	struct scsi_device	*device;
-	u8			 tflags;
+	u16			 tflags;
 	u8			 ioc_id;
 	u8			 target_id;
 	u8			 bus_id;
@@ -370,6 +374,9 @@ typedef struct _VirtDevice {
 #define MPT_TARGET_FLAGS_Q_YES		0x08
 #define MPT_TARGET_FLAGS_VALID_56	0x10
 #define MPT_TARGET_FLAGS_SAF_TE_ISSUED	0x20
+#define MPT_TARGET_FLAGS_LED_ON		0x40
+#define MPT_TARGET_FLAGS_TLR_DONE     	0x80
+#define MPT_TARGET_FLAGS_DELETED     	0x100
 
 /*
  *	/proc/mpt interface
@@ -527,23 +534,6 @@ typedef struct _sas_phy_info {
 	u8	reserved;
 } sas_phy_info_t;
 
-typedef enum {
-	ADD_DEVICE,
-	DEL_DEVICE
-} HOT_PLUG_TYPE;
-
-typedef struct _mptscsih_hot_plug_event {
-	struct	list_head 	list;
-	u32			channel;
-	u32			id;
-	u32			lun;
-	u32			device_info;
-	u8			phy_id;
-	u8			isRaid;
-	u8			rsvd[2];
-	HOT_PLUG_TYPE		event_type;
-} mptscsih_hot_plug_event;
-
 /*
  *  Adapter Structure - pci_dev specific. Maximum: MPT_MAX_ADAPTERS
  */
@@ -647,11 +637,11 @@ typedef struct _MPT_ADAPTER
 	U64			 sas_port_WWID[4];
 	u8			 BoardTracerNumber[16];
 	u8			 numPhys;
+	u16			 vendorID;
 	sas_phy_info_t		 *sasPhyInfo;
 	struct list_head	 sasDeviceList;
-	struct list_head	 hot_plug_list;
 	struct semaphore	 hot_plug_semaphore;
-	struct work_struct	 mptscsih_hot_plug_task;
+	struct work_struct	 mptscsih_persistTask;
 	struct timer_list	 persist_timer;	/* persist table timer */
 	int			 persist_wait_done; /* persist completion flag */
 	u8			 persist_reply_frame[MPT_DEFAULT_FRAME_SIZE]; /* persist reply */
@@ -660,6 +650,9 @@ typedef struct _MPT_ADAPTER
 	LANPage1_t		 lan_cnfg_page1;
 #if CONFIG_PM && (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,9))
 	u32           		 PciState[64];     /* save PCI state to this area */
+#endif
+#if defined(CPQ_CIM)
+    u32         csmi_change_count;    /* count to track all IR events for CSMI */
 #endif
 	/*  
 	 * Description: errata_flag_1064
@@ -678,7 +671,7 @@ typedef struct _MPT_ADAPTER
 	int			 TaskCtx;
 	int			 InternalCtx;
 	spinlock_t		 initializing_hba_lock;
-	int			 initializing_hba_lock_flag;
+	int 	 		 initializing_hba_lock_flag;
 	struct list_head	 list;
 	struct net_device	*netdev;
 } MPT_ADAPTER;
@@ -770,8 +763,26 @@ typedef struct _mpt_sge {
 
 #ifdef MPT_DEBUG_EVENTS
 #define devtprintk(x)  printk x
+#define DBG_DUMP_EVENT_REQUEST_FRAME(mfp) \
+	{	int  i, n = 5;						\
+		u32 *m = (u32 *)(mfp);					\
+		printk("EventAck Request Message:\n");			\
+		for (i=0; i<n; i++) {					\
+			if (i && ((i%8)==0))				\
+				printk("\n");				\
+			printk("%08x ", le32_to_cpu(m[i]));		\
+		}							\
+		printk("\n");						\
+	}
 #else
 #define devtprintk(x)
+#define DBG_DUMP_EVENT_REQUEST_FRAME(mfp)
+#endif
+
+#ifdef MPT_DEBUG_HOTPLUG
+#define dhotpprintk(x)  printk x
+#else
+#define dhotpprintk(x)
 #endif
 
 #ifdef MPT_DEBUG_RESET

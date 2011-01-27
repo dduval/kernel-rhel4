@@ -294,6 +294,10 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
 		MATCH(DMI_PRODUCT_NAME, "HP xw9400 Workstation"),
 		NO_MATCH, NO_MATCH, NO_MATCH
 		} },
+	{ disable_pci_mmconf, "HP DL585 G2", {
+		MATCH(DMI_PRODUCT_NAME, "ProLiant DL585 G2"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
 	{ disable_pci_mmconf, "ASUS A8N-SLI Premium", {
 		MATCH(DMI_BOARD_VENDOR, "ASUSTeK Computer INC."),
 		MATCH(DMI_BOARD_NAME, "A8N-SLI Premium"),
@@ -412,3 +416,35 @@ char * dmi_get_system_info(int field)
 }
 
 EXPORT_SYMBOL(dmi_get_system_info);
+
+/**
+ *      dmi_get_year - Return year of a DMI date
+ *      @field: data index (like dmi_get_system_info)
+ *
+ *      Returns -1 when the field doesn't exist. 0 when it is broken.
+ */
+int dmi_get_year(int field)
+{
+        int year;
+        char *s = dmi_get_system_info(field);
+
+        if (!s)
+                return -1;
+        if (*s == '\0')
+                return 0;
+        s = strrchr(s, '/');
+        if (!s)
+                return 0;
+
+        s += 1;
+        year = simple_strtoul(s, NULL, 0);
+        if (year && year < 100) {       /* 2-digit year */
+                year += 1900;
+                if (year < 1996)        /* no dates < spec 1.0 */
+                        year += 100;
+        }
+
+        return year;
+}
+
+EXPORT_SYMBOL(dmi_get_year);

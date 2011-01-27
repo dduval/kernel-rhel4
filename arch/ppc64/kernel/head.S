@@ -936,7 +936,9 @@ FPUnavailable_common:
 AltivecUnavailable_common:
 	EXCEPTION_PROLOG_COMMON(0xf20, PACA_EXGEN)
 #ifdef CONFIG_ALTIVEC
+BEGIN_FTR_SECTION
 	bne	.load_up_altivec	/* if from user, just load it up */
+END_FTR_SECTION_IFSET(CPU_FTR_ALTIVEC)
 #endif
 	bl	.save_nvgprs
 	addi	r3,r1,STACK_FRAME_OVERHEAD
@@ -1493,7 +1495,7 @@ _STATIC(load_up_fpu)
 	or	r12,r12,r4
 	std	r12,_MSR(r1)
 	lfd	fr0,THREAD_FPSCR(r5)
-	mtfsf	0xff,fr0
+	MTFSF_L(fr0)
 	REST_32FPRS(0, r5)
 #ifndef CONFIG_SMP
 	/* Update last_task_used_math to 'current' */
@@ -1742,10 +1744,16 @@ _GLOBAL(__secondary_start)
 	stb	r6,PACAPROCENABLED(r13)
 
 #ifndef CONFIG_PPC_ISERIES
-	/* Initialize the page table pointer register. */
+	/* Initialize the page table pointer register if we're not an lpar */
+	li	r6,SYSTEMCFG_PHYS_ADDR	/* r6 = ptr to systemcfg */
+	lwz	r6,PLATFORM(r6)		/* r6 = platform flags */
+	cmpldi 	r6,PLATFORM_PSERIES_LPAR
+	beq	98f	
+
 	LOADADDR(r6,_SDR1)
 	ld	r6,0(r6)		/* get the value of _SDR1	 */
 	mtspr	SDR1,r6			/* set the htab location	 */
+98:
 #endif
 	/* Initialize the first segment table (or SLB) entry		 */
 	ld	r3,PACASTABVIRT(r13)	/* get addr of segment table	 */
@@ -1773,14 +1781,14 @@ _GLOBAL(__secondary_start)
 	lwz	r3,PLATFORM(r3)		/* r3 = platform flags		 */
 	cmpldi 	r3,PLATFORM_PSERIES_LPAR
 	bne	98f
-	mfspr	r3,PVR
+	mfspr	r3,PVR			/* we're some kind of lpar */
 	srwi	r3,r3,16
 	cmpwi	r3,0x37			/* SStar  */
 	beq	97f
 	cmpwi	r3,0x36			/* IStar  */
 	beq	97f
 	cmpwi	r3,0x34			/* Pulsar */
-	bne	98f
+	bne	99f			/* not a star chip, skip the mtasr */
 97:	li	r3,H_SET_ASR		/* hcall = H_SET_ASR */
 	HVSC				/* Invoking hcall */
 	b	99f
@@ -1954,7 +1962,7 @@ _STATIC(start_here_multiplatform)
 	li	r3,SYSTEMCFG_PHYS_ADDR	/* r3 = ptr to systemcfg */
 	lwz	r3,PLATFORM(r3)		/* r3 = platform flags */
 	cmpldi 	r3,PLATFORM_PSERIES_LPAR
-	bne	98f
+	bne	99f			/* if we're an lpar, don't set asr */
 	mfspr	r3,PVR
 	srwi	r3,r3,16
 	cmpwi	r3,0x37			/* SStar */
@@ -1962,7 +1970,7 @@ _STATIC(start_here_multiplatform)
 	cmpwi	r3,0x36			/* IStar  */
 	beq	97f
 	cmpwi	r3,0x34			/* Pulsar */
-	bne	98f
+	bne	99f			/* not star chip, don't set asr */
 97:	li	r3,H_SET_ASR		/* hcall = H_SET_ASR */
 	HVSC				/* Invoking hcall */
 	b	99f

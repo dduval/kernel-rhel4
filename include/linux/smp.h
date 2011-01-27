@@ -16,6 +16,7 @@
 #include <linux/thread_info.h>
 #include <asm/smp.h>
 #include <asm/bug.h>
+#include <asm/system.h>
 
 /*
  * main cross-CPU interfaces, handles INIT, TLB flush, STOP, etc.
@@ -65,7 +66,9 @@ static inline int on_each_cpu(void (*func) (void *info), void *info,
 
 	preempt_disable();
 	ret = smp_call_function(func, info, retry, wait);
+	local_irq_disable();
 	func(info);
+	local_irq_enable();
 	preempt_enable();
 	return ret;
 }
@@ -102,7 +105,13 @@ void smp_prepare_boot_cpu(void);
 #define smp_threads_ready			1
 #define smp_call_function(func,info,retry,wait)	({ 0; })
 static inline void dump_smp_call_function(void (*func) (void *info), void *info) { }
-#define on_each_cpu(func,info,retry,wait)	({ func(info); 0; })
+#define on_each_cpu(func,info,retry,wait)	\
+	({					\
+		local_irq_disable();		\
+		func(info);			\
+		local_irq_enable();		\
+		0;				\
+	})
 static inline void smp_send_reschedule(int cpu) { }
 #define num_booting_cpus()			1
 #define smp_prepare_boot_cpu()			do {} while (0)

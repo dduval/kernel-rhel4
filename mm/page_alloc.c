@@ -282,7 +282,8 @@ void __free_pages_ok(struct page *page, unsigned int order)
 	LIST_HEAD(list);
 	int i;
 
-	arch_free_page(page, order);
+	if(arch_free_page(page, order))
+		return;
 
 	mod_page_state(pgfree, 1 << order);
 	for (i = 0 ; i < (1 << order) ; ++i)
@@ -512,7 +513,8 @@ static void fastcall free_hot_cold_page(struct page *page, int cold)
 	struct per_cpu_pages *pcp;
 	unsigned long flags;
 
-	arch_free_page(page, 0);
+	if (arch_free_page(page, 0))
+		return;
 
 	kernel_map_pages(page, 1, 0);
 	inc_page_state(pgfree);
@@ -689,24 +691,17 @@ rebalance:
 	p->flags |= PF_MEMALLOC;
 	reclaim_state.reclaimed_slab = 0;
 	p->reclaim_state = &reclaim_state;
-
-	try_to_free_pages(zones, gfp_mask, order);
+	try_to_free_pages(zones, gfp_mask, order, can_try_harder, alloc_type);
 
 	p->reclaim_state = NULL;
 	p->flags &= ~PF_MEMALLOC;
 
 	/* go through the zonelist yet one more time */
 	for (i = 0; (z = zones[i]) != NULL; i++) {
-		min = z->pages_min;
-		if (gfp_mask & __GFP_HIGH)
-			min /= 2;
-		if (can_try_harder)
-			min -= min / 4;
-		min += (1<<order) + z->protection[alloc_type];
+		min = zone_min(z,gfp_mask,can_try_harder,alloc_type,order);
 
 		if (z->free_pages < min)
 			continue;
-
 		page = buffered_rmqueue(z, order, gfp_mask);
 		if (page)
 			goto got_pg;
@@ -1178,7 +1173,7 @@ static int __init build_zonelists_node(pg_data_t *pgdat, struct zonelist *zoneli
 		zone = pgdat->node_zones + ZONE_NORMAL;
 		if (zone->present_pages)
 			zonelist->zones[j++] = zone;
-#if defined(CONFIG_HIGHMEM64G) || defined(CONFIG_X86_64)
+#if defined(CONFIG_HIGHMEM64G) || (defined(CONFIG_X86_64) && !defined(CONFIG_XEN))
 		break;
 #endif
 	case ZONE_DMA:

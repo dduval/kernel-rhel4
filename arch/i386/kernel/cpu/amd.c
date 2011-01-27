@@ -20,7 +20,7 @@
  */
 
 extern int smp_num_cores;
- 
+
 extern void vide(void);
 __asm__(".align 4\nvide: ret");
 
@@ -29,6 +29,23 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 	u32 l, h;
 	int mbytes = num_physpages >> (20-PAGE_SHIFT);
 	int r;
+	int x86_power;
+
+#ifdef CONFIG_SMP
+	unsigned long long value;
+
+	/* Disable TLB flush filter by setting HWCR.FFDIS on K8
+	 * bit 6 of msr C001_0015
+	 *
+	 * Errata 63 for SH-B3 steppings
+	 * Errata 122 for all steppings (F+ have it disabled by default)
+	 */
+	if (c->x86 == 15) {
+		rdmsrl(MSR_K7_HWCR, value);
+		value |= 1 << 6;
+		wrmsrl(MSR_K7_HWCR, value);
+	}
+#endif
 
 	/*
 	 *	FIXME: We should handle the K5 here. Set up the write
@@ -147,6 +164,12 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 					set_bit(X86_FEATURE_K6_MTRR, c->x86_capability);
 				break;
 			}
+
+			if (c->x86_model == 10) {
+				/* AMD Geode LX is model 10 */
+				/* placeholder for any needed mods */
+				break;
+			}
 			break;
 
 		case 6: /* An Athlon/Duron */
@@ -188,41 +211,41 @@ static void __init init_amd(struct cpuinfo_x86 *c)
 		set_bit(X86_FEATURE_K7, c->x86_capability); 
 		break;
 	}
+	if (c->x86 >= 6)
+		set_bit(X86_FEATURE_FXSAVE_LEAK, c->x86_capability);
 
 	display_cacheinfo(c);
 
 #ifdef CONFIG_SMP
 	if (cpuid_eax(0x80000000) >= 0x80000008) {
 		smp_num_cores = (cpuid_ecx(0x80000008) & 0xff) + 1;
-		if (smp_num_cores & (smp_num_cores - 1))
-			smp_num_cores = 1;
 	}
 #endif
+
+	if (cpuid_eax(0x80000000) >= 0x80000007) {
+		x86_power = cpuid_edx(0x80000007);
+		if (x86_power & (1<<8))
+			set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
+	}
 
 #ifdef CONFIG_X86_HT
 	/*
 	 * On a AMD dual core setup the lower bits of the APIC id
-	 * distingush the cores.  Assumes number of cores is a power
-	 * of two.
+	 * distingush the cores. 
 	 */
 	if (smp_num_cores > 1) {
 		int cpu = smp_processor_id();
-		unsigned bits = 0;
+		unsigned bits = (cpuid_ecx(0x80000008) >> 12) & 0xf;
 		int initial_apic_id;
 
-		while ((1 << bits) < smp_num_cores)
-			bits++;
+		if (bits == 0) {
+			while ((1 << bits) < smp_num_cores)
+				bits++;
+		}
 		cpu_core_id[cpu] = phys_proc_id[cpu] & ((1<<bits)-1);
 		phys_proc_id[cpu] >>= bits;
-		initial_apic_id = hard_smp_processor_id();
-		printk(KERN_INFO  "CPU%d: Physical Processor ID: %d\n",
-		       cpu, phys_proc_id[cpu]);
-		printk(KERN_INFO  "CPU%d: Processor Core ID: %d\n",
-		       cpu, cpu_core_id[cpu]);
-		printk(KERN_INFO  "CPU%d: Initial APIC ID: %d\n",
-		       cpu, initial_apic_id);
-                printk(KERN_INFO "CPU %d(%d) -> Core %d\n",
-                       cpu, smp_num_cores, cpu_core_id[cpu]);
+		printk(KERN_INFO "CPU %d(%d) -> Core %d\n",
+		       cpu, smp_num_cores, cpu_core_id[cpu]);
 	}
 #endif
 }

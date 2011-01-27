@@ -349,7 +349,7 @@ static int e7xxx_probe1(struct pci_dev *pdev, int dev_idx)
 	int drc_ddim;		/* DRAM Data Integrity Mode 0=none,2=edac */
 	u32 dra;
 	unsigned long last_cumul_size;
-
+	struct e7xxx_error_info discard;
 
 	debugf0("MC: " __FILE__ ": %s(): mci\n", __func__);
 
@@ -462,8 +462,7 @@ static int e7xxx_probe1(struct pci_dev *pdev, int dev_idx)
 	       pvt->remapbase, pvt->remaplimit);
 
 	/* clear any pending errors, or initial state bits */
-	pci_write_bits8(pvt->bridge_ck, E7XXX_DRAM_FERR, 0x03, 0x03);
-	pci_write_bits8(pvt->bridge_ck, E7XXX_DRAM_NERR, 0x03, 0x03);
+	e7xxx_get_error_info(mci, &discard);
 
 	if (edac_mc_add_mc(mci) != 0) {
 		debugf3("MC: " __FILE__
@@ -505,12 +504,11 @@ static void __devexit e7xxx_remove_one(struct pci_dev *pdev)
 
 	debugf0(__FILE__ ": %s()\n", __func__);
 
-	if (((mci = edac_mc_find_mci_by_pdev(pdev)) != 0) &&
-	    edac_mc_del_mc(mci)) {
-		pvt = (struct e7xxx_pvt *) mci->pvt_info;
-		pci_dev_put(pvt->bridge_ck);
-		edac_mc_free(mci);
-	}
+	if ((mci = edac_mc_del_mc(pdev)) == NULL)
+		return;
+	pvt = (struct e7xxx_pvt *) mci->pvt_info;
+	pci_dev_put(pvt->bridge_ck);
+	edac_mc_free(mci);
 }
 
 

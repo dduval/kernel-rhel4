@@ -63,19 +63,6 @@ struct ehca_av;
 
 #include "ehca_irq.h"
 
-struct ehca_module {
-	struct list_head shca_list;
-	spinlock_t shca_lock;
-	struct timer_list timer;
-	kmem_cache_t *cache_pd;
-	kmem_cache_t *cache_cq;
-	kmem_cache_t *cache_qp;
-	kmem_cache_t *cache_av;
-	kmem_cache_t *cache_mr;
-	kmem_cache_t *cache_mw;
-	struct ehca_pfmodule pf;
-};
-
 struct ehca_eq {
 	u32 length;
 	struct ipz_queue ipz_queue;
@@ -108,14 +95,12 @@ struct ehca_shca {
 	struct ehca_eq neq;
 	struct ehca_mr *maxmr;
 	struct ehca_pd *pd;
-	struct ehca_pfshca pf;
 	struct h_galpas galpas;
 };
 
 struct ehca_pd {
 	struct ib_pd ib_pd;
 	struct ipz_pd fw_pd;
-	struct ehca_pfpd pf;
 	u32 ownpid;
 };
 
@@ -195,8 +180,6 @@ struct ehca_mr {
 	/* data for userspace bridge */
 	u32 nr_of_pages;
 	void *pagearray;
-
-	struct ehca_pfmr pf;	/* platform specific part of MR */
 };
 
 struct ehca_mw {
@@ -206,8 +189,6 @@ struct ehca_mw {
 	u8 never_bound;		/* indication MW was never bound */
 	struct ipz_mrmw_handle ipz_mw_handle;	/* MW handle for h-calls */
 	struct h_galpas galpas;
-
-	struct ehca_pfmw pf;	/* platform specific part of MW */
 };
 
 enum ehca_mr_pgi_type {
@@ -281,10 +262,25 @@ int ehca_shca_delete(struct ehca_shca *me);
 
 struct ehca_sport *ehca_sport_new(struct ehca_shca *anchor);
 
+int ehca_init_pd_cache(void);
+void ehca_cleanup_pd_cache(void);
+int ehca_init_cq_cache(void);
+void ehca_cleanup_cq_cache(void);
+int ehca_init_qp_cache(void);
+void ehca_cleanup_qp_cache(void);
+int ehca_init_av_cache(void);
+void ehca_cleanup_av_cache(void);
+int ehca_init_mrmw_cache(void);
+void ehca_cleanup_mrmw_cache(void);
+
 extern spinlock_t ehca_qp_idr_lock;
 extern spinlock_t ehca_cq_idr_lock;
 extern struct idr ehca_qp_idr;
 extern struct idr ehca_cq_idr;
+
+extern int ehca_static_rate;
+extern int ehca_port_act_time;
+extern int ehca_use_hp_mr;
 
 struct ipzu_queue_resp {
 	u64 queue;        /* points to first queue entry */

@@ -2042,6 +2042,9 @@ static struct scsi_host_template driver_template = {
 	.eh_abort_handler	= lpfc_abort_handler,
 	.eh_device_reset_handler= lpfc_reset_lun_handler,
 	.eh_bus_reset_handler	= lpfc_reset_bus_handler,
+#if defined(RHEL_FC)
+	.eh_timed_out		= fc_timed_out,
+#endif
 	.slave_alloc		= lpfc_slave_alloc,
 	.slave_configure	= lpfc_slave_configure,
 	.slave_destroy		= lpfc_slave_destroy,

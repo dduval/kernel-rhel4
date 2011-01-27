@@ -1,14 +1,6 @@
 #ifndef __ASM_SPINLOCK_H
 #define __ASM_SPINLOCK_H
 
-#include <asm/atomic.h>
-#include <asm/rwlock.h>
-#include <asm/page.h>
-#include <linux/config.h>
-
-extern int printk(const char * fmt, ...)
-	__attribute__ ((format (printf, 1, 2)));
-
 /*
  * Your basic SMP spinlocks, allowing only a single CPU anywhere
  */
@@ -19,6 +11,15 @@ typedef struct {
 	unsigned magic;
 #endif
 } spinlock_t;
+
+#include <asm/atomic.h>
+#include <asm/rwlock.h>
+#include <asm/page.h>
+#include <linux/config.h>
+
+extern int printk(const char * fmt, ...)
+	__attribute__ ((format (printf, 1, 2)));
+
 
 #define SPINLOCK_MAGIC	0xdead4ead
 

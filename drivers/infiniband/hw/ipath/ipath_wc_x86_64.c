@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2006 QLogic, Inc. All rights reserved.
  * Copyright (c) 2003, 2004, 2005, 2006 PathScale, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -111,20 +112,6 @@ int ipath_enable_wc(struct ipath_devdata *dd)
 			   (unsigned long long) piolen);
 		cookie = mtrr_add(pioaddr, piolen, MTRR_TYPE_WRCOMB, 0);
 		if (cookie < 0) {
-#if defined (pgprot_writecombine) && defined(_PAGE_MA_WC)
-			/*
-			 * Support for the LNXI LS-1, uses PAT patch, so
-			 * can ignore failures from mtrr_add()
-			 */
-			if (dd->ipath_boardrev == 8 &&
-			    (dd->ipath_flags & IPATH_32BITCOUNTERS))
-				dev_info(&dd->pcidev->dev,
-					 "mtrr_add() WC for PIO bufs "
-					 "failed (%d); PAT enabled so "
-					 "probably OK\n",
-					 cookie);
-			else
-#endif
 			{
 				dev_info(&dd->pcidev->dev,
 					 "mtrr_add()  WC for PIO bufs "

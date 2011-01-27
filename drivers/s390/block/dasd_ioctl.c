@@ -304,7 +304,8 @@ dasd_ioctl_format(struct block_device *bdev, int no, long args)
 
 	if (device == NULL)
 		return -ENODEV;
-	if (test_bit(DASD_FLAG_RO, &device->flags))
+
+	if (device->features & DASD_FEATURE_READONLY)
 		return -EROFS;
 	if (copy_from_user(&fdata, (void __user *) args,
 			   sizeof (struct format_data_t)))
@@ -349,6 +350,9 @@ dasd_ioctl_read_profile(struct block_device *bdev, int no, long args)
 	if (device == NULL)
 		return -ENODEV;
 
+	if (dasd_profile_level == DASD_PROFILE_OFF)
+		return -EIO;
+
 	if (copy_to_user((long __user *) args, (long *) &device->profile,
 			 sizeof (struct dasd_profile_info_t)))
 		return -EFAULT;
@@ -387,7 +391,7 @@ dasd_ioctl_information(struct block_device *bdev, int no, long args)
 	if (!device->discipline->fill_info)
 		return -EINVAL;
 
-	dasd_info = kmalloc(sizeof(struct dasd_information2_t), GFP_KERNEL);
+	dasd_info = kzalloc(sizeof(struct dasd_information2_t), GFP_KERNEL);
 	if (dasd_info == NULL)
 		return -ENOMEM;
 
@@ -405,8 +409,15 @@ dasd_ioctl_information(struct block_device *bdev, int no, long args)
 	dasd_info->cu_model = cdev->id.cu_model;
 	dasd_info->dev_type = cdev->id.dev_type;
 	dasd_info->dev_model = cdev->id.dev_model;
-	dasd_info->open_count = atomic_read(&device->open_count);
 	dasd_info->status = device->state;
+	/*
+	 * The open_count is increased for every opener, that includes
+	 * the blkdev_get in dasd_scan_partitions.
+	 * This must be hidden from user-space.
+	 */
+	dasd_info->open_count = atomic_read(&device->open_count);
+	if (!device->bdev)
+		dasd_info->open_count++;
 	
 	/*
 	 * check if device is really formatted
@@ -415,16 +426,15 @@ dasd_ioctl_information(struct block_device *bdev, int no, long args)
 	if ((device->state < DASD_STATE_READY) ||
 	    (dasd_check_blocksize(device->bp_block)))
 		dasd_info->format = DASD_FORMAT_NONE;
-	
-	dasd_info->features |= test_bit(DASD_FLAG_RO, &device->flags) ?
-		DASD_FEATURE_READONLY : DASD_FEATURE_DEFAULT;
+
+	dasd_info->features |= 
+		((device->features & DASD_FEATURE_READONLY) != 0);
 
 	if (device->discipline)
 		memcpy(dasd_info->type, device->discipline->name, 4);
 	else
 		memcpy(dasd_info->type, "none", 4);
-	dasd_info->req_queue_len = 0;
-	dasd_info->chanq_len = 0;
+
 	if (device->request_queue->request_fn) {
 		struct list_head *l;
 #ifdef DASD_EXTENDED_PROFILING
@@ -459,7 +469,7 @@ static int
 dasd_ioctl_set_ro(struct block_device *bdev, int no, long args)
 {
 	struct dasd_device *device;
-	int intval;
+	int intval, rc;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
@@ -471,12 +481,11 @@ dasd_ioctl_set_ro(struct block_device *bdev, int no, long args)
 	device =  bdev->bd_disk->private_data;
 	if (device == NULL)
 		return -ENODEV;
+
 	set_disk_ro(bdev->bd_disk, intval);
-	if (intval)
-		set_bit(DASD_FLAG_RO, &device->flags);
-	else
-		clear_bit(DASD_FLAG_RO, &device->flags);
-	return 0;
+	rc = dasd_set_feature(device->cdev, DASD_FEATURE_READONLY, intval);
+
+	return rc;
 }
 
 /*

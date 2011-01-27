@@ -35,7 +35,8 @@ typedef void (*dm_dtr_fn) (struct dm_target *ti);
  * The map function must return:
  * < 0: error
  * = 0: The target will handle the io by resubmitting it later
- * > 0: simple remap complete
+ * = 1: simple remap complete
+ * = 2: The target wants to push back the io
  */
 typedef int (*dm_map_fn) (struct dm_target *ti, struct bio *bio,
 			  union map_info *map_context);
@@ -46,6 +47,7 @@ typedef int (*dm_map_fn) (struct dm_target *ti, struct bio *bio,
  * 0   : ended successfully
  * 1   : for some reason the io has still not completed (eg,
  *       multipath target might want to requeue a failed io).
+ * 2   : The target wants to push back the io
  */
 typedef int (*dm_endio_fn) (struct dm_target *ti,
 			    struct bio *bio, int error,
@@ -59,6 +61,10 @@ typedef int (*dm_status_fn) (struct dm_target *ti, status_type_t status_type,
 			     char *result, unsigned int maxlen);
 
 typedef int (*dm_message_fn) (struct dm_target *ti, unsigned argc, char **argv);
+
+typedef int (*dm_ioctl_fn) (struct dm_target *ti, struct inode *inode,
+			    struct file *filp, unsigned int cmd,
+			    unsigned long arg);
 
 void dm_error(const char *message);
 
@@ -87,6 +93,9 @@ struct target_type {
 	dm_resume_fn resume;
 	dm_status_fn status;
 	dm_message_fn message;
+#ifndef __GENKSYMS__
+	dm_ioctl_fn ioctl;
+#endif
 };
 
 struct io_restrictions {

@@ -73,6 +73,7 @@ ahd_compose_id(u_int device, u_int vendor, u_int subdevice, u_int subvendor)
 #define ID_AIC7901			0x800F9005FFFF9005ull
 #define ID_AHA_29320A			0x8000900500609005ull
 #define ID_AHA_29320ALP			0x8017900500449005ull
+#define ID_AHA_29320LPE			0x8017900500459005ull
 
 #define ID_AIC7901A			0x801E9005FFFF9005ull
 #define ID_AHA_29320			0x8012900500429005ull
@@ -134,6 +135,12 @@ struct ahd_pci_identity ahd_pci_ident_table [] =
 		ID_AHA_29320ALP,
 		ID_ALL_MASK,
 		"Adaptec 29320ALP Ultra320 SCSI adapter",
+		ahd_aic7901_setup
+	},
+	{
+		ID_AHA_29320LPE,
+		ID_ALL_MASK,
+		"Adaptec 29320LPE PCIe Ultra320 SCSI adapter",
 		ahd_aic7901_setup
 	},
 	/* aic7902 based controllers */	

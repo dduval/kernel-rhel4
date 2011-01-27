@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   
-  Copyright(c) 1999 - 2005 Intel Corporation. All rights reserved.
+  Copyright(c) 1999 - 2006 Intel Corporation. All rights reserved.
   
   This program is free software; you can redistribute it and/or modify it 
   under the terms of the GNU General Public License as published by the Free 
@@ -22,6 +22,7 @@
   
   Contact Information:
   Linux NICS <linux.nics@intel.com>
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 
 *******************************************************************************/
@@ -40,25 +41,6 @@
 #include <asm/io.h>
 #include <linux/interrupt.h>
 #include <linux/sched.h>
-
-#ifndef msec_delay
-#define msec_delay(x)	do { if(in_interrupt()) { \
-				/* Don't mdelay in interrupt context! */ \
-	                	BUG(); \
-			} else { \
-				msleep(x); \
-			} } while (0)
-
-/* Some workarounds require millisecond delays and are run during interrupt
- * context.  Most notably, when establishing link, the phy may need tweaking
- * but cannot process phy register reads/writes faster than millisecond
- * intervals...and we establish link due to a "link status change" interrupt.
- */
-#define msec_delay_irq(x) mdelay(x)
-#endif
-
-#define PCI_COMMAND_REGISTER   PCI_COMMAND
-#define CMD_MEM_WRT_INVALIDATE PCI_COMMAND_INVALIDATE
 
 typedef enum {
 #undef FALSE
@@ -125,5 +107,18 @@ typedef enum {
         (offset)))
 
 #define E1000_WRITE_FLUSH(a) E1000_READ_REG(a, STATUS)
+
+#define E1000_WRITE_ICH8_REG(a, reg, value) ( \
+    writel((value), ((a)->flash_address + reg)))
+
+#define E1000_READ_ICH8_REG(a, reg) ( \
+    readl((a)->flash_address + reg))
+
+#define E1000_WRITE_ICH8_REG16(a, reg, value) ( \
+    writew((value), ((a)->flash_address + reg)))
+
+#define E1000_READ_ICH8_REG16(a, reg) ( \
+    readw((a)->flash_address + reg))
+
 
 #endif /* _E1000_OSDEP_H_ */
