@@ -168,7 +168,7 @@ static int get_nodes(unsigned long *nodes, unsigned long __user *nmask,
 	if (copy_from_user(nodes, nmask, nlongs*sizeof(unsigned long)))
 		return -EFAULT;
 	nodes[nlongs-1] &= endmask;
-	return mpol_check_policy(mode, nodes);
+	return 0;
 }
 
 /* Generate a custom zonelist for the BIND policy. */
@@ -372,6 +372,9 @@ asmlinkage long sys_mbind(unsigned long start, unsigned long len,
 	if (err)
 		return err;
 
+	if (mpol_check_policy(mode, nodes))
+		return -EINVAL;
+
 	new = mpol_new(mode, nodes);
 	if (IS_ERR(new))
 		return PTR_ERR(new);
@@ -402,6 +405,8 @@ asmlinkage long sys_set_mempolicy(int mode, unsigned long __user *nmask,
 	err = get_nodes(nodes, nmask, maxnode, mode);
 	if (err)
 		return err;
+	if (mpol_check_policy(mode, nodes))
+		return -EINVAL;
 	new = mpol_new(mode, nodes);
 	if (IS_ERR(new))
 		return PTR_ERR(new);
