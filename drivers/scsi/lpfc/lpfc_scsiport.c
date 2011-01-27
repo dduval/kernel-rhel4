@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_scsiport.c 1.219 2005/03/04 15:27:05EST sf_support Exp  $
+ * $Id: lpfc_scsiport.c 1.231.2.8 2005/07/25 12:56:08EDT sf_support Exp  $
  */
 #include <linux/version.h>
 #include <linux/spinlock.h>
@@ -138,7 +138,7 @@ lpfc_get_scsi_buf(struct lpfc_hba * phba, int gfp_flags)
 	return (psb);
 }
 
-static void
+void
 lpfc_free_scsi_buf(struct lpfc_scsi_buf * psb)
 {
 	struct lpfc_hba *phba = psb->scsi_hba;
@@ -518,20 +518,20 @@ lpfc_handle_fcp_err(struct lpfc_scsi_buf *lpfc_cmd)
 	cmnd->result = ScsiResult(host_status, scsi_status);
 }
 
-static void
+void
 lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 			struct lpfc_iocbq *pIocbOut)
 {
+	int depth, pend_cnt;
 	struct lpfc_scsi_buf *lpfc_cmd =
 		(struct lpfc_scsi_buf *) pIocbIn->context1;
 	struct lpfc_target *target = lpfc_cmd->target;
 	struct scsi_cmnd *cmd = lpfc_cmd->pCmd;
+	struct scsi_device *sdev;
+	int result;
 
 	lpfc_cmd->result = pIocbOut->iocb.un.ulpWord[4];
 	lpfc_cmd->status = pIocbOut->iocb.ulpStatus;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, lpfc_cmd->dma_ext.phys,
-			LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	target->iodonecnt++;
 
@@ -561,6 +561,13 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 		case IOSTAT_FABRIC_BSY:
 			cmd->result = ScsiResult(DID_BUS_BUSY, 0);
 			break;
+		case IOSTAT_LOCAL_REJECT:
+			if (lpfc_cmd->result == IOERR_LOOP_OPEN_FAILURE)
+				lpfc_discq_post_event(phba, target->pnode,
+						      NULL,
+						      LPFC_EVT_OPEN_LOOP);
+			cmd->result = ScsiResult(DID_ERROR, 0);
+			break;
 		default:
 			cmd->result = ScsiResult(DID_ERROR, 0);
 			break;
@@ -589,9 +596,32 @@ lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 				*lp, *(lp + 3), cmd->retries, cmd->resid);
 	}
 
+	result = cmd->result;
+	sdev = cmd->device;
+
 	lpfc_free_scsi_buf(lpfc_cmd);
 	cmd->host_scribble = NULL;
 	cmd->scsi_done(cmd);
+
+	/*
+	 * Check for queue full.  If the lun is reporting queue full, then
+	 * back off the lun queue depth to prevent target overloads.
+	 */
+	if (result == SAM_STAT_TASK_SET_FULL) {
+		pend_cnt = lpfc_sli_sum_iocb_lun(phba,
+				&phba->sli.ring[phba->sli.fcp_ring],
+				sdev->id, sdev->lun);
+
+		spin_unlock_irq(phba->host->host_lock);
+		depth = scsi_track_queue_full(sdev, pend_cnt);
+		spin_lock_irq(phba->host->host_lock);
+	
+		if (depth) {
+			lpfc_printf_log(phba, KERN_WARNING, LOG_FCP,
+				"%d:0711 detected queue full - lun queue depth "
+				" adjusted to %d.\n", phba->brd_no, depth);
+		}			
+	}
 }
 
 static int
@@ -604,9 +634,7 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 	struct lpfc_iocbq *piocbq;
 	IOCB_t *piocb;
 	struct fcp_cmnd *fcp_cmnd;
-	struct scsi_device *scsi_dev = lpfc_cmd->pCmd->device;
-	struct lpfc_target *target = scsi_dev->hostdata;
-	struct lpfc_nodelist *ndlp = target->pnode;
+	struct lpfc_nodelist *ndlp = lpfc_cmd->target->pnode;
 
 	if ((ndlp == 0) || (ndlp->nlp_state != NLP_STE_MAPPED_NODE)) {
 		return 0;
@@ -619,12 +647,11 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 
 
 	fcp_cmnd = lpfc_cmd->fcp_cmnd;
-	putLunHigh(fcp_cmnd->fcpLunMsl, lpfc_cmd->pCmd->device->lun);
-	putLunLow(fcp_cmnd->fcpLunLsl, lpfc_cmd->pCmd->device->lun)
+	putLunHigh(fcp_cmnd->fcpLunMsl, lpfc_cmd->lun);
+	putLunLow(fcp_cmnd->fcpLunLsl, lpfc_cmd->lun)
 	fcp_cmnd->fcpCntl2 = task_mgmt_cmd;
+	fcp_cmnd->fcpCntl3 = 0;
 
-	piocb->ulpIoTag =
-	    lpfc_sli_next_iotag(phba, &phba->sli.ring[psli->fcp_ring]);
 	piocb->ulpCommand = CMD_FCP_ICMND64_CR;
 
 	piocb->ulpContext = ndlp->nlp_rpi;
@@ -644,8 +671,6 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 		piocb->ulpTimeout = lpfc_cmd->timeout;
 	}
 
-	lpfc_cmd->target = target;
-
 	switch (task_mgmt_cmd) {
 	case FCP_LUN_RESET:
 		/* Issue LUN Reset to TGT <num> LUN <num> */
@@ -655,7 +680,7 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 				"%d:0703 Issue LUN Reset to TGT %d LUN %d "
 				"Data: x%x x%x\n",
 				phba->brd_no,
-				scsi_dev->id, scsi_dev->lun,
+				lpfc_cmd->target->scsi_id, lpfc_cmd->lun,
 				ndlp->nlp_rpi, ndlp->nlp_flag);
 
 		break;
@@ -667,7 +692,7 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 				"%d:0701 Issue Abort Task Set to TGT %d LUN %d "
 				"Data: x%x x%x\n",
 				phba->brd_no,
-				scsi_dev->id, scsi_dev->lun,
+				lpfc_cmd->target->scsi_id, lpfc_cmd->lun,
 				ndlp->nlp_rpi, ndlp->nlp_flag);
 
 		break;
@@ -679,7 +704,7 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 				"%d:0702 Issue Target Reset to TGT %d "
 				"Data: x%x x%x\n",
 				phba->brd_no,
-				scsi_dev->id, ndlp->nlp_rpi,
+				lpfc_cmd->target->scsi_id, ndlp->nlp_rpi,
 				ndlp->nlp_flag);
 		break;
 	}
@@ -688,27 +713,39 @@ lpfc_scsi_prep_task_mgmt_cmd(struct lpfc_hba *phba,
 }
 
 static int
-lpfc_scsi_tgt_reset(struct lpfc_scsi_buf * lpfc_cmd, struct lpfc_hba * phba)
+lpfc_scsi_tgt_reset(struct lpfc_target * target, int id, struct lpfc_hba * phba)
 {
 	struct lpfc_iocbq *piocbq, *piocbqrsp;
-	struct lpfc_sli *psli;
-	int ret;
+	struct lpfc_scsi_buf * lpfc_cmd;
+	struct lpfc_sli *psli = &phba->sli;
+	int ret, retval = FAILED;
+
+	lpfc_cmd = lpfc_get_scsi_buf(phba, GFP_ATOMIC);
+	if (!lpfc_cmd)
+		goto out;
+
+	/*
+	 * The driver cannot count on any meaningful timeout value in the scsi
+	 * command.  The timeout is chosen to be twice the ratov plus a window.
+	 */
+	lpfc_cmd->timeout  = (2 * phba->fc_ratov) + 3;
+	lpfc_cmd->target = target;
+	lpfc_cmd->lun = 0;
 
 	ret = lpfc_scsi_prep_task_mgmt_cmd(phba, lpfc_cmd, FCP_TARGET_RESET);
 	if (!ret)
-		return FAILED;
+		goto out_free_scsi_buf;
 
-	lpfc_cmd->scsi_hba = phba;
-	psli = &phba->sli;
 	piocbq = &lpfc_cmd->cur_iocbq;
-	piocbqrsp = mempool_alloc(phba->iocb_mem_pool,
-				  GFP_ATOMIC);
+	piocbq->context1 = lpfc_cmd;
+
+	piocbqrsp = mempool_alloc(phba->iocb_mem_pool, GFP_ATOMIC);
 	if (!piocbqrsp)
-		return FAILED;
+		goto out_free_scsi_buf;
 
 	/* First flush all outstanding commands on the txq for the target */
 	lpfc_sli_abort_iocb_tgt(phba, &phba->sli.ring[phba->sli.fcp_ring],
-				lpfc_cmd->pCmd->device->id, LPFC_ABORT_TXQ);
+				lpfc_cmd->target->scsi_id, LPFC_ABORT_TXQ);
 
 	memset(piocbqrsp, 0, sizeof (struct lpfc_iocbq));
 
@@ -717,16 +754,17 @@ lpfc_scsi_tgt_reset(struct lpfc_scsi_buf * lpfc_cmd, struct lpfc_hba * phba)
 	ret = lpfc_sli_issue_iocb_wait_high_priority(phba,
 		     &phba->sli.ring[psli->fcp_ring],
 		     piocbq, SLI_IOCB_HIGH_PRIORITY,
-		     piocbqrsp,
-		     lpfc_cmd->timeout);
+		     piocbqrsp);
 	if (ret != IOCB_SUCCESS) {
 		lpfc_cmd->status = IOSTAT_DRIVER_REJECT;
+		retval = FAILED;
 	} else {
 		lpfc_cmd->result = piocbqrsp->iocb.un.ulpWord[4];
 		lpfc_cmd->status = piocbqrsp->iocb.ulpStatus;
 		if (lpfc_cmd->status == IOSTAT_LOCAL_REJECT &&
 			(lpfc_cmd->result & IOERR_DRVR_MASK))
 				lpfc_cmd->status = IOSTAT_DRIVER_REJECT;
+		retval = SUCCESS;
 	}
 
 	/* At this point in time, target reset completion, all outstanding
@@ -735,11 +773,21 @@ lpfc_scsi_tgt_reset(struct lpfc_scsi_buf * lpfc_cmd, struct lpfc_hba * phba)
 	 * to help it out a bit.
 	 */
 	lpfc_sli_abort_iocb_tgt(phba, &phba->sli.ring[phba->sli.fcp_ring],
-				lpfc_cmd->pCmd->device->id, LPFC_ABORT_ALLQ);
+				lpfc_cmd->target->scsi_id, LPFC_ABORT_ALLQ);
 
-	/* Done with piocbqrsp, return to free list. */
+	/*
+	 * If the IOCB failed then free the memory resources.  Otherwise,
+	 * the resources will be freed up by the completion handler.
+	 */
+	if (ret == IOCB_TIMEDOUT)
+		goto out;
+
 	mempool_free(piocbqrsp, phba->iocb_mem_pool);
-	return ret;
+
+out_free_scsi_buf:
+	lpfc_free_scsi_buf(lpfc_cmd);
+out:
+	return retval;
 }
 
 
@@ -749,35 +797,9 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 {
 	struct Scsi_Host *shost = cmnd->device->host;
 	struct lpfc_hba *phba = (struct lpfc_hba *)shost->hostdata[0];
-	struct lpfc_target *target;
 	int ret = FAILED, i, err_count = 0;
+	struct lpfc_target *target;
 	int cnt, loopcnt;
-	struct scsi_cmnd *lnx_cmd;
-	struct scsi_device *scsi_dev;
-	struct lpfc_scsi_buf * lpfc_cmd;
-
-	lpfc_cmd = lpfc_get_scsi_buf(phba, GFP_ATOMIC);
-	if (!lpfc_cmd)
-		goto out;
-
-	lnx_cmd = kmalloc(sizeof(struct scsi_cmnd), GFP_ATOMIC);
-	if (!lnx_cmd)
-		goto out_free_scsi_buf;
-
-	scsi_dev = kmalloc(sizeof(struct scsi_device), GFP_ATOMIC);
-	if (!scsi_dev)
-		goto out_free_lnx_cmd;
-
-	/* The lpfc_cmd storage is reused.  Set all loop invariants. */
-	lpfc_cmd->timeout = cmnd->timeout;
-	if (!cmnd->timeout)
-		 lpfc_cmd->timeout = LPFC_DRVR_TIMEOUT;
-
-	lpfc_cmd->pCmd			= lnx_cmd;
-	lpfc_cmd->scsi_hba		= phba;
-	lpfc_cmd->pCmd->device		= scsi_dev;
-	lpfc_cmd->pCmd->device->channel = 0;
-	lpfc_cmd->pCmd->device->lun	= 0;
 
 	/*
 	 * Since the driver manages a single bus device, reset all
@@ -789,12 +811,10 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 		if (!target)
 			continue;
 
-		lpfc_cmd->pCmd->device->id = i;
-		lpfc_cmd->pCmd->device->hostdata = target;
-		ret = lpfc_scsi_tgt_reset(lpfc_cmd, phba);
-		if (ret != IOCB_SUCCESS) {
+		ret = lpfc_scsi_tgt_reset(target, i, phba);
+		if (ret != SUCCESS) {
 			lpfc_printf_log(phba, KERN_INFO, LOG_FCP,
-				"%d:0713 Bus Reset on target %d failed\n",
+				"%d:0712 Bus Reset on target %d failed\n",
 				phba->brd_no, i);
 			err_count++;
 		}
@@ -813,7 +833,7 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 			break;
 	}
 
-	if(cnt) {
+	if (cnt) {
 		/* flush all outstanding commands on the host */
 		i = lpfc_sli_abort_iocb_host(phba,
 				&phba->sli.ring[phba->sli.fcp_ring],
@@ -823,19 +843,18 @@ lpfc_reset_bus_handler(struct scsi_cmnd *cmnd)
 		   "%d:0715 Bus Reset I/O flush failure: cnt x%x left x%x\n",
 		   phba->brd_no, cnt, i);
 	}
+
 	if (!err_count)
 		ret = SUCCESS;
+	else
+		ret = FAILED;
 
-out_free_lnx_cmd:
-	kfree(lnx_cmd);
-out_free_scsi_buf:
-	lpfc_free_scsi_buf(lpfc_cmd);
 	lpfc_printf_log(phba,
 			KERN_ERR,
 			LOG_FCP,
 			"%d:0714 SCSI layer issued Bus Reset Data: x%x\n",
 			phba->brd_no, ret);
-out:
+
 	return ret;
 }
 
@@ -899,10 +918,11 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 	cmnd->host_scribble = (unsigned char *)lpfc_cmd;
 
 	lpfc_cmd->target = targetp;
+	lpfc_cmd->lun = cmnd->device->lun;
 	lpfc_cmd->timeout = 0;
 	lpfc_cmd->pCmd = cmnd;
-	putLunHigh(lpfc_cmd->fcp_cmnd->fcpLunMsl, lpfc_cmd->pCmd->device->lun);
-	putLunLow(lpfc_cmd->fcp_cmnd->fcpLunLsl, lpfc_cmd->pCmd->device->lun);
+	putLunHigh(lpfc_cmd->fcp_cmnd->fcpLunMsl, lpfc_cmd->lun);
+	putLunLow(lpfc_cmd->fcp_cmnd->fcpLunLsl, lpfc_cmd->lun);
 
 	err = lpfc_os_prep_io(phba, lpfc_cmd);
 	if (err)
@@ -921,9 +941,6 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 
 	piocbq->iocb.ulpClass = (ndlp->nlp_fcp_info & 0x0f);
 
-	pci_dma_sync_single_for_device(phba->pcidev, lpfc_cmd->dma_ext.phys,
-			LPFC_SCSI_DMA_EXT_SIZE, PCI_DMA_TODEVICE);
-
 	err = lpfc_sli_issue_iocb(phba, &phba->sli.ring[psli->fcp_ring], piocbq,
 				 SLI_IOCB_RET_IOCB);
 	if (err)
@@ -932,6 +949,7 @@ lpfc_queuecommand(struct scsi_cmnd *cmnd, void (*done) (struct scsi_cmnd *))
 
  out_host_busy_free_buf:
 	lpfc_free_scsi_buf(lpfc_cmd);
+	cmnd->host_scribble = NULL;
  out_host_busy:
 	targetp->iodonecnt++;
 	targetp->errorcnt++;
@@ -953,13 +971,13 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	struct lpfc_scsi_buf *lpfc_cmd;
 	struct lpfc_iocbq *piocbq, *piocbqrsp = NULL;
 	struct lpfc_target *target = cmnd->device->hostdata;
-	int ret = FAILED;
+	int ret, retval = FAILED;
 	int cnt, loopcnt;
 
 	/*
-	   If target is not in a MAPPED state, delay the reset till
-	   target is rediscovered or nodev timeout is fired.
-	*/
+	 * If target is not in a MAPPED state, delay the reset till
+	 * target is rediscovered or nodev timeout is fired.
+	 */
 	while ( 1 ) {
 		if (!target->pnode)
 			break;
@@ -979,15 +997,17 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	if (!lpfc_cmd)
 		goto out;
 
-	lpfc_cmd->pCmd = cmnd;
 	lpfc_cmd->timeout = 60; /* set command timeout to 60 seconds */
 	lpfc_cmd->scsi_hba = phba;
+	lpfc_cmd->target = target;
+	lpfc_cmd->lun = cmnd->device->lun;
 
 	ret = lpfc_scsi_prep_task_mgmt_cmd(phba, lpfc_cmd, FCP_LUN_RESET);
 	if (!ret)
 		goto out_free_scsi_buf;
 
 	piocbq = &lpfc_cmd->cur_iocbq;
+	piocbq->context1 = lpfc_cmd;
 
 	/* get a buffer for this IOCB command response */
 	piocbqrsp = mempool_alloc(phba->iocb_mem_pool, GFP_ATOMIC);
@@ -1003,14 +1023,13 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 	memset(piocbqrsp, 0, sizeof (struct lpfc_iocbq));
 
 	piocbq->iocb_flag |= LPFC_IO_POLL;
-	piocbq->iocb_cmpl = lpfc_sli_wake_iocb_high_priority;
 
 	ret = lpfc_sli_issue_iocb_wait_high_priority(phba,
 		     &phba->sli.ring[psli->fcp_ring],
 		     piocbq, 0,
-		     piocbqrsp, 60);
+		     piocbqrsp);
 	if (ret == IOCB_SUCCESS)
-		ret = SUCCESS;
+		retval = SUCCESS;
 
 	lpfc_cmd->result = piocbqrsp->iocb.un.ulpWord[4];
 	lpfc_cmd->status = piocbqrsp->iocb.ulpStatus;
@@ -1049,18 +1068,22 @@ lpfc_reset_lun_handler(struct scsi_cmnd *cmnd)
 			phba->brd_no, cnt);
 	}
 
-	mempool_free(piocbqrsp, phba->iocb_mem_pool);
-
-out_free_scsi_buf:
 	lpfc_printf_log(phba, KERN_ERR, LOG_FCP,
 			"%d:0713 SCSI layer issued LUN reset (%d, %d) "
 			"Data: x%x x%x x%x\n",
-			phba->brd_no, lpfc_cmd->pCmd->device->id,
-			lpfc_cmd->pCmd->device->lun, ret, lpfc_cmd->status,
+			phba->brd_no, lpfc_cmd->target->scsi_id,
+			lpfc_cmd->lun, ret, lpfc_cmd->status,
 			lpfc_cmd->result);
+
+	if (ret == IOCB_TIMEDOUT)
+		goto out;
+
+	mempool_free(piocbqrsp, phba->iocb_mem_pool);
+
+out_free_scsi_buf:
 	lpfc_free_scsi_buf(lpfc_cmd);
 out:
-	return ret;
+	return retval;
 }
 
 static void
@@ -1069,15 +1092,21 @@ lpfc_scsi_cmd_iocb_cleanup (struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
 {
         struct lpfc_scsi_buf *lpfc_cmd =
                 (struct lpfc_scsi_buf *) pIocbIn->context1;
+	struct scsi_cmnd *ml_cmd =
+		((struct lpfc_scsi_buf *) pIocbIn->context1)->pCmd;
+	struct lpfc_target *targetp = ml_cmd->device->hostdata;
 
-        pci_dma_sync_single_for_cpu(phba->pcidev, lpfc_cmd->dma_ext.phys,
-                        LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
+	if (targetp) {
+		targetp->iodonecnt++;
+		targetp->errorcnt++;
+	}
         lpfc_free_scsi_buf(lpfc_cmd);
 }
 
 static void
-lpfc_scsi_cmd_iocb_cmpl_aborted (struct lpfc_hba *phba, struct lpfc_iocbq *pIocbIn,
-					struct lpfc_iocbq *pIocbOut)
+lpfc_scsi_cmd_iocb_cmpl_aborted (struct lpfc_hba *phba, 
+				 struct lpfc_iocbq *pIocbIn,
+				 struct lpfc_iocbq *pIocbOut)
 {
 	struct scsi_cmnd *ml_cmd =
 		((struct lpfc_scsi_buf *) pIocbIn->context1)->pCmd;
@@ -1099,21 +1128,21 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 	unsigned long snum;
 	unsigned int id, lun;
 	unsigned int loop_count = 0;
-	int ret = IOCB_ERROR;
+	int ret = IOCB_SUCCESS;
 
-        /*
-         * If the host_scribble data area is NULL, then the driver has already
-         * completed this command, but the midlayer did not see the completion before
-         * the eh fired.  Just return SUCCESS.
-         */	
+	/*
+	 * If the host_scribble data area is NULL, then the driver has already
+	 * completed this command, but the midlayer did not see the completion
+	 * before the eh fired.  Just return SUCCESS.
+	 */	
 	lpfc_cmd = (struct lpfc_scsi_buf *)cmnd->host_scribble;
 	if (!lpfc_cmd)
        		return SUCCESS;
 
 	/* save these now since lpfc_cmd can be freed */
-	id   = lpfc_cmd->pCmd->device->id;
-	lun  = lpfc_cmd->pCmd->device->lun;
-	snum = lpfc_cmd->pCmd->serial_number;
+	id   = lpfc_cmd->target->scsi_id;
+	lun  = lpfc_cmd->lun;
+	snum = cmnd->serial_number;
 
 	/* Search the txq first. */
 	list_for_each_entry_safe(iocb, next_iocb, &pring->txq, list) {
@@ -1131,7 +1160,6 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 			cmd->un.ulpWord[4] = IOERR_SLI_ABORTED;
 			lpfc_scsi_cmd_iocb_cmpl_aborted(phba, iocb, iocb);
 		}
-		ret = IOCB_SUCCESS;
        		goto out;
 	}
 
@@ -1157,18 +1185,16 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 
 		icmd->ulpLe = 1;
 		icmd->ulpClass = cmd->ulpClass;
-		icmd->ulpIoTag = lpfc_sli_next_iotag(phba, pring);
+		abtsiocbp->iocb_cmpl = lpfc_sli_abort_fcp_cmpl;
 		if (phba->hba_state >= LPFC_LINK_UP)
 			icmd->ulpCommand = CMD_ABORT_XRI_CN;
 		else
 			icmd->ulpCommand = CMD_CLOSE_XRI_CN;
 
-		/* set up an iotag  */
-		icmd->ulpIoTag = lpfc_sli_next_iotag(phba, pring);
-
 		if (lpfc_sli_issue_iocb(phba, pring, abtsiocbp, 0) ==
 								IOCB_ERROR) {
 			mempool_free(abtsiocbp, phba->iocb_mem_pool);
+			ret = IOCB_ERROR;
 			break;
 		}
 
@@ -1193,9 +1219,9 @@ lpfc_abort_handler(struct scsi_cmnd *cmnd)
 					phba->brd_no, ret, id, lun, snum);
 			cmnd->host_scribble = NULL;
 			iocb->iocb_cmpl = lpfc_scsi_cmd_iocb_cleanup;
+			ret = IOCB_ERROR;
 		}
 
-		ret = IOCB_SUCCESS;
 		break;
 	}
 
@@ -1324,8 +1350,7 @@ top:
 int
 lpfc_target_add(struct lpfc_hba *phba, struct lpfc_target *targetp)
 {
-	struct Scsi_Host   *shost;
-
+	/* If the driver is not supporting scsi hotplug, just exit. */
 	if(!phba->cfg_scsi_hotplug)
 		return 1;
 
@@ -1335,11 +1360,6 @@ lpfc_target_add(struct lpfc_hba *phba, struct lpfc_target *targetp)
 			"%d:0261 Adding Target scsi id x%x\n",
 			phba->brd_no, targetp->scsi_id);
 
-	shost = phba->host;
-
-#ifdef USE_SCAN_TARGET
-	lpfc_discq_post_event(phba, targetp, NULL, LPFC_EVT_SCAN);
-#else
 	/*
 	 * The driver discovered a new target.  Call the midlayer and get this
 	 * target's luns added into the device list.
@@ -1349,7 +1369,6 @@ lpfc_target_add(struct lpfc_hba *phba, struct lpfc_target *targetp)
 	 */
 	mod_timer(&phba->fc_scantmo, jiffies + HZ);
 	phba->fc_flag |= FC_SCSI_SCAN_TMO;
-#endif
 	return 0;
 }
 #endif  /* RHEL_FC or SLES_FC */

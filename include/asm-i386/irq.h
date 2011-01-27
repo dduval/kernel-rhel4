@@ -31,6 +31,7 @@ extern int can_request_irq(unsigned int, unsigned long flags);
 #define ARCH_HAS_NMI_WATCHDOG		/* See include/linux/nmi.h */
 #endif
 
+#ifdef CONFIG_4KSTACKS
 /*
  * per-CPU IRQ handling contexts (thread information and stack)
  */
@@ -45,6 +46,9 @@ extern union irq_ctx *softirq_ctx[NR_CPUS];
 extern void irq_ctx_init(int cpu);
 
 #define __ARCH_HAS_DO_SOFTIRQ
+#else
+#define irq_ctx_init(cpu) do { ; } while (0)
+#endif
 
 struct irqaction;
 struct pt_regs;

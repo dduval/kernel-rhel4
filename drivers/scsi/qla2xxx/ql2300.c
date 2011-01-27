@@ -1,7 +1,7 @@
 /*
  * QLogic ISP2300 device driver for Linux 2.6.x
  * Copyright (C) 2003 Christoph Hellwig.
- * Copyright (C) 2003-2004 QLogic Corporation (www.qlogic.com)
+ * Copyright (C) 2003-2005 QLogic Corporation (www.qlogic.com)
  *
  * Released under GPL v2.
  */
@@ -98,6 +98,6 @@ module_init(qla2300_init);
 module_exit(qla2300_exit);
 
 MODULE_AUTHOR("QLogic Corporation");
-MODULE_DESCRIPTION("QLogic ISP2300 FC-SCSI Host Bus Adapter driver");
+MODULE_DESCRIPTION("QLogic ISP23xx FC-SCSI Host Bus Adapter driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(QLA2XXX_VERSION);

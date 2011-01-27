@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_ct.c 1.148 2005/02/23 10:40:33EST sf_support Exp  $
+ * $Id: lpfc_ct.c 1.150.2.2 2005/06/13 17:16:09EDT sf_support Exp  $
  *
  * Fibre Channel SCSI LAN Device Driver CT support
  */
@@ -264,9 +264,6 @@ lpfc_gen_req(struct lpfc_hba *phba, struct lpfc_dmabuf *bmp,
 	/* Fill in payload, bp points to frame payload */
 	icmd->ulpCommand = CMD_GEN_REQUEST64_CR;
 
-	pci_dma_sync_single_for_device(phba->pcidev, bmp->phys,
-		LPFC_BPL_SIZE, PCI_DMA_TODEVICE);
-
 	icmd->ulpIoTag = lpfc_sli_next_iotag(phba, pring);
 
 	/* Fill in rest of iocb */
@@ -347,9 +344,6 @@ lpfc_ns_rsp(struct lpfc_hba * phba, struct lpfc_dmabuf * mp, uint32_t Size)
 	list_add_tail(&head, &mp->list);
 	list_for_each_entry_safe(mp, next_mp, &head, list) {
 		mlast = mp;
-		pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys,
-			LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
-
 		Size -= Cnt;
 
 		if (!ctptr)

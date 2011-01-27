@@ -30,42 +30,46 @@ u8  memnodemap[NODEMAPSIZE];
 unsigned char cpu_to_node[NR_CPUS] = { [0 ... NR_CPUS-1] = NUMA_NO_NODE };
 cpumask_t     node_to_cpumask[MAXNODE]; 
 
-int numa_off __initdata;
+int numa_off __initdata = 0;
 
 unsigned long nodes_present; 
 
 int __init compute_hash_shift(struct node *nodes)
 {
 	int i; 
-	int shift = 24;
-	u64 addr;
+	int shift = 20;
+	unsigned long addr,maxend=0;
 	
-	/* When in doubt use brute force. */
-	while (shift < 48) { 
-		memset(memnodemap,0xff,sizeof(*memnodemap) * NODEMAPSIZE); 
-		for (i = 0; i < numnodes; i++) { 
-			if (nodes[i].start == nodes[i].end) 
-				continue;
-			for (addr = nodes[i].start; 
-			     addr < nodes[i].end; 
-			     addr += (1UL << shift)) {
-				if (memnodemap[addr >> shift] != 0xff && 
-				    memnodemap[addr >> shift] != i) { 
-					printk(KERN_INFO 
-					    "node %d shift %d addr %Lx conflict %d\n", 
-					       i, shift, addr, memnodemap[addr>>shift]);
-					goto next; 
-				} 
-				memnodemap[addr >> shift] = i; 
+	for (i = 0; i < numnodes; i++)
+		if ((nodes[i].start != nodes[i].end) && (nodes[i].end > maxend))
+				maxend = nodes[i].end;
+
+	while ((1UL << shift) <  (maxend / NODEMAPSIZE))
+		shift++;
+
+	printk (KERN_DEBUG"Using %d for the hash shift. Max addr is %lx \n",
+			shift,maxend);
+	memset(memnodemap,0xff,sizeof(*memnodemap) * NODEMAPSIZE);
+	for (i = 0; i < numnodes; i++) {
+		if (nodes[i].start == nodes[i].end)
+			continue;
+		for (addr = nodes[i].start;
+		     addr < nodes[i].end;
+		     addr += (1UL << shift)) {
+			if (memnodemap[addr >> shift] != 0xff) {
+				printk(KERN_INFO
+	"Your memory is not aligned you need to rebuild your kernel "
+	"with a bigger NODEMAPSIZE shift=%d addr=%lu\n",
+					shift,addr);
+				return -1;
 			} 
+			memnodemap[addr >> shift] = i;
 		} 
-		return shift; 
-	next:
-		shift++; 
 	} 
-	memset(memnodemap,0,sizeof(*memnodemap) * NODEMAPSIZE); 
-	return -1; 
+	return shift;
 }
+
+
 
 /* Initialize bootmem allocator for a node */
 void __init setup_node_bootmem(int nodeid, unsigned long start, unsigned long end)
@@ -144,10 +148,13 @@ void __init setup_node_zones(int nodeid)
 void __init numa_init_array(void)
 {
 	int rr, i;
+
+
 	/* There are unfortunately some poorly designed mainboards around
-	   that only connect memory to a single CPU. This breaks the 1:1 cpu->node
-	   mapping. To avoid this fill in the mapping for all possible
-	   CPUs, as the number of CPUs is not known yet. 
+	   that only connect memory to a single CPU. This breaks the 1:1 
+	   cpu->node mapping. If we don't have an ACPI SRAT table available
+	   to tell us about the NUMA configuration, fill in the mapping for all 
+	   possible CPUs, as the number of CPUs is not known yet. 
 	   We round robin the existing nodes. */
 	rr = 0;
 	for (i = 0; i < MAXNODE; i++) {
@@ -246,8 +253,10 @@ void __init numa_initmem_init(unsigned long start_pfn, unsigned long end_pfn)
 
 __init void numa_add_cpu(int cpu)
 {
-	/* BP is initialized elsewhere */
-	if (cpu) 
+	/* If we're not using ACPI SRAT NUMA config,
+	 * then the boot processor is initialized elsewhere 
+	 */
+	if (cpu || acpi_numa) 
 		set_bit(cpu, &node_to_cpumask[cpu_to_node(cpu)]);
 } 
 

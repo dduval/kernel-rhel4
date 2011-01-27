@@ -1,5 +1,5 @@
-snd-azx-objs := azx.o
-snd-hda-codec-objs := hda_codec.o hda_generic.o patch_realtek.o patch_cmedia.o
+snd-azx-objs := hda_intel.o
+snd-hda-codec-objs := hda_codec.o hda_generic.o patch_realtek.o patch_cmedia.o patch_analog.o patch_sigmatel.o
 ifdef CONFIG_PROC_FS
 snd-hda-codec-objs += hda_proc.o
 endif

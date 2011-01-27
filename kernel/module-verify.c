@@ -107,7 +107,7 @@ do { if (unlikely(!(X))) { line = __LINE__; goto relacheck_error; } } while(0)
 	elfcheck(hdr->e_shentsize == sizeof(Elf_Shdr));
 
 	tmp = (size_t) hdr->e_shentsize * (size_t) hdr->e_shnum;
-	elfcheck(tmp < size - hdr->e_shoff);
+	elfcheck(tmp <= size - hdr->e_shoff);
 
 	/* allocate a table to hold in-file section sizes */
 	mvdata->secsizes = kmalloc(hdr->e_shnum * sizeof(size_t), GFP_KERNEL);

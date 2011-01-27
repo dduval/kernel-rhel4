@@ -33,6 +33,10 @@ extern int request_module(const char * name, ...) __attribute__ ((format (printf
 static inline int request_module(const char * name, ...) { return -ENOSYS; }
 #endif
 
+struct key;
+extern int call_usermodehelper_keys(char *path, char *argv[], char *envp[],
+				    struct key *session_keyring, int wait);
+
 #define try_then_request_module(x, mod...) ((x) ?: (request_module(mod), (x)))
 extern int call_usermodehelper(char *path, char *argv[], char *envp[], int wait);
 extern void usermodehelper_init(void);

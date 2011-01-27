@@ -28,6 +28,8 @@
 #include <linux/highmem.h>
 #include <asm/tlbflush.h>
 
+atomic_t bouncepages = ATOMIC_INIT(0);
+
 static mempool_t *page_pool, *isa_page_pool;
 
 static void *page_pool_alloc(int gfp_mask, void *data)
@@ -305,14 +307,14 @@ static void copy_to_high_bio_irq(struct bio *to, struct bio *from)
 	}
 }
 
-static void bounce_end_io(struct bio *bio, mempool_t *pool)
+static void bounce_end_io(struct bio *bio, mempool_t *pool, int err)
 {
 	struct bio *bio_orig = bio->bi_private;
 	struct bio_vec *bvec, *org_vec;
-	int i, err = 0;
+	int i;
 
-	if (!test_bit(BIO_UPTODATE, &bio->bi_flags))
-		err = -EIO;
+	if (test_bit(BIO_EOPNOTSUPP, &bio->bi_flags))
+		set_bit(BIO_EOPNOTSUPP, &bio_orig->bi_flags);
 
 	/*
 	 * free up bounce indirect pages used
@@ -323,6 +325,7 @@ static void bounce_end_io(struct bio *bio, mempool_t *pool)
 			continue;
 
 		mempool_free(bvec->bv_page, pool);	
+		atomic_dec(&bouncepages);
 	}
 
 	bio_endio(bio_orig, bio_orig->bi_size, err);
@@ -334,7 +337,7 @@ static int bounce_end_io_write(struct bio *bio, unsigned int bytes_done,int err)
 	if (bio->bi_size)
 		return 1;
 
-	bounce_end_io(bio, page_pool);
+	bounce_end_io(bio, page_pool, err);
 	return 0;
 }
 
@@ -343,18 +346,18 @@ static int bounce_end_io_write_isa(struct bio *bio, unsigned int bytes_done, int
 	if (bio->bi_size)
 		return 1;
 
-	bounce_end_io(bio, isa_page_pool);
+	bounce_end_io(bio, isa_page_pool, err);
 	return 0;
 }
 
-static void __bounce_end_io_read(struct bio *bio, mempool_t *pool)
+static void __bounce_end_io_read(struct bio *bio, mempool_t *pool, int err)
 {
 	struct bio *bio_orig = bio->bi_private;
 
 	if (test_bit(BIO_UPTODATE, &bio->bi_flags))
 		copy_to_high_bio_irq(bio_orig, bio);
 
-	bounce_end_io(bio, pool);
+	bounce_end_io(bio, pool, err);
 }
 
 static int bounce_end_io_read(struct bio *bio, unsigned int bytes_done, int err)
@@ -362,7 +365,7 @@ static int bounce_end_io_read(struct bio *bio, unsigned int bytes_done, int err)
 	if (bio->bi_size)
 		return 1;
 
-	__bounce_end_io_read(bio, page_pool);
+	__bounce_end_io_read(bio, page_pool, err);
 	return 0;
 }
 
@@ -371,7 +374,7 @@ static int bounce_end_io_read_isa(struct bio *bio, unsigned int bytes_done, int 
 	if (bio->bi_size)
 		return 1;
 
-	__bounce_end_io_read(bio, isa_page_pool);
+	__bounce_end_io_read(bio, isa_page_pool, err);
 	return 0;
 }
 
@@ -403,6 +406,7 @@ static void __blk_queue_bounce(request_queue_t *q, struct bio **bio_orig,
 		to->bv_page = mempool_alloc(pool, q->bounce_gfp);
 		to->bv_len = from->bv_len;
 		to->bv_offset = from->bv_offset;
+		atomic_inc(&bouncepages);
 
 		if (rw == WRITE) {
 			char *vto, *vfrom;

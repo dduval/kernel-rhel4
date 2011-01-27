@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_sli.c 1.195 2005/02/23 10:40:47EST sf_support Exp  $
+ * $Id: lpfc_sli.c 1.200.1.8 2005/07/27 17:00:59EDT sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -41,9 +41,11 @@
 #include "lpfc_logmsg.h"
 #include "lpfc_mem.h"
 #include "lpfc_compat.h"
+#include "lpfc_fcp.h"
 
 static int lpfc_sli_reset_on_init = 1;
-
+extern void
+lpfc_scsi_cmd_iocb_cmpl(struct lpfc_hba *, struct lpfc_iocbq *, struct lpfc_iocbq *);
 /*
  * Define macro to log: Mailbox command x%x cannot issue Data
  * This allows multiple uses of lpfc_msgBlk0311
@@ -297,6 +299,9 @@ lpfc_sli_ringtxcmpl_put(struct lpfc_hba * phba,
 
 	list_add_tail(&piocb->list, &pring->txcmplq);
 	pring->txcmplq_cnt++;
+	if (unlikely(pring->ringno == LPFC_ELS_RING))
+		mod_timer(&phba->els_tmofunc,
+					jiffies + HZ * (phba->fc_ratov << 1));
 
 	if (pring->fast_lookup) {
 		/* Setup fast lookup based on iotag for completion */
@@ -320,6 +325,16 @@ lpfc_sli_ringtxcmpl_put(struct lpfc_hba * phba,
 					*(((uint32_t *)(&piocb->iocb)) + 7));
 		}
 	}
+	return (0);
+}
+
+static int
+lpfc_sli_ringtx_put(struct lpfc_hba * phba, struct lpfc_sli_ring * pring,
+		    struct lpfc_iocbq * piocb)
+{
+	/* Insert the caller's iocb in the txq tail for later processing. */
+	list_add_tail(&piocb->list, &pring->txq);
+	pring->txq_cnt++;
 	return (0);
 }
 
@@ -388,7 +403,7 @@ lpfc_sli_next_iocb_slot (struct lpfc_hba *phba, struct lpfc_sli_ring *pring)
 	return iocb;
 }
 
-static void
+static int
 lpfc_sli_submit_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		IOCB_t *iocb, struct lpfc_iocbq *nextiocb)
 {
@@ -398,8 +413,9 @@ lpfc_sli_submit_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	/*
 	 * Alloocate and set up an iotag
 	 */
-	nextiocb->iocb.ulpIoTag =
-		lpfc_sli_next_iotag(phba, &psli->ring[psli->fcp_ring]);
+	if ((nextiocb->iocb.ulpIoTag =
+	     lpfc_sli_next_iotag(phba, &psli->ring[psli->fcp_ring])) == 0)
+		return (1);
 
 	/*
 	 * Issue iocb command to adapter
@@ -427,7 +443,7 @@ lpfc_sli_submit_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	writeb(pring->cmdidx,
 	       (u8 *)phba->MBslimaddr + (SLIMOFF + (ringno * 2)) * 4);
 
-	return;
+	return (0);
 }
 
 static void
@@ -486,7 +502,10 @@ lpfc_sli_resume_iocb(struct lpfc_hba * phba, struct lpfc_sli_ring * pring)
 
 		while ((iocb = lpfc_sli_next_iocb_slot(phba, pring)) &&
 		       (nextiocb = lpfc_sli_ringtx_get(phba, pring)))
-			lpfc_sli_submit_iocb(phba, pring, iocb, nextiocb);
+			if (lpfc_sli_submit_iocb(phba, pring, iocb, nextiocb)) {
+				lpfc_sli_ringtx_put(phba, pring, nextiocb);
+				break;
+			}
 
 		if (iocb)
 			lpfc_sli_update_ring(phba, pring);
@@ -718,14 +737,14 @@ lpfc_sli_handle_mb_event(struct lpfc_hba * phba)
 				pmbox->mbxCommand,
 				pmb->mbox_cmpl,
 				*((uint32_t *) pmbox),
-				pmbox->un.varWords[0],
-				pmbox->un.varWords[1],
-				pmbox->un.varWords[2],
-				pmbox->un.varWords[3],
-				pmbox->un.varWords[4],
-				pmbox->un.varWords[5],
-				pmbox->un.varWords[6],
-				pmbox->un.varWords[7]);
+				mbox->un.varWords[0],
+				mbox->un.varWords[1],
+				mbox->un.varWords[2],
+				mbox->un.varWords[3],
+				mbox->un.varWords[4],
+				mbox->un.varWords[5],
+				mbox->un.varWords[6],
+				mbox->un.varWords[7]);
 
 		if (pmb->mbox_cmpl) {
 			/* Copy entire mbox completion over buffer */
@@ -994,10 +1013,14 @@ lpfc_sli_process_sol_iocb(struct lpfc_hba * phba, struct lpfc_sli_ring * pring,
 					rc = 0;
 				}
 
-				spin_unlock_irqrestore(phba->host->host_lock,
-						       iflag);
-				(cmdiocbp->iocb_cmpl) (phba, cmdiocbp, saveq);
-				spin_lock_irqsave(phba->host->host_lock, iflag);
+				if (cmdiocbp->iocb_cmpl == lpfc_scsi_cmd_iocb_cmpl)
+					(cmdiocbp->iocb_cmpl) (phba, cmdiocbp, saveq);
+				else {
+					spin_unlock_irqrestore(phba->host->host_lock,
+							       iflag);
+					(cmdiocbp->iocb_cmpl) (phba, cmdiocbp, saveq);
+					spin_lock_irqsave(phba->host->host_lock, iflag);
+                                }
 			}
 		} else {
 			mempool_free( cmdiocbp, phba->iocb_mem_pool);
@@ -1913,6 +1936,8 @@ lpfc_mbox_timeout_handler(struct lpfc_hba *phba)
 		spin_unlock_irq(phba->host->host_lock);
 		return;
 	}
+	
+	phba->work_hba_events &= ~WORKER_MBOX_TMO;
 
 	pmbox = psli->mbox_active;
 	mb = &pmbox->mb;
@@ -2082,10 +2107,6 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 				      (sizeof (uint32_t) *
 				       (MAILBOX_CMD_WSIZE)));
 
-		pci_dma_sync_single_for_device(phba->pcidev,
-					       phba->slim2p_mapping,
-					       sizeof (MAILBOX_t),
-					       PCI_DMA_TODEVICE);
 	} else {
 		if (mb->mbxCommand == MBX_CONFIG_PORT) {
 			/* copy command data into host mbox for cmpl */
@@ -2222,16 +2243,6 @@ lpfc_sli_issue_mbox(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmbox, uint32_t flag)
 	return (status);
 }
 
-static int
-lpfc_sli_ringtx_put(struct lpfc_hba * phba, struct lpfc_sli_ring * pring,
-		    struct lpfc_iocbq * piocb)
-{
-	/* Insert the caller's iocb in the txq tail for later processing. */
-	list_add_tail(&piocb->list, &pring->txq);
-	pring->txq_cnt++;
-	return (0);
-}
-
 static struct lpfc_iocbq *
 lpfc_sli_next_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		   struct lpfc_iocbq ** piocb)
@@ -2277,8 +2288,6 @@ lpfc_sli_issue_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		switch (piocb->iocb.ulpCommand) {
 		case CMD_QUE_RING_BUF_CN:
 		case CMD_QUE_RING_BUF64_CN:
-		case CMD_CLOSE_XRI_CN:
-		case CMD_ABORT_XRI_CN:
 			/*
 			 * For IOCBs, like QUE_RING_BUF, that have no rsp ring
 			 * completion, iocb_cmpl MUST be 0.
@@ -2306,13 +2315,15 @@ lpfc_sli_issue_iocb(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 	 */
 	if (unlikely((flag & SLI_IOCB_HIGH_PRIORITY) &&
 		     (iocb = lpfc_sli_next_iocb_slot(phba, pring)))) {
-		lpfc_sli_submit_iocb(phba, pring, iocb, piocb);
+		if (lpfc_sli_submit_iocb(phba, pring, iocb, piocb))
+			goto iocb_busy;
 		piocb = NULL;
 	}
 
 	while ((iocb = lpfc_sli_next_iocb_slot(phba, pring)) &&
 	       (nextiocb = lpfc_sli_next_iocb(phba, pring, &piocb)))
-		lpfc_sli_submit_iocb(phba, pring, iocb, nextiocb);
+		if (lpfc_sli_submit_iocb(phba, pring, iocb, nextiocb))
+			break;
 
 	if (iocb)
 		lpfc_sli_update_ring(phba, pring);
@@ -2487,8 +2498,6 @@ lpfc_sli_ringpostbuf_get(struct lpfc_hba *phba, struct lpfc_sli_ring *pring,
 		if (mp->phys == phys) {
 			list_del_init(&mp->list);
 			pring->postbufq_cnt--;
-			pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys,
- 					LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 			return mp;
 		}
 	}
@@ -2635,6 +2644,19 @@ lpfc_sli_issue_abort_iotag32(struct lpfc_hba * phba,
 	return (1);
 }
 
+void
+lpfc_sli_abort_fcp_cmpl(struct lpfc_hba * phba, struct lpfc_iocbq * cmdiocb,
+                           struct lpfc_iocbq * rspiocb)
+{
+	/*
+	 * Just free the iocbq resources back to the memory pool.  This was an
+	 * abort command and has no other outstanding resources associated with
+	 * it.
+	 */
+	mempool_free(cmdiocb, phba->iocb_mem_pool);
+}
+
+
 int
 lpfc_sli_abort_iocb_ctx(struct lpfc_hba * phba, struct lpfc_sli_ring * pring,
 			uint32_t ctx)
@@ -2691,6 +2713,7 @@ lpfc_sli_abort_iocb_ctx(struct lpfc_hba * phba, struct lpfc_sli_ring * pring,
 
 		icmd->ulpLe = 1;
 		icmd->ulpClass = cmd->ulpClass;
+		abtsiocbp->iocb_cmpl = lpfc_sli_abort_fcp_cmpl;
 		if (phba->hba_state >= LPFC_LINK_UP) {
 			icmd->ulpCommand = CMD_ABORT_XRI_CN;
 		} else {
@@ -2846,6 +2869,7 @@ lpfc_sli_abort_iocb_host(struct lpfc_hba * phba,
 
 			icmd->ulpLe = 1;
 			icmd->ulpClass = cmd->ulpClass;
+			abtsiocbp->iocb_cmpl = lpfc_sli_abort_fcp_cmpl;
 			if (phba->hba_state >= LPFC_LINK_UP) {
 				icmd->ulpCommand = CMD_ABORT_XRI_CN;
 			} else {
@@ -2896,8 +2920,9 @@ lpfc_sli_sum_iocb_lun(struct lpfc_hba * phba,
 		/* context1 MUST be a struct lpfc_scsi_buf */
 		lpfc_cmd = (struct lpfc_scsi_buf *) (iocb->context1);
 		if ((lpfc_cmd == 0) ||
-		    (lpfc_cmd->pCmd->device->id != scsi_target) ||
-		    (lpfc_cmd->pCmd->device->lun != scsi_lun)) {
+		    (lpfc_cmd->target == 0) ||
+		    (lpfc_cmd->target->scsi_id != scsi_target) ||
+		    (lpfc_cmd->lun != scsi_lun)) {
 			continue;
 		}
 		sum++;
@@ -2917,8 +2942,9 @@ lpfc_sli_sum_iocb_lun(struct lpfc_hba * phba,
 		/* context1 MUST be a struct lpfc_scsi_buf */
 		lpfc_cmd = (struct lpfc_scsi_buf *) (iocb->context1);
 		if ((lpfc_cmd == 0) ||
-		    (lpfc_cmd->pCmd->device->id != scsi_target) ||
-		    (lpfc_cmd->pCmd->device->lun != scsi_lun)) {
+		    (lpfc_cmd->target == 0) ||
+		    (lpfc_cmd->target->scsi_id != scsi_target) ||
+		    (lpfc_cmd->lun != scsi_lun)) {
 			continue;
 		}
 
@@ -2951,16 +2977,17 @@ lpfc_sli_abort_iocb_lun(struct lpfc_hba * phba,
 
 			/* Must be a FCP command */
 			if ((cmd->ulpCommand != CMD_FCP_ICMND64_CR) &&
-		    	(cmd->ulpCommand != CMD_FCP_IWRITE64_CR) &&
-		    	(cmd->ulpCommand != CMD_FCP_IREAD64_CR)) {
+			    (cmd->ulpCommand != CMD_FCP_IWRITE64_CR) &&
+			    (cmd->ulpCommand != CMD_FCP_IREAD64_CR)) {
 				continue;
 			}
 
 			/* context1 MUST be a struct lpfc_scsi_buf */
 			lpfc_cmd = (struct lpfc_scsi_buf *) (iocb->context1);
 			if ((lpfc_cmd == 0) ||
-			    (lpfc_cmd->pCmd->device->id != scsi_target) ||
-			    (lpfc_cmd->pCmd->device->lun != scsi_lun)) {
+			    (lpfc_cmd->target == 0) ||
+			    (lpfc_cmd->target->scsi_id != scsi_target) ||
+			    (lpfc_cmd->lun != scsi_lun)) {
 				continue;
 			}
 
@@ -2993,8 +3020,9 @@ lpfc_sli_abort_iocb_lun(struct lpfc_hba * phba,
 			/* context1 MUST be a struct lpfc_scsi_buf */
 			lpfc_cmd = (struct lpfc_scsi_buf *) (iocb->context1);
 			if ((lpfc_cmd == 0) ||
-			    (lpfc_cmd->pCmd->device->id != scsi_target) ||
-			    (lpfc_cmd->pCmd->device->lun != scsi_lun)) {
+			    (lpfc_cmd->target == 0) ||
+			    (lpfc_cmd->target->scsi_id != scsi_target) ||
+			    (lpfc_cmd->lun != scsi_lun)) {
 				continue;
 			}
 
@@ -3013,6 +3041,7 @@ lpfc_sli_abort_iocb_lun(struct lpfc_hba * phba,
 
 			icmd->ulpLe = 1;
 			icmd->ulpClass = cmd->ulpClass;
+			abtsiocbp->iocb_cmpl = lpfc_sli_abort_fcp_cmpl;
 			if (phba->hba_state >= LPFC_LINK_UP) {
 				icmd->ulpCommand = CMD_ABORT_XRI_CN;
 			} else {
@@ -3057,15 +3086,16 @@ lpfc_sli_abort_iocb_tgt(struct lpfc_hba * phba,
 
 			/* Must be a FCP command */
 			if ((cmd->ulpCommand != CMD_FCP_ICMND64_CR) &&
-		    	(cmd->ulpCommand != CMD_FCP_IWRITE64_CR) &&
-		    	(cmd->ulpCommand != CMD_FCP_IREAD64_CR)) {
+			    (cmd->ulpCommand != CMD_FCP_IWRITE64_CR) &&
+			    (cmd->ulpCommand != CMD_FCP_IREAD64_CR)) {
 				continue;
 			}
 
 			/* context1 MUST be a struct lpfc_scsi_buf */
 			lpfc_cmd = (struct lpfc_scsi_buf *) (iocb->context1);
-			if ((lpfc_cmd == 0)
-			    || (lpfc_cmd->pCmd->device->id != scsi_target)) {
+			if ((lpfc_cmd == 0) ||
+			    (lpfc_cmd->target == 0) ||
+			    (lpfc_cmd->target->scsi_id != scsi_target)) {
 				continue;
 			}
 
@@ -3097,8 +3127,9 @@ lpfc_sli_abort_iocb_tgt(struct lpfc_hba * phba,
 
 			/* context1 MUST be a struct lpfc_scsi_buf */
 			lpfc_cmd = (struct lpfc_scsi_buf *) (iocb->context1);
-			if ((lpfc_cmd == 0)
-			    || (lpfc_cmd->pCmd->device->id != scsi_target)) {
+			if ((lpfc_cmd == 0) ||
+			    (lpfc_cmd->target == 0) ||
+			    (lpfc_cmd->target->scsi_id != scsi_target)) {
 				continue;
 			}
 
@@ -3117,6 +3148,7 @@ lpfc_sli_abort_iocb_tgt(struct lpfc_hba * phba,
 
 			icmd->ulpLe = 1;
 			icmd->ulpClass = cmd->ulpClass;
+			abtsiocbp->iocb_cmpl = lpfc_sli_abort_fcp_cmpl;
 			if (phba->hba_state >= LPFC_LINK_UP) {
 				icmd->ulpCommand = CMD_ABORT_XRI_CN;
 			} else {
@@ -3153,15 +3185,31 @@ lpfc_sli_wake_iocb_high_priority(struct lpfc_hba * phba,
 	return;
 }
 
+static void
+lpfc_sli_wake_iocb_high_priority_cleanup(struct lpfc_hba * phba,
+					struct lpfc_iocbq * queue1,
+					struct lpfc_iocbq * queue2)
+{
+	struct lpfc_scsi_buf *lpfc_cmd = queue1->context1;
+
+	/*
+	 * Just free the iocbq back to the mempool.  The driver
+	 * has stopped polling and this routine will execute as
+	 * a result of the subsequent abort.
+	 */
+	mempool_free(queue1->context2, phba->iocb_mem_pool);
+	lpfc_free_scsi_buf(lpfc_cmd);
+	return;
+}
+
 int
 lpfc_sli_issue_iocb_wait_high_priority(struct lpfc_hba * phba,
 				       struct lpfc_sli_ring * pring,
 				       struct lpfc_iocbq * piocb,
 				       uint32_t flag,
-				       struct lpfc_iocbq * prspiocbq,
-				       uint32_t timeout)
+				       struct lpfc_iocbq * prspiocbq)
 {
-	int j, delay_time,  retval = IOCB_ERROR;
+	int wait_time = 0, retval = IOCB_ERROR;
 
 	/* The caller must left context1 empty.  */
 	if (piocb->context_un.hipri_wait_queue != 0) {
@@ -3193,33 +3241,52 @@ lpfc_sli_issue_iocb_wait_high_priority(struct lpfc_hba * phba,
 	 * is held by the midlayer and must be released here to allow the
 	 * interrupt handlers to complete the IO and signal this routine via
 	 * the iocb_flag.
-	 * Also, the delay_time is computed to be one second longer than
-	 * the scsi command timeout to give the FW time to abort on
-	 * timeout rather than the driver just giving up.  Typically,
-	 * the midlayer does not specify a time for this command so the
-	 * driver is free to enforce its own timeout.
+	 * The driver waits a maximum of 600 seconds to give the FW ample time
+	 * to complete the target reset ABTS.  The race is not waiting long 
+	 * enough and then having the FW complete the request before the driver
+	 * can issue the second abort.  Since a solicited completion is required
+	 * by the FW, this wait period should be enough time for the FW to
+	 * complete the abts successfully or give up.
 	 */
 
-	delay_time = ((timeout + 1) * 1000) >> 6;
-	retval = IOCB_ERROR;
+	retval = IOCB_TIMEDOUT;
 	spin_unlock_irq(phba->host->host_lock);
-	for (j = 0; j < 64; j++) {
+	while (wait_time <= 600000) {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,6)
-		mdelay(delay_time);
+		mdelay(100);
 #else
-		msleep(delay_time);
+		msleep(100);
 #endif
 		if (piocb->iocb_flag & LPFC_IO_HIPRI) {
 			piocb->iocb_flag &= ~LPFC_IO_HIPRI;
 			retval = IOCB_SUCCESS;
 			break;
 		}
+		wait_time += 100;
 	}
 
 	spin_lock_irq(phba->host->host_lock);
+
+	/*
+	 * If the polling attempt failed to get a completion from the HBA, 
+	 * then substitute the initial completion function with one that
+	 * releases the piocb back to the mempool.  Failure to do this 
+	 * results in a memory leak.  Also note the small timing race that
+	 * exists between the driver giving up and a completion coming in.
+	 */
+	if ((retval == IOCB_TIMEDOUT) && !(piocb->iocb_flag & LPFC_IO_HIPRI)) {
+		lpfc_printf_log(phba, KERN_ERR, LOG_SLI,
+				"%d:0327 waited %d mSecs for high priority "
+				"IOCB %p - giving up\n",
+				phba->brd_no, wait_time, piocb);
+		piocb->iocb_cmpl = lpfc_sli_wake_iocb_high_priority_cleanup;
+	}
+
 	piocb->context2 = NULL;
+
 	return retval;
 }
+
 int
 lpfc_sli_issue_mbox_wait(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmboxq,
 			 uint32_t timeout)
@@ -3327,7 +3394,9 @@ lpfc_sli_issue_iocb_wait(struct lpfc_hba * phba,
 		/* Give up thread time and wait for the iocb to complete or for
 		 * the alloted time to expire.
 		 */
+		spin_unlock_irq(phba->host->host_lock);
 		timeleft = schedule_timeout(timeout * HZ);
+		spin_lock_irq(phba->host->host_lock);
 
 		piocb->context_un.hipri_wait_queue = NULL;
 		piocb->iocb_cmpl = NULL;
@@ -3340,13 +3409,10 @@ lpfc_sli_issue_iocb_wait(struct lpfc_hba * phba,
 		 * LPFC_IO_WAIT is also an error since the wakeup callback sets
 		 * this flag when it runs.  Handle each.
 		 */
-		if (timeleft == 0) {
-			printk(KERN_WARNING "lpfc driver detected iocb "
-			       "Timeout!\n");
-			retval = IOCB_TIMEDOUT;
-		} else if (!(piocb->iocb_flag & LPFC_IO_WAIT)) {
-			printk(KERN_WARNING "lpfc driver detected iocb "
-			       "flag = 0x%X\n", piocb->iocb_flag);
+		if (!(piocb->iocb_flag & LPFC_IO_WAIT)) {
+			printk(KERN_ERR "%s: Timeleft is %d, iocb_flags is 0x%x ring_no %d ulpCommand 0x%x`\n ",
+			       __FUNCTION__, timeleft, piocb->iocb_flag,
+				pring->ringno, piocb->iocb.ulpCommand);
 			retval = IOCB_TIMEDOUT;
 		}
 	}

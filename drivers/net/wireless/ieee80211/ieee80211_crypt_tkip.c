@@ -23,9 +23,6 @@
 
 #include "ieee80211.h"
 
-#ifndef CONFIG_CRYPTO
-#error CONFIG_CRYPTO is required to build this module.
-#endif
 
 #include <linux/crypto.h>
 #include <asm/scatterlist.h>

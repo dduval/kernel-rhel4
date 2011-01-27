@@ -214,6 +214,16 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 	PCI_DEVICE_ID_INTEL_82443BX_1, 	qu
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_INTEL, 	PCI_DEVICE_ID_INTEL_82443BX_2, 	quirk_natoma );
 
 /*
+ *  This chip can cause PCI parity errors if config register 0xA0 is read
+ *  while DMAs are occurring.
+ */
+static void __devinit quirk_citrine(struct pci_dev *dev)
+{
+	dev->cfg_size = 0xA0;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_IBM,	PCI_DEVICE_ID_IBM_CITRINE,	quirk_citrine );
+
+/*
  *  S3 868 and 968 chips report region size equal to 32M, but they decode 64M.
  *  If it's needed, re-allocate the region.
  */
@@ -701,7 +711,7 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_VIA,	PCI_ANY_ID,                     quir
 /*
  *	Serverworks CSB5 IDE does not fully support native mode
  */
-static void __init quirk_svwks_csb5ide(struct pci_dev *pdev)
+static void __devinit quirk_svwks_csb5ide(struct pci_dev *pdev)
 {
 	u8 prog;
 	pci_read_config_byte(pdev, PCI_CLASS_PROG, &prog);
@@ -968,6 +978,7 @@ static void __devinit quirk_intel_ide_combined(struct pci_dev *pdev)
 	case 0x2651:
 	case 0x2652:
 	case 0x2653:
+	case 0x2680:	/* ESB2 */
 		ich = 6;
 		break;
 	case 0x27c0:

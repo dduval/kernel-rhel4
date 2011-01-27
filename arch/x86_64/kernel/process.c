@@ -33,6 +33,7 @@
 #include <linux/irq.h>
 #include <linux/ptrace.h>
 #include <linux/version.h>
+#include <linux/kprobes.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -262,6 +263,14 @@ void exit_thread(void)
 {
 	struct task_struct *me = current;
 	struct thread_struct *t = &me->thread;
+
+	/*
+	 * Remove function-return probe instances associated with this task
+	 * and put them back on the free list. Do not insert an exit probe for
+	 * this function, it will be disabled by kprobe_flush_task if you do.
+	 */
+	kprobe_flush_task(me);
+
 	if (me->thread.io_bitmap_ptr) { 
 		struct tss_struct *tss = &per_cpu(init_tss, get_cpu());
 
@@ -280,6 +289,13 @@ void flush_thread(void)
 {
 	struct task_struct *tsk = current;
 	struct thread_info *t = current_thread_info();
+
+	/*
+	 * Remove function-return probe instances associated with this task
+	 * and put them back on the free list. Do not insert an exit probe for
+	 * this function, it will be disabled by kprobe_flush_task if you do.
+	 */
+	kprobe_flush_task(tsk);
 
 	if (t->flags & _TIF_ABI_PENDING)
 		t->flags ^= (_TIF_ABI_PENDING | _TIF_IA32);

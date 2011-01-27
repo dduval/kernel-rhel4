@@ -10,7 +10,7 @@
  *	   2 of the License, or (at your option) any later version.
  *
  * FILE		: megaraid_mm.c
- * Version	: v2.20.2.5 (Jan 21 2005)
+ * Version	: v2.20.2.6 (Mar 7 2005)
  *
  * Common management module
  */
@@ -65,7 +65,7 @@ struct scsi_device *mraid_mm_diskdump_poll_device = NULL;
 EXPORT_SYMBOL(mraid_mm_diskdump_poll_device);
 
 static int majorno;
-static uint32_t drvr_ver	= 0x02200201;
+static uint32_t drvr_ver	= 0x02200206;
 
 static int adapters_count_g;
 static struct list_head adapters_list_g;
@@ -1242,9 +1242,12 @@ static int
 mraid_mm_compat_ioctl(unsigned int fd, unsigned int cmd,
 			unsigned long arg, struct file *filep)
 {
+	int err;
 	struct inode *inode = filep->f_dentry->d_inode;
 
-	return mraid_mm_ioctl(inode, filep, cmd, arg);
+	err = mraid_mm_ioctl(inode, filep, cmd, arg);
+
+	return err;
 }
 #endif
 

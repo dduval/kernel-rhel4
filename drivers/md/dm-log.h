@@ -32,7 +32,8 @@ struct dirty_log_type {
 	 * There are times when we don't want the log to touch
 	 * the disk.
 	 */
-	int (*suspend)(struct dirty_log *log);
+	int (*presuspend)(struct dirty_log *log);
+	int (*postsuspend)(struct dirty_log *log);
 	int (*resume)(struct dirty_log *log);
 
 	/*
@@ -46,6 +47,16 @@ struct dirty_log_type {
 	 * May block.
 	 */
 	int (*is_clean)(struct dirty_log *log, region_t region);
+
+	/*
+	 * Returns: 0, 1
+	 *
+	 * This is necessary for cluster mirroring. It provides
+	 * a way to detect recovery on another node, so we
+	 * aren't writing concurrently.  This function is likely
+	 * to block (when a cluster log is used).
+	 */
+	int (*is_remote_recovering)(struct dirty_log *log, region_t region);
 
 	/*
 	 *  Returns: 0, 1, -EWOULDBLOCK, < 0

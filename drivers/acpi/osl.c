@@ -1104,3 +1104,12 @@ acpi_wake_gpes_always_on_setup(char *str)
 
 __setup("acpi_wake_gpes_always_on", acpi_wake_gpes_always_on_setup);
 
+/*
+ * max_cstate is defined in the base kernel so modules can
+ * change it w/o depending on the state of the processor module.
+ */
+unsigned int max_cstate = ACPI_C_STATES_MAX;
+
+
+EXPORT_SYMBOL(max_cstate);
+

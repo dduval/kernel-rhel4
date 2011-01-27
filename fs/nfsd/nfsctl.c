@@ -23,6 +23,7 @@
 #include <linux/seq_file.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
+#include <linux/string.h>
 
 #include <linux/nfs.h>
 #include <linux/nfsd_idmap.h>
@@ -34,6 +35,10 @@
 #include <linux/nfsd/interface.h>
 
 #include <asm/uaccess.h>
+
+int nfsd_port = 2049;
+unsigned int nfsd_portbits = 0;
+unsigned int nfsd_versbits = 0;
 
 /*
  *	We have a single directory with 9 nodes in it.
@@ -51,6 +56,8 @@ enum {
 	NFSD_Fh,
 	NFSD_Threads,
 	NFSD_Leasetime,
+	NFSD_Ports,
+	NFSD_Versions,
 };
 
 /*
@@ -66,6 +73,8 @@ static ssize_t write_getfs(struct file *file, char *buf, size_t size);
 static ssize_t write_filehandle(struct file *file, char *buf, size_t size);
 static ssize_t write_threads(struct file *file, char *buf, size_t size);
 static ssize_t write_leasetime(struct file *file, char *buf, size_t size);
+static ssize_t write_ports(struct file *file, char *buf, size_t size);
+static ssize_t write_versions(struct file *file, char *buf, size_t size);
 
 static ssize_t (*write_op[])(struct file *, char *, size_t) = {
 	[NFSD_Svc] = write_svc,
@@ -78,6 +87,8 @@ static ssize_t (*write_op[])(struct file *, char *, size_t) = {
 	[NFSD_Fh] = write_filehandle,
 	[NFSD_Threads] = write_threads,
 	[NFSD_Leasetime] = write_leasetime,
+	[NFSD_Ports] = write_ports,
+	[NFSD_Versions] = write_versions,
 };
 
 static ssize_t nfsctl_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
@@ -85,14 +96,12 @@ static ssize_t nfsctl_transaction_write(struct file *file, const char __user *bu
 	ino_t ino =  file->f_dentry->d_inode->i_ino;
 	char *data;
 	ssize_t rv;
-
 	if (ino >= sizeof(write_op)/sizeof(write_op[0]) || !write_op[ino])
 		return -EINVAL;
 
 	data = simple_transaction_get(file, buf, size);
 	if (IS_ERR(data))
 		return PTR_ERR(data);
-
 	rv =  write_op[ino](file, data, size);
 	if (rv>0) {
 		simple_transaction_set(file, rv);
@@ -256,7 +265,7 @@ static ssize_t write_filehandle(struct file *file, char *buf, size_t size)
 	 * qword quoting is used, so filehandle will be \x....
 	 */
 	char *dname, *path;
-	int maxsize;
+	int maxsize = 0;
 	char *mesg = buf;
 	int len;
 	struct auth_domain *dom;
@@ -325,6 +334,102 @@ static ssize_t write_threads(struct file *file, char *buf, size_t size)
 	sprintf(buf, "%d\n", nfsd_nrthreads());
 	return strlen(buf);
 }
+static ssize_t write_ports(struct file *file, char *buf, size_t size)
+{
+	/*
+	 * Format:
+	 *   family proto proto address port
+	 */
+	char *mesg = buf;
+	char *family, *udp, *tcp, *addr; 
+	int len, port = 0;
+	ssize_t tlen = 0;
+
+	if (buf[size-1] != '\n')
+		return -EINVAL;
+	buf[size-1] = 0;
+
+	family = mesg;
+	len = qword_get(&mesg, family, size);
+	if (len <= 0) return -EINVAL;
+
+	tlen += len;
+	udp = family+len+1;
+	len = qword_get(&mesg, udp, size);
+	if (len <= 0) return -EINVAL;
+
+	tlen += len;
+	tcp = udp+len+1;
+	len = qword_get(&mesg, tcp, size);
+	if (len <= 0) return -EINVAL;
+
+	tlen += len;
+	addr = tcp+len+1;
+	len = qword_get(&mesg, addr, size);
+	if (len <= 0) return -EINVAL;
+
+	len = get_int(&mesg, &port);
+	if (len)
+		return len;
+
+	tlen += sizeof(port);
+	if (port)
+		nfsd_port = port;
+
+	if (strcmp(tcp, "tcp") == 0 || strcmp(tcp, "TCP") == 0)
+		NFSCTL_TCPSET(nfsd_portbits);
+	else
+		NFSCTL_TCPUNSET(nfsd_portbits);
+
+	if (strcmp(udp, "udp") == 0 || strcmp(udp, "UDP") == 0)
+		NFSCTL_UDPSET(nfsd_portbits);
+	else
+		NFSCTL_UDPUNSET(nfsd_portbits);
+
+	return tlen;
+}
+static ssize_t write_versions(struct file *file, char *buf, size_t size)
+{
+	/*
+	 * Format:
+	 *   [-/+]vers [-/+]vers ...
+	 */
+	char *mesg = buf;
+	char *vers, sign;
+	int len, num;
+	ssize_t tlen = 0;
+
+	if (buf[size-1] != '\n')
+		return -EINVAL;
+	buf[size-1] = 0;
+
+	vers = mesg;
+	len = qword_get(&mesg, vers, size);
+	if (len <= 0) return -EINVAL;
+	do {
+		sign = *vers;
+		if (sign == '+' || sign == '-')
+			num = simple_strtol((vers+1), NULL, 0);
+		else
+			num = simple_strtol(vers, NULL, 0);
+		switch(num) {
+		case 2:
+		case 3:
+		case 4:
+			if (sign != '-')
+				NFSCTL_VERSET(nfsd_versbits, num);
+			else
+				NFSCTL_VERUNSET(nfsd_versbits, num);
+			break;
+		default:
+			return -EINVAL;
+		}
+		vers += len + 1;
+		tlen += len;
+	} while ((len = qword_get(&mesg, vers, size)) > 0);
+
+	return tlen;
+}
 
 extern time_t nfs4_leasetime(void);
 
@@ -370,6 +475,8 @@ static int nfsd_fill_super(struct super_block * sb, void * data, int silent)
 #ifdef CONFIG_NFSD_V4
 		[NFSD_Leasetime] = {"nfsv4leasetime", &transaction_ops, S_IWUSR|S_IRUSR},
 #endif
+		[NFSD_Ports] = {"ports", &transaction_ops, S_IWUSR|S_IRUSR},
+		[NFSD_Versions] = {"versions", &transaction_ops, S_IWUSR|S_IRUSR},
 		/* last one */ {""}
 	};
 	return simple_fill_super(sb, 0x6e667364, nfsd_files);

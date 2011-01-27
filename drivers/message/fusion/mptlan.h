@@ -28,8 +28,8 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 
-    /* Override mptbase.h by pre-defining these! */
-    #define MODULEAUTHOR "Noah Romer, Eddie C. Dost"
+/* Override mptbase.h by pre-defining these! */
+#define MODULEAUTHOR "LSI Logic Corporation"
 
 #include "mptbase.h"
 

@@ -55,6 +55,7 @@ unsigned long kallsyms_lookup_name(const char *name)
 	}
 	return module_kallsyms_lookup_name(name);
 }
+EXPORT_SYMBOL_GPL(kallsyms_lookup_name);
 
 /* Lookup an address.  modname is set to NULL if it's in the kernel. */
 const char *kallsyms_lookup(unsigned long addr,

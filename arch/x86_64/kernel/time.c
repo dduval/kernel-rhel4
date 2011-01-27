@@ -26,6 +26,8 @@
 #include <linux/sysdev.h>
 #include <linux/bcd.h>
 #include <linux/kallsyms.h>
+#include <linux/acpi.h>
+#include <acpi/achware.h>      /* for PM timer frequency */
 #include <asm/8253pit.h>
 #include <asm/pgtable.h>
 #include <asm/vsyscall.h>
@@ -52,6 +54,7 @@ spinlock_t rtc_lock = SPIN_LOCK_UNLOCKED;
 spinlock_t i8253_lock = SPIN_LOCK_UNLOCKED;
 
 static int nohpet __initdata = 0;
+static int notsc __initdata = 0;
 
 #undef HPET_HACK_ENABLE_DANGEROUS
 
@@ -59,6 +62,7 @@ static int nohpet __initdata = 0;
 unsigned int cpu_khz;					/* TSC clocks / usec, not used here */
 unsigned long hpet_period;				/* fsecs / HPET clock */
 unsigned long hpet_tick;				/* HPET clocks / interrupt */
+static int hpet_use_timer;
 unsigned long vxtime_hz = PIT_TICK_RATE;
 int report_lost_ticks;				/* command line option */
 unsigned long long monotonic_base;
@@ -100,7 +104,9 @@ static inline unsigned int do_gettimeoffset_tsc(void)
 
 static inline unsigned int do_gettimeoffset_hpet(void)
 {
-	return ((hpet_readl(HPET_COUNTER) - vxtime.last) * vxtime.quot) >> 32;
+	/* cap counter read to one tick to avoid inconsistencies */
+	unsigned long counter = hpet_readl(HPET_COUNTER) - vxtime.last;
+	return (min(counter,hpet_tick) * vxtime.quot) >> 32;
 }
 
 unsigned int (*do_gettimeoffset)(void) = do_gettimeoffset_tsc;
@@ -296,7 +302,7 @@ unsigned long long monotonic_clock(void)
 
 			last_offset = vxtime.last;
 			base = monotonic_base;
-			this_offset = hpet_readl(HPET_T0_CMP) - hpet_tick;
+			this_offset = hpet_readl(HPET_COUNTER);
 
 		} while (read_seqretry(&xtime_lock, seq));
 		offset = (this_offset - last_offset);
@@ -372,7 +378,14 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 	write_seqlock(&xtime_lock);
 
-	if (vxtime.hpet_address) {
+	if (vxtime.hpet_address)
+		offset = hpet_readl(HPET_COUNTER);
+
+	if (hpet_use_timer) {
+		/* if we're using the hpet timer functionality,
+		 * we can more accurately know the counter value
+		 * when the timer interrupt occured.
+		 */
 		offset = hpet_readl(HPET_T0_CMP) - hpet_tick;
 		delay = hpet_readl(HPET_COUNTER) - offset;
 	} else {
@@ -395,6 +408,10 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 			(offset - vxtime.last)*(NSEC_PER_SEC/HZ) / hpet_tick;
 
 		vxtime.last = offset;
+#ifdef CONFIG_X86_PM_TIMER
+       } else if (vxtime.mode == VXTIME_PMTMR) {
+               lost = pmtimer_mark_offset();
+#endif
 	} else {
 		offset = (((tsc - vxtime.last_tsc) *
 			   vxtime.tsc_quot) >> 32) - (USEC_PER_SEC / HZ);
@@ -738,8 +755,7 @@ static int hpet_init(void)
 
 	id = hpet_readl(HPET_ID);
 
-	if (!(id & HPET_ID_VENDOR) || !(id & HPET_ID_NUMBER) ||
-	    !(id & HPET_ID_LEGSUP))
+	if (!(id & HPET_ID_VENDOR) || !(id & HPET_ID_NUMBER))
 		return -1;
 
 	hpet_period = hpet_readl(HPET_PERIOD);
@@ -748,6 +764,8 @@ static int hpet_init(void)
 
 	hpet_tick = (1000000000L * (USEC_PER_SEC / HZ) + hpet_period / 2) /
 		hpet_period;
+
+	hpet_use_timer = (id & HPET_ID_LEGSUP);
 
 /*
  * Stop the timers and reset the main counter.
@@ -764,17 +782,20 @@ static int hpet_init(void)
  * and period also hpet_tick.
  */
 
-	hpet_writel(HPET_TN_ENABLE | HPET_TN_PERIODIC | HPET_TN_SETVAL |
-		    HPET_TN_32BIT, HPET_T0_CFG);
-	hpet_writel(hpet_tick, HPET_T0_CMP);
-	hpet_writel(hpet_tick, HPET_T0_CMP); /* AK: why twice? */
+	if (hpet_use_timer) {
+		hpet_writel(HPET_TN_ENABLE | HPET_TN_PERIODIC | HPET_TN_SETVAL |
+ 		    HPET_TN_32BIT, HPET_T0_CFG);
+		hpet_writel(hpet_tick, HPET_T0_CMP);
+		hpet_writel(hpet_tick, HPET_T0_CMP); /* AK: why twice? */
+		cfg |= HPET_CFG_LEGACY;
+	}
 
 /*
  * Go!
  */
 
-	cfg |= HPET_CFG_ENABLE | HPET_CFG_LEGACY;
-	hpet_writel(cfg, HPET_CFG);
+	cfg |= HPET_CFG_ENABLE;
+ 	hpet_writel(cfg, HPET_CFG);
 
 	return 0;
 }
@@ -827,11 +848,20 @@ void __init time_init(void)
 	set_normalized_timespec(&wall_to_monotonic,
 	                        -xtime.tv_sec, -xtime.tv_nsec);
 
-	if (!hpet_init()) {
+	if (!hpet_init())
                 vxtime_hz = (1000000000000000L + hpet_period / 2) /
 			hpet_period;
+
+	if (hpet_use_timer) {
 		cpu_khz = hpet_calibrate_tsc();
 		timename = "HPET";
+#ifdef CONFIG_X86_PM_TIMER
+       } else if (pmtmr_ioport) {
+               vxtime_hz = PM_TIMER_FREQUENCY;
+               timename = "PM";
+               pit_init();
+               cpu_khz = pit_calibrate_tsc();
+#endif
 	} else {
 		pit_init();
 		cpu_khz = pit_calibrate_tsc();
@@ -850,21 +880,63 @@ void __init time_init(void)
 	setup_irq(0, &irq0);
 
 	set_cyc2ns_scale(cpu_khz / 1000);
+#ifndef CONFIG_SMP
+	time_init_gtod();
+#endif
 }
 
-void __init time_init_smp(void)
+ /*
+ * Make an educated guess if the TSC is trustworthy and synchronized
+ * over all CPUs.
+ */
+static __init int unsynchronized_tsc(void)
+{
+#ifdef CONFIG_SMP
+	if (oem_force_hpet_timer())
+		return 1;
+	/* Intel systems are normally all synchronized. Exceptions
+		are handled in the OEM check above. */
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL)
+		return 0;
+	/* All in a single socket - should be synchronized */
+	/* hmm. we don't have the cpu_core_map in RHEL4 */
+	/* if (cpus_weight(cpu_core_map[0]) == num_online_cpus())
+		return 0;
+	*/
+#endif
+	/* Assume multi socket systems are not synchronized */
+	return num_online_cpus() > 1;
+}
+
+/*
+ * Decide after all CPUs are booted what mode gettimeofday should use.
+ */
+void __init time_init_gtod(void)
 {
 	char *timetype;
 
-	if (vxtime.hpet_address) {
-		timetype = "HPET";
+	if (unsynchronized_tsc())
+		notsc = 1;
+	if (vxtime.hpet_address && notsc) {
+		timetype = hpet_use_timer ? "HPET" : "PIT/HPET";
 		vxtime.last = hpet_readl(HPET_T0_CMP) - hpet_tick;
 		vxtime.mode = VXTIME_HPET;
 		do_gettimeoffset = do_gettimeoffset_hpet;
+#ifdef CONFIG_X86_PM_TIMER
+	/* Using PM for gettimeofday is quite slow, but we have no other
+	   choice because the TSC is too unreliable on some systems. */
+	} else if (pmtmr_ioport && !vxtime.hpet_address && notsc) {
+		timetype = "PM";
+		do_gettimeoffset = do_gettimeoffset_pm;
+		vxtime.mode = VXTIME_PMTMR;
+		sysctl_vsyscall = 0;
+		printk(KERN_INFO "Disabling vsyscall due to use of PM timer\n");
+#endif
 	} else {
-		timetype = "PIT/TSC";
+		timetype = hpet_use_timer ? "HPET/TSC" : "PIT/TSC";
 		vxtime.mode = VXTIME_TSC;
 	}
+
 	printk(KERN_INFO "time.c: Using %s based timekeeping.\n", timetype);
 }
 
@@ -1151,3 +1223,13 @@ static int __init nohpet_setup(char *s)
 } 
 
 __setup("nohpet", nohpet_setup);
+
+static int __init notsc_setup(char *s)
+{
+	notsc = 1;
+	return 0;
+}
+
+__setup("notsc", notsc_setup);
+
+

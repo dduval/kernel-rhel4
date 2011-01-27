@@ -2491,7 +2491,7 @@ static int con_open(struct tty_struct *tty, struct file *filp)
 	int ret = 0;
 
 	acquire_console_sem();
-	if (tty->count == 1) {
+	if (!(test_and_set_bit(TTY_OPENED, &tty->flags))) {
 		ret = vc_allocate(currcons);
 		if (ret == 0) {
 			vt_cons[currcons]->vc_num = currcons;

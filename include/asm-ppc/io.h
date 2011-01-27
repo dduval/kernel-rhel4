@@ -214,6 +214,8 @@ extern unsigned long mm_ptov(unsigned long addr) __attribute_const__;
 extern void io_block_mapping(unsigned long virt, phys_addr_t phys,
 			     unsigned int size, int flags);
 
+#define mmiowb()
+
 /*
  * The PCI bus is inherently Little-Endian.  The PowerPC is being
  * run Big-Endian.  Thus all values which cross the [PCI] barrier

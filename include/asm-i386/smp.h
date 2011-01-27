@@ -34,6 +34,7 @@
 extern void smp_alloc_memory(void);
 extern int pic_mode;
 extern int smp_num_siblings;
+extern int smp_num_cores;
 extern cpumask_t cpu_sibling_map[];
 
 extern void smp_flush_tlb(void);

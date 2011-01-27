@@ -52,8 +52,9 @@ change_pte_range(pmd_t *pmd, unsigned long address,
 			 * bits by wiping the pte and then setting the new pte
 			 * into place.
 			 */
-			entry = ptep_get_and_clear(pte);
-			set_pte(pte, pte_modify(entry, newprot));
+			entry = pte_modify(ptep_get_and_clear(pte), newprot);
+			set_pte(pte, entry);
+			lazy_mmu_prot_update(entry);
 		}
 		address += PAGE_SIZE;
 		pte++;

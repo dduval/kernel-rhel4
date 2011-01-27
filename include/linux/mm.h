@@ -25,6 +25,7 @@ extern unsigned long num_physpages;
 extern void * high_memory;
 extern unsigned long vmalloc_earlyreserve;
 extern int page_cluster;
+extern int oom_kill_enabled;
 
 #ifdef CONFIG_SYSCTL
 extern int sysctl_legacy_va_layout;

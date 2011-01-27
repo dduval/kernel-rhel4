@@ -64,6 +64,8 @@
 #include <net/ipv6.h>
 #include <linux/hugetlb.h>
 #include <linux/personality.h>
+#include <linux/audit.h>
+#include <linux/string.h>
 
 #include "avc.h"
 #include "objsec.h"
@@ -72,7 +74,7 @@
 #define XATTR_SELINUX_SUFFIX "selinux"
 #define XATTR_NAME_SELINUX XATTR_SECURITY_PREFIX XATTR_SELINUX_SUFFIX
 
-extern int policydb_loaded_version;
+extern unsigned int policydb_loaded_version;
 extern int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm);
 
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
@@ -825,7 +827,9 @@ static int inode_doinit_with_dentry(struct inode *inode, struct dentry *opt_dent
 				       __FUNCTION__, context, -rc,
 				       inode->i_sb->s_id, inode->i_ino);
 				kfree(context);
-				goto out;
+				/* Leave with the unlabeled SID */
+				rc = 0;
+				break;
 			}
 		}
 		kfree(context);
@@ -1977,7 +1981,8 @@ static int selinux_sb_copy_data(struct file_system_type *type, void *orig, void 
 		}
 	} while (*in_end++);
 
-	copy_page(in_save, nosec_save);
+	strcpy(in_save, nosec_save);
+	free_page((unsigned long)nosec_save);
 out:
 	return rc;
 }
@@ -2177,6 +2182,9 @@ static int selinux_inode_setattr(struct dentry *dentry, struct iattr *iattr)
 	rc = secondary_ops->inode_setattr(dentry, iattr);
 	if (rc)
 		return rc;
+
+	if (iattr->ia_valid & ATTR_FORCE)
+		return 0;
 
 	if (iattr->ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID |
 			       ATTR_ATIME_SET | ATTR_MTIME_SET))
@@ -2692,16 +2700,7 @@ static int selinux_task_setrlimit(unsigned int resource, struct rlimit *new_rlim
 
 static int selinux_task_setscheduler(struct task_struct *p, int policy, struct sched_param *lp)
 {
-	struct task_security_struct *tsec1, *tsec2;
-
-	tsec1 = current->security;
-	tsec2 = p->security;
-
-	/* No auditing from the setscheduler hook, since the runqueue lock
-	   is held and the system will deadlock if we try to log an audit
-	   message. */
-	return avc_has_perm_noaudit(tsec1->sid, tsec2->sid,
-				    SECCLASS_PROCESS, PROCESS__SETSCHED, NULL);
+	return task_has_perm(current, p, PROCESS__SETSCHED);
 }
 
 static int selinux_task_getscheduler(struct task_struct *p)
@@ -2855,8 +2854,7 @@ static int selinux_parse_skb_ipv6(struct sk_buff *skb, struct avc_audit_data *ad
 
 	nexthdr = ip6->nexthdr;
 	offset += sizeof(_ipv6h);
-	offset = ipv6_skip_exthdr(skb, offset, &nexthdr,
-				  skb->tail - skb->head - offset);
+	offset = ipv6_skip_exthdr_nolen(skb, offset, &nexthdr);
 	if (offset < 0)
 		goto out;
 
@@ -3378,6 +3376,15 @@ static int selinux_nlmsg_perm(struct sock *sk, struct sk_buff *skb)
 	
 	err = selinux_nlmsg_lookup(isec->sclass, nlh->nlmsg_type, &perm);
 	if (err) {
+		if (err == -EINVAL) {
+			audit_log(current->audit_context, GFP_KERNEL, AUDIT_SELINUX_ERR,
+				  "SELinux:  unrecognized netlink message"
+				  " type=%hu for sclass=%hu\n",
+				  nlh->nlmsg_type, isec->sclass);
+			if (!selinux_enforcing)
+				err = 0;
+		}
+
 		/* Ignore */
 		if (err == -ENOENT)
 			err = 0;
@@ -3527,12 +3534,20 @@ static inline int selinux_nlmsg_perm(struct sock *sk, struct sk_buff *skb)
 
 static int selinux_netlink_send(struct sock *sk, struct sk_buff *skb)
 {
-	int err = 0;
+	struct task_security_struct *tsec;
+	struct av_decision avd;
+	int err;
 
-	if (capable(CAP_NET_ADMIN))
-		cap_raise (NETLINK_CB (skb).eff_cap, CAP_NET_ADMIN);
-	else
-		NETLINK_CB(skb).eff_cap = 0;
+	err = secondary_ops->netlink_send(sk, skb);
+	if (err)
+		return err;
+
+	tsec = current->security;
+
+	avd.allowed = 0;
+	avc_has_perm_noaudit(tsec->sid, tsec->sid,
+				SECCLASS_CAPABILITY, ~0, &avd);
+	cap_mask(NETLINK_CB(skb).eff_cap, avd.allowed);
 
 	if (policydb_loaded_version >= POLICYDB_VERSION_NLCLASS)
 		err = selinux_nlmsg_perm(sk, skb);
@@ -4093,6 +4108,7 @@ static int selinux_setprocattr(struct task_struct *p,
 	struct task_security_struct *tsec;
 	u32 sid = 0;
 	int error;
+	char *str = value;
 
 	if (current != p || !strcmp(name, "current")) {
 		/* SELinux only allows a process to change its own
@@ -4116,8 +4132,11 @@ static int selinux_setprocattr(struct task_struct *p,
 		return error;
 
 	/* Obtain a SID for the context, if one was specified. */
-	if (size) {
-		int error;
+	if (size && str[1] && str[1] != '\n') {
+		if (str[size-1] == '\n') {
+			str[size-1] = 0;
+			size--;
+		}
 		error = security_context_to_sid(value, size, &sid);
 		if (error)
 			return error;

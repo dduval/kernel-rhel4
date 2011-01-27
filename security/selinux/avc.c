@@ -131,8 +131,10 @@ void avc_dump_av(struct audit_buffer *ab, u16 tclass, u32 av)
 	i = 0;
 	perm = 1;
 	while (perm < common_base) {
-		if (perm & av)
+		if (perm & av) {
 			audit_log_format(ab, " %s", common_pts[i]);
+			av &= ~perm;
+		}
 		i++;
 		perm <<= 1;
 	}
@@ -144,13 +146,18 @@ void avc_dump_av(struct audit_buffer *ab, u16 tclass, u32 av)
 				    (av_perm_to_string[i2].value == perm))
 					break;
 			}
-			if (i2 < ARRAY_SIZE(av_perm_to_string))
+			if (i2 < ARRAY_SIZE(av_perm_to_string)) {
 				audit_log_format(ab, " %s",
 						 av_perm_to_string[i2].name);
+				av &= ~perm;
+			}
 		}
 		i++;
 		perm <<= 1;
 	}
+
+	if (av)
+		audit_log_format(ab, " 0x%x", av);
 
 	audit_log_format(ab, " }");
 }
@@ -204,7 +211,7 @@ void __init avc_init(void)
 	avc_node_cachep = kmem_cache_create("avc_node", sizeof(struct avc_node),
 					     0, SLAB_PANIC, NULL, NULL);
 
-	audit_log(current->audit_context, "AVC INITIALIZED\n");
+	audit_log(current->audit_context, GFP_KERNEL, AUDIT_KERNEL, "AVC INITIALIZED\n");
 }
 
 int avc_get_hash_stats(char *page)
@@ -512,7 +519,7 @@ void avc_audit(u32 ssid, u32 tsid,
 			return;
 	}
 
-	ab = audit_log_start(current->audit_context);
+	ab = audit_log_start(current->audit_context, GFP_ATOMIC, AUDIT_AVC);
 	if (!ab)
 		return;		/* audit_panic has been called */
 	audit_log_format(ab, "avc:  %s ", denied ? "denied" : "granted");
@@ -520,8 +527,10 @@ void avc_audit(u32 ssid, u32 tsid,
 	audit_log_format(ab, " for ");
 	if (a && a->tsk)
 		tsk = a->tsk;
-	if (tsk && tsk->pid)
-		audit_log_format(ab, " pid=%d comm=%s", tsk->pid, tsk->comm);
+	if (tsk && tsk->pid) {
+		audit_log_format(ab, " pid=%d comm=", tsk->pid);
+		audit_log_untrustedstring(ab, tsk->comm);
+	}
 
 	if (a) {
 		switch (a->type) {
@@ -534,21 +543,18 @@ void avc_audit(u32 ssid, u32 tsid,
 		case AVC_AUDIT_DATA_FS:
 			if (a->u.fs.dentry) {
 				struct dentry *dentry = a->u.fs.dentry;
-				if (a->u.fs.mnt) {
-					audit_log_d_path(ab, "path=", dentry,
-							a->u.fs.mnt);
-				} else {
-					audit_log_format(ab, " name=%s",
-							 dentry->d_name.name);
-				}
+				if (a->u.fs.mnt)
+					audit_avc_path(dentry, a->u.fs.mnt);
+				audit_log_format(ab, " name=");
+				audit_log_untrustedstring(ab, dentry->d_name.name);
 				inode = dentry->d_inode;
 			} else if (a->u.fs.inode) {
 				struct dentry *dentry;
 				inode = a->u.fs.inode;
 				dentry = d_find_alias(inode);
 				if (dentry) {
-					audit_log_format(ab, " name=%s",
-							 dentry->d_name.name);
+					audit_log_format(ab, " name=");
+					audit_log_untrustedstring(ab, dentry->d_name.name);
 					dput(dentry);
 				}
 			}
@@ -591,22 +597,20 @@ void avc_audit(u32 ssid, u32 tsid,
 				case AF_UNIX:
 					u = unix_sk(sk);
 					if (u->dentry) {
-						audit_log_d_path(ab, "path=",
-							u->dentry, u->mnt);
+						audit_avc_path(u->dentry, u->mnt);
+						audit_log_format(ab, " name=");
+						audit_log_untrustedstring(ab, u->dentry->d_name.name);
 						break;
 					}
 					if (!u->addr)
 						break;
 					len = u->addr->len-sizeof(short);
 					p = &u->addr->name->sun_path[0];
+					audit_log_format(ab, " path=");
 					if (*p)
-						audit_log_format(ab,
-							"path=%*.*s", len,
-							len, p);
+						audit_log_untrustedstring(ab, p);
 					else
-						audit_log_format(ab,
-							"path=@%*.*s", len-1,
-							len-1, p+1);
+						audit_log_hex(ab, p, len);
 					break;
 				}
 			}

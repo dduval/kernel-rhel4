@@ -54,7 +54,11 @@ struct thread_info {
 #endif
 
 #define PREEMPT_ACTIVE		0x4000000
+#ifdef CONFIG_4KSTACKS
 #define THREAD_SIZE            (4096)
+#else
+#define THREAD_SIZE		(8192)
+#endif
 
 #define STACK_WARN             (THREAD_SIZE/8)
 /*

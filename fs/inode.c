@@ -21,6 +21,7 @@
 #include <linux/pagemap.h>
 #include <linux/cdev.h>
 #include <linux/bootmem.h>
+#include <linux/audit.h>
 
 /*
  * This is needed for the following functions:
@@ -174,6 +175,7 @@ void destroy_inode(struct inode *inode)
 {
 	if (inode_has_buffers(inode))
 		BUG();
+	audit_inode_free(inode);
 	security_inode_free(inode);
 	if (inode->i_sb->s_op->destroy_inode)
 		inode->i_sb->s_op->destroy_inode(inode);
@@ -260,7 +262,7 @@ void clear_inode(struct inode *inode)
 		bd_forget(inode);
 	if (inode->i_cdev)
 		cd_forget(inode);
-	inode->i_state = I_CLEAR;
+	inode->i_state = I_CLEAR | (inode->i_state & I_AUDIT);
 }
 
 EXPORT_SYMBOL(clear_inode);
@@ -512,7 +514,7 @@ repeat:
 			continue;
 		if (!test(inode, data))
 			continue;
-		if (inode->i_state & (I_FREEING|I_CLEAR)) {
+		if (inode->i_state & (I_FREEING|I_CLEAR|I_WILL_FREE)) {
 			__wait_on_freeing_inode(inode);
 			goto repeat;
 		}
@@ -537,7 +539,7 @@ repeat:
 			continue;
 		if (inode->i_sb != sb)
 			continue;
-		if (inode->i_state & (I_FREEING|I_CLEAR)) {
+		if (inode->i_state & (I_FREEING|I_CLEAR|I_WILL_FREE)) {
 			__wait_on_freeing_inode(inode);
 			goto repeat;
 		}
@@ -736,7 +738,7 @@ EXPORT_SYMBOL(iunique);
 struct inode *igrab(struct inode *inode)
 {
 	spin_lock(&inode_lock);
-	if (!(inode->i_state & I_FREEING))
+	if (!(inode->i_state & (I_FREEING|I_WILL_FREE)))
 		__iget(inode);
 	else
 		/*
@@ -1017,7 +1019,7 @@ void generic_delete_inode(struct inode *inode)
 	hlist_del_init(&inode->i_hash);
 	spin_unlock(&inode_lock);
 	wake_up_inode(inode);
-	if (inode->i_state != I_CLEAR)
+	if ((inode->i_state & ~I_AUDIT) != I_CLEAR)
 		BUG();
 	destroy_inode(inode);
 }
@@ -1032,16 +1034,20 @@ static void generic_forget_inode(struct inode *inode)
 		if (!(inode->i_state & (I_DIRTY|I_LOCK)))
 			list_move(&inode->i_list, &inode_unused);
 		inodes_stat.nr_unused++;
-		spin_unlock(&inode_lock);
-		if (!sb || (sb->s_flags & MS_ACTIVE))
+		if (!sb || (sb->s_flags & MS_ACTIVE)) {
+			spin_unlock(&inode_lock);
 			return;
+		}
+		inode->i_state |= I_WILL_FREE;
+		spin_unlock(&inode_lock);
 		write_inode_now(inode, 1);
 		spin_lock(&inode_lock);
+		inode->i_state &= ~I_WILL_FREE;
 		inodes_stat.nr_unused--;
 		hlist_del_init(&inode->i_hash);
 	}
 	list_del_init(&inode->i_list);
-	inode->i_state|=I_FREEING;
+	inode->i_state |= I_FREEING;
 	inodes_stat.nr_inodes--;
 	spin_unlock(&inode_lock);
 	if (inode->i_data.nrpages)
@@ -1055,13 +1061,15 @@ static void generic_forget_inode(struct inode *inode)
  * inode when the usage count drops to zero, and
  * i_nlink is zero.
  */
-static void generic_drop_inode(struct inode *inode)
+void generic_drop_inode(struct inode *inode)
 {
 	if (!inode->i_nlink)
 		generic_delete_inode(inode);
 	else
 		generic_forget_inode(inode);
 }
+
+EXPORT_SYMBOL_GPL(generic_drop_inode);
 
 /*
  * Called when we're dropping the last reference
@@ -1130,19 +1138,6 @@ sector_t bmap(struct inode * inode, sector_t block)
 
 EXPORT_SYMBOL(bmap);
 
-/*
- * Return true if the filesystem which backs this inode considers the two
- * passed timespecs to be sufficiently different to warrant flushing the
- * altered time out to disk.
- */
-static int inode_times_differ(struct inode *inode,
-			struct timespec *old, struct timespec *new)
-{
-	if (IS_ONE_SECOND(inode))
-		return old->tv_sec != new->tv_sec;
-	return !timespec_equal(old, new);
-}
-
 /**
  *	update_atime	-	update the access time
  *	@inode: inode accessed
@@ -1162,8 +1157,8 @@ void update_atime(struct inode *inode)
 	if (IS_RDONLY(inode))
 		return;
 
-	now = current_kernel_time();
-	if (inode_times_differ(inode, &inode->i_atime, &now)) {
+	now = current_fs_time(inode->i_sb);
+	if (!timespec_equal(&inode->i_atime, &now)) {
 		inode->i_atime = now;
 		mark_inode_dirty_sync(inode);
 	} else {
@@ -1193,14 +1188,13 @@ void inode_update_time(struct inode *inode, int ctime_too)
 	if (IS_RDONLY(inode))
 		return;
 
-	now = current_kernel_time();
-
-	if (inode_times_differ(inode, &inode->i_mtime, &now))
+	now = current_fs_time(inode->i_sb);
+	if (!timespec_equal(&inode->i_mtime, &now))
 		sync_it = 1;
 	inode->i_mtime = now;
 
 	if (ctime_too) {
-		if (inode_times_differ(inode, &inode->i_ctime, &now))
+		if (!timespec_equal(&inode->i_ctime, &now))
 			sync_it = 1;
 		inode->i_ctime = now;
 	}
@@ -1376,6 +1370,7 @@ void __init inode_init(unsigned long mempages)
 	inode_cachep = kmem_cache_create("inode_cache", sizeof(struct inode),
 				0, SLAB_PANIC, init_once, NULL);
 	set_shrinker(DEFAULT_SEEKS, shrink_icache_memory);
+	audit_filesystem_init();
 }
 
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)

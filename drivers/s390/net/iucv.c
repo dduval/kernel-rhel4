@@ -2554,12 +2554,12 @@ EXPORT_SYMBOL (iucv_reply_prmmsg);
 EXPORT_SYMBOL (iucv_resume);
 #endif
 EXPORT_SYMBOL (iucv_send);
-#if 0
 EXPORT_SYMBOL (iucv_send2way);
 EXPORT_SYMBOL (iucv_send2way_array);
-EXPORT_SYMBOL (iucv_send_array);
 EXPORT_SYMBOL (iucv_send2way_prmmsg);
 EXPORT_SYMBOL (iucv_send2way_prmmsg_array);
+#if 0
+EXPORT_SYMBOL (iucv_send_array);
 EXPORT_SYMBOL (iucv_send_prmmsg);
 EXPORT_SYMBOL (iucv_setmask);
 #endif

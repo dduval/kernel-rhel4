@@ -44,6 +44,10 @@ ACPI_MODULE_NAME		("pci_root")
 #define ACPI_PCI_ROOT_DRIVER_NAME	"ACPI PCI Root Bridge Driver"
 #define ACPI_PCI_ROOT_DEVICE_NAME	"PCI Root Bridge"
 
+#if defined(CONFIG_X86)
+extern int pci_noseg;
+#endif
+
 static int acpi_pci_root_add (struct acpi_device *device);
 static int acpi_pci_root_remove (struct acpi_device *device, int type);
 
@@ -200,6 +204,13 @@ acpi_pci_root_add (
 		goto end;
 	}
 
+#if defined(CONFIG_X86)
+	if (root->id.segment && pci_noseg) {
+		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "pci=noseg enabled, forcing segment %d to 0\n", root->id.segment));
+		root->id.segment = 0;
+	}
+#endif
+
 	/* 
 	 * Bus
 	 * ---
@@ -296,8 +307,11 @@ acpi_pci_root_add (
 			root->id.bus);
 
 end:
-	if (result)
+	if (result) {
+		if (!list_empty(&root->node))
+			list_del(&root->node);
 		kfree(root);
+	}
 
 	return_VALUE(result);
 }

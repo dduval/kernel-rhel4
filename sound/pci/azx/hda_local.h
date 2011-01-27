@@ -36,7 +36,7 @@
 #define HDA_CODEC_VOLUME_IDX(xname, xcidx, nid, xindex, direction) \
 	HDA_CODEC_VOLUME_MONO_IDX(xname, xcidx, nid, 3, xindex, direction)
 #define HDA_CODEC_VOLUME_MONO(xname, nid, channel, xindex, direction) \
-	HDA_CODEC_VOLUME_MONO_IDX(xname, 0, nid, 3, xindex, direction)
+	HDA_CODEC_VOLUME_MONO_IDX(xname, 0, nid, channel, xindex, direction)
 #define HDA_CODEC_VOLUME(xname, nid, xindex, direction) \
 	HDA_CODEC_VOLUME_MONO(xname, nid, 3, xindex, direction)
 #define HDA_CODEC_MUTE_MONO_IDX(xname, xcidx, nid, channel, xindex, direction) \
@@ -48,7 +48,7 @@
 #define HDA_CODEC_MUTE_IDX(xname, xcidx, nid, xindex, direction) \
 	HDA_CODEC_MUTE_MONO_IDX(xname, xcidx, nid, 3, xindex, direction)
 #define HDA_CODEC_MUTE_MONO(xname, nid, channel, xindex, direction) \
-	HDA_CODEC_MUTE_MONO_IDX(xname, 0, nid, 3, xindex, direction)
+	HDA_CODEC_MUTE_MONO_IDX(xname, 0, nid, channel, xindex, direction)
 #define HDA_CODEC_MUTE(xname, nid, xindex, direction) \
 	HDA_CODEC_MUTE_MONO(xname, nid, 3, xindex, direction)
 
@@ -60,6 +60,7 @@ int snd_hda_mixer_amp_switch_get(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t 
 int snd_hda_mixer_amp_switch_put(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *ucontrol);
 
 int snd_hda_create_spdif_out_ctls(struct hda_codec *codec, hda_nid_t nid);
+int snd_hda_create_spdif_in_ctls(struct hda_codec *codec, hda_nid_t nid);
 
 /*
  * input MUX helper
@@ -125,11 +126,11 @@ static inline int snd_hda_codec_proc_new(struct hda_codec *codec) { return 0; }
 struct hda_board_config {
 	const char *modelname;
 	int config;
-	unsigned short pci_vendor;
-	unsigned short pci_device;
+	unsigned short pci_subvendor;
+	unsigned short pci_subdevice;
 };
 
-int snd_hda_check_board_config(struct hda_codec *codec, struct hda_board_config *tbl);
+int snd_hda_check_board_config(struct hda_codec *codec, const struct hda_board_config *tbl);
 int snd_hda_add_new_ctls(struct hda_codec *codec, snd_kcontrol_new_t *knew);
 
 /*
@@ -138,6 +139,54 @@ int snd_hda_add_new_ctls(struct hda_codec *codec, snd_kcontrol_new_t *knew);
 #ifdef CONFIG_PM
 int snd_hda_resume_ctls(struct hda_codec *codec, snd_kcontrol_new_t *knew);
 int snd_hda_resume_spdif_out(struct hda_codec *codec);
+int snd_hda_resume_spdif_in(struct hda_codec *codec);
 #endif
+
+/*
+ * unsolicited event handler
+ */
+
+#define HDA_UNSOL_QUEUE_SIZE	64
+
+struct hda_bus_unsolicited {
+	/* ring buffer */
+	u32 queue[HDA_UNSOL_QUEUE_SIZE * 2];
+	unsigned int rp, wp;
+
+	/* workqueue */
+	struct workqueue_struct *workq;
+	struct work_struct work;
+};
+
+/*
+ * Helper for automatic ping configuration
+ */
+
+enum {
+	AUTO_PIN_MIC,
+	AUTO_PIN_FRONT_MIC,
+	AUTO_PIN_LINE,
+	AUTO_PIN_FRONT_LINE,
+	AUTO_PIN_CD,
+	AUTO_PIN_AUX,
+	AUTO_PIN_LAST
+};
+
+struct auto_pin_cfg {
+	int line_outs;
+	hda_nid_t line_out_pins[4]; /* sorted in the order of Front/Surr/CLFE/Side */
+	hda_nid_t hp_pin;
+	hda_nid_t input_pins[AUTO_PIN_LAST];
+	hda_nid_t dig_out_pin;
+	hda_nid_t dig_in_pin;
+};
+
+#define get_defcfg_connect(cfg) ((cfg & AC_DEFCFG_PORT_CONN) >> AC_DEFCFG_PORT_CONN_SHIFT)
+#define get_defcfg_association(cfg) ((cfg & AC_DEFCFG_DEF_ASSOC) >> AC_DEFCFG_ASSOC_SHIFT)
+#define get_defcfg_location(cfg) ((cfg & AC_DEFCFG_LOCATION) >> AC_DEFCFG_LOCATION_SHIFT)
+#define get_defcfg_sequence(cfg) (cfg & AC_DEFCFG_SEQUENCE)
+#define get_defcfg_device(cfg) ((cfg & AC_DEFCFG_DEVICE) >> AC_DEFCFG_DEVICE_SHIFT)
+
+int snd_hda_parse_pin_def_config(struct hda_codec *codec, struct auto_pin_cfg *cfg);
 
 #endif /* __SOUND_HDA_LOCAL_H */

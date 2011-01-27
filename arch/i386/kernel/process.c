@@ -38,6 +38,7 @@
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 #include <linux/random.h>
+#include <linux/kprobes.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -304,6 +305,13 @@ void exit_thread(void)
 	struct task_struct *tsk = current;
 	struct thread_struct *t = &tsk->thread;
 
+	/*
+	 * Remove function-return probe instances associated with this task
+	 * and put them back on the free list. Do not insert an exit probe for
+	 * this function, it will be disabled by kprobe_flush_task if you do.
+	 */
+	kprobe_flush_task(tsk);
+
 	/* The process may have allocated an io port bitmap... nuke it. */
 	if (unlikely(NULL != t->io_bitmap_ptr)) {
 		int cpu = get_cpu();
@@ -326,6 +334,13 @@ void exit_thread(void)
 void flush_thread(void)
 {
 	struct task_struct *tsk = current;
+
+	/*
+	 * Remove function-return probe instances associated with this task
+	 * and put them back on the free list. Do not insert an exit probe for
+	 * this function, it will be disabled by kprobe_flush_task if you do.
+	 */
+	kprobe_flush_task(tsk);
 
 	memset(tsk->thread.debugreg, 0, sizeof(unsigned long)*8);
 #ifdef CONFIG_X86_HIGH_ENTRY

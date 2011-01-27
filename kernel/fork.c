@@ -24,6 +24,7 @@
 #include <linux/mempolicy.h>
 #include <linux/sem.h>
 #include <linux/file.h>
+#include <linux/key.h>
 #include <linux/binfmts.h>
 #include <linux/mman.h>
 #include <linux/fs.h>
@@ -79,6 +80,7 @@ static kmem_cache_t *task_struct_cachep;
 
 void free_task(struct task_struct *tsk)
 {
+	kfree(task_aux(tsk));
 	free_thread_info(tsk->thread_info);
 	free_task_struct(tsk);
 }
@@ -225,8 +227,11 @@ int autoremove_wake_function(wait_queue_t *wait, unsigned mode, int sync, void *
 
 EXPORT_SYMBOL(autoremove_wake_function);
 
+static struct task_struct_aux init_task_aux;
+
 void __init fork_init(unsigned long mempages)
 {
+	task_aux(current) = &init_task_aux;
 #ifndef __HAVE_ARCH_TASK_STRUCT_ALLOCATOR
 #ifndef ARCH_MIN_TASKALIGN
 #define ARCH_MIN_TASKALIGN	L1_CACHE_BYTES
@@ -255,6 +260,7 @@ void __init fork_init(unsigned long mempages)
 
 static struct task_struct *dup_task_struct(struct task_struct *orig)
 {
+	struct task_struct_aux *aux;
 	struct task_struct *tsk;
 	struct thread_info *ti;
 
@@ -270,10 +276,19 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 		return NULL;
 	}
 
+	aux = kmalloc(sizeof(*aux), GFP_KERNEL);
+	if (!aux) {
+		free_thread_info(ti);
+		free_task_struct(tsk);
+		return NULL;
+	}
+
 	*ti = *orig->thread_info;
+	*aux = *task_aux(orig);
 	*tsk = *orig;
 	tsk->thread_info = ti;
 	ti->task = tsk;
+	task_aux(tsk) = aux;
 
 	/* One for us, one for whoever does the "release_task()" (usually parent) */
 	atomic_set(&tsk->usage,2);
@@ -533,14 +548,14 @@ EXPORT_SYMBOL_GPL(get_task_mm);
  */
 void mm_release(struct task_struct *tsk, struct mm_struct *mm)
 {
-	struct completion *vfork_done = tsk->vfork_done;
+	struct completion *vfork_done = task_aux(tsk)->vfork_done;
 
 	/* Get rid of any cached register state */
 	deactivate_mm(tsk, mm);
 
 	/* notify parent sleeping on vfork() */
 	if (vfork_done) {
-		tsk->vfork_done = NULL;
+		task_aux(tsk)->vfork_done = NULL;
 		complete(vfork_done);
 	}
 	if (tsk->clear_child_tid && atomic_read(&mm->mm_users) > 1) {
@@ -845,6 +860,7 @@ static inline int copy_sighand(unsigned long clone_flags, struct task_struct * t
 static inline int copy_signal(unsigned long clone_flags, struct task_struct * tsk)
 {
 	struct signal_struct *sig;
+	int ret;
 
 	if (clone_flags & CLONE_THREAD) {
 		atomic_inc(&current->signal->count);
@@ -854,6 +870,13 @@ static inline int copy_signal(unsigned long clone_flags, struct task_struct * ts
 	tsk->signal = sig;
 	if (!sig)
 		return -ENOMEM;
+
+	ret = copy_thread_group_keys(tsk);
+	if (ret < 0) {
+		kmem_cache_free(signal_cachep, sig);
+		return ret;
+	}
+
 	atomic_set(&sig->count, 1);
 	sig->group_exit = 0;
 	sig->group_exit_code = 0;
@@ -981,7 +1004,7 @@ static task_t *copy_process(unsigned long clone_flags,
 	INIT_LIST_HEAD(&p->children);
 	INIT_LIST_HEAD(&p->sibling);
 	init_waitqueue_head(&p->wait_chldexit);
-	p->vfork_done = NULL;
+	task_aux(p)->vfork_done = NULL;
 	spin_lock_init(&p->alloc_lock);
 	spin_lock_init(&p->proc_lock);
 
@@ -1026,8 +1049,10 @@ static task_t *copy_process(unsigned long clone_flags,
 		goto bad_fork_cleanup_sighand;
 	if ((retval = copy_mm(clone_flags, p)))
 		goto bad_fork_cleanup_signal;
-	if ((retval = copy_namespace(clone_flags, p)))
+	if ((retval = copy_keys(clone_flags, p)))
 		goto bad_fork_cleanup_mm;
+	if ((retval = copy_namespace(clone_flags, p)))
+		goto bad_fork_cleanup_keys;
 	retval = copy_thread(0, clone_flags, stack_start, stack_size, p, regs);
 	if (retval)
 		goto bad_fork_cleanup_namespace;
@@ -1149,6 +1174,8 @@ fork_out:
 
 bad_fork_cleanup_namespace:
 	exit_namespace(p);
+bad_fork_cleanup_keys:
+	exit_keys(p);
 bad_fork_cleanup_mm:
 	if (p->mm)
 		mmput(p->mm);
@@ -1253,7 +1280,7 @@ long do_fork(unsigned long clone_flags,
 		struct completion vfork;
 
 		if (clone_flags & CLONE_VFORK) {
-			p->vfork_done = &vfork;
+			task_aux(p)->vfork_done = &vfork;
 			init_completion(&vfork);
 		}
 

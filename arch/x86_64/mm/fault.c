@@ -23,6 +23,7 @@
 #include <linux/vt_kern.h>		/* For unblank_screen() */
 #include <linux/compiler.h>
 #include <linux/module.h>
+#include <linux/kprobes.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -268,6 +269,9 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 
 	/* get the address */
 	__asm__("movq %%cr2,%0":"=r" (address));
+	if (notify_die(DIE_PAGE_FAULT, "page_fault", regs, error_code, 14,
+					SIGSEGV) == NOTIFY_STOP)
+		return;
 
 	if (likely(regs->eflags & X86_EFLAGS_IF))
 		local_irq_enable();

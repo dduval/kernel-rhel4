@@ -1881,10 +1881,28 @@ ret_einval(unsigned int fd, unsigned int cmd, unsigned long arg)
 	return -EINVAL;
 }
 
+static int do_blkgetsize(unsigned int fd, unsigned int cmd, unsigned long arg)
+{
+	/* It's basically doing the same job as w_long except that we
+	 * need to return EFBIG on result overflow. */
+	int err;
+	unsigned long val = 0;
+	unsigned long __user *arg64 = compat_alloc_user_space(sizeof(long));
+	
+	err = sys_ioctl(fd, cmd, (unsigned long) arg64);
+	if (!err) 
+		err = get_user(val, arg64);
+	if (!err && val >= (1UL << 32))
+		err = -EFBIG;
+	if (!err && put_user(val, (u32 __user *)compat_ptr(arg)))
+		err = -EFAULT;
+	return err;
+}
+
 static int broken_blkgetsize(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	/* The mkswap binary hard codes it to Intel value :-((( */
-	return w_long(fd, BLKGETSIZE, arg);
+	return do_blkgetsize(fd, BLKGETSIZE, arg);
 }
 
 struct blkpg_ioctl_arg32 {
@@ -3212,7 +3230,7 @@ HANDLE_IOCTL(SIOCGSTAMP, do_siocgstamp)
 #endif
 HANDLE_IOCTL(HDIO_GETGEO, hdio_getgeo)
 HANDLE_IOCTL(BLKRAGET, w_long)
-HANDLE_IOCTL(BLKGETSIZE, w_long)
+HANDLE_IOCTL(BLKGETSIZE, do_blkgetsize)
 HANDLE_IOCTL(0x1260, broken_blkgetsize)
 HANDLE_IOCTL(BLKFRAGET, w_long)
 HANDLE_IOCTL(BLKSECTGET, w_long)

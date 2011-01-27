@@ -702,7 +702,7 @@ ext2_xattr_set2(struct inode *inode, struct buffer_head *old_bh,
 
 	/* Update the inode. */
 	EXT2_I(inode)->i_file_acl = new_bh ? new_bh->b_blocknr : 0;
-	inode->i_ctime = CURRENT_TIME;
+	inode->i_ctime = CURRENT_TIME_SEC;
 	if (IS_SYNC(inode)) {
 		error = ext2_sync_inode (inode);
 		if (error)
@@ -874,6 +874,7 @@ ext2_xattr_cmp(struct ext2_xattr_header *header1,
 		if (IS_LAST_ENTRY(entry2))
 			return 1;
 		if (entry1->e_hash != entry2->e_hash ||
+		    entry1->e_name_index != entry2->e_name_index ||
 		    entry1->e_name_len != entry2->e_name_len ||
 		    entry1->e_value_size != entry2->e_value_size ||
 		    memcmp(entry1->e_name, entry2->e_name, entry1->e_name_len))

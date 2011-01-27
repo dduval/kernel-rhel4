@@ -556,6 +556,7 @@ asmlinkage void __init start_kernel(void)
 	proc_caches_init();
 	buffer_init();
 	unnamed_dev_init();
+	key_init();
 	security_scaffolding_startup();
 	vfs_caches_init(num_physpages);
 	radix_tree_init();

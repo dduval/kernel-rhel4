@@ -462,8 +462,9 @@ acpi_processor_idle (void)
 	 * Track the number of longs (time asleep is greater than threshold)
 	 * and promote when the count threshold is reached.  Note that bus
 	 * mastering activity may prevent promotions.
+	 * Do not promote above max_cstate.
 	 */
-	if (cx->promotion.state) {
+	if (cx->promotion.state && (cx->promotion.state <= max_cstate)) {
 		if (sleep_ticks > cx->promotion.threshold.ticks) {
 			cx->promotion.count++;
  			cx->demotion.count = 0;
@@ -500,6 +501,13 @@ acpi_processor_idle (void)
 	}
 
 end:
+	/*
+	 * Demote if current state exceeds max_cstate
+	 */
+	if (pr->power.state > max_cstate) {
+		next_state = max_cstate;
+	}
+
 	/*
 	 * New Cx State?
 	 * -------------
@@ -967,6 +975,7 @@ acpi_processor_get_performance_states (
 	struct acpi_buffer	state = {0, NULL};
 	union acpi_object 	*pss = NULL;
 	int			i = 0;
+	int			count = 0;
 
 	ACPI_FUNCTION_TRACE("acpi_processor_get_performance_states");
 
@@ -983,8 +992,21 @@ acpi_processor_get_performance_states (
 		goto end;
 	}
 
-	ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found %d performance states\n", 
-		pss->package.count));
+	/* Some BIOS's have a bunch of empty (or zeroed) values after the real values */
+	/* in the _PSS table. Here we make a count the valid (non-zero) entries */ 
+	for (i=0; i<pss->package.count; i++) {
+        	if ( pss->package.elements[i].integer.value )
+                	count++;
+	}	
+
+	/* Do a sanity check, set to max valid entries if package.count is not sane */
+        if (pss->package.count > count ) {
+                printk(KERN_WARNING "Limiting number of power states to max (%d)\n", count);
+                pss->package.count = count;
+        }
+	else
+		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found %d performance states\n", 
+			pss->package.count));
 
 	pr->performance->state_count = pss->package.count;
 	pr->performance->states = kmalloc(sizeof(struct acpi_processor_px) * pss->package.count, GFP_KERNEL);
@@ -2492,5 +2514,6 @@ acpi_processor_exit (void)
 
 module_init(acpi_processor_init);
 module_exit(acpi_processor_exit);
+module_param(max_cstate, uint, 0);
 
 EXPORT_SYMBOL(acpi_processor_set_thermal_limit);

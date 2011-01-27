@@ -145,7 +145,7 @@ zfcp_cmd_dbf_event_fsf(const char *text, struct zfcp_fsf_req *fsf_req,
 	int i;
 	unsigned long flags;
 
-	write_lock_irqsave(&adapter->cmd_dbf_lock, flags);
+	spin_lock_irqsave(&adapter->dbf_lock, flags);
 	if (zfcp_fsf_req_is_scsi_cmnd(fsf_req)) {
 		scsi_cmnd = fsf_req->data.send_fcp_command_task.scsi_cmnd;
 		debug_text_event(adapter->cmd_dbf, level, "fsferror");
@@ -164,7 +164,7 @@ zfcp_cmd_dbf_event_fsf(const char *text, struct zfcp_fsf_req *fsf_req,
 				    (char *) add_data + i,
 				    min(ZFCP_CMD_DBF_LENGTH, add_length - i));
 	}
-	write_unlock_irqrestore(&adapter->cmd_dbf_lock, flags);
+	spin_unlock_irqrestore(&adapter->dbf_lock, flags);
 }
 
 /* XXX additionally log unit if available */
@@ -181,7 +181,7 @@ zfcp_cmd_dbf_event_scsi(const char *text, struct scsi_cmnd *scsi_cmnd)
 	adapter = (struct zfcp_adapter *) scsi_cmnd->device->host->hostdata[0];
 	req_data = (union zfcp_req_data *) scsi_cmnd->host_scribble;
 	fsf_req = (req_data ? req_data->send_fcp_command_task.fsf_req : NULL);
-	write_lock_irqsave(&adapter->cmd_dbf_lock, flags);
+	spin_lock_irqsave(&adapter->dbf_lock, flags);
 	debug_text_event(adapter->cmd_dbf, level, "hostbyte");
 	debug_text_event(adapter->cmd_dbf, level, text);
 	debug_event(adapter->cmd_dbf, level, &scsi_cmnd->result, sizeof (u32));
@@ -198,7 +198,7 @@ zfcp_cmd_dbf_event_scsi(const char *text, struct scsi_cmnd *scsi_cmnd)
 		debug_text_event(adapter->cmd_dbf, level, "");
 		debug_text_event(adapter->cmd_dbf, level, "");
 	}
-	write_unlock_irqrestore(&adapter->cmd_dbf_lock, flags);
+	spin_unlock_irqrestore(&adapter->dbf_lock, flags);
 }
 
 void
@@ -278,7 +278,7 @@ zfcp_init_device_configure(void)
 		goto out_unit;
 	up(&zfcp_data.config_sema);
 	ccw_device_set_online(adapter->ccw_device);
-	wait_event(unit->scsi_add_wq, atomic_read(&unit->scsi_add_work) == 0);
+	zfcp_erp_wait(adapter);
 	down(&zfcp_data.config_sema);
 	zfcp_unit_put(unit);
  out_unit:
@@ -597,7 +597,8 @@ zfcp_sg_list_alloc(struct zfcp_sg_list *sg_list, size_t size)
 		retval = -ENOMEM;
 		goto out;
 	}
-
+	memset(sg_list->sg, 0, sg_list->count * sizeof(struct scatterlist));
+	
 	for (i = 0, sg = sg_list->sg; i < sg_list->count; i++, sg++) {
 		sg->length = min(size, PAGE_SIZE);
 		sg->offset = 0;
@@ -874,7 +875,6 @@ zfcp_unit_enqueue(struct zfcp_port *port, fcp_lun_t fcp_lun)
 		return NULL;
 	memset(unit, 0, sizeof (struct zfcp_unit));
 
-	init_waitqueue_head(&unit->scsi_add_wq);
 	/* initialise reference count stuff */
 	atomic_set(&unit->refcount, 0);
 	init_waitqueue_head(&unit->remove_wq);
@@ -1048,11 +1048,10 @@ zfcp_adapter_debug_register(struct zfcp_adapter *adapter)
 	char dbf_name[20];
 
 	/* debug feature area which records SCSI command failures (hostbyte) */
-	rwlock_init(&adapter->cmd_dbf_lock);
+	spin_lock_init(&adapter->dbf_lock);
 	sprintf(dbf_name, ZFCP_CMD_DBF_NAME "%s",
 		zfcp_get_busid_by_adapter(adapter));
-	adapter->cmd_dbf = debug_register(dbf_name,
-					  ZFCP_CMD_DBF_INDEX,
+	adapter->cmd_dbf = debug_register(dbf_name, ZFCP_CMD_DBF_INDEX,
 					  ZFCP_CMD_DBF_AREAS,
 					  ZFCP_CMD_DBF_LENGTH);
 	debug_register_view(adapter->cmd_dbf, &debug_hex_ascii_view);
@@ -1061,18 +1060,16 @@ zfcp_adapter_debug_register(struct zfcp_adapter *adapter)
 	/* debug feature area which records SCSI command aborts */
 	sprintf(dbf_name, ZFCP_ABORT_DBF_NAME "%s",
 		zfcp_get_busid_by_adapter(adapter));
-	adapter->abort_dbf = debug_register(dbf_name,
-					    ZFCP_ABORT_DBF_INDEX,
+	adapter->abort_dbf = debug_register(dbf_name, ZFCP_ABORT_DBF_INDEX,
 					    ZFCP_ABORT_DBF_AREAS,
 					    ZFCP_ABORT_DBF_LENGTH);
 	debug_register_view(adapter->abort_dbf, &debug_hex_ascii_view);
 	debug_set_level(adapter->abort_dbf, ZFCP_ABORT_DBF_LEVEL);
 
-	/* debug feature area which records SCSI command aborts */
+	/* debug feature area which records incoming ELS commands */
 	sprintf(dbf_name, ZFCP_IN_ELS_DBF_NAME "%s",
 		zfcp_get_busid_by_adapter(adapter));
-	adapter->in_els_dbf = debug_register(dbf_name,
-					     ZFCP_IN_ELS_DBF_INDEX,
+	adapter->in_els_dbf = debug_register(dbf_name, ZFCP_IN_ELS_DBF_INDEX,
 					     ZFCP_IN_ELS_DBF_AREAS,
 					     ZFCP_IN_ELS_DBF_LENGTH);
 	debug_register_view(adapter->in_els_dbf, &debug_hex_ascii_view);
@@ -1082,19 +1079,18 @@ zfcp_adapter_debug_register(struct zfcp_adapter *adapter)
 	/* debug feature area which records erp events */
 	sprintf(dbf_name, ZFCP_ERP_DBF_NAME "%s",
 		zfcp_get_busid_by_adapter(adapter));
-	adapter->erp_dbf = debug_register(dbf_name,
-					  ZFCP_ERP_DBF_INDEX,
+	adapter->erp_dbf = debug_register(dbf_name, ZFCP_ERP_DBF_INDEX,
 					  ZFCP_ERP_DBF_AREAS,
 					  ZFCP_ERP_DBF_LENGTH);
 	debug_register_view(adapter->erp_dbf, &debug_hex_ascii_view);
 	debug_set_level(adapter->erp_dbf, ZFCP_ERP_DBF_LEVEL);
 
-	if (adapter->cmd_dbf && adapter->abort_dbf &&
-	    adapter->in_els_dbf && adapter->erp_dbf)
-		return 0;
-
-	zfcp_adapter_debug_unregister(adapter);
-	return -ENOMEM;
+	if (!(adapter->cmd_dbf && adapter->abort_dbf &&
+	      adapter->in_els_dbf && adapter->erp_dbf)) {
+		zfcp_adapter_debug_unregister(adapter);
+		return -ENOMEM;
+	}
+	return 0;
 }
 
 /**
@@ -1104,10 +1100,14 @@ zfcp_adapter_debug_register(struct zfcp_adapter *adapter)
 void
 zfcp_adapter_debug_unregister(struct zfcp_adapter *adapter)
 {
-	debug_unregister(adapter->erp_dbf);
-	debug_unregister(adapter->cmd_dbf);
-	debug_unregister(adapter->abort_dbf);
-	debug_unregister(adapter->in_els_dbf);
+ 	debug_unregister(adapter->abort_dbf);
+ 	debug_unregister(adapter->cmd_dbf);
+ 	debug_unregister(adapter->erp_dbf);
+ 	debug_unregister(adapter->in_els_dbf);
+	adapter->abort_dbf = NULL;
+	adapter->cmd_dbf = NULL;
+	adapter->erp_dbf = NULL;
+	adapter->in_els_dbf = NULL;
 }
 
 void

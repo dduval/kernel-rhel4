@@ -47,14 +47,16 @@
 #include <linux/proc_fs.h>
 
 #define PFX "IPMI message handler: "
-#define IPMI_MSGHANDLER_VERSION "v33"
+#define IPMI_MSGHANDLER_VERSION "33.4"
 
 struct ipmi_recv_msg *ipmi_alloc_recv_msg(void);
 static int ipmi_init_msghandler(void);
 
 static int initialized = 0;
 
-static struct proc_dir_entry *proc_ipmi_root = NULL;
+#ifdef CONFIG_PROC_FS
+struct proc_dir_entry *proc_ipmi_root = NULL;
+#endif /* CONFIG_PROC_FS */
 
 #define MAX_EVENTS_IN_QUEUE	25
 
@@ -124,11 +126,13 @@ struct ipmi_channel
 	unsigned char protocol;
 };
 
+#ifdef CONFIG_PROC_FS
 struct ipmi_proc_entry
 {
 	char                   *name;
 	struct ipmi_proc_entry *next;
 };
+#endif
 
 #define IPMI_IPMB_NUM_SEQ	64
 #define IPMI_MAX_CHANNELS       8
@@ -156,10 +160,13 @@ struct ipmi_smi
 	struct ipmi_smi_handlers *handlers;
 	void                     *send_info;
 
+#ifdef CONFIG_PROC_FS
 	/* A list of proc entries for this interface.  This does not
 	   need a lock, only one thread creates it and only one thread
 	   destroys it. */
+	spinlock_t             proc_entry_lock;
 	struct ipmi_proc_entry *proc_entries;
+#endif
 
 	/* A table of sequence numbers for this interface.  We use the
            sequence numbers for IPMB messages that go out of the
@@ -481,6 +488,9 @@ unsigned int ipmi_addr_length(int addr_type)
 		return sizeof(struct ipmi_ipmb_addr);
 	}
 
+	if (addr_type == IPMI_LAN_ADDR_TYPE)
+		return sizeof(struct ipmi_lan_addr);
+
 	return 0;
 }
 
@@ -675,7 +685,7 @@ int ipmi_create_user(unsigned int          if_num,
 		return -ENOMEM;
 
 	down_read(&interfaces_sem);
-	if ((if_num > MAX_IPMI_INTERFACES) || ipmi_interfaces[if_num] == NULL)
+	if ((if_num >= MAX_IPMI_INTERFACES) || ipmi_interfaces[if_num] == NULL)
 	{
 		rv = -EINVAL;
 		goto out_unlock;
@@ -1533,8 +1543,9 @@ int ipmi_smi_add_proc_entry(ipmi_smi_t smi, char *name,
 			    read_proc_t *read_proc, write_proc_t *write_proc,
 			    void *data, struct module *owner)
 {
-	struct proc_dir_entry  *file;
 	int                    rv = 0;
+#ifdef CONFIG_PROC_FS
+	struct proc_dir_entry  *file;
 	struct ipmi_proc_entry *entry;
 
 	/* Create a list element. */
@@ -1560,10 +1571,13 @@ int ipmi_smi_add_proc_entry(ipmi_smi_t smi, char *name,
 		file->write_proc = write_proc;
 		file->owner = owner;
 
+		spin_lock(&smi->proc_entry_lock);
 		/* Stick it on the list. */
 		entry->next = smi->proc_entries;
 		smi->proc_entries = entry;
+		spin_unlock(&smi->proc_entry_lock);
 	}
+#endif /* CONFIG_PROC_FS */
 
 	return rv;
 }
@@ -1572,6 +1586,7 @@ static int add_proc_entries(ipmi_smi_t smi, int num)
 {
 	int rv = 0;
 
+#ifdef CONFIG_PROC_FS
 	sprintf(smi->proc_dir_name, "%d", num);
 	smi->proc_dir = proc_mkdir(smi->proc_dir_name, proc_ipmi_root);
 	if (!smi->proc_dir)
@@ -1594,14 +1609,17 @@ static int add_proc_entries(ipmi_smi_t smi, int num)
 		rv = ipmi_smi_add_proc_entry(smi, "version",
 					     version_file_read_proc, NULL,
 					     smi, THIS_MODULE);
+#endif /* CONFIG_PROC_FS */
 
 	return rv;
 }
 
 static void remove_proc_entries(ipmi_smi_t smi)
 {
+#ifdef CONFIG_PROC_FS
 	struct ipmi_proc_entry *entry;
 
+	spin_lock(&smi->proc_entry_lock);
 	while (smi->proc_entries) {
 		entry = smi->proc_entries;
 		smi->proc_entries = entry->next;
@@ -1610,7 +1628,9 @@ static void remove_proc_entries(ipmi_smi_t smi)
 		kfree(entry->name);
 		kfree(entry);
 	}
+	spin_unlock(&smi->proc_entry_lock);
 	remove_proc_entry(smi->proc_dir_name, proc_ipmi_root);
+#endif /* CONFIG_PROC_FS */
 }
 
 static int
@@ -1714,6 +1734,7 @@ int ipmi_register_smi(struct ipmi_smi_handlers *handlers,
 		      void		       *send_info,
 		      unsigned char            version_major,
 		      unsigned char            version_minor,
+		      unsigned char            slave_addr,
 		      ipmi_smi_t               *intf)
 {
 	int              i, j;
@@ -1749,7 +1770,10 @@ int ipmi_register_smi(struct ipmi_smi_handlers *handlers,
 			new_intf->intf_num = i;
 			new_intf->version_major = version_major;
 			new_intf->version_minor = version_minor;
-			new_intf->my_address = IPMI_BMC_SLAVE_ADDR;
+			if (slave_addr == 0)
+				new_intf->my_address = IPMI_BMC_SLAVE_ADDR;
+			else
+				new_intf->my_address = slave_addr;
 			new_intf->my_lun = 2;  /* the SMS LUN. */
 			rwlock_init(&(new_intf->users_lock));
 			INIT_LIST_HEAD(&(new_intf->users));
@@ -1761,6 +1785,9 @@ int ipmi_register_smi(struct ipmi_smi_handlers *handlers,
 				new_intf->seq_table[j].seqid = 0;
 			}
 			new_intf->curr_seq = 0;
+#ifdef CONFIG_PROC_FS
+			spin_lock_init(&(new_intf->proc_entry_lock));
+#endif
 			spin_lock_init(&(new_intf->waiting_msgs_lock));
 			INIT_LIST_HEAD(&(new_intf->waiting_msgs));
 			spin_lock_init(&(new_intf->events_lock));
@@ -3145,6 +3172,7 @@ static int ipmi_init_msghandler(void)
 		ipmi_interfaces[i] = NULL;
 	}
 
+#ifdef CONFIG_PROC_FS
 	proc_ipmi_root = proc_mkdir("ipmi", NULL);
 	if (!proc_ipmi_root) {
 	    printk(KERN_ERR PFX "Unable to create IPMI proc dir");
@@ -3152,6 +3180,7 @@ static int ipmi_init_msghandler(void)
 	}
 
 	proc_ipmi_root->owner = THIS_MODULE;
+#endif /* CONFIG_PROC_FS */
 
 	init_timer(&ipmi_timer);
 	ipmi_timer.data = 0;
@@ -3192,7 +3221,9 @@ static __exit void cleanup_ipmi(void)
 		schedule_timeout(1);
 	}
 
+#ifdef CONFIG_PROC_FS
 	remove_proc_entry(proc_ipmi_root->name, &proc_root);
+#endif /* CONFIG_PROC_FS */
 
 	initialized = 0;
 
@@ -3210,6 +3241,9 @@ module_exit(cleanup_ipmi);
 
 module_init(ipmi_init_msghandler_mod);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Corey Minyard <minyard@mvista.com>");
+MODULE_DESCRIPTION("Incoming and outgoing message routing for an IPMI interface.");
+MODULE_VERSION(IPMI_MSGHANDLER_VERSION);
 
 EXPORT_SYMBOL(ipmi_alloc_recv_msg);
 EXPORT_SYMBOL(ipmi_create_user);
@@ -3240,4 +3274,5 @@ EXPORT_SYMBOL(ipmi_get_my_address);
 EXPORT_SYMBOL(ipmi_set_my_LUN);
 EXPORT_SYMBOL(ipmi_get_my_LUN);
 EXPORT_SYMBOL(ipmi_smi_add_proc_entry);
+EXPORT_SYMBOL(proc_ipmi_root);
 EXPORT_SYMBOL(ipmi_user_set_run_to_completion);

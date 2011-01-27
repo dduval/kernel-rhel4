@@ -1,4 +1,3 @@
-#define __NO_VERSION__
 /*
  * Universal Interface for Intel High Definition Audio Codec
  *
@@ -45,7 +44,7 @@ struct hda_gnode {
 	struct list_head list;
 };
 
-/* pathc-specific record */
+/* patch-specific record */
 struct hda_gspec {
 	struct hda_gnode *dac_node;	/* DAC node */
 	struct hda_gnode *out_pin_node;	/* Output pin (Line-Out) node */
@@ -69,8 +68,8 @@ struct hda_gspec {
 /*
  * retrieve the default device type from the default config value
  */
-#define get_defcfg_type(node) (((node)->def_cfg & AC_DEFCFG_DEVICE) >> AC_DEFCFG_DEVICE_SHIFT)
-#define get_defcfg_location(node) (((node)->def_cfg & AC_DEFCFG_LOCATION) >> AC_DEFCFG_LOCATION_SHIFT)
+#define defcfg_type(node) (((node)->def_cfg & AC_DEFCFG_DEVICE) >> AC_DEFCFG_DEVICE_SHIFT)
+#define defcfg_location(node) (((node)->def_cfg & AC_DEFCFG_LOCATION) >> AC_DEFCFG_LOCATION_SHIFT)
 
 /*
  * destructor
@@ -127,7 +126,7 @@ static int add_new_node(struct hda_codec *codec, struct hda_gspec *spec, hda_nid
 	if (node->wid_caps & AC_WCAP_IN_AMP) {
 		if (node->wid_caps & AC_WCAP_AMP_OVRD)
 			node->amp_in_caps = snd_hda_param_read(codec, node->nid, AC_PAR_AMP_IN_CAP);
-		if (! node->amp_out_caps)
+		if (! node->amp_in_caps)
 			node->amp_in_caps = spec->def_amp_in_caps;
 	}
 	list_add_tail(&node->list, &spec->nid_list);
@@ -210,6 +209,8 @@ static int unmute_input(struct hda_codec *codec, struct hda_gnode *node, unsigne
 		val -= ofs;
 	val |= AC_AMP_SET_LEFT | AC_AMP_SET_RIGHT;
 	val |= AC_AMP_SET_INPUT;
+	// awk added - fixed to allow unmuting of indexed amps
+	val |= index << AC_AMP_SET_INDEX_SHIFT;
 	return snd_hda_codec_write(codec, node->nid, 0, AC_VERB_SET_AMP_GAIN_MUTE, val);
 }
 
@@ -253,6 +254,10 @@ static int parse_output_path(struct hda_codec *codec, struct hda_gspec *spec,
 
 	node->checked = 1;
 	if (node->type == AC_WID_AUD_OUT) {
+		if (node->wid_caps & AC_WCAP_DIGITAL) {
+			snd_printdd("Skip Digital OUT node %x\n", node->nid);
+			return 0;
+		}
 		snd_printdd("AUD_OUT found %x\n", node->nid);
 		if (spec->dac_node) {
 			/* already DAC node is assigned, just unmute & connect */
@@ -318,8 +323,10 @@ static struct hda_gnode *parse_output_jack(struct hda_codec *codec,
 		if (! (node->pin_caps & AC_PINCAP_OUT))
 			continue;
 		if (jack_type >= 0) {
-			if (jack_type != get_defcfg_type(node))
+			if (jack_type != defcfg_type(node))
 				continue;
+			if (node->wid_caps & AC_WCAP_DIGITAL)
+				continue; /* skip SPDIF */
 		} else {
 			/* output as default? */
 			if (! (node->pin_ctl & AC_PINCTL_OUT_EN))
@@ -411,15 +418,15 @@ static int capture_source_put(snd_kcontrol_t *kcontrol, snd_ctl_elem_value_t *uc
  */
 static const char *get_input_type(struct hda_gnode *node, unsigned int *pinctl)
 {
-	unsigned int location = get_defcfg_location(node);
-	switch (get_defcfg_type(node)) {
+	unsigned int location = defcfg_location(node);
+	switch (defcfg_type(node)) {
 	case AC_JACK_LINE_IN:
 		if ((location & 0x0f) == AC_JACK_LOC_FRONT)
 			return "Front Line";
 		return "Line";
 	case AC_JACK_CD:
 		if (pinctl)
-			*pinctl |= AC_PIN_VREF_GRD;
+			*pinctl |= AC_PINCTL_VREF_GRD;
 		return "CD";
 	case AC_JACK_AUX:
 		if ((location & 0x0f) == AC_JACK_LOC_FRONT)
@@ -481,6 +488,9 @@ static int parse_adc_sub_nodes(struct hda_codec *codec, struct hda_gspec *spec,
 	if (! (node->pin_caps & AC_PINCAP_IN))
 		return 0;
 
+	if (node->wid_caps & AC_WCAP_DIGITAL)
+		return 0; /* skip SPDIF */
+
 	if (spec->input_mux.num_items >= HDA_MAX_NUM_INPUTS) {
 		snd_printk(KERN_ERR "hda_generic: Too many items for capture\n");
 		return -EINVAL;
@@ -519,6 +529,9 @@ static int parse_input_path(struct hda_codec *codec, struct hda_gnode *adc_node)
 	snd_printdd("AUD_IN = %x\n", adc_node->nid);
 	clear_check_flags(spec);
 
+	// awk added - fixed no recording due to muted widget
+	unmute_input(codec, adc_node, 0);
+	
 	/*
 	 * check each connection of the ADC
 	 * if it reaches to a proper input PIN, add the path as the
@@ -578,6 +591,8 @@ static int parse_input(struct hda_codec *codec)
 	 */
 	list_for_each(p, &spec->nid_list) {
 		node = list_entry(p, struct hda_gnode, list);
+		if (node->wid_caps & AC_WCAP_DIGITAL)
+			continue; /* skip SPDIF */
 		if (node->type == AC_WID_AUD_IN) {
 			err = parse_input_path(codec, node);
 			if (err < 0)
@@ -602,6 +617,7 @@ static int create_mixer(struct hda_codec *codec, struct hda_gnode *node,
 	char name[32];
 	int err;
 	int created = 0;
+	snd_kcontrol_new_t knew;
 
 	if (type)
 		sprintf(name, "%s %s Switch", type, dir_sfx);
@@ -609,16 +625,14 @@ static int create_mixer(struct hda_codec *codec, struct hda_gnode *node,
 		sprintf(name, "%s Switch", dir_sfx);
 	if ((node->wid_caps & AC_WCAP_IN_AMP) &&
 	    (node->amp_in_caps & AC_AMPCAP_MUTE)) {
-		snd_kcontrol_new_t knew =
-			HDA_CODEC_MUTE(name, node->nid, index, HDA_INPUT);
+		knew = (snd_kcontrol_new_t)HDA_CODEC_MUTE(name, node->nid, index, HDA_INPUT);
 		snd_printdd("[%s] NID=0x%x, DIR=IN, IDX=0x%x\n", name, node->nid, index);
 		if ((err = snd_ctl_add(codec->bus->card, snd_ctl_new1(&knew, codec))) < 0)
 			return err;
 		created = 1;
 	} else if ((node->wid_caps & AC_WCAP_OUT_AMP) &&
 		   (node->amp_out_caps & AC_AMPCAP_MUTE)) {
-		snd_kcontrol_new_t knew =
-			HDA_CODEC_MUTE(name, node->nid, 0, HDA_OUTPUT);
+		knew = (snd_kcontrol_new_t)HDA_CODEC_MUTE(name, node->nid, 0, HDA_OUTPUT);
 		snd_printdd("[%s] NID=0x%x, DIR=OUT\n", name, node->nid);
 		if ((err = snd_ctl_add(codec->bus->card, snd_ctl_new1(&knew, codec))) < 0)
 			return err;
@@ -631,16 +645,14 @@ static int create_mixer(struct hda_codec *codec, struct hda_gnode *node,
 		sprintf(name, "%s Volume", dir_sfx);
 	if ((node->wid_caps & AC_WCAP_IN_AMP) &&
 	    (node->amp_in_caps & AC_AMPCAP_NUM_STEPS)) {
-		snd_kcontrol_new_t knew =
-			HDA_CODEC_VOLUME(name, node->nid, index, HDA_INPUT);
+		knew = (snd_kcontrol_new_t)HDA_CODEC_VOLUME(name, node->nid, index, HDA_INPUT);
 		snd_printdd("[%s] NID=0x%x, DIR=IN, IDX=0x%x\n", name, node->nid, index);
 		if ((err = snd_ctl_add(codec->bus->card, snd_ctl_new1(&knew, codec))) < 0)
 			return err;
 		created = 1;
 	} else if ((node->wid_caps & AC_WCAP_OUT_AMP) &&
 		   (node->amp_out_caps & AC_AMPCAP_NUM_STEPS)) {
-		snd_kcontrol_new_t knew =
-			HDA_CODEC_VOLUME(name, node->nid, 0, HDA_OUTPUT);
+		knew = (snd_kcontrol_new_t)HDA_CODEC_VOLUME(name, node->nid, 0, HDA_OUTPUT);
 		snd_printdd("[%s] NID=0x%x, DIR=OUT\n", name, node->nid);
 		if ((err = snd_ctl_add(codec->bus->card, snd_ctl_new1(&knew, codec))) < 0)
 			return err;

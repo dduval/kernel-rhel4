@@ -337,4 +337,9 @@ sys_call_table:
 	.long sys_mq_timedreceive
 	.long sys_mq_notify
 	.long sys_mq_getsetattr		/* 310 */
+	.long sys_ni_syscall	/* Reserved for kexec */
+	.long sys_ni_syscall	/* Reserved for waitid */
+	.long sys_add_key
+	.long sys_request_key
+	.long sys_keyctl		/* 315 */
 

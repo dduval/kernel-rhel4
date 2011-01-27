@@ -2209,8 +2209,8 @@ static void active_load_balance(runqueue_t *busiest, int busiest_cpu)
 	if (busiest->nr_running <= 1)
 		return;
 
-	for_each_domain(busiest_cpu, sd)
-		if (cpu_isset(busiest->push_cpu, sd->span))
+	for_each_domain(busiest->push_cpu, sd)
+		if (cpu_isset(busiest_cpu, sd->span))
 			break;
 	if (!sd)
 		return;

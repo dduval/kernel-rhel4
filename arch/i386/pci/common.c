@@ -27,6 +27,8 @@ int pcibios_last_bus = -1;
 struct pci_bus *pci_root_bus = NULL;
 struct pci_raw_ops *raw_pci_ops;
 
+int pci_noseg = 0;
+
 static int pci_read(struct pci_bus *bus, unsigned int devfn, int where, int size, u32 *value)
 {
 	return raw_pci_ops->read(0, bus->number, devfn, where, size, value);
@@ -205,6 +207,10 @@ char * __devinit  pcibios_setup(char *str)
 		return NULL;
 	}
 #endif
+	else if (!strcmp(str, "noseg")) {
+		pci_noseg = 1;
+		return NULL;
+	}
 	else if (!strcmp(str, "noacpi")) {
 		acpi_noirq_set();
 		return NULL;

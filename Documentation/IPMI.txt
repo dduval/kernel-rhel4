@@ -342,6 +342,7 @@ You can change this at module load time (for a module) with:
        irqs=<irq1>,<irq2>... trydefaults=[0|1]
        regspacings=<sp1>,<sp2>,... regsizes=<size1>,<size2>,...
        regshifts=<shift1>,<shift2>,...
+       slave_addrs=<addr1>,<addr2>,...
 
 Each of these except si_trydefaults is a list, the first item for the
 first interface, second item for the second interface, etc.
@@ -383,6 +384,10 @@ Since the register size may be larger than 32 bits, the IPMI data may not
 be in the lower 8 bits.  The regshifts parameter give the amount to shift
 the data to get to the actual IPMI data.
 
+The slave_addrs specifies the IPMI address of the local BMC.  This is
+usually 0x20 and the driver defaults to that, but in case it's not, it
+can be specified when the driver starts up.
+
 When compiled into the kernel, the addresses can be specified on the
 kernel command line as:
 
@@ -392,6 +397,7 @@ kernel command line as:
        ipmi_si.regspacings=<sp1>,<sp2>,...
        ipmi_si.regsizes=<size1>,<size2>,...
        ipmi_si.regshifts=<shift1>,<shift2>,...
+       ipmi_si.slave_addrs=<addr1>,<addr2>,...
 
 It works the same as the module parameters of the same names.
 
@@ -526,3 +532,23 @@ Once you open the watchdog timer, you must write a 'V' character to the
 device to close it, or the timer will not stop.  This is a new semantic
 for the driver, but makes it consistent with the rest of the watchdog
 drivers in Linux.
+
+
+Poweroff
+ --------
+ 
+If the poweroff capability is selected, the IPMI driver will install
+a shutdown function into the standard poweroff function pointer.  This
+is in the ipmi_poweroff module.  When the system requests a powerdown,
+it will send the proper IPMI commands to do this.  This is supported on
+several platforms.
+
+There is a module parameter named "poweroff_control" that may either be zero
+(do a power down) or 2 (do a power cycle, power the system off, then power
+it on in a few seconds).  Setting ipmi_poweroff.poweroff_control=x will do
+the same thing on the kernel command line.  The parameter is also available
+via the proc filesystem in /proc/ipmi/poweroff_control.  Note that if the
+system does not support power cycling, it will always to the power off.
+
+Note that if you have ACPI enabled, the system will prefer using ACPI to
+power off.

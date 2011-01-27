@@ -100,12 +100,15 @@ static void reboot_warm(void)
 static void smp_halt(void)
 {
 	int cpuid = safe_smp_processor_id(); 
-		static int first_entry = 1;
+	static int first_entry = 1;
 
-		if (first_entry) { 
-			first_entry = 0;
-			smp_call_function((void *)machine_restart, NULL, 1, 0);
-		} 
+	if (first_entry) { 
+		first_entry = 0;
+		/* If nobody's alive, just return to machine_restart */
+		if (num_online_cpus() == 1)
+			return;
+		smp_call_function((void *)machine_restart, NULL, 1, 0);
+	} 
 			
 	smp_stop_cpu(); 
 

@@ -186,6 +186,8 @@ extern void iounmap(void __iomem *addr);
 #define __raw_readl readl
 #define __raw_readq readq
 
+#define mmiowb()
+
 #ifdef CONFIG_UNORDERED_IO
 static inline void __writel(__u32 val, void __iomem *addr)
 {

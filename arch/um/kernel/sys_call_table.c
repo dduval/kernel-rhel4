@@ -306,6 +306,9 @@ syscall_handler_t *sys_call_table[] = {
 	[ __NR_utimes ] (syscall_handler_t *) sys_utimes,
 	[ __NR_fadvise64_64 ] (syscall_handler_t *) sys_fadvise64_64,
 	[ __NR_vserver ] (syscall_handler_t *) sys_ni_syscall,
+	[ __NR_add_key ] = (syscall_handler_t *) sys_add_key,
+	[ __NR_request_key ] = (syscall_handler_t *) sys_request_key,
+	[ __NR_keyctl ] = (syscall_handler_t *) sys_keyctl,
 
 	ARCH_SYSCALLS
 	[ LAST_SYSCALL + 1 ... NR_syscalls ] = 

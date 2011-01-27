@@ -53,6 +53,8 @@ static u8 svwks_proc = 0;
 static struct pci_dev *svwks_devs[SVWKS_MAX_DEVS];
 static int n_svwks_devs;
 
+static int serverworks_claim_all = 0;	/* Do not claim MegaRAIDed chips */
+
 static int svwks_get_info (char *buffer, char **addr, off_t offset, int count)
 {
 	char *p = buffer;
@@ -510,7 +512,7 @@ static int svwks_ide_dma_end (ide_drive_t *drive)
 	return __ide_dma_end(drive);
 }
 
-static unsigned int __init init_chipset_svwks (struct pci_dev *dev, const char *name)
+static unsigned int __devinit init_chipset_svwks (struct pci_dev *dev, const char *name)
 {
 	unsigned int reg;
 	u8 btr;
@@ -621,7 +623,7 @@ static unsigned int __init init_chipset_svwks (struct pci_dev *dev, const char *
 	return (dev->irq) ? dev->irq : 0;
 }
 
-static unsigned int __init ata66_svwks_svwks (ide_hwif_t *hwif)
+static unsigned int __devinit ata66_svwks_svwks (ide_hwif_t *hwif)
 {
 	return 1;
 }
@@ -633,7 +635,7 @@ static unsigned int __init ata66_svwks_svwks (ide_hwif_t *hwif)
  * Bit 14 clear = primary IDE channel does not have 80-pin cable.
  * Bit 14 set   = primary IDE channel has 80-pin cable.
  */
-static unsigned int __init ata66_svwks_dell (ide_hwif_t *hwif)
+static unsigned int __devinit ata66_svwks_dell (ide_hwif_t *hwif)
 {
 	struct pci_dev *dev = hwif->pci_dev;
 	if (dev->subsystem_vendor == PCI_VENDOR_ID_DELL &&
@@ -651,7 +653,7 @@ static unsigned int __init ata66_svwks_dell (ide_hwif_t *hwif)
  *
  * WARNING: this only works on Alpine hardware!
  */
-static unsigned int __init ata66_svwks_cobalt (ide_hwif_t *hwif)
+static unsigned int __devinit ata66_svwks_cobalt (ide_hwif_t *hwif)
 {
 	struct pci_dev *dev = hwif->pci_dev;
 	if (dev->subsystem_vendor == PCI_VENDOR_ID_SUN &&
@@ -662,7 +664,7 @@ static unsigned int __init ata66_svwks_cobalt (ide_hwif_t *hwif)
 	return 0;
 }
 
-static unsigned int __init ata66_svwks (ide_hwif_t *hwif)
+static unsigned int __devinit ata66_svwks (ide_hwif_t *hwif)
 {
 	struct pci_dev *dev = hwif->pci_dev;
 
@@ -687,7 +689,7 @@ static unsigned int __init ata66_svwks (ide_hwif_t *hwif)
 }
 
 #undef CAN_SW_DMA
-static void __init init_hwif_svwks (ide_hwif_t *hwif)
+static void __devinit init_hwif_svwks (ide_hwif_t *hwif)
 {
 	u8 dma_stat = 0;
 
@@ -735,7 +737,7 @@ static void __init init_hwif_svwks (ide_hwif_t *hwif)
 /*
  * We allow the BM-DMA driver to only work on enabled interfaces.
  */
-static void __init init_dma_svwks (ide_hwif_t *hwif, unsigned long dmabase)
+static void __devinit init_dma_svwks (ide_hwif_t *hwif, unsigned long dmabase)
 {
 	struct pci_dev *dev = hwif->pci_dev;
 
@@ -747,7 +749,7 @@ static void __init init_dma_svwks (ide_hwif_t *hwif, unsigned long dmabase)
 	ide_setup_dma(hwif, dmabase, 8);
 }
 
-static void __init init_setup_svwks (struct pci_dev *dev, ide_pci_device_t *d)
+static void __devinit init_setup_svwks (struct pci_dev *dev, ide_pci_device_t *d)
 {
 	ide_setup_pci_device(dev, d);
 }
@@ -786,6 +788,17 @@ static int __devinit svwks_init_one(struct pci_dev *dev, const struct pci_device
 {
 	ide_pci_device_t *d = &serverworks_chipsets[id->driver_data];
 
+	/* Refuse to acknowledge CSB6 in MegaRAID mode on IBM HS20/40 blade. */
+	if (!serverworks_claim_all &&
+		((dev->subsystem_vendor == PCI_VENDOR_ID_IBM &&
+		dev->subsystem_device == PCI_DEVICE_ID_SERVERWORKS_CSB6IDE) ||
+		(dev->subsystem_vendor == PCI_VENDOR_ID_INTEL &&
+		dev->subsystem_device == PCI_DEVICE_ID_SERVERWORKS_CSB6IDE)) )
+	{
+		printk(KERN_INFO "svwks: MegaRAID detected; ignoring.\n");
+		return -ENODEV;
+	}
+
 	d->init_setup(dev, d);
 	return 0;
 }
@@ -811,6 +824,14 @@ static int svwks_ide_init(void)
 }
 
 module_init(svwks_ide_init);
+
+static int __init svwks_claim_all(char *tr)
+{
+	serverworks_claim_all = 1;	/* Claim mega ide */
+	printk("svwks: Will claim MegaRAIDed chips.\n");
+}
+
+__setup("svwks_claim_all", svwks_claim_all);
 
 MODULE_AUTHOR("Michael Aubry. Andrzej Krzysztofowicz, Andre Hedrick");
 MODULE_DESCRIPTION("PCI driver module for Serverworks OSB4/CSB5/CSB6 IDE");

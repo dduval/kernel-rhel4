@@ -28,7 +28,7 @@ obj-$(CONFIG_SCSI)		+= scsi_mod.o
 # --------------------------
 obj-$(CONFIG_SCSI_SPI_ATTRS)	+= scsi_transport_spi.o
 obj-$(CONFIG_SCSI_FC_ATTRS) 	+= scsi_transport_fc.o
-
+obj-$(CONFIG_SCSI_ISCSI_ATTRS)	+= scsi_transport_iscsi.o
 
 obj-$(CONFIG_SCSI_AMIGA7XX)	+= amiga7xx.o	53c7xx.o
 obj-$(CONFIG_A3000_SCSI)	+= a3000.o	wd33c93.o
@@ -101,6 +101,7 @@ obj-$(CONFIG_SCSI_ACARD)	+= atp870u.o
 obj-$(CONFIG_SCSI_SUNESP)	+= esp.o
 obj-$(CONFIG_SCSI_GDTH)		+= gdth.o
 obj-$(CONFIG_SCSI_INITIO)	+= initio.o
+obj-$(CONFIG_SCSI_ISCSI_SFNET)	+= iscsi_sfnet/
 obj-$(CONFIG_SCSI_INIA100)	+= a100u2w.o
 obj-$(CONFIG_SCSI_QLOGICPTI)	+= qlogicpti.o
 obj-$(CONFIG_BLK_DEV_IDESCSI)	+= ide-scsi.o

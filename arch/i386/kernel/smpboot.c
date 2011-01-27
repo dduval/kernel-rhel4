@@ -60,7 +60,11 @@ static int __initdata smp_b_stepping;
 
 /* Number of siblings per CPU package */
 int smp_num_siblings = 1;
+/* Number of CPU cores per package */
+int smp_num_cores = 1;
 int phys_proc_id[NR_CPUS]; /* Package ID of each logical CPU */
+int cpu_core_id[NR_CPUS]; /* Core ID of each logical CPU */
+EXPORT_SYMBOL(cpu_core_id);
 
 /* bitmap of online cpus */
 cpumask_t cpu_online_map;
@@ -382,8 +386,6 @@ void __init smp_callin(void)
 	setup_local_APIC();
 	map_cpu_to_logical_apicid();
 
-	local_irq_enable();
-
 	/*
 	 * Get our bogomips.
 	 */
@@ -396,7 +398,6 @@ void __init smp_callin(void)
  	smp_store_cpu_info(cpuid);
 
 	disable_APIC_timer();
-	local_irq_disable();
 	/*
 	 * Allow the master to continue.
 	 */

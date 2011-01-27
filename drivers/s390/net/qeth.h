@@ -15,7 +15,7 @@
 #include <net/addrconf.h>
 
 
-#include <asm/bitops.h>
+#include <linux/bitops.h>
 #include <asm/debug.h>
 #include <asm/qdio.h>
 #include <asm/ccwdev.h>
@@ -792,9 +792,9 @@ qeth_get_hlen(__u8 link_type)
 }
 
 inline static unsigned short
-qeth_get_netdev_flags(int cardtype)
+qeth_get_netdev_flags(struct qeth_card *card)
 {
-	switch (cardtype) {
+	switch (card->info.type) {
 	case QETH_CARD_TYPE_IQD:
 		return IFF_NOARP;
 #ifdef CONFIG_QETH_IPV6

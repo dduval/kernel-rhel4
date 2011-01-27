@@ -135,6 +135,7 @@ enum
 	KERN_HZ_TIMER=65,	/* int: hz timer on or off */
 	KERN_UNKNOWN_NMI_PANIC=66, /* int: unknown nmi panic flag */
 	KERN_SETUID_DUMPABLE=67, /* int: behaviour of dumps for setuid core */
+	KERN_SERCONS_ESC=68,	/* int: ascii code of ser-cons "break" or -1 */
 };
 
 
@@ -168,6 +169,7 @@ enum
 	VM_HUGETLB_GROUP=25,	/* permitted hugetlb group */
 	VM_VFS_CACHE_PRESSURE=26, /* dcache/icache reclaim pressure */
 	VM_LEGACY_VA_LAYOUT=27, /* legacy/compatibility virtual address space layout */
+	VM_OOM_KILL=28,		/* oom killer enabled */
 };
 
 

@@ -17,6 +17,7 @@
 #include <linux/smp_lock.h>
 #include <linux/user.h>
 #include <linux/security.h>
+#include <linux/audit.h>
 
 #include <asm/pgtable.h>
 #include <asm/processor.h>
@@ -851,6 +852,13 @@ access_uarea (struct task_struct *child, unsigned long addr, unsigned long *data
 				*data = (pt->cr_ipsr & IPSR_READ_MASK);
 			return 0;
 
+		      case PT_AR_RSC:
+			if (write_access)
+				pt->ar_rsc = *data | (3 << 2); /* force PL3 */
+			else
+				*data = pt->ar_rsc;
+			return 0;	
+
 		      case PT_AR_RNAT:
 			urbs_end = ia64_get_user_rbs_end(child, pt, NULL);
 			rnat_addr = (long) ia64_rse_rnat_addr((long *) urbs_end);
@@ -905,9 +913,6 @@ access_uarea (struct task_struct *child, unsigned long addr, unsigned long *data
 		      case PT_AR_BSPSTORE:
 			ptr = (unsigned long *)
 				((long) pt + offsetof(struct pt_regs, ar_bspstore));
-			break;
-		      case PT_AR_RSC:
-			ptr = (unsigned long *) ((long) pt + offsetof(struct pt_regs, ar_rsc));
 			break;
 		      case PT_AR_UNAT:
 			ptr = (unsigned long *) ((long) pt + offsetof(struct pt_regs, ar_unat));
@@ -1141,7 +1146,7 @@ ptrace_getregs (struct task_struct *child, struct pt_all_user_regs __user *ppr)
 static long
 ptrace_setregs (struct task_struct *child, struct pt_all_user_regs __user *ppr)
 {
-	unsigned long psr, ec, lc, rnat, bsp, cfm, nat_bits, val = 0;
+	unsigned long psr, rsc, ec, lc, rnat, bsp, cfm, nat_bits, val = 0;
 	struct unw_frame_info info;
 	struct switch_stack *sw;
 	struct ia64_fpreg fpval;
@@ -1178,7 +1183,7 @@ ptrace_setregs (struct task_struct *child, struct pt_all_user_regs __user *ppr)
 	/* app regs */
 
 	retval |= __get_user(pt->ar_pfs, &ppr->ar[PT_AUR_PFS]);
-	retval |= __get_user(pt->ar_rsc, &ppr->ar[PT_AUR_RSC]);
+	retval |= __get_user(rsc, &ppr->ar[PT_AUR_RSC]);
 	retval |= __get_user(pt->ar_bspstore, &ppr->ar[PT_AUR_BSPSTORE]);
 	retval |= __get_user(pt->ar_unat, &ppr->ar[PT_AUR_UNAT]);
 	retval |= __get_user(pt->ar_ccv, &ppr->ar[PT_AUR_CCV]);
@@ -1271,6 +1276,7 @@ ptrace_setregs (struct task_struct *child, struct pt_all_user_regs __user *ppr)
 	retval |= __get_user(nat_bits, &ppr->nat);
 
 	retval |= access_uarea(child, PT_CR_IPSR, &psr, 1);
+	retval |= access_uarea(child, PT_AR_RSC, &rsc, 1);
 	retval |= access_uarea(child, PT_AR_EC, &ec, 1);
 	retval |= access_uarea(child, PT_AR_LC, &lc, 1);
 	retval |= access_uarea(child, PT_AR_RNAT, &rnat, 1);
@@ -1507,17 +1513,22 @@ syscall_trace_enter (long arg0, long arg1, long arg2, long arg3,
 	struct pt_regs *regs = (struct pt_regs *) &stack;
 	long syscall;
 
-	if (unlikely(current->audit_context)) {
-		if (IS_IA32_PROCESS(regs))
-			syscall = regs->r1;
-		else
-			syscall = regs->r15;
-
-		audit_syscall_entry(current, syscall, arg0, arg1, arg2, arg3);
-	}
-
 	if (test_thread_flag(TIF_SYSCALL_TRACE) && (current->ptrace & PT_PTRACED))
 		syscall_trace();
+
+	if (unlikely(current->audit_context)) {
+		int arch;
+
+		if (IS_IA32_PROCESS(regs)) {
+			syscall = regs->r1;
+			arch = AUDIT_ARCH_I386;
+		} else {
+			syscall = regs->r15;
+			arch = AUDIT_ARCH_IA64;
+		}
+		audit_syscall_entry(current, arch, syscall, arg0, arg1, arg2, arg3);
+	}
+
 }
 
 /* "asmlinkage" so the input arguments are preserved... */
@@ -1527,7 +1538,9 @@ syscall_trace_leave (long arg0, long arg1, long arg2, long arg3,
 		     long arg4, long arg5, long arg6, long arg7, long stack)
 {
 	if (unlikely(current->audit_context))
-		audit_syscall_exit(current, ((struct pt_regs *) &stack)->r8);
+		audit_syscall_exit(current, 
+				   AUDITSC_RESULT(((struct pt_regs *) &stack)->r8),
+				   ((struct pt_regs *) &stack)->r8);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE) && (current->ptrace & PT_PTRACED))
 		syscall_trace();

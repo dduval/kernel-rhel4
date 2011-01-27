@@ -811,9 +811,9 @@ static int init_or_cleanup(int init)
 	nf_unregister_hook(&ip_conntrack_defrag_ops);
  cleanup_proc_stat:
 #ifdef CONFIG_PROC_FS
-	proc_net_remove("ip_conntrack_stat");
-cleanup_proc_exp:
-	proc_net_remove("ip_conntrack_exp");
+	remove_proc_entry("ip_conntrack", proc_net_stat);
+ cleanup_proc_exp:
+	proc_net_remove("ip_conntrack_expect");
  cleanup_proc:
 	proc_net_remove("ip_conntrack");
  cleanup_init:

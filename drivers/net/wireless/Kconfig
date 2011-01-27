@@ -213,12 +213,9 @@ config IPW2100
 	tristate "Intel PRO/Wireless 2100 802.11b"
 	depends on NET_RADIO && PCI && IEEE80211
 	select FW_LOADER
-	select CRYPTO
-	select CRYPTO_ARC4
-	select CRC32
 	---help---
-          A driver for the Intel PRO/Wireless 2100 802.11b wireless network
-          adapter.
+          A driver for the Intel PRO/Wireless 2100 Network
+	  Connection 802.11b wireless network adapter.
 
           See <file:Documentation/networking/README.ipw2100> for information on
           the capabilities currently enabled in this driver and for tips
@@ -239,10 +236,14 @@ config IPW2100
           say M here and read <file:Documentation/modules.txt>.  The module
           will be called ipw2100.ko.
 
-	  NOTE:  The IPW2200 relies on the kernel crypto support 
-    	  (CONFIG_CRYPTO) in order to support WEP.  In addition to 
-	  requiring crypto support, you must have the ARC4 module 
-	  enabled, as well as the CRC library function.
+config IPW2100_PROMISC
+        bool "Enable promiscuous mode"
+        depends on IPW2100
+        ---help---
+	  Enables promiscuous/monitor mode support for the ipw2100 driver.
+	  With this feature compiled into the driver, you can switch to 
+	  promiscuous mode via the Wireless Tool's Monitor mode.  While in this
+	  mode, no packets can be sent.
 
 config IPW_DEBUG
 	bool "Enable full debugging output"
@@ -254,44 +255,12 @@ config IPW_DEBUG
 	  control which debug output is sent to the kernel log by setting the 
 	  value in 
 
-	  /proc/ipw2100/debug_level
+	  /sys/bus/pci/drivers/ipw2100/debug_level
 
-	  This entry will only exist if this option is enabled.  For a list of 
-	  values you can assign to debug_level, simply perform:
-
-	  % cat /proc/ipw2100/debug_level
-
-	  To set a value, simply echo an 8-byte hex value to the same file:
-
-	  % echo 00000FFO > /proc/ipw2100/debug_level
+	  This entry will only exist if this option is enabled.
 
 	  If you are not trying to debug or develop the IPW2100 driver, you 
 	  most likely want to say N here.
-
-config IPW2100_PROMISC
-        bool "Enable promiscuous mode"
-        depends on IPW2100
-        ---help---
-	  Enables promiscuous/monitor mode support for the ipw2100 driver.
-	  With this feature compiled into the driver, you can switch to 
-	  promiscuous mode via the Wireless Tool's Monitor mode.  While in this
-	  mode, no packets can be sent.
-
-config IPW2100_LEGACY_FW_LOAD
-	bool "Legacy firmware loading (non-hotplug)"
-	depends on IPW2100
-	---help---
-	  As of 0.33 we added the ability to use the hotplug request_firmware
-	  capability of Linux to load the firmware image.  If you do not have
-	  hot plug configured, or have compilation or other errors while trying
-	  to use the new mechanism, you can enable this option to use the
-	  legacy approach (loading the firmware from /etc/firmware/).
-
-	  Legacy approach will not work when IPW2100 support is directly in the
-	  kernel (not module).
-
-	  Saying Y here will result in the kernel module being ~4k larger.
-
 
 config IPW2200
 	tristate "Intel PRO/Wireless 2200 802.11bg"

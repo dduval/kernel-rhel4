@@ -307,6 +307,10 @@
 #define __NR_mq_getsetattr		(__NR_SYSCALL_BASE+279)
 #define __NR_waitid			(__NR_SYSCALL_BASE+280)
 
+#define __NR_add_key			(__NR_SYSCALL_BASE+309)
+#define __NR_request_key		(__NR_SYSCALL_BASE+310)
+#define __NR_keyctl			(__NR_SYSCALL_BASE+311)
+
 /*
  * The following SWIs are ARM private.
  */

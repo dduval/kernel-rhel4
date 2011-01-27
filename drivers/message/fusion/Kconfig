@@ -4,6 +4,7 @@ menu "Fusion MPT device support"
 config FUSION
 	tristate "Fusion MPT (base + ScsiHost) drivers"
 	depends on PCI && SCSI
+        select SCSI_FC_ATTRS
 	---help---
 	  LSI Logic Fusion(TM) Message Passing Technology (MPT) device support
 	  provides high performance SCSI host initiator, and LAN [1] interface
@@ -17,7 +18,7 @@ config FUSION
 config FUSION_MAX_SGE
 	int "Maximum number of scatter gather entries"
 	depends on FUSION
-	default "40"
+	default "128"
 	help
 	  This option allows you to specify the maximum number of scatter-
 	  gather entries per I/O. The driver defaults to 40, a reasonable number
@@ -29,7 +30,7 @@ config FUSION_MAX_SGE
 
 config FUSION_CTL
 	tristate "Fusion MPT misc device (ioctl) driver"
-	depends on MODULES && FUSION && m
+	depends on FUSION
 	---help---
 	  The Fusion MPT misc device driver provides specialized control
 	  of MPT adapters via system ioctl calls.  Use of ioctl calls to

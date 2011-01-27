@@ -19,6 +19,7 @@
 #include <linux/fs.h>
 #include <linux/workqueue.h>
 #include <linux/device.h>
+#include <linux/key.h>
 #include <linux/times.h>
 #include <linux/security.h>
 #include <linux/dcookies.h>
@@ -278,6 +279,10 @@ cond_syscall(sys_set_mempolicy)
 cond_syscall(compat_mbind)
 cond_syscall(compat_get_mempolicy)
 cond_syscall(compat_set_mempolicy)
+cond_syscall(sys_add_key);
+cond_syscall(sys_request_key);
+cond_syscall(sys_keyctl);
+cond_syscall(compat_sys_keyctl);
 
 /* arch-specific weak syscall entries */
 cond_syscall(sys_pciconfig_read)
@@ -601,6 +606,7 @@ asmlinkage long sys_setregid(gid_t rgid, gid_t egid)
 	current->fsgid = new_egid;
 	current->egid = new_egid;
 	current->gid = new_rgid;
+	key_fsgid_changed(current);
 	return 0;
 }
 
@@ -638,6 +644,7 @@ asmlinkage long sys_setgid(gid_t gid)
 	}
 	else
 		return -EPERM;
+	key_fsgid_changed(current);
 	return 0;
 }
   
@@ -726,6 +733,8 @@ asmlinkage long sys_setreuid(uid_t ruid, uid_t euid)
 		current->suid = current->euid;
 	current->fsuid = current->euid;
 
+	key_fsuid_changed(current);
+
 	return security_task_post_setuid(old_ruid, old_euid, old_suid, LSM_SETID_RE);
 }
 
@@ -770,6 +779,8 @@ asmlinkage long sys_setuid(uid_t uid)
 	}
 	current->fsuid = current->euid = uid;
 	current->suid = new_suid;
+
+	key_fsuid_changed(current);
 
 	return security_task_post_setuid(old_ruid, old_euid, old_suid, LSM_SETID_ID);
 }
@@ -816,6 +827,8 @@ asmlinkage long sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 	current->fsuid = current->euid;
 	if (suid != (uid_t) -1)
 		current->suid = suid;
+
+	key_fsuid_changed(current);
 
 	return security_task_post_setuid(old_ruid, old_euid, old_suid, LSM_SETID_RES);
 }
@@ -866,6 +879,8 @@ asmlinkage long sys_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 		current->gid = rgid;
 	if (sgid != (gid_t) -1)
 		current->sgid = sgid;
+
+	key_fsgid_changed(current);
 	return 0;
 }
 
@@ -907,6 +922,8 @@ asmlinkage long sys_setfsuid(uid_t uid)
 		current->fsuid = uid;
 	}
 
+	key_fsuid_changed(current);
+
 	security_task_post_setuid(old_fsuid, (uid_t)-1, (uid_t)-1, LSM_SETID_FS);
 
 	return old_fsuid;
@@ -933,6 +950,7 @@ asmlinkage long sys_setfsgid(gid_t gid)
 			wmb();
 		}
 		current->fsgid = gid;
+		key_fsgid_changed(current);
 	}
 	return old_fsgid;
 }
@@ -1278,7 +1296,7 @@ static void groups_sort(struct group_info *group_info)
 }
 
 /* a simple bsearch */
-static int groups_search(struct group_info *group_info, gid_t grp)
+int groups_search(struct group_info *group_info, gid_t grp)
 {
 	int left, right;
 

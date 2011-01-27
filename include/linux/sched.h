@@ -322,6 +322,15 @@ struct signal_struct {
 	unsigned long utime, stime, cutime, cstime;
 	unsigned long nvcsw, nivcsw, cnvcsw, cnivcsw;
 	unsigned long min_flt, maj_flt, cmin_flt, cmaj_flt;
+
+	/* keep the process-shared keyrings here so that they do the right
+	 * thing in threads created with CLONE_THREAD */
+#ifndef __GENKSYMS__
+#ifdef CONFIG_KEYS
+	struct key *session_keyring;	/* keyring inherited over fork */
+	struct key *process_keyring;	/* keyring private to this process */
+#endif
+#endif
 };
 
 /*
@@ -359,6 +368,13 @@ struct user_struct {
 	/* Hash table maintenance information */
 	struct list_head uidhash_list;
 	uid_t uid;
+
+#ifndef __GENKSYMS__
+#ifdef CONFIG_KEYS
+	struct key *uid_keyring;	/* UID specific keyring */
+	struct key *session_keyring;	/* UID's default session keyring */
+#endif
+#endif
 };
 
 extern struct user_struct *find_user(uid_t);
@@ -436,6 +452,7 @@ struct group_info {
 struct group_info *groups_alloc(int gidsetsize);
 void groups_free(struct group_info *group_info);
 int set_current_groups(struct group_info *group_info);
+extern int groups_search(struct group_info *group_info, gid_t grp);
 /* access the groups "array" with this macro */
 #define GROUP_AT(gi, i) \
     ((gi)->blocks[(i)/NGROUPS_PER_BLOCK][(i)%NGROUPS_PER_BLOCK])
@@ -443,6 +460,15 @@ int set_current_groups(struct group_info *group_info);
 
 struct audit_context;		/* See audit.c */
 struct mempolicy;
+
+/* auxilliary task structure to avoid KABI breakage */
+struct task_struct_aux {
+	struct completion *vfork_done;	/* for vfork() [displaced from task_struct] */
+	struct key *thread_keyring;	/* keyring private to this thread */
+	unsigned char jit_keyring;	/* default keyring to attach requested keys to */
+};
+
+#define task_aux(tsk) ((tsk)->auxilliary)
 
 struct task_struct {
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
@@ -509,7 +535,11 @@ struct task_struct {
 	struct pid pids[PIDTYPE_MAX];
 
 	wait_queue_head_t wait_chldexit;	/* for wait4() */
+#ifndef __GENKSYMS__
+	struct task_struct_aux *auxilliary;	/* KABI-resistant auxilliary task data */
+#else
 	struct completion *vfork_done;		/* for vfork() */
+#endif
 	int __user *set_child_tid;		/* CLONE_CHILD_SETTID */
 	int __user *clear_child_tid;		/* CLONE_CHILD_CLEARTID */
 

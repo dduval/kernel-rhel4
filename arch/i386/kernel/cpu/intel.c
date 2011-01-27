@@ -76,6 +76,24 @@ static void __init Intel_errata_workarounds(struct cpuinfo_x86 *c)
 }
 
 
+/*
+ * find out the number of processor cores on the die
+ */
+static int __init num_cpu_cores(struct cpuinfo_x86 *c)
+{
+	unsigned int eax;
+	if (c->cpuid_level < 4)
+		return 1;
+	__asm__("cpuid"
+		: "=a" (eax)
+		: "0" (4), "c" (0)
+		: "bx", "dx");
+	if (eax & 0x1f)
+		return ((eax >> 26) + 1);
+	else
+		return 1;
+}
+
 static void __init init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
@@ -137,22 +155,29 @@ static void __init init_intel(struct cpuinfo_x86 *c)
 
 	if ( p )
 		strcpy(c->x86_model_id, p);
-	
+
+#ifdef CONFIG_SMP
+	smp_num_cores = num_cpu_cores(c);
+#endif
 #ifdef CONFIG_X86_HT
+
 	if (cpu_has(c, X86_FEATURE_HT)) {
 		extern	int phys_proc_id[NR_CPUS];
+		extern  int cpu_core_id[NR_CPUS];
 		
 		u32 	eax, ebx, ecx, edx;
-		int 	index_lsb, index_msb, tmp;
+		int 	index_msb, tmp;
 		int 	cpu = smp_processor_id();
+		int	initial_apic_id;
 
 		cpuid(1, &eax, &ebx, &ecx, &edx);
 		smp_num_siblings = (ebx & 0xff0000) >> 16;
+		initial_apic_id = (ebx >> 24) & 0xff;
 
 		if (smp_num_siblings == 1) {
 			printk(KERN_INFO  "CPU: Hyper-Threading is disabled\n");
 		} else if (smp_num_siblings > 1 ) {
-			index_lsb = 0;
+
 			index_msb = 31;
 
 			if (smp_num_siblings > NR_CPUS) {
@@ -160,25 +185,54 @@ static void __init init_intel(struct cpuinfo_x86 *c)
 				smp_num_siblings = 1;
 				goto too_many_siblings;
 			}
-			tmp = smp_num_siblings;
-			while ((tmp & 1) == 0) {
-				tmp >>=1 ;
-				index_lsb++;
-			}
+
+			/* Calculate index_msb for the *total* number of
+			 * threads on the package (HT sibs * cores)
+			 */
 			tmp = smp_num_siblings;
 			while ((tmp & 0x80000000 ) == 0) {
 				tmp <<=1 ;
 				index_msb--;
 			}
-			if (index_lsb != index_msb )
+			if (smp_num_siblings & (smp_num_siblings - 1))
 				index_msb++;
-			phys_proc_id[cpu] = phys_pkg_id((ebx >> 24) & 0xFF, index_msb);
 
-			printk(KERN_INFO  "CPU: Physical Processor ID: %d\n",
-                               phys_proc_id[cpu]);
+			phys_proc_id[cpu] = initial_apic_id >> index_msb;
+
+			if (smp_num_cores == 1) {
+				cpu_core_id[cpu] = phys_proc_id[cpu];
+				printk(KERN_INFO  "CPU%d: Initial APIC ID: %d, Physical Processor ID: %d\n",
+						   cpu, (ebx>>24)&0xff, phys_proc_id[cpu]);
+				goto end;
+			}
+
+			smp_num_siblings /= smp_num_cores;
+			/* Now calculate the index_msb for the number
+			 * of HT threads on each core...
+			 */
+			index_msb = 31;
+
+			tmp = smp_num_siblings;
+			while ((tmp & 0x80000000 ) == 0) {
+				tmp <<=1 ;
+				index_msb--;
+			}
+			if (smp_num_siblings & (smp_num_siblings - 1))
+				index_msb++;
+
+			cpu_core_id[cpu] = initial_apic_id >> index_msb;
+
+			printk(KERN_INFO  "CPU%d: Physical Processor ID: %d\n",
+                               cpu, phys_proc_id[cpu]);
+			printk(KERN_INFO  "CPU%d: Processor Core ID: %d\n",
+                               cpu, cpu_core_id[cpu]);
+			printk(KERN_INFO  "CPU%d: Initial APIC ID: %d\n",
+				cpu, initial_apic_id);
+
 		}
 
 	}
+end:
 too_many_siblings:
 
 #endif

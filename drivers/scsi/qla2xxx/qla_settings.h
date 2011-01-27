@@ -2,7 +2,7 @@
  *                  QLOGIC LINUX SOFTWARE
  *
  * QLogic ISP2x00 device driver for Linux 2.6.x
- * Copyright (C) 2003-2004 QLogic Corporation
+ * Copyright (C) 2003-2005 QLogic Corporation
  * (www.qlogic.com)
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -20,8 +20,6 @@
  * Compile time Options:
  *     0 - Disable and 1 - Enable
  */
-#define DEBUG_QLA2100		0	/* For Debug of qla2x00 */
-
 #define STOP_ON_RESET		0
 #define USE_ABORT_TGT		1	/* Use Abort Target mbx cmd */
 
@@ -60,5 +58,8 @@
  * the following to force a logout after a successful device reset.
  */
 #undef LOGOUT_AFTER_DEVICE_RESET
+
+#undef ENABLE_MSI
+#undef ENABLE_MSIX
 
 #include "qla_version.h"

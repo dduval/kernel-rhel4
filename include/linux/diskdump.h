@@ -27,6 +27,7 @@
 #include <linux/utsname.h>
 #include <linux/device.h>
 #include <linux/nmi.h>
+#include <linux/version.h>
 
 /* The minimum Dump I/O unit. Must be the same of PAGE_SIZE */
 #define DUMP_BLOCK_SIZE		PAGE_SIZE
@@ -34,6 +35,7 @@
 
 int diskdump_register_hook(void (*dump_func)(struct pt_regs *));
 void diskdump_unregister_hook(void);
+int diskdump_mark_free_pages(void);
 
 /*
  * The handler of diskdump module
@@ -189,5 +191,20 @@ extern enum disk_dump_states {
 	orig_crc == cur_crc;						\
 })
 
+
+/* Dump Level */
+#define DUMP_EXCLUDE_CACHE 0x00000001	/* Exclude LRU & SwapCache pages*/
+#define DUMP_EXCLUDE_CLEAN 0x00000002	/* Exclude all-zero pages */
+#define DUMP_EXCLUDE_FREE  0x00000004	/* Exclude free pages */
+#define DUMP_EXCLUDE_ANON  0x00000008	/* Exclude Anon pages */
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,11)
+#define	PG_nosave_free		19	/* Free page not to be dumped */
+#define PageNosaveFree(page)		test_bit(PG_nosave_free, &(page)->flags)
+#define SetPageNosaveFree(page)		set_bit(PG_nosave_free, &(page)->flags)
+#define TestSetPageNosaveFree(page)	test_and_set_bit(PG_nosave_free, &(page)->flags)
+#define ClearPageNosaveFree(page)	clear_bit(PG_nosave_free, &(page)->flags)
+#define TestClearPageNosaveFree(page)	test_and_clear_bit(PG_nosave_free, &(page)->flags)
+#endif
 
 #endif /* _LINUX_DISKDUMP_H */

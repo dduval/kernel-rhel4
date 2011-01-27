@@ -39,8 +39,8 @@
 /*
  * Literals
  */
-#define IPR_DRIVER_VERSION "2.0.11"
-#define IPR_DRIVER_DATE "(August 3, 2004)"
+#define IPR_DRIVER_VERSION "2.0.11.1"
+#define IPR_DRIVER_DATE "(March 11, 2005)"
 
 /*
  * IPR_DBG_TRACE: Setting this to 1 will turn on some general function tracing
@@ -73,10 +73,12 @@
 #define IPR_SUBS_DEV_ID_2780	0x0264
 #define IPR_SUBS_DEV_ID_5702	0x0266
 #define IPR_SUBS_DEV_ID_5703	0x0278
-#define IPR_SUBS_DEV_ID_572E  0x02D3
+#define IPR_SUBS_DEV_ID_572E  0x028D
+#define IPR_SUBS_DEV_ID_573E  0x02D3
 #define IPR_SUBS_DEV_ID_573D  0x02D4
-#define IPR_SUBS_DEV_ID_570F	0x02BD
+#define IPR_SUBS_DEV_ID_571A	0x02C0
 #define IPR_SUBS_DEV_ID_571B	0x02BE
+#define IPR_SUBS_DEV_ID_571E  0x02BF
 
 #define IPR_NAME				"ipr"
 
@@ -131,7 +133,8 @@
 #define IPR_MAX_PHYSICAL_DEVS				192
 
 #define IPR_MAX_SGLIST					64
-#define IPR_MAX_SECTORS					512
+#define IPR_IOA_MAX_SECTORS				32767
+#define IPR_VSET_MAX_SECTORS				512
 #define IPR_MAX_CDB_LEN					16
 
 #define IPR_DEFAULT_BUS_WIDTH				16
@@ -146,6 +149,7 @@
 /*
  * Adapter Commands
  */
+#define IPR_QUERY_RSRC_STATE				0xC2
 #define IPR_RESET_DEVICE				0xC3
 #define	IPR_RESET_TYPE_SELECT				0x80
 #define	IPR_LUN_RESET					0x40
@@ -164,17 +168,17 @@
 /*
  * Timeouts
  */
-#define IPR_SHUTDOWN_TIMEOUT			(10 * 60 * HZ)
-#define IPR_VSET_RW_TIMEOUT			(2 * 60 * HZ)
+#define IPR_SHUTDOWN_TIMEOUT			(ipr_fastfail ? 60 * HZ : 10 * 60 * HZ)
+#define IPR_VSET_RW_TIMEOUT			(ipr_fastfail ? 30 * HZ : 2 * 60 * HZ)
 #define IPR_ABBREV_SHUTDOWN_TIMEOUT		(10 * HZ)
-#define IPR_DEVICE_RESET_TIMEOUT		(30 * HZ)
-#define IPR_CANCEL_ALL_TIMEOUT		(30 * HZ)
-#define IPR_ABORT_TASK_TIMEOUT		(30 * HZ)
-#define IPR_INTERNAL_TIMEOUT			(30 * HZ)
+#define IPR_DEVICE_RESET_TIMEOUT		(ipr_fastfail ? 10 * HZ : 30 * HZ)
+#define IPR_CANCEL_ALL_TIMEOUT		(ipr_fastfail ? 10 * HZ : 30 * HZ)
+#define IPR_ABORT_TASK_TIMEOUT		(ipr_fastfail ? 10 * HZ : 30 * HZ)
+#define IPR_INTERNAL_TIMEOUT			(ipr_fastfail ? 10 * HZ : 30 * HZ)
 #define IPR_WRITE_BUFFER_TIMEOUT		(10 * 60 * HZ)
 #define IPR_SET_SUP_DEVICE_TIMEOUT		(2 * 60 * HZ)
 #define IPR_REQUEST_SENSE_TIMEOUT		(10 * HZ)
-#define IPR_OPERATIONAL_TIMEOUT		(5 * 60 * HZ)
+#define IPR_OPERATIONAL_TIMEOUT		(5 * 60)
 #define IPR_WAIT_FOR_RESET_TIMEOUT		(2 * HZ)
 #define IPR_CHECK_FOR_RESET_TIMEOUT		(HZ / 10)
 #define IPR_WAIT_FOR_BIST_TIMEOUT		(2 * HZ)
@@ -766,6 +770,12 @@ struct ipr_chip_cfg_t {
 	u32 mailbox;
 	u8 cache_line_size;
 	struct ipr_interrupts regs;
+};
+
+struct ipr_chip_t {
+	u16 vendor;
+	u16 device;
+	const struct ipr_chip_cfg_t *cfg;
 };
 
 enum ipr_shutdown_type {

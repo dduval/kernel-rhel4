@@ -33,6 +33,7 @@
 #include <linux/smp_lock.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
+#include <linux/fs.h>
 
 /* 
  * The timezone where the local system is located.  Used as a default by some
@@ -423,6 +424,50 @@ struct timespec current_kernel_time(void)
 }
 
 EXPORT_SYMBOL(current_kernel_time);
+
+/**
+ * current_fs_time - Return FS time
+ * @sb: Superblock.
+ *
+ * Return the current time truncated to the time granuality supported by
+ * the fs.
+ */
+struct timespec current_fs_time(struct super_block *sb)
+{
+	struct timespec now = current_kernel_time();
+	return timespec_trunc(now, get_sb_time_gran(sb));
+}
+EXPORT_SYMBOL(current_fs_time);
+
+/**
+ * timespec_trunc - Truncate timespec to a granuality
+ * @t: Timespec
+ * @gran: Granuality in ns.
+ *
+ * Truncate a timespec to a granuality. gran must be smaller than a second.
+ * Always rounds down.
+ *
+ * This function should be only used for timestamps returned by
+ * current_kernel_time() or CURRENT_TIME, not with do_gettimeofday() because
+ * it doesn't handle the better resolution of the later.
+ */
+struct timespec timespec_trunc(struct timespec t, unsigned gran)
+{
+	/*
+	 * Division is pretty slow so avoid it for common cases.
+	 * Currently current_kernel_time() never returns better than
+	 * jiffies resolution. Exploit that.
+	 */
+	if (gran <= jiffies_to_usecs(1) * 1000) {
+		/* nothing */
+	} else if (gran == 1000000000) {
+		t.tv_nsec = 0;
+	} else {
+		t.tv_nsec -= t.tv_nsec % gran;
+	}
+	return t;
+}
+EXPORT_SYMBOL(timespec_trunc);
 
 #ifdef CONFIG_TIME_INTERPOLATION
 void getnstimeofday (struct timespec *tv)

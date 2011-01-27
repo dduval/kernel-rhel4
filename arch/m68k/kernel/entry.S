@@ -663,3 +663,50 @@ sys_call_table:
 	.long sys_lremovexattr
 	.long sys_fremovexattr
 	.long sys_futex		/* 235 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 240 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 245 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 250 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 255 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 260 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 265 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 270 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* 275 */
+	.long sys_ni_syscall
+	.long sys_ni_syscall
+	.long sys_ni_syscall	/* for sys_vserver */
+	.long sys_add_key
+	.long sys_request_key	/* 280 */
+	.long sys_keyctl
+

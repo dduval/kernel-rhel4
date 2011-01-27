@@ -16,6 +16,8 @@
 #include <asm/proto.h>
 #include <asm/numa.h>
 
+unsigned char apicid_to_node[MAX_APICS] = { [0 ... MAX_APICS-1] = 0xff };
+
 static DECLARE_BITMAP(nodes_parsed, MAXNODE) __initdata;
 static struct node nodes[MAXNODE] __initdata;
 static __u8  pxm2node[256] __initdata = { [0 ... 255] = 0xff };
@@ -100,7 +102,7 @@ acpi_numa_processor_affinity_init(struct acpi_table_processor_affinity *pa)
 		bad_srat();
 		return;
 	}
-	cpu_to_node[pa->apic_id] = node;
+	apicid_to_node[pa->apic_id] = node;
 	acpi_numa = 1;
 	printk(KERN_INFO "SRAT: PXM %u -> APIC %u -> Node %u\n",
 	       pxm, pa->apic_id, node);
@@ -179,4 +181,14 @@ int __init acpi_scan_nodes(unsigned long start, unsigned long end)
 	}
 	numa_init_array();
 	return 0;
+}
+
+void acpi_numa_setup_cpu(int cpu, int apicid)
+{
+	int node = apicid_to_node[apicid];
+
+	if (node_online(node))
+		cpu_to_node[cpu] = node;
+	else 
+		cpu_to_node[cpu] = find_first_bit(node_online_map, MAX_NUMNODES);
 }

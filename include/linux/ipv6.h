@@ -289,6 +289,9 @@ static inline struct raw6_opt * raw6_sk(const struct sock *__sk)
 	return &((struct raw6_sock *)__sk)->raw6;
 }
 
+int ipv6_register_dev_id_func(int (*func)(struct net_device* , u8*, u8*));
+int ipv6_unregister_dev_id_func(int (*func)(struct net_device* , u8*, u8*));
+
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 #define __ipv6_only_sock(sk)	(inet6_sk(sk)->ipv6only)
 #define ipv6_only_sock(sk)	((sk)->sk_family == PF_INET6 && __ipv6_only_sock(sk))

@@ -30,7 +30,8 @@ int dm_unregister_dirty_log_type(struct dirty_log_type *type)
 	spin_lock(&_lock);
 
 	if (type->use_count)
-		DMWARN("Attempt to unregister a log type that is still in use");
+		DMWARN("Unregister failed: log type '%s' still in use",
+		       type->name);
 	else
 		list_del(&type->list);
 
@@ -136,7 +137,7 @@ struct log_c {
 	unsigned bitset_uint32_count;
 	uint32_t *clean_bits;
 	uint32_t *sync_bits;
-	uint32_t *recovering_bits;	/* FIXME: this seems excessive */
+	uint32_t *recovering_bits;
 
 	int sync_search;
 
@@ -150,6 +151,9 @@ struct log_c {
 	/*
 	 * Disk log fields
 	 */
+	int log_dev_failed;
+	atomic_t suspended;
+	struct completion failure_completion;
 	struct dm_dev *log_dev;
 	struct log_header header;
 
@@ -360,7 +364,7 @@ static int core_ctr(struct dirty_log *log, struct dm_target *ti,
 
 	lc->recovering_bits = vmalloc(bitset_size);
 	if (!lc->recovering_bits) {
-		DMWARN("couldn't allocate sync bitset");
+		DMWARN("couldn't allocate recovering bitset");
 		vfree(lc->sync_bits);
 		vfree(lc->clean_bits);
 		kfree(lc);
@@ -412,6 +416,8 @@ static int disk_ctr(struct dirty_log *log, struct dm_target *ti,
 
 	lc = (struct log_c *) log->context;
 	lc->log_dev = dev;
+	lc->log_dev_failed = 0;
+	init_completion(&lc->failure_completion);
 
 	/* setup the disk header fields */
 	lc->header_location.bdev = lc->log_dev->bdev;
@@ -465,22 +471,35 @@ static int count_bits32(uint32_t *addr, unsigned size)
 	return count;
 }
 
+static void fail_log_device(struct log_c *lc)
+{
+	lc->log_dev_failed = 1;
+	dm_table_event(lc->ti->table);
+}
+
+static void restore_log_device(struct log_c *lc)
+{
+	lc->log_dev_failed = 0;
+}
+
 static int disk_resume(struct dirty_log *log)
 {
-	int r;
+	int r = 0;
 	unsigned i;
 	struct log_c *lc = (struct log_c *) log->context;
 	size_t size = lc->bitset_uint32_count * sizeof(uint32_t);
 
-	/* read the disk header */
-	r = read_header(lc);
-	if (r)
-		return r;
-
-	/* read the bits */
-	r = read_bits(lc);
-	if (r)
-		return r;
+	/* 
+	 * Read the disk header, but only if we know it is good.
+	 * Assume the worst in the event of failure.
+	 */
+	if (!lc->log_dev_failed &&
+	    ((r = read_header(lc)) || read_bits(lc))) {
+		DMWARN("Read %s failed on mirror log device, %s.",
+		      r ? "header" : "bits", lc->log_dev->name);
+		fail_log_device(lc);
+		lc->header.nr_regions = 0;
+	}
 
 	/* set or clear any new bits */
 	if (lc->sync == NOSYNC)
@@ -496,16 +515,20 @@ static int disk_resume(struct dirty_log *log)
 	memcpy(lc->sync_bits, lc->clean_bits, size);
 	lc->sync_count = count_bits32(lc->clean_bits, lc->bitset_uint32_count);
 
-	/* write the bits */
-	r = write_bits(lc);
-	if (r)
-		return r;
-
 	/* set the correct number of regions in the header */
 	lc->header.nr_regions = lc->region_count;
 
-	/* write the new header */
-	return write_header(lc);
+	/* write out the log.  'i' tells us which has failed if any */
+	i = 1;
+	if ((r = write_bits(lc)) || (i = 0) || (r = write_header(lc))) {
+		DMWARN("Write %s failed on mirror log device, %s.",
+		      i ? "bits" : "header", lc->log_dev->name);
+		fail_log_device(lc);
+	} else
+		restore_log_device(lc);
+
+	atomic_set(&lc->suspended, 0);
+	return r;
 }
 
 static sector_t core_get_region_size(struct dirty_log *log)
@@ -532,6 +555,17 @@ static int core_flush(struct dirty_log *log)
 	return 0;
 }
 
+static int disk_presuspend(struct dirty_log *log)
+{
+	struct log_c *lc = (struct log_c *) log->context;
+
+	atomic_set(&lc->suspended, 1);
+	if (lc->log_dev_failed)
+		complete(&lc->failure_completion);
+
+	return 0;
+}
+
 static int disk_flush(struct dirty_log *log)
 {
 	int r;
@@ -541,9 +575,23 @@ static int disk_flush(struct dirty_log *log)
 	if (!lc->touched)
 		return 0;
 
+	/*
+	 * If a failure occurs, we must wait for a suspension.
+	 * We must not proceed in the event of a failure,
+	 * because if the machine reboots with the log
+	 * incorrect, recovery could be compromised
+	 */
 	r = write_bits(lc);
-	if (!r)
+	if (!r) {
 		lc->touched = 0;
+		restore_log_device(lc);
+	} else {
+		DMERR("Write failure on mirror log device, %s.",
+		      lc->log_dev->name);
+		fail_log_device(lc);
+		if (!atomic_read(&lc->suspended))
+			wait_for_completion(&lc->failure_completion);
+	}
 
 	return r;
 }
@@ -613,6 +661,7 @@ static int core_status(struct dirty_log *log, status_type_t status,
 
 	switch(status) {
 	case STATUSTYPE_INFO:
+		DMEMIT("1 core");
 		break;
 
 	case STATUSTYPE_TABLE:
@@ -628,17 +677,18 @@ static int disk_status(struct dirty_log *log, status_type_t status,
 		       char *result, unsigned int maxlen)
 {
 	int sz = 0;
-	char buffer[16];
 	struct log_c *lc = log->context;
 
 	switch(status) {
 	case STATUSTYPE_INFO:
+		DMEMIT("3 disk %s %c", lc->log_dev->name,
+		       lc->log_dev_failed ? 'D' : 'A');
 		break;
 
 	case STATUSTYPE_TABLE:
-		format_dev_t(buffer, lc->log_dev->bdev->bd_dev);
 		DMEMIT("%s %u %s %u ", log->type->name,
-		       lc->sync == DEFAULTSYNC ? 2 : 3, buffer,
+		       lc->sync == DEFAULTSYNC ? 2 : 3,
+		       lc->log_dev->name,
 		       lc->region_size);
 		DMEMIT_SYNC;
 	}
@@ -668,7 +718,8 @@ static struct dirty_log_type _disk_type = {
 	.module = THIS_MODULE,
 	.ctr = disk_ctr,
 	.dtr = disk_dtr,
-	.suspend = disk_flush,
+	.presuspend = disk_presuspend,
+	.postsuspend = disk_flush,
 	.resume = disk_resume,
 	.get_region_size = core_get_region_size,
 	.is_clean = core_is_clean,

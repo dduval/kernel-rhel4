@@ -257,8 +257,9 @@ dasd_format(struct dasd_device * device, struct format_data_t * fdata)
 		      fdata->stop_unit, fdata->blksize, fdata->intensity);
 
 	/* Since dasdfmt keeps the device open after it was disabled,
-	 * there still exists an inode for this device. We must update i_blkbits,
-	 * otherwise we might get errors when enabling the device later.
+	 * there still exists an inode for this device.
+	 * We must update i_blkbits, otherwise we might get errors when
+	 * enabling the device later.
 	 */
 	if (fdata->start_unit == 0) {
 		struct block_device *bdev = bdget_disk(device->gdp, 0);
@@ -441,7 +442,6 @@ dasd_ioctl_information(struct block_device *bdev, int no, long args)
 		spin_unlock_irqrestore(get_ccwdev_lock(device->cdev),
 				       flags);
 	}
-
 	rc = 0;
 	if (copy_to_user((long __user *) args, (long *) dasd_info,
 			 ((no == (unsigned int) BIODASDINFO2) ?

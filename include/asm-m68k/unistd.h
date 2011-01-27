@@ -238,8 +238,11 @@
 #define __NR_lremovexattr	233
 #define __NR_fremovexattr	234
 #define __NR_futex		235
+#define __NR_add_key		279
+#define __NR_request_key	280
+#define __NR_keyctl		281
 
-#define NR_syscalls		236
+#define NR_syscalls		282
 
 /* user-visible error numbers are in the range -1 - -124: see
    <asm-m68k/errno.h> */

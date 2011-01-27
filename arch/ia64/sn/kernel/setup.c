@@ -3,7 +3,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (C) 1999,2001-2004 Silicon Graphics, Inc. All rights reserved.
+ * Copyright (C) 1999,2001-2005 Silicon Graphics, Inc. All rights reserved.
  */
 
 #include <linux/config.h>
@@ -28,6 +28,7 @@
 #include <linux/compiler.h>
 #include <linux/sched.h>
 #include <linux/root_dev.h>
+#include <linux/pm.h>
 
 #include <asm/io.h>
 #include <asm/sal.h>
@@ -40,7 +41,6 @@
 #include <asm/sn/nodepda.h>
 #include <asm/sn/sn_cpuid.h>
 #include <asm/sn/simulator.h>
-#include "shub.h"
 #include <asm/sn/leds.h>
 #include <asm/sn/bte.h>
 #include <asm/sn/shub_mmr.h>
@@ -67,8 +67,16 @@ extern void snidle(int);
 extern unsigned char acpi_kbd_controller_present;
 
 unsigned long sn_rtc_cycles_per_second;
-
 EXPORT_SYMBOL(sn_rtc_cycles_per_second);
+
+DEFINE_PER_CPU(struct sn_hub_info_s, __sn_hub_info);
+EXPORT_PER_CPU_SYMBOL(__sn_hub_info);
+
+DEFINE_PER_CPU(short, __sn_cnodeid_to_nasid[NR_NODES]);
+EXPORT_PER_CPU_SYMBOL(__sn_cnodeid_to_nasid);
+
+DEFINE_PER_CPU(struct nodepda_s *, __sn_nodepda);
+EXPORT_PER_CPU_SYMBOL(__sn_nodepda);
 
 partid_t sn_partid = -1;
 EXPORT_SYMBOL(sn_partid);
@@ -76,6 +84,16 @@ char sn_system_serial_number_string[128];
 EXPORT_SYMBOL(sn_system_serial_number_string);
 u64 sn_partition_serial_number;
 EXPORT_SYMBOL(sn_partition_serial_number);
+u8 sn_partition_id;
+EXPORT_SYMBOL(sn_partition_id);
+u8 sn_system_size;
+EXPORT_SYMBOL(sn_system_size);
+u8 sn_sharing_domain_size;
+EXPORT_SYMBOL(sn_sharing_domain_size);
+u8 sn_coherency_id;
+EXPORT_SYMBOL(sn_coherency_id);
+u8 sn_region_size;
+EXPORT_SYMBOL(sn_region_size);
 
 short physical_node_map[MAX_PHYSNODE_ID];
 
@@ -163,13 +181,12 @@ static int __init pxm_to_nasid(int pxm)
 
 void __init early_sn_setup(void)
 {
-	void ia64_sal_handler_init(void *entry_point, void *gpval);
 	efi_system_table_t *efi_systab;
 	efi_config_table_t *config_tables;
 	struct ia64_sal_systab *sal_systab;
 	struct ia64_sal_desc_entry_point *ep;
 	char *p;
-	int i;
+	int i, j;
 
 	/*
 	 * Parse enough of the SAL tables to locate the SAL entry point. Since, console
@@ -185,24 +202,26 @@ void __init early_sn_setup(void)
 		    0) {
 			sal_systab = __va(config_tables[i].table);
 			p = (char *)(sal_systab + 1);
-			for (i = 0; i < sal_systab->entry_count; i++) {
+			for (j = 0; j < sal_systab->entry_count; j++) {
 				if (*p == SAL_DESC_ENTRY_POINT) {
 					ep = (struct ia64_sal_desc_entry_point
 					      *)p;
 					ia64_sal_handler_init(__va
 							      (ep->sal_proc),
 							      __va(ep->gp));
-					break;
+					return;
 				}
 				p += SAL_DESC_SIZE(*p);
 			}
 		}
 	}
+	/* Uh-oh, SAL not available?? */
+	printk(KERN_ERR "failed to find SAL entry point\n");
 }
 
 extern int platform_intr_list[];
 extern nasid_t master_nasid;
-static int shub_1_1_found __initdata;
+static int __initdata shub_1_1_found = 0;
 
 /*
  * sn_check_for_wars
@@ -215,8 +234,10 @@ static inline int __init is_shub_1_1(int nasid)
 	unsigned long id;
 	int rev;
 
-	id = REMOTE_HUB_L(nasid, SH_SHUB_ID);
-	rev = (id & SH_SHUB_ID_REVISION_MASK) >> SH_SHUB_ID_REVISION_SHFT;
+	if (is_shub2())
+		return 0;
+	id = REMOTE_HUB_L(nasid, SH1_SHUB_ID);
+	rev = (id & SH1_SHUB_ID_REVISION_MASK) >> SH1_SHUB_ID_REVISION_SHFT;
 	return rev <= 2;
 }
 
@@ -224,9 +245,13 @@ static void __init sn_check_for_wars(void)
 {
 	int cnode;
 
-	for (cnode = 0; cnode < numnodes; cnode++)
-		if (is_shub_1_1(cnodeid_to_nasid(cnode)))
-			shub_1_1_found = 1;
+	if (is_shub2()) {
+		/* none yet */
+	} else {
+		for (cnode = 0; cnode < numnodes; cnode++)
+			if (is_shub_1_1(cnodeid_to_nasid(cnode)))
+				shub_1_1_found = 1;
+	}
 }
 
 /**
@@ -243,6 +268,8 @@ void __init sn_setup(char **cmdline_p)
 	int pxm;
 	int major = sn_sal_rev_major(), minor = sn_sal_rev_minor();
 	extern void sn_cpu_init(void);
+
+	ia64_sn_plat_set_error_handling_features();
 
 	/*
 	 * If the generic code has enabled vga console support - lets
@@ -333,6 +360,14 @@ void __init sn_setup(char **cmdline_p)
 	screen_info = sn_screen_info;
 
 	sn_timer_init();
+
+	/*
+	 * set pm_power_off to a SAL call to allow
+	 * sn machines to power off. The SAL call can be replaced
+	 * by an ACPI interface call when ACPI is fully implemented
+	 * for sn.
+	 */
+	pm_power_off = ia64_sn_power_down;
 }
 
 /**
@@ -340,15 +375,15 @@ void __init sn_setup(char **cmdline_p)
  *
  * One time setup for Node Data Area.  Called by sn_setup().
  */
-void __init sn_init_pdas(char **cmdline_p)
+static void __init sn_init_pdas(char **cmdline_p)
 {
 	cnodeid_t cnode;
 
-	memset(pda->cnodeid_to_nasid_table, -1,
-	       sizeof(pda->cnodeid_to_nasid_table));
+	memset(sn_cnodeid_to_nasid, -1,
+			sizeof(__ia64_per_cpu_var(__sn_cnodeid_to_nasid)));
 	for (cnode = 0; cnode < numnodes; cnode++)
-		pda->cnodeid_to_nasid_table[cnode] =
-		    pxm_to_nasid(nid_to_pxm_map[cnode]);
+		sn_cnodeid_to_nasid[cnode] =
+				pxm_to_nasid(nid_to_pxm_map[cnode]);
 
 	numionodes = numnodes;
 	scan_for_ionodes();
@@ -418,6 +453,13 @@ void __init sn_cpu_init(void)
 	int i;
 	static int wars_have_been_checked;
 
+	memset(pda, 0, sizeof(pda));
+	if (ia64_sn_get_sn_info(0, &sn_hub_info->shub2, &sn_hub_info->nasid_bitmask, &sn_hub_info->nasid_shift,
+				&sn_system_size, &sn_sharing_domain_size, &sn_partition_id,
+				&sn_coherency_id, &sn_region_size))
+		BUG();
+	sn_hub_info->as_shift = sn_hub_info->nasid_shift - 2;
+
 	/*
 	 * The boot cpu makes this call again after platform initialization is
 	 * complete.
@@ -441,8 +483,8 @@ void __init sn_cpu_init(void)
 
 	cnode = nasid_to_cnodeid(nasid);
 
-	memset(pda, 0, sizeof(pda));
-	pda->p_nodepda = nodepdaindr[cnode];
+	sn_nodepda = nodepdaindr[cnode];
+
 	pda->led_address =
 	    (typeof(pda->led_address)) (LED0 + (slice << LED_CPU_SHIFT));
 	pda->led_state = LED_ALWAYS_SET;
@@ -451,43 +493,50 @@ void __init sn_cpu_init(void)
 	pda->idle_flag = 0;
 
 	if (cpuid != 0) {
-		memcpy(pda->cnodeid_to_nasid_table,
-		       pdacpu(0)->cnodeid_to_nasid_table,
-		       sizeof(pda->cnodeid_to_nasid_table));
+		/* copy cpu 0's sn_cnodeid_to_nasid table to this cpu's */
+		memcpy(sn_cnodeid_to_nasid,
+		       (&per_cpu(__sn_cnodeid_to_nasid, 0)),
+		       sizeof(__ia64_per_cpu_var(__sn_cnodeid_to_nasid)));
 	}
 
 	/*
 	 * Check for WARs.
 	 * Only needs to be done once, on BSP.
-	 * Has to be done after loop above, because it uses pda.cnodeid_to_nasid_table[i].
+	 * Has to be done after loop above, because it uses this cpu's
+	 * sn_cnodeid_to_nasid table which was just initialized if this
+	 * isn't cpu 0.
 	 * Has to be done before assignment below.
 	 */
 	if (!wars_have_been_checked) {
 		sn_check_for_wars();
 		wars_have_been_checked = 1;
 	}
-	pda->shub_1_1_found = shub_1_1_found;
+	sn_hub_info->shub_1_1_found = shub_1_1_found;
 
 	/*
-	 * We must use different memory allocators for first cpu (bootmem 
-	 * allocator) than for the other cpus (regular allocator).
+	 * Set up addresses of PIO/MEM write status registers.
 	 */
-	pda->pio_write_status_addr = (volatile unsigned long *)
-	    LOCAL_MMR_ADDR((slice <
-			    2 ? SH_PIO_WRITE_STATUS_0 : SH_PIO_WRITE_STATUS_1));
-	pda->mem_write_status_addr = (volatile u64 *)
-	    LOCAL_MMR_ADDR((slice <
-			    2 ? SH_MEMORY_WRITE_STATUS_0 :
-			    SH_MEMORY_WRITE_STATUS_1));
+	{
+		u64 pio1[] = {SH1_PIO_WRITE_STATUS_0, 0, SH1_PIO_WRITE_STATUS_1, 0};
+		u64 pio2[] = {SH2_PIO_WRITE_STATUS_0, SH2_PIO_WRITE_STATUS_1, 
+			SH2_PIO_WRITE_STATUS_2, SH2_PIO_WRITE_STATUS_3};
+		u64 *pio;
+		pio = is_shub1() ? pio1 : pio2;
+		pda->pio_write_status_addr = (volatile unsigned long *) LOCAL_MMR_ADDR(pio[slice]);
+		pda->pio_write_status_val = is_shub1() ? SH_PIO_WRITE_STATUS_PENDING_WRITE_COUNT_MASK : 0;
+	}
 
-	if (local_node_data->active_cpu_count++ == 0) {
+	/*
+	 * WAR addresses for SHUB 1.x.
+	 */
+	if (local_node_data->active_cpu_count++ == 0 && is_shub1()) {
 		int buddy_nasid;
 		buddy_nasid =
 		    cnodeid_to_nasid(numa_node_id() ==
 				     numnodes - 1 ? 0 : numa_node_id() + 1);
 		pda->pio_shub_war_cam_addr =
 		    (volatile unsigned long *)GLOBAL_MMR_ADDR(nasid,
-							      SH_PI_CAM_CONTROL);
+							      SH1_PI_CAM_CONTROL);
 	}
 }
 
@@ -503,15 +552,15 @@ static void __init scan_for_ionodes(void)
 
 	/* Setup ionodes with memory */
 	for (nasid = 0; nasid < MAX_PHYSNODE_ID; nasid += 2) {
-		u64 klgraph_header;
+		char *klgraph_header;
 		cnodeid_t cnodeid;
 
 		if (physical_node_map[nasid] == -1)
 			continue;
 
-		klgraph_header = cnodeid = -1;
-		klgraph_header = ia64_sn_get_klconfig_addr(nasid);
-		if (klgraph_header <= 0) {
+		cnodeid = -1;
+		klgraph_header = __va(ia64_sn_get_klconfig_addr(nasid));
+		if (!klgraph_header) {
 			if (IS_RUNNING_ON_SIMULATOR())
 				continue;
 			BUG();	/* All nodes must have klconfig tables! */
@@ -541,8 +590,7 @@ static void __init scan_for_ionodes(void)
 		brd = find_lboard_any(brd, KLTYPE_SNIA);
 
 		while (brd) {
-			pda->cnodeid_to_nasid_table[numionodes] =
-			    brd->brd_nasid;
+			sn_cnodeid_to_nasid[numionodes] = brd->brd_nasid;
 			physical_node_map[brd->brd_nasid] = numionodes;
 			root_lboard[numionodes] = brd;
 			numionodes++;
@@ -563,8 +611,7 @@ static void __init scan_for_ionodes(void)
 				      root_lboard[nasid_to_cnodeid(nasid)],
 				      KLTYPE_TIO);
 		while (brd) {
-			pda->cnodeid_to_nasid_table[numionodes] =
-			    brd->brd_nasid;
+			sn_cnodeid_to_nasid[numionodes] = brd->brd_nasid;
 			physical_node_map[brd->brd_nasid] = numionodes;
 			root_lboard[numionodes] = brd;
 			numionodes++;
@@ -575,7 +622,6 @@ static void __init scan_for_ionodes(void)
 			brd = find_lboard_any(brd, KLTYPE_TIO);
 		}
 	}
-
 }
 
 int
@@ -584,7 +630,8 @@ nasid_slice_to_cpuid(int nasid, int slice)
 	long cpu;
 	
 	for (cpu=0; cpu < NR_CPUS; cpu++) 
-		if (nodepda->phys_cpuid[cpu].nasid == nasid && nodepda->phys_cpuid[cpu].slice == slice)
+		if (cpuid_to_nasid(cpu) == nasid &&
+					cpuid_to_slice(cpu) == slice)
 			return cpu;
 
 	return -1;

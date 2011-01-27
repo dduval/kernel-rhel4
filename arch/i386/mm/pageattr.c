@@ -31,7 +31,8 @@ pte_t *lookup_address(unsigned long address)
         return pte_offset_kernel(pmd, address);
 } 
 
-static struct page *split_large_page(unsigned long address, pgprot_t prot)
+static struct page *split_large_page(unsigned long address, pgprot_t prot, 
+					pgprot_t ref_prot)
 { 
 	int i; 
 	unsigned long addr;
@@ -49,7 +50,7 @@ static struct page *split_large_page(unsigned long address, pgprot_t prot)
 	pbase = (pte_t *)page_address(base);
 	for (i = 0; i < PTRS_PER_PTE; i++, addr += PAGE_SIZE) {
 		pbase[i] = pfn_pte(addr >> PAGE_SHIFT, 
-				   addr == address ? prot : PAGE_KERNEL);
+				   addr == address ? prot : ref_prot);
 	}
 	return base;
 } 
@@ -117,24 +118,41 @@ __change_page_attr(struct page *page, pgprot_t prot)
 	if (!kpte)
 		return -EINVAL;
 	kpte_page = virt_to_page(kpte);
+
+	/*
+	 * If this page is part of a large page that's executable (and NX is
+	 * enabled), then split page up and set new PTE page as reserved so
+	 * we won't revert this back into a large page.  This should only
+	 * happen in large pages that also contain kernel executable code,
+	 * and shouldn't happen at all if init.c correctly sets up NX regions.
+	 */
+	if (nx_enabled && 
+	    !(pte_val(*kpte) & _PAGE_NX) &&
+	    (pte_val(*kpte) & _PAGE_PSE)) {
+		struct page *split = split_large_page(address, prot, PAGE_KERNEL_EXEC); 
+		if (!split)
+			return -ENOMEM;
+		set_pmd_pte(kpte,address,mk_pte(split, PAGE_KERNEL_EXEC));
+		SetPageReserved(split);
+		return 0;
+	}
+
 	if (pgprot_val(prot) != pgprot_val(PAGE_KERNEL)) { 
 		if ((pte_val(*kpte) & _PAGE_PSE) == 0) { 
-			pte_t old = *kpte;
-			pte_t standard = mk_pte(page, PAGE_KERNEL); 
 			set_pte_atomic(kpte, mk_pte(page, prot)); 
-			if (pte_same(old,standard))
-				get_page(kpte_page);
 		} else {
-			struct page *split = split_large_page(address, prot); 
+			struct page *split = split_large_page(address, prot, PAGE_KERNEL); 
 			if (!split)
 				return -ENOMEM;
-			get_page(kpte_page);
 			set_pmd_pte(kpte,address,mk_pte(split, PAGE_KERNEL));
+			kpte_page = split;
 		}	
+		get_page(kpte_page);
 	} else if ((pte_val(*kpte) & _PAGE_PSE) == 0) { 
 		set_pte_atomic(kpte, mk_pte(page, PAGE_KERNEL));
 		__put_page(kpte_page);
-	}
+	} else
+		BUG();
 
 	if (cpu_has_pse && (page_count(kpte_page) == 1)) {
 		list_add(&kpte_page->lru, &df_list);

@@ -1165,7 +1165,7 @@ try_again:
 		 * new region fits between prev_vma->vm_end and
 		 * vma->vm_start, use it:
 		 */
-		if (addr+len <= vma->vm_start &&
+		if (addr && addr+len <= vma->vm_start &&
 				(!prev_vma || (addr >= prev_vma->vm_end)))
 			/* remember the address as a hint for next time */
 			return (mm->free_area_cache = addr);
@@ -1176,7 +1176,7 @@ try_again:
 
 		/* try just below the current vma->vm_start */
 		addr = vma->vm_start-len;
-	} while (len <= vma->vm_start);
+	} while (len < vma->vm_start);
 
 fail:
 	/*
@@ -1303,7 +1303,7 @@ unsigned long arch_get_unmapped_exec_area(struct file *filp, unsigned long addr0
 			 * as much as possible:
 			 */
 			if (addr >= 0x01000000) {
-				tmp = randomize_range(0x01000000, mm->brk, len);
+				tmp = randomize_range(0x01000000, PAGE_ALIGN(max(mm->start_brk, 0x08000000)), len);
 				vma = find_vma(mm, tmp);
 				if (TASK_SIZE - len >= tmp &&
 				    (!vma || tmp + len <= vma->vm_start))

@@ -169,6 +169,16 @@ config AUDITSYSCALL
 	  can be used independently or with another kernel subsystem,
 	  such as SELinux.
 
+config AUDITFILESYSTEM
+	bool "Enable file system auditing support"
+	depends on AUDITSYSCALL
+	default n
+	help
+	  Enable file system auditing for regular files and directories.
+	  When a targeted file or directory is accessed, an audit record
+	  is generated describing the inode accessed, how it was accessed,
+	  and by whom (ie: pid and system call).
+
 config LOG_BUF_SHIFT
 	int "Kernel log buffer size (16 => 64KB, 17 => 128KB)" if DEBUG_KERNEL
 	range 12 20

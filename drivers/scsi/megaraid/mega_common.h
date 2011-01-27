@@ -27,6 +27,7 @@
 #include <linux/list.h>
 #include <linux/version.h>
 #include <linux/moduleparam.h>
+#include <linux/dma-mapping.h>
 #include <linux/diskdump.h>
 #include <asm/semaphore.h>
 #include <scsi/scsi.h>

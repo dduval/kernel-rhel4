@@ -1,32 +1,59 @@
 
-Intel PRO/Wireless 2100 802.11b Driver for Linux
+===========================
+Intel(R) PRO/Wireless 2100 Network Connection Driver for Linux
 README.ipw2100
 
-October 13, 2004
+March 14, 2005
+
+===========================
+Index
+---------------------------
+0. Introduction
+1. Release 1.1.0 Current Features
+2. Command Line Parameters
+3. Sysfs Helper Files
+4. Radio Kill Switch
+5. Dynamic Firmware
+6. Power Management
+7. Support
+8. License
 
 
-Release 0.56 Current Features
+===========================
+0. Introduction
 ------------ -----   -----       ----       ---       --         -     
 
-- IBSS and BSS modes
-- 802.11 fragmentation
+This document provides a brief overview of the features supported by the 
+IPW2100 driver project.  The main project website, where the latest 
+development version of the driver can be found, is:
+
+	http://ipw2100.sourceforge.net
+
+There you can find the not only the latest releases, but also information about
+potential fixes and patches, as well as links to the development mailing list
+for the driver project.
+
+
+===========================
+1. Release 1.1.0 Current Supported Features
+---------------------------     
+- Managed (BSS) and Ad-Hoc (IBSS)
 - WEP (shared key and open)
-- wireless extension support 
-- 802.1x EAP via xsupplicant
+- Wireless Tools support 
+- 802.1x (tested with XSupplicant 1.0.1)
+
+Enabled (but not supported) features:
 - Monitor/RFMon mode
-- transmit power control
-- long/short preamble support
-- power states support (ACPI)
+- WPA/WPA2
 
-TODO
------------- -----   -----       ----       ---       --         -     
-- Fix bugs...  The biggies:
-  C3 corruption
-  Fragmentation
+The distinction between officially supported and enabled is a reflection
+on the amount of validation and interoperability testing that has been
+performed on a given feature.
 
 
-Command Line Parameters
------------- -----   -----       ----       ---       --         -     
+===========================
+2. Command Line Parameters
+---------------------------     
 
 If the driver is built as a module, the following optional parameters are used
 by entering them on the command line with the modprobe command using this
@@ -34,26 +61,68 @@ syntax:
 
 	modprobe ipw2100 [<option>=<VAL1><,VAL2>...]
 
-For example, to set the interface name for driver, entering:
+For example, to disable the radio on driver loading, enter:
 
-	modprobe ipw2100 if_name=wlan%d
-
-results in the ipw2100 driver defaulting to the wlan prefix, with the system
-assigning a unique number in place of %d.  The default interface name is eth%d.
+	modprobe ipw2100 disable=1
 
 The ipw2100 driver supports the following module parameters:
 
 Name		Value		Example:
 debug		0x0-0xffffffff	debug=1024
-if_name		string		if_name=wlan%d
 mode		0,1,2		mode=1   /* AdHoc */
 channel		int		channel=3 /* Only valid in AdHoc or Monitor */
 associate	boolean		associate=0 /* Do NOT auto associate */
 disable		boolean		disable=1 /* Do not power the HW */
 
 
-Radio Kill Switch
------------- -----   -----       ----       ---       --         -
+===========================
+3. Sysfs Helper Files
+---------------------------     
+
+There are several ways to control the behavior of the driver.  Many of the 
+general capabilities are exposed through the Wireless Tools (iwconfig).  There
+are a few capabilities that are exposed through entries in the Linux Sysfs.
+
+
+----- Driver Level ------
+For the driver level files, look in /sys/bus/pci/drivers/ipw2100/
+
+  debug_level  
+	
+	This controls the same global as the 'debug' module parameter.  For 
+        information on the various debugging levels available, run the 'dvals'
+	script found in the driver source directory.
+
+	NOTE:  'debug_level' is only enabled if CONFIG_IPW2100_DEBUG is turn
+	       on.
+
+----- Device Level ------
+For the device level files look in
+	
+	/sys/bus/pci/drivers/ipw2100/{PCI-ID}/
+
+For example:
+	/sys/bus/pci/drivers/ipw2100/0000:02:01.0
+
+For the device level files, see /sys/bus/pci/drivers/ipw2100:
+
+  rf_kill
+	read - 
+	0 = RF kill not enabled (radio on)
+	1 = SW based RF kill active (radio off)
+	2 = HW based RF kill active (radio off)
+	3 = Both HW and SW RF kill active (radio off)
+	write -
+	0 = If SW based RF kill active, turn the radio back on
+	1 = If radio is on, activate SW based RF kill
+
+	NOTE: If you enable the SW based RF kill and then toggle the HW
+  	based RF kill from ON -> OFF -> ON, the radio will NOT come back on
+
+
+===========================
+4. Radio Kill Switch
+---------------------------
 Most laptops provide the ability for the user to physically disable the radio.
 Some vendors have implemented this as a physical switch that requires no
 software to turn the radio off and on.  On other laptops, however, the switch
@@ -61,27 +130,13 @@ is controlled through a button being pressed and a software driver then making
 calls to turn the radio off and on.  This is referred to as a "software based
 RF kill switch"
 
-To determine if you have such a switch, you can check the contents of:
-
-	/sys/bus/pci/drivers/ipw2100/*/rf_kill
-
-A value of:
-	
-	Radio is {en,dis}abled by RF switch
-
-means that you have an RF switch and the radio is in the state 
-described.
-
-A value of:
-
-	Your hardware does not have an RF switch
-
-is self explanatory.  In this case you should not need to worry about 
-enabling the radio.
+See the Sysfs helper file 'rf_kill' for determining the state of the RF switch
+on your system.
 
 
-Dynamic Firmware
------------- -----   -----       ----       ---       --         -     
+===========================
+5. Dynamic Firmware
+---------------------------     
 As the firmware is licensed under a restricted use license, it can not be 
 included within the kernel sources.  To enable the IPW2100 you will need a 
 firmware image to load into the wireless NIC's processors.
@@ -91,8 +146,9 @@ You can obtain these images from <http://ipw2100.sf.net/firmware.php>.
 See INSTALL for instructions on installing the firmware.
 
 
-Power Management
------------- -----   -----       ----       ---       --         -     
+===========================
+6. Power Management
+---------------------------     
 The IPW2100 supports the configuration of the Power Save Protocol 
 through a private wireless extension interface.  The IPW2100 supports 
 the following different modes:
@@ -144,22 +200,33 @@ xxxx/yyyy will be replaced with 'off' -- the level reported will be the active
 level if `iwconfig eth1 power on` is invoked.
 
 
-Support
------------- -----   -----       ----       ---       --         -     
+===========================
+7. Support
+---------------------------     
 
-For general information and support, go to:
+For general development information and support,
+go to:
 	
     http://ipw2100.sf.net/
 
-License
------------- -----   -----       ----       ---       --         -     
+The ipw2100 1.1.0 driver and firmware can be downloaded from:  
 
-  Copyright(c) 2003 - 2004 Intel Corporation. All rights reserved.
+    http://support.intel.com
+
+For installation support on the ipw2100 1.1.0 driver on Linux kernels 
+2.6.8 or greater, email support is available from:  
+
+    http://supportmail.intel.com
+
+===========================
+8. License
+---------------------------     
+
+  Copyright(c) 2003 - 2005 Intel Corporation. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify it 
-  under the terms of the GNU General Public License as published by the Free 
-  Software Foundation; either version 2 of the License, or (at your option) 
-  any later version.
+  under the terms of the GNU General Public License (version 2) as 
+  published by the Free Software Foundation.
   
   This program is distributed in the hope that it will be useful, but WITHOUT 
   ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
@@ -173,7 +240,7 @@ License
   The full GNU General Public License is included in this distribution in the
   file called LICENSE.
   
-  Contact Information:
+  License Contact Information:
   James P. Ketrenos <ipw2100-admin@linux.intel.com>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
 

@@ -61,6 +61,13 @@
 static int set_wce = 1;
 module_param_named(set_wce, set_wce, bool, S_IRUGO|S_IWUSR);
 
+static int qcmnd_timeout = 5000000;
+static int io_timeout = 30000000;
+static int scmnd_timeout = 60000000;
+module_param(qcmnd_timeout, int, S_IRUGO|S_IWUSR);
+module_param(io_timeout, int, S_IRUGO|S_IWUSR);
+module_param(scmnd_timeout, int, S_IRUGO|S_IWUSR);
+
 static int quiesce_ok = 0;
 static struct scsi_cmnd scsi_dump_cmnd;
 static struct request scsi_dump_req;
@@ -263,7 +270,8 @@ static int cmd_result(struct scsi_cmnd *scmd)
 			Err("host_byte(scmd->result) set to : DID_RESET");
 			return 1;  /* retry */
 		} else if ((status == CHECK_CONDITION) &&
-			   (scmd->sense_buffer[2] == UNIT_ATTENTION)) {
+			   ((scmd->sense_buffer[2] == UNIT_ATTENTION) ||
+			    (scmd->sense_buffer[2] == NOT_READY))) {
 			/*
 			 * if we are expecting a cc/ua because of a bus reset
 			 * that we performed, treat this just as a retry.
@@ -277,6 +285,13 @@ static int cmd_result(struct scsi_cmnd *scmd)
 				scmd->device->expecting_cc_ua = 0;
 				return 1; /* retry */
 			}
+
+			/* Retry if ASC is reset code */
+			if (scmd->sense_buffer[12] == 0x29) {
+				Err("ASC is 0x29");
+				return 1; /* retry */
+			}
+
 			/*
 			 * if the device is in the process of becoming ready, we
 			 * should retry.
@@ -320,13 +335,29 @@ static int cmd_result(struct scsi_cmnd *scmd)
 	return -EIO;
 }
 
+static inline int send_command_wait(int *timeout, int *total_timeout)
+{
+	int wait = 100;
+
+	udelay(wait);
+	*timeout -= wait;
+	*total_timeout -= wait;
+	diskdump_update();
+	return *timeout >= 0;
+}
+
 static int send_command(struct scsi_cmnd *scmd)
 {
 	struct Scsi_Host *host = scmd->device->host;
 	struct scsi_device *sdev = scmd->device;
 	int ret;
+	int qcmnd_tmout, io_tmout, scmnd_tmout;
 
+	scmnd_tmout = scmnd_timeout;
 	do {
+		qcmnd_tmout = qcmnd_timeout;
+		io_tmout = io_timeout;
+
 		if (!scsi_device_online(sdev)) {
 			Err("Scsi disk is not online");
 			return -EIO;
@@ -336,18 +367,30 @@ static int send_command(struct scsi_cmnd *scmd)
 			return -EIO;
 		}
 
-		spin_lock(host->host_lock);
-		host->hostt->queuecommand(scmd, rw_intr);
-		spin_unlock(host->host_lock);
+		for (;;) {
+			spin_lock(host->host_lock);
+			ret = host->hostt->queuecommand(scmd, rw_intr);
+			spin_unlock(host->host_lock);
+			if (ret == 0)
+				break;
+			host->hostt->dump_poll(scmd->device);
+			if (!send_command_wait(&qcmnd_tmout, &scmnd_tmout)) {
+				ret = -EIO;
+				goto retry_out;
+			}
+		}
 
 		while (scmd->done != NULL) {
 			host->hostt->dump_poll(scmd->device);
-			udelay(100);
-			diskdump_update();
+			if (!send_command_wait(&io_tmout, &scmnd_tmout)) {
+				ret = -EIO;
+				goto retry_out;
+			}
 		}
 		scmd->done = rw_intr;
-	} while ((ret = cmd_result(scmd)) > 0);
+	} while ((ret = cmd_result(scmd)) > 0 && scmnd_tmout >= 0);
 
+retry_out:
 	return ret;
 }
 

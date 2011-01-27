@@ -1251,12 +1251,12 @@ sys32_fadvise64_wrapper:
 	or	%r3,%r4			# get low word of 64bit loff_t
 	llgfr	%r4,%r5			# size_t (unsigned long)
 	lgfr	%r5,%r6			# int
-	jg	sys_fadvise64
+	jg	sys32_fadvise64
 
 	.globl	sys32_fadvise64_64_wrapper
 sys32_fadvise64_64_wrapper:
 	llgtr	%r2,%r2			# struct fadvise64_64_args *
-	jg	s390_fadvise64_64
+	jg	sys32_fadvise64_64
 
 	.globl	sys32_clock_settime_wrapper
 sys32_clock_settime_wrapper:
@@ -1406,3 +1406,20 @@ compat_sys_mq_getsetattr_wrapper:
 	llgtr	%r3,%r3			# struct compat_mq_attr *
 	llgtr	%r4,%r4			# struct compat_mq_attr *
 	jg	compat_sys_mq_getsetattr
+
+	.globl	compat_sys_add_key_wrapper
+compat_sys_add_key_wrapper:
+	llgtr	%r2,%r2			# const char *
+	llgtr	%r3,%r3			# const char *
+	llgtr	%r4,%r4			# const void *
+	llgfr	%r5,%r5			# size_t
+	llgfr	%r6,%r6			# (key_serial_t) u32
+	jg	sys_add_key
+
+	.globl	compat_sys_request_key_wrapper
+compat_sys_request_key_wrapper:
+	llgtr	%r2,%r2			# const char *
+	llgtr	%r3,%r3			# const char *
+	llgtr	%r4,%r4			# const void *
+	llgfr	%r5,%r5			# (key_serial_t) u32
+	jg	sys_request_key

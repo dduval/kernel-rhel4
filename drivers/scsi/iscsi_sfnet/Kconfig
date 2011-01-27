@@ -1,0 +1,26 @@
+config SCSI_ISCSI_SFNET
+	tristate "Software iSCSI support"
+	depends on SCSI && INET
+	select SCSI_ISCSI_ATTRS
+	select CRYPTO
+	select CRYPTO_MD5
+	select CRYPTO_CRC32C
+	---help---
+	To compile this driver as a module, choose M here: the
+	module will be called iscsi_sfnet.
+
+	The iSCSI Driver provides a host with the ability to access
+	storage through an IP network. The driver uses the iSCSI
+	protocol to transport SCSI requests and responses over an IP
+	network between the host (the "initiator") and "targets".
+	Architecturally, the iSCSI driver combines with the host's
+	TCP/IP stack, network drivers, and Network Interface Card
+	(NIC) to provide the same functions as a SCSI or a Fibre
+	Channel (FC) adapter driver with a Host Bus Adapter (HBA).
+
+	The userspace component needed to initialize the driver,
+	documentation, and sample configuration files are in the
+	iscsi-initiator-utils package. 
+
+	More information on this driver can be found here:
+	http://linux-iscsi.sourceforge.net

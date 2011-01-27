@@ -1109,6 +1109,7 @@ static inline void break_cow(struct vm_area_struct * vma, struct page * new_page
 			      vma);
 	ptep_establish(vma, address, page_table, entry);
 	update_mmu_cache(vma, address, entry);
+	lazy_mmu_prot_update(entry);
 }
 
 /*
@@ -1161,6 +1162,7 @@ static int do_wp_page(struct mm_struct *mm, struct vm_area_struct * vma,
 					      vma);
 			ptep_set_access_flags(vma, address, page_table, entry, 1);
 			update_mmu_cache(vma, address, entry);
+			lazy_mmu_prot_update(entry);
 			pte_unmap(page_table);
 			spin_unlock(&mm->page_table_lock);
 			return VM_FAULT_MINOR;
@@ -1494,6 +1496,7 @@ static int do_swap_page(struct mm_struct * mm,
 
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache(vma, address, pte);
+	lazy_mmu_prot_update(pte);
 	pte_unmap(page_table);
 	spin_unlock(&mm->page_table_lock);
 out:
@@ -1552,6 +1555,7 @@ do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	/* No need to invalidate - it was non-present before */
 	update_mmu_cache(vma, addr, entry);
+	lazy_mmu_prot_update(entry);
 	spin_unlock(&mm->page_table_lock);
 out:
 	return VM_FAULT_MINOR;
@@ -1669,6 +1673,7 @@ retry:
 
 	/* no need to invalidate: a not-present page shouldn't be cached */
 	update_mmu_cache(vma, address, entry);
+	lazy_mmu_prot_update(entry);
 	spin_unlock(&mm->page_table_lock);
 out:
 	return ret;
@@ -1763,6 +1768,7 @@ static inline int handle_pte_fault(struct mm_struct *mm,
 	entry = pte_mkyoung(entry);
 	ptep_set_access_flags(vma, address, pte, entry, write_access);
 	update_mmu_cache(vma, address, entry);
+	lazy_mmu_prot_update(entry);
 	pte_unmap(pte);
 	spin_unlock(&mm->page_table_lock);
 	return VM_FAULT_MINOR;

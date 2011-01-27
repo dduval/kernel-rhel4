@@ -70,6 +70,7 @@ typedef unsigned char ia64_mv_readb_relaxed_t (void *);
 typedef unsigned short ia64_mv_readw_relaxed_t (void *);
 typedef unsigned int ia64_mv_readl_relaxed_t (void *);
 typedef unsigned long ia64_mv_readq_relaxed_t (void *);
+typedef void ia64_mv_mmiowb_t (void);
 
 static inline void
 machvec_noop (void)
@@ -138,6 +139,7 @@ extern void machvec_tlb_migrate_finish (struct mm_struct *);
 #  define platform_readw_relaxed        ia64_mv.readw_relaxed
 #  define platform_readl_relaxed        ia64_mv.readl_relaxed
 #  define platform_readq_relaxed        ia64_mv.readq_relaxed
+#  define platform_mmiowb	ia64_mv.mmiowb
 # endif
 
 /* __attribute__((__aligned__(16))) is required to make size of the
@@ -184,6 +186,9 @@ struct ia64_machine_vector {
 	ia64_mv_readw_relaxed_t *readw_relaxed;
 	ia64_mv_readl_relaxed_t *readl_relaxed;
 	ia64_mv_readq_relaxed_t *readq_relaxed;
+#ifndef __GENKSYMS__
+	ia64_mv_mmiowb_t *mmiowb;
+#endif
 } __attribute__((__aligned__(16))); /* align attrib? see above comment */
 
 #define MACHVEC_INIT(name)			\
@@ -226,6 +231,7 @@ struct ia64_machine_vector {
 	platform_readw_relaxed,			\
 	platform_readl_relaxed,			\
 	platform_readq_relaxed,			\
+	platform_mmiowb,			\
 }
 
 extern struct ia64_machine_vector ia64_mv;
@@ -367,6 +373,9 @@ extern ia64_mv_dma_supported		swiotlb_dma_supported;
 #endif
 #ifndef platform_readq_relaxed
 # define platform_readq_relaxed	__ia64_readq_relaxed
+#endif
+#ifndef platform_mmiowb
+# define platform_mmiowb	__ia64_mmiowb
 #endif
 
 #endif /* _ASM_IA64_MACHVEC_H */

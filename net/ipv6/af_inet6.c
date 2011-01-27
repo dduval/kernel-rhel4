@@ -632,8 +632,10 @@ snmp6_mib_free(void *ptr[2])
 {
 	if (ptr == NULL)
 		return;
-	free_percpu(ptr[0]);
-	free_percpu(ptr[1]);
+	if (ptr[0])
+		free_percpu(ptr[0]);
+	if (ptr[1])
+		free_percpu(ptr[1]);
 	ptr[0] = ptr[1] = NULL;
 }
 
@@ -759,10 +761,11 @@ static int __init inet6_init(void)
 	if (if6_proc_init())
 		goto proc_if6_fail;
 #endif
-	ipv6_packet_init();
 	ip6_route_init();
 	ip6_flowlabel_init();
-	addrconf_init();
+	err = addrconf_init();
+	if (err)
+		goto addrconf_fail;
 	sit_init();
 
 	/* Init v6 extension headers. */
@@ -774,10 +777,15 @@ static int __init inet6_init(void)
 	/* Init v6 transport protocols. */
 	udpv6_init();
 	tcpv6_init();
+
+	ipv6_packet_init();
 	err = 0;
 out:
 	return err;
 
+addrconf_fail:
+	ip6_flowlabel_cleanup();
+	ip6_route_cleanup();
 #ifdef CONFIG_PROC_FS
 proc_if6_fail:
 	ac6_proc_exit();

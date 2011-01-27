@@ -63,6 +63,7 @@ static ide_pci_device_t piix_pci_info[] __devinitdata = {
 	/* 19 */ DECLARE_PIIX_DEV("ICH5"),
 	/* 20 */ DECLARE_PIIX_DEV("ICH6"),
 	/* 21 */ DECLARE_PIIX_DEV("ICH7"),
+	/* 22 */ DECLARE_PIIX_DEV("ESB2"),
 };
 
 #endif /* PIIX_H */

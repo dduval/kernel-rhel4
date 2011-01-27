@@ -8,7 +8,7 @@
  * This hopefully works with any (fixed) IA-64 page-size, as defined
  * in <asm/page.h> (currently 8192).
  *
- * Copyright (C) 1998-2004 Hewlett-Packard Co
+ * Copyright (C) 1998-2005 Hewlett-Packard Co
  *	David Mosberger-Tang <davidm@hpl.hp.com>
  */
 
@@ -419,6 +419,7 @@ pte_same (pte_t a, pte_t b)
 {
 	return pte_val(a) == pte_val(b);
 }
+#define update_mmu_cache(vma,address,pte) do { } while (0)
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 extern void paging_init (void);
@@ -479,7 +480,7 @@ extern void hugetlb_free_pgtables(struct mmu_gather *tlb,
  * information.  However, we use this routine to take care of any (delayed) i-cache
  * flushing that may be necessary.
  */
-extern void update_mmu_cache (struct vm_area_struct *vma, unsigned long vaddr, pte_t pte);
+extern void lazy_mmu_prot_update (pte_t pte);
 
 #define __HAVE_ARCH_PTEP_SET_ACCESS_FLAGS
 /*
@@ -549,7 +550,11 @@ do {											\
 
 /* These tell get_user_pages() that the first gate page is accessible from user-level.  */
 #define FIXADDR_USER_START	GATE_ADDR
-#define FIXADDR_USER_END	(GATE_ADDR + 2*PERCPU_PAGE_SIZE)
+#ifdef HAVE_BUGGY_SEGREL
+# define FIXADDR_USER_END	(GATE_ADDR + 2*PAGE_SIZE)
+#else
+# define FIXADDR_USER_END	(GATE_ADDR + 2*PERCPU_PAGE_SIZE)
+#endif
 
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_DIRTY
@@ -558,6 +563,7 @@ do {											\
 #define __HAVE_ARCH_PTEP_MKDIRTY
 #define __HAVE_ARCH_PTE_SAME
 #define __HAVE_ARCH_PGD_OFFSET_GATE
+#define __HAVE_ARCH_LAZY_MMU_UPDATE
 #include <asm-generic/pgtable.h>
 
 #endif /* _ASM_IA64_PGTABLE_H */

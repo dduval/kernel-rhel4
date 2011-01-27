@@ -249,6 +249,16 @@ static __init int disable_acpi_pci(struct dmi_blacklist *d)
 	}
 	return 0;
 }  
+static __init int disable_pci_mmconf_seg(struct dmi_blacklist *d)
+{
+	extern char * pcibios_setup(char * str);
+
+	printk(KERN_NOTICE "%s detected, forcing pci=nommconf and pci=noseg\n", 
+		d->ident);
+	pcibios_setup("nommconf");
+	pcibios_setup("noseg");
+}
+
 #endif
 
 /*
@@ -439,6 +449,10 @@ static __initdata struct dmi_blacklist dmi_blacklist[]={
  			NO_MATCH, NO_MATCH
  			} },
 
+	{ disable_pci_mmconf_seg, "HP xw9300 Workstation", {
+		MATCH(DMI_PRODUCT_NAME, "HP xw9300 Workstation"),
+		NO_MATCH, NO_MATCH, NO_MATCH
+		} },
 #endif
 
 	{ NULL, }

@@ -358,3 +358,8 @@ EXPORT(sysn32_call_table)
 	PTR	compat_sys_mq_notify
 	PTR	compat_sys_mq_getsetattr	/* 6239 */
 	PTR	sys_ni_syscall			/* sys_vserver */
+	PTR	sys_ni_syscall			/* sys_waitid */
+	PTR	sys_ni_syscall			/* available, was setaltroot */
+	PTR	sys_add_key
+	PTR	sys_request_key
+	PTR	sys_keyctl			/* 6245 */

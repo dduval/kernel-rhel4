@@ -134,4 +134,7 @@ static inline void ptep_mkdirty(pte_t *ptep)
 #define pgd_offset_gate(mm, addr)	pgd_offset(mm, addr)
 #endif
 
+#ifndef __HAVE_ARCH_LAZY_MMU_UPDATE
+#define lazy_mmu_prot_update(pte)		do { } while (0)
+#endif
 #endif /* _ASM_GENERIC_PGTABLE_H */

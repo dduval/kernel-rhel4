@@ -5,15 +5,10 @@
  *          LSIFC9xx/LSI409xx Fibre Channel
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Credits:
- *     (see mptbase.c)
- *
- *  Copyright (c) 1999-2004 LSI Logic Corporation
- *  Originally By: Steven J. Ralston
- *  (mailto:sjralston1@netscape.net)
+ *  Copyright (c) 1999-2005 LSI Logic Corporation
  *  (mailto:mpt_linux_developer@lsil.com)
  *
- *  $Id: mptbase.h,v 1.144 2003/01/28 21:31:56 pdelaney Exp $
+ *  $Id: mptbase.h,v 1.149 2003/05/07 14:08:31 Exp $
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -60,6 +55,7 @@
 #include <linux/kernel.h>
 #include <linux/pci.h>
 
+#include "linux_compat.h"	/* linux-2.6 tweaks */
 #include "lsi/mpi_type.h"
 #include "lsi/mpi.h"		/* Fusion MPI(nterface) basic defs */
 #include "lsi/mpi_ioc.h"	/* Fusion MPT IOC(ontroller) defs */
@@ -71,7 +67,7 @@
 #include "lsi/mpi_fc.h"		/* Fibre Channel (lowlevel) support */
 #include "lsi/mpi_targ.h"	/* SCSI/FCP Target protcol support */
 #include "lsi/mpi_tool.h"	/* Tools support */
-#include "lsi/fc_log.h"
+#include "lsi/mpi_sas.h"	/* SAS support */
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 
@@ -80,11 +76,15 @@
 #endif
 
 #ifndef COPYRIGHT
-#define COPYRIGHT	"Copyright (c) 1999-2004 " MODULEAUTHOR
+#define COPYRIGHT	"Copyright (c) 1999-2005 " MODULEAUTHOR
 #endif
 
-#define MPT_LINUX_VERSION_COMMON	"3.01.16"
-#define MPT_LINUX_PACKAGE_NAME		"@(#)mptlinux-3.01.16"
+#define MPT_LINUX_VERSION_COMMON	"3.02.18"
+#define MPT_LINUX_PACKAGE_NAME		"@(#)mptlinux-3.02.18"
+#define MPT_LINUX_MAJOR_VERSION		3
+#define MPT_LINUX_MINOR_VERSION		02
+#define MPT_LINUX_BUILD_VERSION		18
+#define MPT_LINUX_RELEASE_VERSION	00
 #define WHAT_MAGIC_STRING		"@" "(" "#" ")"
 
 #define show_mptmod_ver(s,ver)  \
@@ -100,6 +100,7 @@
 #define MPT_MAX_FC_DEVICES		255
 #define MPT_MAX_SCSI_DEVICES		16
 #define MPT_LAST_LUN			255
+#define MPT_NON_IU_LAST_LUN		63
 #define MPT_SENSE_BUFFER_ALLOC		64
 	/* allow for 256 max sense alloc, but only 255 max request */
 #if MPT_SENSE_BUFFER_ALLOC >= 256
@@ -118,23 +119,20 @@
 #define MPT_PROCFS_SUMMARY_ALL_PATHNAME		"/proc/" MPT_PROCFS_SUMMARY_ALL_NODE
 #define MPT_FW_REV_MAGIC_ID_STRING		"FwRev="
 
-#define  MPT_MAX_REQ_DEPTH		1023
-#define  MPT_DEFAULT_REQ_DEPTH		256
-#define  MPT_MIN_REQ_DEPTH		128
-
-#define  MPT_MAX_REPLY_DEPTH		MPT_MAX_REQ_DEPTH
 #define  MPT_DEFAULT_REPLY_DEPTH	128
-#define  MPT_MIN_REPLY_DEPTH		8
 #define  MPT_MAX_REPLIES_PER_ISR	32
 
 #define  MPT_MAX_FRAME_SIZE		128
 #define  MPT_DEFAULT_FRAME_SIZE		128
 
-#define  MPT_REPLY_FRAME_SIZE		0x40  /* Must be a multiple of 8 */
+#define  MPT_REPLY_FRAME_SIZE		0x50  /* Must be a multiple of 8 */
 
 #define  MPT_SG_REQ_128_SCALE		1
 #define  MPT_SG_REQ_96_SCALE		2
 #define  MPT_SG_REQ_64_SCALE		4
+
+#define MPT_DIAG_BUFFER_IS_REGISTERED 	1
+#define MPT_DIAG_BUFFER_IS_RELEASED 	2
 
 #define	 CAN_SLEEP			1
 #define  NO_SLEEP			0
@@ -166,19 +164,9 @@
 #define MPT_SCSI_CAN_QUEUE	127
 
 /*
- * Set the MAX_SGE value based on user input.
+ * Default MAX_SGE value.  Can be changed by using mptbase sg_count parameter.
  */
-#ifdef  CONFIG_FUSION_MAX_SGE
-#if     CONFIG_FUSION_MAX_SGE  < 16
-#define MPT_SCSI_SG_DEPTH	16
-#elif   CONFIG_FUSION_MAX_SGE  > 128
 #define MPT_SCSI_SG_DEPTH	128
-#else
-#define MPT_SCSI_SG_DEPTH	CONFIG_FUSION_MAX_SGE
-#endif
-#else
-#define MPT_SCSI_SG_DEPTH	40
-#endif
 
 #ifdef __KERNEL__	/* { */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -206,7 +194,6 @@ typedef enum {
 	MPTSCSIH_DRIVER,	/* MPT SCSI host (initiator) class */
 	MPTLAN_DRIVER,		/* MPT LAN class */
 	MPTSTM_DRIVER,		/* MPT SCSI target mode class */
-	MPTDMP_DRIVER,		/* MPT Dynamic Multi-pathing class */
 	MPTUNKNOWN_DRIVER
 } MPT_DRIVER_CLASS;
 
@@ -226,8 +213,7 @@ struct mpt_pci_driver{
 
 typedef union _MPT_FRAME_TRACKER {
 	struct {
-		struct _MPT_FRAME_HDR	*forw;
-		struct _MPT_FRAME_HDR	*back;
+		struct list_head        list;
 		u32			 arg1;
 		u32			 pad;
 		void			*argp1;
@@ -276,6 +262,7 @@ typedef union _MPT_FRAME_TRACKER {
  *    3) SCSIIOReply
  *    4) MPIDefaultReply
  *    5) frame tracker
+ *    6) SASSMPRequest
  */
 typedef struct _MPT_FRAME_HDR {
 	union {
@@ -285,19 +272,11 @@ typedef struct _MPT_FRAME_HDR {
 		ConfigReply_t		configreply;
 		MPIDefaultReply_t	reply;
 		MPT_FRAME_TRACKER	frame;
+		SmpPassthroughRequest_t	smpreq;
 	} u;
 } MPT_FRAME_HDR;
 
 #define MPT_REQ_MSGFLAGS_DROPME		0x80
-
-/* Used for tracking the free request frames
- * and free reply frames.
- */
-typedef struct _MPT_Q_TRACKER {
-	MPT_FRAME_HDR	*head;
-	MPT_FRAME_HDR	*tail;
-} MPT_Q_TRACKER;
-
 
 typedef struct _MPT_SGL_HDR {
 	SGESimple32_t	 sge[1];
@@ -307,32 +286,6 @@ typedef struct _MPT_SGL64_HDR {
 	SGESimple64_t	 sge[1];
 } MPT_SGL64_HDR;
 
-
-typedef struct _Q_ITEM {
-	struct _Q_ITEM	*forw;
-	struct _Q_ITEM	*back;
-} Q_ITEM;
-
-typedef struct _Q_TRACKER {
-	struct _Q_ITEM	*head;
-	struct _Q_ITEM	*tail;
-} Q_TRACKER;
-
-/*
- *  Chip-specific stuff... FC929 delineates break between
- *  FC and Parallel SCSI parts. Do NOT re-order.
- */
-
-typedef enum {
-	FC919X = 0x0819,
-	FC929X = 0x0829,
-	FC909 = 0x0909,
-	FC919 = 0x0919,
-	FC929 = 0x0929,
-	C1030 = 0x1030,
-	C1035 = 0x1035,
-	FCUNK = 0xFBAD
-} CHIP_TYPE;
 
 /*
  *  System interface register set
@@ -368,27 +321,6 @@ typedef struct _SYSIF_REGS
 /*
  *	Dynamic Multi-Pathing specific stuff...
  */
-#define DMP_MAX_PATHS	8
-
-typedef struct _PathInfo {
-	u8		 ioc;
-	u8		 target;
-	u8		 pad;
-	u8		 pflags;
-} PathInfo;
-
-#define PATHINFO_FLAGS_OWNED		0x01
-#define PATHINFO_FLAGS_EXISTS		0x02
-#define PATHINFO_FLAGS_AVAILABLE	0x04
-#define PATHINFO_FLAGS_SECONDARY	0x08
-
-#define PFLAGS_EXISTS_AND_AVAIL		(PATHINFO_FLAGS_EXISTS|PATHINFO_FLAGS_AVAILABLE)
-#define PFLAGS_AVAIL_AND_OWNED		(PATHINFO_FLAGS_AVAILABLE|PATHINFO_FLAGS_OWNED)
-
-typedef struct _ScsiCmndTracker {
-	void			*head;
-	void			*tail;
-} ScsiCmndTracker;
 
 /* VirtDevice negoFlags field */
 #define MPT_TARGET_NO_NEGO_WIDE		0x01
@@ -398,14 +330,9 @@ typedef struct _ScsiCmndTracker {
 
 /*
  *	VirtDevice - FC LUN device or SCSI target device
- *	(used to be FCSCSI_TARGET)
  */
 typedef struct _VirtDevice {
-	struct _VirtDevice	*forw;
-	struct _VirtDevice	*back;
 	struct scsi_device	*device;
-	rwlock_t		 VdevLock;
-	int			 ref_cnt;
 	u8			 tflags;
 	u8			 ioc_id;
 	u8			 target_id;
@@ -418,18 +345,10 @@ typedef struct _VirtDevice {
 	u8			 type;		/* byte 0 of Inquiry data */
 	u8			 cflags;	/* controller flags */
 	u8			 rsvd1raid;
-	int			 npaths;
 	u16			 fc_phys_lun;
 	u16			 fc_xlat_lun;
-	int			 stall_detected;
-	PathInfo		 path[DMP_MAX_PATHS];
-	struct timer_list	 stall_timer;
-	struct timer_list	 retry_timer;
-	struct timer_list	 gone_timer;
-	ScsiCmndTracker		 WaitQ;
-	ScsiCmndTracker		 SentQ;
-	ScsiCmndTracker		 DoneQ;
 	u32			 num_luns;
+	u32			 last_lun;
 	u32			 luns[8];		/* Max LUNs is 256 */
 	u8			 pad[4];
 	u8			 inq_data[8];
@@ -440,6 +359,8 @@ typedef struct _VirtDevice {
 	u8			 uniq_prepad[8];
 	u8			 uniq_data[20];
 	u8			 pad2[4];
+	U64			 WWPN;
+	U64			 WWNN;
 } VirtDevice;
 
 /*
@@ -451,14 +372,6 @@ typedef struct _VirtDevice {
 #define MPT_TARGET_FLAGS_Q_YES		0x08
 #define MPT_TARGET_FLAGS_VALID_56	0x10
 #define MPT_TARGET_FLAGS_SAF_TE_ISSUED	0x20
-
-typedef struct _VirtDevTracker {
-	struct _VirtDevice	*head;
-	struct _VirtDevice	*tail;
-	rwlock_t		 VlistLock;
-	int			 pad;
-} VirtDevTracker;
-
 
 /*
  *	/proc/mpt interface
@@ -501,7 +414,6 @@ do { \
 
 typedef struct _MPT_IOCTL {
 	struct _MPT_ADAPTER	*ioc;
-	struct timer_list	 timer;		/* timer function for this adapter */
 	u8			 ReplyFrame[MPT_DEFAULT_FRAME_SIZE];	/* reply frame data */
 	u8			 sense[MPT_SENSE_BUFFER_ALLOC];
 	int			 wait_done;	/* wake-up value for this ioc */
@@ -509,15 +421,13 @@ typedef struct _MPT_IOCTL {
 	u8			 status;	/* current command status */
 	u8			 reset;		/* 1 if bus reset allowed */
 	u8			 target;	/* target for reset */
-	void 			*tmPtr;
-	struct timer_list	 TMtimer;	/* timer function for this adapter */
 	struct semaphore	 sem_ioc;
 } MPT_IOCTL;
 
 /*
  *  Event Structure and define
  */
-#define MPTCTL_EVENT_LOG_SIZE		(0x0000000A)
+#define MPTCTL_EVENT_LOG_SIZE		(0x00000032)
 typedef struct _mpt_ioctl_events {
 	u32	event;		/* Specified by define above */
 	u32	eventContext;	/* Index or counter */
@@ -566,23 +476,79 @@ typedef	struct _ScsiCfgData {
 	u8		 dvScheduled;		/* 1 if scheduled */
 	u8		 forceDv;		/* 1 to force DV scheduling */
 	u8		 noQas;			/* Disable QAS for this adapter */
-	u8		 Saf_Te;		/* 1 to force all Processors as SAF-TE if Inquiry data length is too short to check for SAF-TE */
+	u8		 Saf_Te;		/* 1 to force all Processors as
+						 * SAF-TE if Inquiry data length
+						 * is too short to check for SAF-TE
+						 */
+	u8		 ptClear;		/* 1 to automatically clear the
+						 * persistent table.
+						 * 0 to disable
+						 * automatic clearing.
+						 */
 	u8		 rsvd[1];
 } ScsiCfgData;
+
+/*
+ * sas device info link list
+ */
+typedef struct _sas_device_info {
+	struct list_head list;
+	u64	SASAddress;
+	u8	TargetId;
+	u8	Bus;
+	u8	physicalPort;
+	u8	phyNum;
+	u32	deviceInfo;
+	u16	devHandle;
+	u16	flags;
+} sas_device_info_t;
+
+/*
+ * hba phy info array
+ */
+typedef struct _sas_phy_info {
+	u64     SASAddress;
+	u8	port;
+	u8	PortFlags;
+	u8	PhyFlags;
+	u8	NegotiatedLinkRate;
+	u16	ControllerDevHandle;
+	u16	devHandle;
+	u32	ControllerPhyDeviceInfo;
+	u8	phyId;
+	u8	hwLinkRate;
+	u8	reserved;
+} sas_phy_info_t;
+
+typedef enum {
+	ADD_DEVICE,
+	DEL_DEVICE
+} STATUS_CHANGE_TYPE;
+
+typedef struct _mptscsih_dev_status_change {
+	struct	list_head 	list;
+	struct	Scsi_Host 	*shost;
+	u32			channel;
+	u32			id;
+	u32			lun;
+	u32			device_info;
+	u8			phy_id;
+	STATUS_CHANGE_TYPE	status_change;
+} mptscsih_dev_status_change;
 
 /*
  *  Adapter Structure - pci_dev specific. Maximum: MPT_MAX_ADAPTERS
  */
 typedef struct _MPT_ADAPTER
 {
-	struct _MPT_ADAPTER	*forw;
-	struct _MPT_ADAPTER	*back;
 	int			 id;		/* Unique adapter id N {0,1,2,...} */
 	int			 pci_irq;	/* This irq           */
 	char			 name[MPT_NAME_LENGTH];	/* "iocN"             */
 	char			*prod_name;	/* "LSIFC9x9"         */
 	SYSIF_REGS __iomem	*chip;		/* == c8817000 (mmap) */
 	SYSIF_REGS __iomem	*pio_chip;	/* Programmed IO (downloadboot) */
+	u8			 bus_type;	/* Parallel SCSI i/f */
+	u16			 deviceID;
 	u32			 mem_phys;	/* == f4020000 (mmap) */
 	u32			 pio_mem_phys;	/* Programmed IO (downloadboot) */
 	int			 mem_size;	/* mmap memory size */
@@ -602,14 +568,13 @@ typedef struct _MPT_ADAPTER
 		 * ChainBuffer (DMA) virt/phys addresses.
 		 * FreeChainQ (lock) locking mechanisms.
 		 */
-	int			*ReqToChain;
-	int			*RequestNB;
-	int			*ChainToChain;
-	u8			*ChainBuffer;
-	dma_addr_t		 ChainBufferDMA;
-	MPT_Q_TRACKER		 FreeChainQ;
-	spinlock_t		 FreeChainQlock;
-	CHIP_TYPE		 chip_type;
+	int			 *ReqToChain;
+	int			 *RequestNB;
+	int			 *ChainToChain;
+	u8			 *ChainBuffer;
+	dma_addr_t		  ChainBufferDMA;
+	struct list_head	  FreeChainQ;
+	spinlock_t		  FreeChainQlock;
 		/* We (host driver) get to manage our own RequestQueue! */
 	dma_addr_t		 req_frames_dma;
 	MPT_FRAME_HDR		*req_frames;	/* Request msg frames - rounded up! */
@@ -617,7 +582,7 @@ typedef struct _MPT_ADAPTER
 	int			 req_depth;	/* Number of request frames */
 	int			 req_sz;	/* Request frame size (bytes) */
 	spinlock_t		 FreeQlock;
-	MPT_Q_TRACKER		 FreeQ;
+	struct list_head	 FreeQ;
 		/* Pool of SCSI sense buffers for commands coming from
 		 * the SCSI mid-layer.  We have one 256 byte sense buffer
 		 * for each REQ entry.
@@ -625,9 +590,22 @@ typedef struct _MPT_ADAPTER
 	u8			*sense_buf_pool;
 	dma_addr_t		 sense_buf_pool_dma;
 	u32			 sense_buf_low_dma;
+	u8			*HostPageBuffer; /* SAS - host page buffer support */
+	u32			HostPageBuffer_sz;
+	dma_addr_t		HostPageBuffer_dma;
+	u8			*DiagBuffer[MPI_DIAG_BUF_TYPE_COUNT];
+	u32			DataSize[MPI_DIAG_BUF_TYPE_COUNT];
+	u32			DiagBuffer_sz[MPI_DIAG_BUF_TYPE_COUNT];
+	dma_addr_t		DiagBuffer_dma[MPI_DIAG_BUF_TYPE_COUNT];
+	u8                  	TraceLevel[MPI_DIAG_BUF_TYPE_COUNT];
+	u8                  	DiagBuffer_Status[MPI_DIAG_BUF_TYPE_COUNT];
+	u32                 	UniqueId[MPI_DIAG_BUF_TYPE_COUNT];
+	u32                 	ExtendedType[MPI_DIAG_BUF_TYPE_COUNT];
+	u32                 	ProductSpecific[MPI_DIAG_BUF_TYPE_COUNT][4];
+
 	int			 mtrr_reg;
 	struct pci_dev		*pcidev;	/* struct pci_dev pointer */
-	u8			*memmap;	/* mmap address */
+	u8			__iomem *memmap;	/* mmap address */
 	struct Scsi_Host	*sh;		/* Scsi Host pointer */
 	ScsiCfgData		spi_data;	/* Scsi config. data */
 	MPT_IOCTL		*ioctl;		/* ioctl data pointer */
@@ -639,47 +617,55 @@ typedef struct _MPT_ADAPTER
 	int			 eventTypes;	/* Event logging parameters */
 	int			 eventContext;	/* Next event context */
 	int			 eventLogSize;	/* Max number of cached events */
-#ifdef MPTSCSIH_DBG_TIMEOUT
-	int			timeout_hard;
-	int			timeout_delta;
-	int			timeout_cnt;
-	int			timeout_maxcnt;
-#endif
 	struct _mpt_ioctl_events *events;	/* pointer to event log */
 	u8			*cached_fw;	/* Pointer to FW */
 	dma_addr_t	 	cached_fw_dma;
-	Q_TRACKER		 configQ;	/* linked list of config. requests */
+	struct list_head	 configQ;	/* linked list of config. requests */
 	int			 hs_reply_idx;
 #ifndef MFCNT
 	u32			 pad0;
 #else
 	u32			 mfcnt;
 #endif
-	u32			 NB_for_64_byte_frame;       
+	u32			 NB_for_64_byte_frame;
 	u32			 hs_req[MPT_MAX_FRAME_SIZE/sizeof(u32)];
 	u16			 hs_reply[MPT_MAX_FRAME_SIZE/sizeof(u16)];
 	IOCFactsReply_t		 facts;
 	PortFactsReply_t	 pfacts[2];
 	FCPortPage0_t		 fc_port_page0[2];
+/* emoore@lsil.com - sas support - start */
+	U64			 sas_port_WWID[4];
+	u8			 BoardTracerNumber[16];
+	u8			 numPhys;
+	sas_phy_info_t		 *sasPhyInfo;
+	struct list_head	 sasDeviceList;
+	struct list_head	 dev_status_change;
+	struct work_struct	 mptscsih_del_dev_task;
+	struct work_struct	 mptscsih_add_dev_task;
+	struct timer_list	 persist_timer;	/* persist table timer */
+	int			 persist_wait_done; /* persist completion flag */
+	u8			 persist_reply_frame[MPT_DEFAULT_FRAME_SIZE]; /* persist reply */
+/* emoore@lsil.com - sas support - end */
 	LANPage0_t		 lan_cnfg_page0;
 	LANPage1_t		 lan_cnfg_page1;
-#ifdef CONFIG_PM
+#if CONFIG_PM && (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,9))
 	u32           		 PciState[64];     /* save PCI state to this area */
 #endif
+	/*  
+	 * Description: errata_flag_1064
+	 * If a PCIX read occurs within 1 or 2 cycles after the chip receives
+	 * a split completion for a read data, an internal address pointer incorrectly
+	 * increments by 32 bytes
+	 */
+	int			 errata_flag_1064;	
 	u8			 FirstWhoInit;
 	u8			 upload_fw;	/* If set, do a fw upload */
 	u8			 reload_fw;	/* Force a FW Reload on next reset */
-	u8			 NBShiftFactor;  /* NB Shift Factor based on Block Size (Facts)  */     
+	u8			 NBShiftFactor;  /* NB Shift Factor based on Block Size (Facts)  */
 	u8			 pad1[4];
-	struct list_head	 list; 
+	struct list_head	 list;
 	struct net_device	*netdev;
 } MPT_ADAPTER;
-
-
-typedef struct _MPT_ADAPTER_TRACKER {
-	MPT_ADAPTER	*head;
-	MPT_ADAPTER	*tail;
-} MPT_ADAPTER_TRACKER;
 
 /*
  *  New return value convention:
@@ -796,12 +782,6 @@ typedef struct _mpt_sge {
 #define DBG_DUMP_REQUEST_FRAME(mfp)
 #endif
 
-#ifdef MPT_DEBUG_IRQ
-#define dirqprintk(x)  printk x
-#else
-#define dirqprintk(x)
-#endif
-
 #ifdef MPT_DEBUG_SG
 #define dsgprintk(x)  printk x
 #else
@@ -844,6 +824,12 @@ typedef struct _mpt_sge {
 #define dreplyprintk(x)
 #endif
 
+#ifdef MPT_DEBUG_SAS
+#define dsasprintk(x) printk x
+#else
+#define dsasprintk(x)
+#endif
+
 #ifdef MPT_DEBUG_TM
 #define dtmprintk(x) printk x
 #define DBG_DUMP_TM_REQUEST_FRAME(mfp) \
@@ -874,12 +860,6 @@ typedef struct _mpt_sge {
 #define DBG_DUMP_TM_REPLY_FRAME(mfp)
 #endif
 
-#ifdef MPT_DEBUG_NEH
-#define nehprintk(x) printk x
-#else
-#define nehprintk(x)
-#endif
-
 #if defined(MPT_DEBUG_CONFIG) || defined(MPT_DEBUG)
 #define dcprintk(x) printk x
 #else
@@ -902,42 +882,7 @@ typedef struct _mpt_sge {
 #define MPT_INDEX_2_RFPTR(ioc,idx) \
 	(MPT_FRAME_HDR*)( (u8*)(ioc)->reply_frames + (ioc)->req_sz * (idx) )
 
-#define Q_INIT(q,type)  (q)->head = (q)->tail = (type*)(q)
-#define Q_IS_EMPTY(q)   ((Q_ITEM*)(q)->head == (Q_ITEM*)(q))
-
-#define Q_ADD_TAIL(qt,i,type) { \
-	Q_TRACKER	*_qt = (Q_TRACKER*)(qt); \
-	Q_ITEM		*oldTail = _qt->tail; \
-	(i)->forw = (type*)_qt; \
-	(i)->back = (type*)oldTail; \
-	oldTail->forw = (Q_ITEM*)(i); \
-	_qt->tail = (Q_ITEM*)(i); \
-}
-
-#define Q_ADD_HEAD(qt,i,type) { \
-	Q_TRACKER	*_qt = (Q_TRACKER*)(qt); \
-	Q_ITEM		*oldHead = _qt->head; \
-	(i)->forw = (type*)oldHead; \
-	(i)->back = (type*)_qt; \
-	oldHead->back = (Q_ITEM*)(i); \
-	_qt->head = (Q_ITEM*)(i); \
-}
-
-#define Q_DEL_ITEM(i) { \
-	Q_ITEM  *_forw = (Q_ITEM*)(i)->forw; \
-	Q_ITEM  *_back = (Q_ITEM*)(i)->back; \
-	_back->forw = _forw; \
-	_forw->back = _back; \
-}
-
-#define SWAB4(value) \
-	(u32)(   (((value) & 0x000000ff) << 24) \
-	       | (((value) & 0x0000ff00) << 8)  \
-	       | (((value) & 0x00ff0000) >> 8)  \
-	       | (((value) & 0xff000000) >> 24) )
-
-
-#if defined(MPT_DEBUG) || defined(MPT_DEBUG_MSG_FRAME)
+#if defined(MPT_DEBUG) || defined(MPT_DEBUG_MSG_FRAME) || defined(MPT_DEBUG_HANDSHAKE)
 #define DBG_DUMP_REPLY_FRAME(mfp) \
 	{	u32 *m = (u32 *)(mfp);					\
 		int  i, n = (le32_to_cpu(m[0]) & 0x00FF0000) >> 16;	\
@@ -1004,29 +949,29 @@ typedef struct _MPT_LOCAL_REPLY {
 #define	TM_STATE_IN_PROGRESS   (1)
 #define	TM_STATE_ERROR	       (2)
 
+typedef enum {
+	FC,
+	SCSI,
+	SAS
+} BUS_TYPE;
+
 typedef struct _MPT_SCSI_HOST {
 	MPT_ADAPTER		 *ioc;
 	int			  port;
 	u32			  pad0;
 	struct scsi_cmnd	**ScsiLookup;
-	u32			  qtag_tick;
 	VirtDevice		**Targets;
 	MPT_LOCAL_REPLY		 *pLocal;		/* used for internal commands */
 	struct timer_list	  timer;
-	struct timer_list	  TMtimer;		/* Timer for TM commands ONLY */
 		/* Pool of memory for holding SCpnts before doing
 		 * OS callbacks. freeQ is the free pool.
 		 */
-	MPT_Q_TRACKER		  taskQ;		/* TM request Q */
-	int			  taskQcnt;
 	u8			  tmPending;
 	u8			  resetPending;
-	u8			  is_spi;		/* Parallel SCSI i/f */
 	u8			  negoNvram;		/* DV disabled, nego NVRAM */
-	u8			  is_multipath;		/* Multi-path compatible */
+	u8			  pad1;
 	u8                        tmState;
 	u8			  rsvd[2];
-	MPT_FRAME_HDR		 *tmPtr;		/* Ptr to TM request*/
 	MPT_FRAME_HDR		 *cmdPtr;		/* Ptr to nonOS request */
 	struct scsi_cmnd	 *abortSCpnt;
 	MPT_LOCAL_REPLY		  localReply;		/* internal cmd reply struct */
@@ -1044,34 +989,17 @@ typedef struct _MPT_SCSI_HOST {
 /* Forward decl, a strange C thing, to prevent gcc compiler warnings */
 struct scsi_cmnd;
 
-/*
- *	DMP service layer structure / API interface
- */
-typedef struct _DmpServices {
-	VirtDevTracker	  VdevList;
-	struct semaphore *Daemon;
-	int		(*ScsiPathSelect)
-				(struct scsi_cmnd *, MPT_SCSI_HOST **hd, int *target, int *lun);
-	int		(*DmpIoDoneChk)
-				(MPT_SCSI_HOST *, struct scsi_cmnd *,
-				 SCSIIORequest_t *,
-				 SCSIIOReply_t *);
-	void		(*mptscsih_scanVlist)
-				(MPT_SCSI_HOST *, int portnum);
-	int		(*ScsiAbort)
-				(struct scsi_cmnd *);
-	int		(*ScsiBusReset)
-				(struct scsi_cmnd *);
-} DmpServices_t;
-
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
  * Generic structure passed to the base mpt_config function.
  */
 typedef struct _x_config_parms {
-	Q_ITEM			 linkage;	/* linked list */
+	struct list_head	 linkage;	/* linked list */
 	struct timer_list	 timer;		/* timer function for this request  */
-	ConfigPageHeader_t	*hdr;
+	union {
+		ConfigExtendedPageHeader_t	*ehdr;
+		ConfigPageHeader_t	*hdr;
+	} cfghdr;
 	dma_addr_t		 physAddr;
 	int			 wait_done;	/* wait for this request */
 	u32			 pageAddr;	/* properly formatted */
@@ -1099,10 +1027,8 @@ extern MPT_FRAME_HDR	*mpt_get_msg_frame(int handle, MPT_ADAPTER *ioc);
 extern void	 mpt_free_msg_frame(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf);
 extern void	 mpt_put_msg_frame(int handle, MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf);
 extern void	 mpt_add_sge(char *pAddr, u32 flagslength, dma_addr_t dma_addr);
-extern void	 mpt_add_chain(char *pAddr, u8 next, u16 length, dma_addr_t dma_addr);
 
 extern int	 mpt_send_handshake_request(int handle, MPT_ADAPTER *ioc, int reqBytes, u32 *req, int sleepFlag);
-extern int	 mpt_handshake_req_reply_wait(MPT_ADAPTER *ioc, int reqBytes, u32 *req, int replyBytes, u16 *u16reply, int maxwait, int sleepFlag);
 extern int	 mpt_verify_adapter(int iocid, MPT_ADAPTER **iocpp);
 extern u32	 mpt_GetIocState(MPT_ADAPTER *ioc, int cooked);
 extern void	 mpt_print_ioc_summary(MPT_ADAPTER *ioc, char *buf, int *size, int len, int showlan);
@@ -1113,6 +1039,7 @@ extern void	 mpt_alloc_fw_memory(MPT_ADAPTER *ioc, int size);
 extern void	 mpt_free_fw_memory(MPT_ADAPTER *ioc);
 extern int	 mpt_findImVolumes(MPT_ADAPTER *ioc);
 extern int	 mpt_read_ioc_pg_3(MPT_ADAPTER *ioc);
+extern int	 mptbase_sas_persist_operation(MPT_ADAPTER *ioc, u8 persist_opcode);
 extern void	 mpt_poll_interrupt(MPT_ADAPTER *ioc);
 
 /*
@@ -1120,7 +1047,6 @@ extern void	 mpt_poll_interrupt(MPT_ADAPTER *ioc);
  */
 extern struct list_head	  ioc_list;
 extern struct proc_dir_entry	*mpt_proc_root_dir;
-extern DmpServices_t		*DmpService;
 
 extern int		  mpt_lan_index;	/* needed by mptlan.c */
 extern int		  mpt_stm_index;	/* needed by mptstm.c */
@@ -1150,13 +1076,6 @@ extern int		  mpt_stm_index;	/* needed by mptstm.c */
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 #endif		/* } __KERNEL__ */
-
-/*
- *  More (public) macros...
- */
-#ifndef offsetof
-#define offsetof(t, m)	((size_t) (&((t *)0)->m))
-#endif
 
 #if defined(__alpha__) || defined(__sparc_v9__) || defined(__ia64__) || defined(__x86_64__)
 #define CAST_U32_TO_PTR(x)	((void *)(u64)x)

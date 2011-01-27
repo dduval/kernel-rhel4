@@ -395,10 +395,10 @@ int file_fsync(struct file *filp, struct dentry *dentry, int datasync)
 {
 	struct inode * inode = dentry->d_inode;
 	struct super_block * sb;
-	int ret;
+	int ret, err;
 
 	/* sync the inode to buffers */
-	write_inode_now(inode, 0);
+	ret = write_inode_now_err(inode, 0);
 
 	/* sync the superblock to buffers */
 	sb = inode->i_sb;
@@ -408,7 +408,9 @@ int file_fsync(struct file *filp, struct dentry *dentry, int datasync)
 	unlock_super(sb);
 
 	/* .. finally sync the buffers to disk */
-	ret = sync_blockdev(sb->s_bdev);
+	err = sync_blockdev(sb->s_bdev);
+	if (!ret)
+		ret = err;
 	return ret;
 }
 

@@ -55,6 +55,16 @@ static int s7a_workaround;
 
 extern unsigned long pci_probe_only;
 
+static int config_access_valid(struct device_node *dn, int where)
+{
+	if (where < 256)
+		return 1;
+	if (where < 4096 && dn->pci_ext_config_space)
+		return 1;
+
+	return 0;
+}
+
 static int rtas_read_config(struct device_node *dn, int where, int size, u32 *val)
 {
 	int returnval = -1;
@@ -63,10 +73,11 @@ static int rtas_read_config(struct device_node *dn, int where, int size, u32 *va
 
 	if (!dn)
 		return PCIBIOS_DEVICE_NOT_FOUND;
-	if (where & (size - 1))
+	if (!config_access_valid(dn, where))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
 
-	addr = (dn->busno << 16) | (dn->devfn << 8) | where;
+	addr = ((where & 0xf00) << 20) | (dn->busno << 16) |
+		(dn->devfn << 8) | (where & 0xff);
 	buid = dn->phb->buid;
 	if (buid) {
 		ret = rtas_call(ibm_read_pci_config, 4, 2, &returnval,
@@ -99,7 +110,7 @@ static int rtas_pci_read_config(struct pci_bus *bus,
 
 	/* Search only direct children of the bus */
 	for (dn = busdn->child; dn; dn = dn->sibling)
-		if (dn->devfn == devfn)
+		if (dn->devfn == devfn && !dn_failed(dn))
 			return rtas_read_config(dn, where, size, val);
 	return PCIBIOS_DEVICE_NOT_FOUND;
 }
@@ -111,10 +122,11 @@ int rtas_write_config(struct device_node *dn, int where, int size, u32 val)
 
 	if (!dn)
 		return PCIBIOS_DEVICE_NOT_FOUND;
-	if (where & (size - 1))
+	if (!config_access_valid(dn, where))
 		return PCIBIOS_BAD_REGISTER_NUMBER;
 
-	addr = (dn->busno << 16) | (dn->devfn << 8) | where;
+	addr = ((where & 0xf00) << 20) | (dn->busno << 16) |
+		(dn->devfn << 8) | (where & 0xff);
 	buid = dn->phb->buid;
 	if (buid) {
 		ret = rtas_call(ibm_write_pci_config, 5, 1, NULL, addr, buid >> 32, buid & 0xffffffff, size, (ulong) val);
@@ -142,7 +154,7 @@ static int rtas_pci_write_config(struct pci_bus *bus,
 
 	/* Search only direct children of the bus */
 	for (dn = busdn->child; dn; dn = dn->sibling)
-		if (dn->devfn == devfn)
+		if (dn->devfn == devfn && !dn_failed(dn))
 			return rtas_write_config(dn, where, size, val);
 	return PCIBIOS_DEVICE_NOT_FOUND;
 }
@@ -420,16 +432,18 @@ struct pci_controller * __devinit init_phb_dynamic(struct device_node *dn)
 	unsigned int root_size_cells = 0;
 	struct pci_controller *phb;
 	struct pci_bus *bus;
+	int primary;
 
 	root_size_cells = prom_n_size_cells(root);
 
+	primary = list_empty(&hose_list);
 	phb = alloc_phb_dynamic(dn, root_size_cells);
 	if (!phb)
 		return NULL;
 
 	pci_process_bridge_OF_ranges(phb, dn);
 
-	pci_setup_phb_io_dynamic(phb);
+	pci_setup_phb_io_dynamic(phb, primary);
 	of_node_put(root);
 
 	pci_devs_phb_init_dynamic(phb);
@@ -571,6 +585,9 @@ static void phbs_remap_io(void)
 static void __init pSeries_request_regions(void)
 {
 	struct device_node *i8042;
+
+	if (!isa_io_base)
+		return;
 
 	request_region(0x20,0x20,"pic1");
 	request_region(0xa0,0x20,"pic2");

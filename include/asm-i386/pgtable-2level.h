@@ -23,13 +23,21 @@ static inline int pgd_present(pgd_t pgd)	{ return 1; }
  * within a page table are directly modified.  Thus, the following
  * hook is made available.
  */
-#define set_pte(pteptr, pteval) (*(pteptr) = pteval)
+static inline void set_pte(pte_t *pteptr, pte_t pte)
+{
+	mm_track(pteptr);
+	*(pteptr) = pte;
+}
 #define set_pte_atomic(pteptr, pteval) set_pte(pteptr,pteval)
 /*
  * (pmds are folded into pgds so this doesn't get actually called,
  * but the define is needed for a generic inline function.)
  */
-#define set_pmd(pmdptr, pmdval) (*(pmdptr) = pmdval)
+static inline void set_pmd(pmd_t *pmdptr, pmd_t pmd)
+{
+ 	mm_track(pmdptr);
+	*(pmdptr) = pmd;
+}
 #define set_pgd(pgdptr, pgdval) (*(pgdptr) = pgdval)
 
 #define pgd_page(pgd) \
@@ -39,7 +47,11 @@ static inline pmd_t * pmd_offset(pgd_t * dir, unsigned long address)
 {
 	return (pmd_t *) dir;
 }
-#define ptep_get_and_clear(xp)	__pte(xchg(&(xp)->pte_low, 0))
+static inline pte_t ptep_get_and_clear(pte_t *ptep)
+{
+	mm_track(ptep);
+	return __pte(xchg(&(ptep)->pte_low, 0));
+}
 #define pte_same(a, b)		((a).pte_low == (b).pte_low)
 #define pte_page(x)		pfn_to_page(pte_pfn(x))
 #define pte_none(x)		(!(x).pte_low)

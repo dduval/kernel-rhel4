@@ -26,6 +26,7 @@
 #include <linux/proc_fs.h>
 #include <linux/shmem_fs.h>
 #include <linux/security.h>
+#include <linux/audit.h>
 #include <asm/uaccess.h>
 
 #include "util.h"
@@ -599,6 +600,8 @@ asmlinkage long sys_shmctl (int shmid, int cmd, struct shmid_ds __user *buf)
 			err = -EFAULT;
 			goto out;
 		}
+		if ((err = audit_ipc_perms(0, setbuf.uid, setbuf.gid, setbuf.mode)))
+			return err;
 		down(&shm_ids.sem);
 		shp = shm_lock(shmid);
 		err=-EINVAL;

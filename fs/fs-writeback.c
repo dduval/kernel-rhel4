@@ -542,32 +542,43 @@ void sync_inodes(int wait)
 }
 
 /**
- *	write_inode_now	-	write an inode to disk
+ *	write_inode_now_err	-	write an inode to disk
  *	@inode: inode to write to disk
  *	@sync: whether the write should be synchronous or not
  *
  *	This function commits an inode to disk immediately if it is
  *	dirty. This is primarily needed by knfsd.
+ *
+ *      Returns 0 on success else -ERR.
  */
  
-void write_inode_now(struct inode *inode, int sync)
+int write_inode_now_err(struct inode *inode, int sync)
 {
+	int ret;
 	struct writeback_control wbc = {
 		.nr_to_write = LONG_MAX,
 		.sync_mode = WB_SYNC_ALL,
 	};
 
 	if (inode->i_mapping->backing_dev_info->memory_backed)
-		return;
+		return 0;
 
 	might_sleep();
 	spin_lock(&inode_lock);
-	__writeback_single_inode(inode, &wbc);
+	ret = __writeback_single_inode(inode, &wbc);
 	spin_unlock(&inode_lock);
 	if (sync)
 		wait_on_inode(inode);
+	return ret;
 }
+
+void write_inode_now(struct inode *inode, int sync)
+{
+	write_inode_now_err(inode, sync);
+}
+
 EXPORT_SYMBOL(write_inode_now);
+EXPORT_SYMBOL(write_inode_now_err);
 
 /**
  * sync_inode - write an inode and its pages to disk.
@@ -635,8 +646,11 @@ int generic_osync_inode(struct inode *inode, struct address_space *mapping, int 
 		need_write_inode_now = 1;
 	spin_unlock(&inode_lock);
 
-	if (need_write_inode_now)
-		write_inode_now(inode, 1);
+	if (need_write_inode_now) {
+		err2 = write_inode_now_err(inode, 1);
+		if (!err)
+			err = err2;
+	}
 	else
 		wait_on_inode(inode);
 

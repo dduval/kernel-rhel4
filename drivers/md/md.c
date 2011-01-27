@@ -988,12 +988,12 @@ static void super_1_sync(mddev_t *mddev, mdk_rdev_t *rdev)
 
 	max_dev = 0;
 	ITERATE_RDEV(mddev,rdev2,tmp)
-		if (rdev2->desc_nr > max_dev)
-			max_dev = rdev2->desc_nr;
+		if (rdev2->desc_nr+1 > max_dev)
+			max_dev = rdev2->desc_nr+1;
 	
 	sb->max_dev = max_dev;
 	for (i=0; i<max_dev;i++)
-		sb->dev_roles[max_dev] = cpu_to_le16(0xfffe);
+		sb->dev_roles[i] = cpu_to_le16(0xfffe);
 	
 	ITERATE_RDEV(mddev,rdev2,tmp) {
 		i = rdev2->desc_nr;
@@ -1006,6 +1006,7 @@ static void super_1_sync(mddev_t *mddev, mdk_rdev_t *rdev)
 	}
 
 	sb->recovery_offset = cpu_to_le64(0); /* not supported yet */
+	sb->sb_csum = calc_sb_1_csum(sb);
 }
 
 
@@ -1498,9 +1499,8 @@ static int analyze_sbs(mddev_t * mddev)
 		goto abort;
 	}
 
-	if ((mddev->recovery_cp != MaxSector) &&
-	    ((mddev->level == 1) ||
-	     ((mddev->level >= 4) && (mddev->level <= 6))))
+	if (mddev->recovery_cp != MaxSector &&
+	    mddev->level >= 1)
 		printk(KERN_ERR "md: %s: raid array is not clean"
 		       " -- starting background reconstruction\n",
 		       mdname(mddev));
@@ -2496,6 +2496,9 @@ static int set_disk_faulty(mddev_t *mddev, dev_t dev)
 {
 	mdk_rdev_t *rdev;
 
+	if (mddev->pers == NULL)
+		return -ENODEV;
+
 	rdev = find_rdev(mddev, dev);
 	if (!rdev)
 		return -ENODEV;
@@ -3397,10 +3400,12 @@ static void md_do_sync(mddev_t *mddev)
 	init_waitqueue_head(&mddev->recovery_wait);
 	last_check = 0;
 
-	if (j)
+	if (j>2) {
 		printk(KERN_INFO 
 			"md: resuming recovery of %s from checkpoint.\n",
 			mdname(mddev));
+		mddev->curr_resync = j;
+	}
 
 	while (j < max_sectors) {
 		int sectors;
@@ -3483,7 +3488,7 @@ static void md_do_sync(mddev_t *mddev)
 
 	if (!test_bit(MD_RECOVERY_ERR, &mddev->recovery) &&
 	    mddev->curr_resync > 2 &&
-	    mddev->curr_resync > mddev->recovery_cp) {
+	    mddev->curr_resync >= mddev->recovery_cp) {
 		if (test_bit(MD_RECOVERY_INTR, &mddev->recovery)) {
 			printk(KERN_INFO 
 				"md: checkpointing recovery of %s.\n",

@@ -105,16 +105,16 @@ int xfrm4_output(struct sk_buff **pskb)
 			goto error_nolock;
 	}
 
+	if (x->props.mode) {
+		err = xfrm4_tunnel_check_size(skb);
+		if (err)
+			goto error_nolock;
+	}
+
 	spin_lock_bh(&x->lock);
 	err = xfrm_state_check(x, skb);
 	if (err)
 		goto error;
-
-	if (x->props.mode) {
-		err = xfrm4_tunnel_check_size(skb);
-		if (err)
-			goto error;
-	}
 
 	xfrm4_encap(skb);
 

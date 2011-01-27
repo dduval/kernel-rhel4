@@ -8,7 +8,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (c) 2000-2004 Silicon Graphics, Inc.  All rights reserved.
+ * Copyright (c) 2000-2005 Silicon Graphics, Inc.  All rights reserved.
  */
 
 
@@ -18,6 +18,7 @@
 #include <asm/sn/arch.h>
 #include <asm/sn/geo.h>
 #include <asm/sn/nodepda.h>
+#include <asm/sn/shub_mmr.h>
 
 // SGI Specific Calls
 #define  SN_SAL_POD_MODE                           0x02000001
@@ -32,9 +33,10 @@
 #define  SN_SAL_NO_FAULT_ZONE_VIRTUAL		   0x02000010
 #define  SN_SAL_NO_FAULT_ZONE_PHYSICAL		   0x02000011
 #define  SN_SAL_PRINT_ERROR			   0x02000012
-#define  SN_SAL_GET_SAPIC_INFO                     0x02009999	//ZZZZ fix
 #define  SN_SAL_SET_ERROR_HANDLING_FEATURES	   0x0200001a	// reentrant
 #define  SN_SAL_GET_FIT_COMPT			   0x0200001b	// reentrant
+#define  SN_SAL_GET_SAPIC_INFO                     0x0200001d
+#define  SN_SAL_GET_SN_INFO                        0x0200001e
 #define  SN_SAL_CONSOLE_PUTC                       0x02000021
 #define  SN_SAL_CONSOLE_GETC                       0x02000022
 #define  SN_SAL_CONSOLE_PUTS                       0x02000023
@@ -62,6 +64,7 @@
 
 #define  SN_SAL_SYSCTL_IOBRICK_PCI_OP		   0x02000042	// reentrant
 #define	 SN_SAL_IROUTER_OP			   0x02000043
+#define  SN_SAL_SYSCTL_EVENT                       0x02000044
 #define  SN_SAL_IOIF_INTERRUPT			   0x0200004a
 #define  SN_SAL_HWPERF_OP			   0x02000050   // lock
 #define  SN_SAL_IOIF_ERROR_INTERRUPT		   0x02000051
@@ -74,7 +77,8 @@
 #define  SN_SAL_IOIF_GET_WIDGET_DMAFLUSH_LIST	   0x02000058
 
 #define SN_SAL_HUB_ERROR_INTERRUPT		   0x02000060
-
+#define SN_SAL_BTE_RECOVER			   0x02000061
+#define SN_SAL_IOIF_GET_PCI_TOPOLOGY	           0x02000062
 
 /*
  * Service-specific constants
@@ -111,6 +115,13 @@
 #define SAL_IROUTER_INTR_XMIT	SAL_CONSOLE_INTR_XMIT
 #define SAL_IROUTER_INTR_RECV	SAL_CONSOLE_INTR_RECV
 
+/*
+ * Error Handling Features
+ */
+#define SAL_ERR_FEAT_MCA_SLV_TO_OS_INIT_SLV	0x1
+#define SAL_ERR_FEAT_LOG_SBES			0x2
+#define SAL_ERR_FEAT_MFR_OVERRIDE		0x4
+#define SAL_ERR_FEAT_SBE_THRESHOLD		0xffff0000
 
 /*
  * SAL Error Codes
@@ -203,7 +214,7 @@ ia64_sn_get_master_baseio_nasid(void)
 	return ret_stuff.v0;
 }
 
-static inline u64
+static inline char *
 ia64_sn_get_klconfig_addr(nasid_t nasid)
 {
 	struct ia64_sal_retval ret_stuff;
@@ -223,7 +234,7 @@ ia64_sn_get_klconfig_addr(nasid_t nasid)
 	if (ret_stuff.status != 0) {
 		panic("ia64_sn_get_klconfig_addr: Returned error %lx\n", ret_stuff.status);
 	}
-	return(ret_stuff.v0);
+	return ret_stuff.v0 ? __va(ret_stuff.v0) : NULL;
 }
 
 /*
@@ -333,6 +344,25 @@ ia64_sn_plat_cpei_handler(void)
 	ret_stuff.v1 = 0;
 	ret_stuff.v2 = 0;
 	SAL_CALL_NOLOCK(ret_stuff, SN_SAL_LOG_CE, 0, 0, 0, 0, 0, 0, 0);
+
+	return ret_stuff.status;
+}
+
+/*
+ * Set Error Handling Features
+ */
+static inline u64
+ia64_sn_plat_set_error_handling_features(void)
+{
+	struct ia64_sal_retval ret_stuff;
+
+	ret_stuff.status = 0;
+	ret_stuff.v0 = 0;
+	ret_stuff.v1 = 0;
+	ret_stuff.v2 = 0;
+	SAL_CALL_REENTRANT(ret_stuff, SN_SAL_SET_ERROR_HANDLING_FEATURES,
+		(SAL_ERR_FEAT_MCA_SLV_TO_OS_INIT_SLV | SAL_ERR_FEAT_LOG_SBES),
+		0, 0, 0, 0, 0, 0);
 
 	return ret_stuff.status;
 }
@@ -468,10 +498,56 @@ static inline u64
 ia64_sn_pod_mode(void)
 {
 	struct ia64_sal_retval isrv;
-	SAL_CALL(isrv, SN_SAL_POD_MODE, 0, 0, 0, 0, 0, 0, 0);
+	SAL_CALL_REENTRANT(isrv, SN_SAL_POD_MODE, 0, 0, 0, 0, 0, 0, 0);
 	if (isrv.status)
 		return 0;
 	return isrv.v0;
+}
+
+/**
+ * ia64_sn_probe_mem - read from memory safely
+ * @addr: address to probe
+ * @size: number bytes to read (1,2,4,8)
+ * @data_ptr: address to store value read by probe (-1 returned if probe fails)
+ *
+ * Call into the SAL to do a memory read.  If the read generates a machine
+ * check, this routine will recover gracefully and return -1 to the caller.
+ * @addr is usually a kernel virtual address in uncached space (i.e. the
+ * address starts with 0xc), but if called in physical mode, @addr should
+ * be a physical address.
+ *
+ * Return values:
+ *  0 - probe successful
+ *  1 - probe failed (generated MCA)
+ *  2 - Bad arg
+ * <0 - PAL error
+ */
+static inline u64
+ia64_sn_probe_mem(long addr, long size, void *data_ptr)
+{
+	struct ia64_sal_retval isrv;
+
+	SAL_CALL(isrv, SN_SAL_PROBE, addr, size, 0, 0, 0, 0, 0);
+
+	if (data_ptr) {
+		switch (size) {
+		case 1:
+			*((u8*)data_ptr) = (u8)isrv.v0;
+			break;
+		case 2:
+			*((u16*)data_ptr) = (u16)isrv.v0;
+			break;
+		case 4:
+			*((u32*)data_ptr) = (u32)isrv.v0;
+			break;
+		case 8:
+			*((u64*)data_ptr) = (u64)isrv.v0;
+			break;
+		default:
+			isrv.status = 2;
+		}
+	}
+	return isrv.status;
 }
 
 /*
@@ -507,7 +583,8 @@ static inline u64
 ia64_sn_partition_serial_get(void)
 {
 	struct ia64_sal_retval ret_stuff;
-	SAL_CALL(ret_stuff, SN_SAL_PARTITION_SERIAL_GET, 0, 0, 0, 0, 0, 0, 0);
+	ia64_sal_oemcall_reentrant(&ret_stuff, SN_SAL_PARTITION_SERIAL_GET, 0,
+				   0, 0, 0, 0, 0, 0);
 	if (ret_stuff.status != 0)
 	    return 0;
 	return ret_stuff.v0;
@@ -515,11 +592,10 @@ ia64_sn_partition_serial_get(void)
 
 static inline u64
 sn_partition_serial_number_val(void) {
-	if (sn_partition_serial_number) {
-		return(sn_partition_serial_number);
-	} else {
-		return(sn_partition_serial_number = ia64_sn_partition_serial_get());
+	if (unlikely(sn_partition_serial_number == 0)) {
+		sn_partition_serial_number = ia64_sn_partition_serial_get();
 	}
+	return sn_partition_serial_number;
 }
 
 /*
@@ -530,8 +606,8 @@ static inline partid_t
 ia64_sn_sysctl_partition_get(nasid_t nasid)
 {
 	struct ia64_sal_retval ret_stuff;
-	SAL_CALL(ret_stuff, SN_SAL_SYSCTL_PARTITION_GET, nasid,
-		 0, 0, 0, 0, 0, 0);
+	ia64_sal_oemcall_nolock(&ret_stuff, SN_SAL_SYSCTL_PARTITION_GET, nasid,
+				0, 0, 0, 0, 0, 0);
 	if (ret_stuff.status != 0)
 	    return INVALID_PARTID;
 	return ((partid_t)ret_stuff.v0);
@@ -545,11 +621,38 @@ extern partid_t sn_partid;
 
 static inline partid_t
 sn_local_partid(void) {
-	if (sn_partid < 0) {
-		return (sn_partid = ia64_sn_sysctl_partition_get(cpuid_to_nasid(smp_processor_id())));
-	} else {
-		return sn_partid;
+	if (unlikely(sn_partid < 0)) {
+		sn_partid = ia64_sn_sysctl_partition_get(cpuid_to_nasid(smp_processor_id()));
 	}
+	return sn_partid;
+}
+
+/*
+ * Returns the physical address of the partition's reserved page through
+ * an iterative number of calls.
+ *
+ * On first call, 'cookie' and 'len' should be set to 0, and 'addr'
+ * set to the nasid of the partition whose reserved page's address is
+ * being sought.
+ * On subsequent calls, pass the values, that were passed back on the
+ * previous call.
+ *
+ * While the return status equals SALRET_MORE_PASSES, keep calling
+ * this function after first copying 'len' bytes starting at 'addr'
+ * into 'buf'. Once the return status equals SALRET_OK, 'addr' will
+ * be the physical address of the partition's reserved page. If the
+ * return status equals neither of these, an error as occurred.
+ */
+static inline s64
+sn_partition_reserved_page_pa(u64 buf, u64 *cookie, u64 *addr, u64 *len)
+{
+	struct ia64_sal_retval rv;
+	ia64_sal_oemcall_reentrant(&rv, SN_SAL_GET_PARTITION_ADDR, *cookie,
+				   *addr, buf, *len, 0, 0, 0);
+	*cookie = rv.v0;
+	*addr = rv.v1;
+	*len = rv.v2;
+	return rv.status;
 }
 
 /*
@@ -571,8 +674,8 @@ static inline int
 sn_register_xp_addr_region(u64 paddr, u64 len, int operation)
 {
 	struct ia64_sal_retval ret_stuff;
-	SAL_CALL(ret_stuff, SN_SAL_XP_ADDR_REGION, paddr, len, (u64)operation,
-		 0, 0, 0, 0);
+	ia64_sal_oemcall(&ret_stuff, SN_SAL_XP_ADDR_REGION, paddr, len,
+			 (u64)operation, 0, 0, 0, 0);
 	return ret_stuff.status;
 }
 
@@ -596,8 +699,8 @@ sn_register_nofault_code(u64 start_addr, u64 end_addr, u64 return_addr,
 	} else {
 		call = SN_SAL_NO_FAULT_ZONE_PHYSICAL;
 	}
-	SAL_CALL(ret_stuff, call, start_addr, end_addr, return_addr, (u64)1,
-		 0, 0, 0);
+	ia64_sal_oemcall(&ret_stuff, call, start_addr, end_addr, return_addr,
+			 (u64)1, 0, 0, 0);
 	return ret_stuff.status;
 }
 
@@ -618,8 +721,8 @@ static inline int
 sn_change_coherence(u64 *new_domain, u64 *old_domain)
 {
 	struct ia64_sal_retval ret_stuff;
-	SAL_CALL(ret_stuff, SN_SAL_COHERENCE, new_domain, old_domain, 0, 0,
-		 0, 0, 0);
+	ia64_sal_oemcall(&ret_stuff, SN_SAL_COHERENCE, (u64)new_domain,
+			 (u64)old_domain, 0, 0, 0, 0, 0);
 	return ret_stuff.status;
 }
 
@@ -638,8 +741,8 @@ sn_change_memprotect(u64 paddr, u64 len, u64 perms, u64 *nasid_array)
 	cnodeid = nasid_to_cnodeid(get_node_number(paddr));
 	// spin_lock(&NODEPDA(cnodeid)->bist_lock);
 	local_irq_save(irq_flags);
-	SAL_CALL_NOLOCK(ret_stuff, SN_SAL_MEMPROTECT, paddr, len, nasid_array,
-		 perms, 0, 0, 0);
+	ia64_sal_oemcall_nolock(&ret_stuff, SN_SAL_MEMPROTECT, paddr, len,
+				(u64)nasid_array, perms, 0, 0, 0);
 	local_irq_restore(irq_flags);
 	// spin_unlock(&NODEPDA(cnodeid)->bist_lock);
 	return ret_stuff.status;
@@ -801,6 +904,19 @@ ia64_sn_irtr_intr_disable(nasid_t nasid, int subch, u64 intr)
 	return (int) rv.v0;
 }
 
+/*
+ * Set up a node as the point of contact for system controller
+ * environmental event delivery.
+ */
+static inline int
+ia64_sn_sysctl_event_init(nasid_t nasid)
+{
+        struct ia64_sal_retval rv;
+        SAL_CALL_REENTRANT(rv, SN_SAL_SYSCTL_EVENT, (u64) nasid,
+			   0, 0, 0, 0, 0, 0);
+        return (int) rv.v0;
+}
+
 /**
  * ia64_sn_get_fit_compt - read a FIT entry from the PROM header
  * @nasid: NASID of node to read
@@ -847,6 +963,14 @@ ia64_sn_irtr_init(nasid_t nasid, void *buf, int len)
 
 /*
  * Returns the nasid, subnode & slice corresponding to a SAPIC ID
+ *
+ *  In:
+ *	arg0 - SN_SAL_GET_SAPIC_INFO
+ *	arg1 - sapicid (lid >> 16) 
+ *  Out:
+ *	v0 - nasid
+ *	v1 - subnode
+ *	v2 - slice
  */
 static inline u64
 ia64_sn_get_sapic_info(int sapicid, int *nasid, int *subnode, int *slice)
@@ -859,7 +983,7 @@ ia64_sn_get_sapic_info(int sapicid, int *nasid, int *subnode, int *slice)
 	ret_stuff.v2 = 0;
 	SAL_CALL_NOLOCK(ret_stuff, SN_SAL_GET_SAPIC_INFO, sapicid, 0, 0, 0, 0, 0, 0);
 
-/***** BEGIN HACK - temp til new proms available ********/
+/***** BEGIN HACK - temp til old proms no longer supported ********/
 	if (ret_stuff.status == SALRET_NOT_IMPLEMENTED) {
 		if (nasid) *nasid = sapicid & 0xfff;
 		if (subnode) *subnode = (sapicid >> 13) & 1;
@@ -876,6 +1000,69 @@ ia64_sn_get_sapic_info(int sapicid, int *nasid, int *subnode, int *slice)
 	if (slice) *slice = (int) ret_stuff.v2;
 	return 0;
 }
+ 
+/*
+ * Returns information about the HUB/SHUB.
+ *  In:
+ *	arg0 - SN_SAL_GET_SN_INFO
+ * 	arg1 - 0 (other values reserved for future use)
+ *  Out:
+ *	v0 
+ *		[7:0]   - shub type (0=shub1, 1=shub2)
+ *		[15:8]  - Log2 max number of nodes in entire system (includes
+ *			  C-bricks, I-bricks, etc)
+ *		[23:16] - Log2 of nodes per sharing domain			 
+ * 		[31:24] - partition ID
+ * 		[39:32] - coherency_id
+ * 		[47:40] - regionsize
+ *	v1 
+ *		[15:0]  - nasid mask (ex., 0x7ff for 11 bit nasid)
+ *	 	[23:15] - bit position of low nasid bit
+ */
+static inline u64
+ia64_sn_get_sn_info(int fc, u8 *shubtype, u16 *nasid_bitmask, u8 *nasid_shift, 
+		u8 *systemsize, u8 *sharing_domain_size, u8 *partid, u8 *coher, u8 *reg)
+{
+	struct ia64_sal_retval ret_stuff;
+
+	ret_stuff.status = 0;
+	ret_stuff.v0 = 0;
+	ret_stuff.v1 = 0;
+	ret_stuff.v2 = 0;
+	SAL_CALL_NOLOCK(ret_stuff, SN_SAL_GET_SN_INFO, fc, 0, 0, 0, 0, 0, 0);
+
+/***** BEGIN HACK - temp til old proms no longer supported ********/
+	if (ret_stuff.status == SALRET_NOT_IMPLEMENTED) {
+		int nasid = get_sapicid() & 0xfff;;
+#define SH_SHUB_ID_NODES_PER_BIT_MASK 0x001f000000000000UL                                               
+#define SH_SHUB_ID_NODES_PER_BIT_SHFT 48                                                               
+		if (shubtype) *shubtype = 0;
+		if (nasid_bitmask) *nasid_bitmask = 0x7ff;
+		if (nasid_shift) *nasid_shift = 38;
+		if (systemsize) *systemsize = 11;
+		if (sharing_domain_size) *sharing_domain_size = 9;
+		if (partid) *partid = ia64_sn_sysctl_partition_get(nasid);
+		if (coher) *coher = nasid >> 9;
+		if (reg) *reg = (HUB_L((u64 *) LOCAL_MMR_ADDR(SH1_SHUB_ID)) & SH_SHUB_ID_NODES_PER_BIT_MASK) >>
+			SH_SHUB_ID_NODES_PER_BIT_SHFT;
+		return 0;
+	}
+/***** END HACK *******/
+
+	if (ret_stuff.status < 0)
+		return ret_stuff.status;
+
+	if (shubtype) *shubtype = ret_stuff.v0 & 0xff;
+	if (systemsize) *systemsize = (ret_stuff.v0 >> 8) & 0xff;
+	if (sharing_domain_size) *sharing_domain_size = (ret_stuff.v0 >> 16) & 0xff;
+	if (partid) *partid = (ret_stuff.v0 >> 24) & 0xff;
+	if (coher) *coher = (ret_stuff.v0 >> 32) & 0xff;
+	if (reg) *reg = (ret_stuff.v0 >> 40) & 0xff;
+	if (nasid_bitmask) *nasid_bitmask = (ret_stuff.v1 & 0xffff);
+	if (nasid_shift) *nasid_shift = (ret_stuff.v1 >> 16) & 0xff;
+	return 0;
+}
+ 
 /*
  * This is the access point to the Altix PROM hardware performance
  * and status monitoring interface. For info on using this, see
@@ -890,6 +1077,31 @@ ia64_sn_hwperf_op(nasid_t nasid, u64 opcode, u64 a0, u64 a1, u64 a2,
 		opcode, a0, a1, a2, a3, a4);
 	if (v0)
 		*v0 = (int) rv.v0;
+	return (int) rv.status;
+}
+
+static inline int
+ia64_sn_ioif_get_pci_topology(u64 rack, u64 bay, u64 slot, u64 slab,
+			      u64 buf, u64 len)
+{
+	struct ia64_sal_retval rv;
+	SAL_CALL_NOLOCK(rv, SN_SAL_IOIF_GET_PCI_TOPOLOGY,
+		rack, bay, slot, slab, buf, len, 0);
+	return (int) rv.status;
+}
+
+/*
+ * BTE error recovery is implemented in SAL
+ */
+static inline int
+ia64_sn_bte_recovery(nasid_t nasid)
+{
+	struct ia64_sal_retval rv;
+
+	rv.status = 0;
+	SAL_CALL_NOLOCK(rv, SN_SAL_BTE_RECOVER, 0, 0, 0, 0, 0, 0, 0);
+	if (rv.status == SALRET_NOT_IMPLEMENTED)
+		return 0;
 	return (int) rv.status;
 }
 

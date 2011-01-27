@@ -5,22 +5,10 @@
  *          LSIFC9xx/LSI409xx Fibre Channel
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Credits:
- *      This driver would not exist if not for Alan Cox's development
- *      of the linux i2o driver.
- *
- *      A huge debt of gratitude is owed to David S. Miller (DaveM)
- *      for fixing much of the stupid and broken stuff in the early
- *      driver while porting to sparc64 platform.  THANK YOU!
- *
- *      (see also mptbase.c)
- *
- *  Copyright (c) 1999-2004 LSI Logic Corporation
- *  Originally By: Steven J. Ralston
- *  (mailto:netscape.net)
+ *  Copyright (c) 1999-2005 LSI Logic Corporation
  *  (mailto:mpt_linux_developer@lsil.com)
  *
- *  $Id: mptscsih.h,v 1.21 2002/12/03 21:26:35 pdelaney Exp $
+ *  $Id: mptscsih.h,v 1.1.2.2 2003/05/07 14:08:35 Exp $
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -66,8 +54,8 @@
  *	SCSI Public stuff...
  */
 
-#define MPT_SCSI_CMD_PER_DEV_HIGH	31
-#define MPT_SCSI_CMD_PER_DEV_LOW	7
+#define MPT_SCSI_CMD_PER_DEV_HIGH	64
+#define MPT_SCSI_CMD_PER_DEV_LOW	32
 
 #define MPT_SCSI_CMD_PER_LUN		7
 
@@ -90,22 +78,6 @@
 #define MPTSCSIH_MAX_WIDTH              1
 #define MPTSCSIH_MIN_SYNC               0x08
 #define MPTSCSIH_SAF_TE                 0
-
-struct mptscsih_driver_setup
-{
-        u8      dv;
-        u8      max_width;
-        u8      min_sync_fac;
-        u8      saf_te;
-};
-
-
-#define MPTSCSIH_DRIVER_SETUP                   \
-{                                               \
-        MPTSCSIH_DOMAIN_VALIDATION,             \
-        MPTSCSIH_MAX_WIDTH,                     \
-        MPTSCSIH_MIN_SYNC,                      \
-        MPTSCSIH_SAF_TE,                        \
-}
+#define MPTSCSIH_PT_CLEAR               0
 
 #endif

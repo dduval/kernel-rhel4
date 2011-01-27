@@ -296,6 +296,9 @@
 #define __NR_mq_notify		277
 #define __NR_mq_getsetattr	278
 #define __NR_waitid		279
+#define __NR_add_key		281
+#define __NR_request_key	282
+#define __NR_keyctl		283
 
 /* WARNING: You MAY NOT add syscall numbers larger than 282, since
  *          all of the syscall tables in the Sparc kernel are

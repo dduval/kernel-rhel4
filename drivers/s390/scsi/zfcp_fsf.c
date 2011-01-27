@@ -992,6 +992,15 @@ zfcp_fsf_status_read_handler(struct zfcp_fsf_req *fsf_req)
 		zfcp_fsf_incoming_els(fsf_req);
 		break;
 
+	case FSF_STATUS_READ_SENSE_DATA_AVAIL:
+		ZFCP_LOG_FLAGS(1, "FSF_STATUS_READ_SENSE_DATA_AVAIL\n");
+		debug_text_event(adapter->erp_dbf, 3, "unsol_sense:");
+		ZFCP_LOG_INFO("unsolicited sense data received (adapter %s)\n",
+			      zfcp_get_busid_by_adapter(adapter));
+                ZFCP_HEX_DUMP(ZFCP_LOG_LEVEL_NORMAL, (char *) status_buffer,
+                              sizeof(struct fsf_status_read_buffer));
+		break;
+
 	case FSF_STATUS_READ_BIT_ERROR_THRESHOLD:
 		ZFCP_LOG_FLAGS(1, "FSF_STATUS_READ_BIT_ERROR_THRESHOLD\n");
 		debug_text_event(adapter->erp_dbf, 3, "unsol_bit_err:");
@@ -1032,6 +1041,7 @@ zfcp_fsf_status_read_handler(struct zfcp_fsf_req *fsf_req)
 		debug_text_event(adapter->erp_dbf, 2, "unsol_cfdc_update:");
 		ZFCP_LOG_INFO("CFDC has been updated on the adapter %s\n",
 			      zfcp_get_busid_by_adapter(adapter));
+		zfcp_erp_adapter_access_changed(adapter);
 		break;
 
 	case FSF_STATUS_READ_CFDC_HARDENED:
@@ -1284,7 +1294,7 @@ zfcp_fsf_abort_fcp_command_handler(struct zfcp_fsf_req *new_fsf_req)
 			      zfcp_get_busid_by_unit(unit));
 		debug_text_event(new_fsf_req->adapter->erp_dbf, 2,
 				 "fsf_s_pboxed");
-		zfcp_erp_port_reopen(unit->port, 0);
+		zfcp_erp_port_boxed(unit->port);
 		new_fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR
 		    | ZFCP_STATUS_FSFREQ_RETRY;
 		break;
@@ -1633,7 +1643,7 @@ zfcp_fsf_send_ct_handler(struct zfcp_fsf_req *fsf_req)
 			       "needs to be reopened\n",
 			       port->wwpn, zfcp_get_busid_by_port(port));
 		debug_text_event(adapter->erp_dbf, 2, "fsf_s_pboxed");
-		zfcp_erp_port_reopen(port, 0);
+		zfcp_erp_port_boxed(port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR
 		    | ZFCP_STATUS_FSFREQ_RETRY;
 		break;
@@ -1676,7 +1686,7 @@ zfcp_fsf_send_els(struct zfcp_send_els *els)
 	adapter = port->adapter;
 
         ret = zfcp_fsf_req_create(adapter, FSF_QTCB_SEND_ELS,
-				  ZFCP_WAIT_FOR_SBAL|ZFCP_REQ_AUTO_CLEANUP,
+				  ZFCP_REQ_AUTO_CLEANUP,
 				  NULL, &lock_flags, &fsf_req);
 	if (ret < 0) {
                 ZFCP_LOG_INFO("error: creation of ELS request failed "
@@ -1928,6 +1938,7 @@ static int zfcp_fsf_send_els_handler(struct zfcp_fsf_req *fsf_req)
 			}
 		}
 		debug_text_event(adapter->erp_dbf, 1, "fsf_s_access");
+		zfcp_erp_port_access_denied(port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
@@ -1988,7 +1999,7 @@ zfcp_fsf_exchange_config_data(struct zfcp_erp_action *erp_action)
 
 	erp_action->fsf_req->erp_action = erp_action;
 	erp_action->fsf_req->qtcb->bottom.config.feature_selection =
-		FSF_FEATURE_CFDC;
+		(FSF_FEATURE_CFDC | FSF_FEATURE_LUN_SHARING);
 
 	/* start QDIO request for this FSF request */
 	retval = zfcp_fsf_req_send(erp_action->fsf_req, &erp_action->timer);
@@ -2421,7 +2432,7 @@ zfcp_fsf_open_port_handler(struct zfcp_fsf_req *fsf_req)
 			}
 		}
 		debug_text_event(fsf_req->adapter->erp_dbf, 1, "fsf_s_access");
-		zfcp_erp_port_failed(port);
+		zfcp_erp_port_access_denied(port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
@@ -2491,6 +2502,9 @@ zfcp_fsf_open_port_handler(struct zfcp_fsf_req *fsf_req)
 		/* mark port as open */
 		atomic_set_mask(ZFCP_STATUS_COMMON_OPEN |
 				ZFCP_STATUS_PORT_PHYS_OPEN, &port->status);
+		atomic_clear_mask(ZFCP_STATUS_COMMON_ACCESS_DENIED |
+		                  ZFCP_STATUS_COMMON_ACCESS_BOXED,
+		                  &port->status);
 		retval = 0;
 		/* check whether D_ID has changed during open */
 		/*
@@ -2820,6 +2834,7 @@ zfcp_fsf_close_physical_port_handler(struct zfcp_fsf_req *fsf_req)
 			}
 		}
 		debug_text_event(fsf_req->adapter->erp_dbf, 1, "fsf_s_access");
+		zfcp_erp_port_access_denied(port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
@@ -2831,7 +2846,7 @@ zfcp_fsf_close_physical_port_handler(struct zfcp_fsf_req *fsf_req)
 			       port->wwpn,
 			       zfcp_get_busid_by_port(port));
 		debug_text_event(fsf_req->adapter->erp_dbf, 1, "fsf_s_pboxed");
-		zfcp_erp_port_reopen(port, 0);
+		zfcp_erp_port_boxed(port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR |
 			ZFCP_STATUS_FSFREQ_RETRY;
 		break;
@@ -2941,6 +2956,8 @@ zfcp_fsf_open_unit(struct zfcp_erp_action *erp_action)
 		erp_action->port->handle;
 	erp_action->fsf_req->qtcb->bottom.support.fcp_lun =
 		erp_action->unit->fcp_lun;
+	erp_action->fsf_req->qtcb->bottom.support.option =
+		FSF_OPEN_LUN_SUPPRESS_BOXING;
 	atomic_set_mask(ZFCP_STATUS_COMMON_OPENING, &erp_action->unit->status);
 	erp_action->fsf_req->data.open_unit.unit = erp_action->unit;
 	erp_action->fsf_req->erp_action = erp_action;
@@ -2984,17 +3001,31 @@ zfcp_fsf_open_unit_handler(struct zfcp_fsf_req *fsf_req)
 	struct zfcp_unit *unit;
 	struct fsf_qtcb_header *header;
 	struct fsf_qtcb_bottom_support *bottom;
+	struct fsf_queue_designator *queue_designator;
 	u16 subtable, rule, counter;
-
-	adapter = fsf_req->adapter;
+	u32 allowed, exclusive, readwrite;
+	
 	unit = fsf_req->data.open_unit.unit;
-	header = &fsf_req->qtcb->header;
-	bottom = &fsf_req->qtcb->bottom.support;
-
+	
+	
 	if (fsf_req->status & ZFCP_STATUS_FSFREQ_ERROR) {
 		/* don't change unit status in our bookkeeping */
 		goto skip_fsfstatus;
 	}
+
+	adapter = fsf_req->adapter;
+	header = &fsf_req->qtcb->header;
+	bottom = &fsf_req->qtcb->bottom.support;
+	queue_designator = &header->fsf_status_qual.fsf_queue_designator;
+
+	allowed   = bottom->lun_access_info & FSF_UNIT_ACCESS_OPEN_LUN_ALLOWED;
+	exclusive = bottom->lun_access_info & FSF_UNIT_ACCESS_EXCLUSIVE;
+	readwrite = bottom->lun_access_info & FSF_UNIT_ACCESS_OUTBOUND_TRANSFER;
+
+	atomic_clear_mask(ZFCP_STATUS_COMMON_ACCESS_DENIED |
+			  ZFCP_STATUS_UNIT_SHARED |
+			  ZFCP_STATUS_UNIT_READONLY,
+			  &unit->status);
 
 	/* evaluate FSF status in QTCB */
 	switch (header->fsf_status) {
@@ -3046,7 +3077,9 @@ zfcp_fsf_open_unit_handler(struct zfcp_fsf_req *fsf_req)
 			}
 		}
 		debug_text_event(adapter->erp_dbf, 1, "fsf_s_access");
-		zfcp_erp_unit_failed(unit);
+		zfcp_erp_unit_access_denied(unit);
+		atomic_clear_mask(ZFCP_STATUS_UNIT_SHARED, &unit->status);
+                atomic_clear_mask(ZFCP_STATUS_UNIT_READONLY, &unit->status);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
@@ -3056,7 +3089,7 @@ zfcp_fsf_open_unit_handler(struct zfcp_fsf_req *fsf_req)
 			       "needs to be reopened\n",
 			       unit->port->wwpn, zfcp_get_busid_by_unit(unit));
 		debug_text_event(adapter->erp_dbf, 2, "fsf_s_pboxed");
-		zfcp_erp_port_reopen(unit->port, 0);
+		zfcp_erp_port_boxed(unit->port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR |
 			ZFCP_STATUS_FSFREQ_RETRY;
 		break;
@@ -3098,7 +3131,9 @@ zfcp_fsf_open_unit_handler(struct zfcp_fsf_req *fsf_req)
 			      sizeof (union fsf_status_qual));
 		debug_text_event(adapter->erp_dbf, 2,
 				 "fsf_s_l_sh_vio");
-		zfcp_erp_unit_failed(unit);
+		zfcp_erp_unit_access_denied(unit);
+		atomic_clear_mask(ZFCP_STATUS_UNIT_SHARED, &unit->status);
+		atomic_clear_mask(ZFCP_STATUS_UNIT_READONLY, &unit->status);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
@@ -3172,6 +3207,40 @@ zfcp_fsf_open_unit_handler(struct zfcp_fsf_req *fsf_req)
 			       unit->handle);
 		/* mark unit as open */
 		atomic_set_mask(ZFCP_STATUS_COMMON_OPEN, &unit->status);
+		atomic_clear_mask(ZFCP_STATUS_COMMON_ACCESS_DENIED |
+		                  ZFCP_STATUS_COMMON_ACCESS_BOXED,
+		                  &unit->status);
+		if (adapter->supported_features & FSF_FEATURE_LUN_SHARING){
+			if (!exclusive)
+		                atomic_set_mask(ZFCP_STATUS_UNIT_SHARED,
+						&unit->status);
+
+			if (!readwrite) {
+                		atomic_set_mask(ZFCP_STATUS_UNIT_READONLY,
+						&unit->status);
+                		ZFCP_LOG_NORMAL("read-only access for unit "
+						"(adapter %s, wwpn=0x%016Lx, "
+						"fcp_lun=0x%016Lx)\n",
+						zfcp_get_busid_by_unit(unit),
+						unit->port->wwpn,
+						unit->fcp_lun);
+        		}
+
+        		if (exclusive && !readwrite) {
+                		ZFCP_LOG_NORMAL("exclusive access of read-only "
+						"unit not supported\n");
+				zfcp_erp_unit_failed(unit);
+				fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
+				zfcp_erp_unit_shutdown(unit, 0);
+        		} else if (!exclusive && readwrite) {
+                		ZFCP_LOG_NORMAL("shared access of read-write "
+						"unit not supported\n");
+                		zfcp_erp_unit_failed(unit);
+				fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
+				zfcp_erp_unit_shutdown(unit, 0);
+        		}
+		}
+
 		retval = 0;
 		break;
 
@@ -3333,7 +3402,7 @@ zfcp_fsf_close_unit_handler(struct zfcp_fsf_req *fsf_req)
 			       unit->port->wwpn,
 			       zfcp_get_busid_by_unit(unit));
 		debug_text_event(fsf_req->adapter->erp_dbf, 2, "fsf_s_pboxed");
-		zfcp_erp_port_reopen(unit->port, 0);
+		zfcp_erp_port_boxed(unit->port);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR |
 			ZFCP_STATUS_FSFREQ_RETRY;
 		break;
@@ -3421,6 +3490,7 @@ zfcp_fsf_send_fcp_command_task(struct zfcp_adapter *adapter,
 	unsigned long lock_flags;
 	int real_bytes = 0;
 	int retval = 0;
+	int mask;
 
 	/* setup new FSF request */
 	retval = zfcp_fsf_req_create(adapter, FSF_QTCB_FCP_CMND, req_flags,
@@ -3505,14 +3575,14 @@ zfcp_fsf_send_fcp_command_task(struct zfcp_adapter *adapter,
 	/* set FCP_LUN in FCP_CMND IU in QTCB */
 	fcp_cmnd_iu->fcp_lun = unit->fcp_lun;
 
+	mask = ZFCP_STATUS_UNIT_READONLY | ZFCP_STATUS_UNIT_SHARED;
+
 	/* set task attributes in FCP_CMND IU in QTCB */
-	if (likely(scsi_cmnd->device->simple_tags)) {
+	if (likely((scsi_cmnd->device->simple_tags) ||
+		   (atomic_test_mask(mask, &unit->status))))
 		fcp_cmnd_iu->task_attribute = SIMPLE_Q;
-		ZFCP_LOG_TRACE("setting SIMPLE_Q task attribute\n");
-	} else {
+	else
 		fcp_cmnd_iu->task_attribute = UNTAGGED;
-		ZFCP_LOG_TRACE("setting UNTAGGED task attribute\n");
-	}
 
 	/* set additional length of FCP_CDB in FCP_CMND IU in QTCB, if needed */
 	if (unlikely(scsi_cmnd->cmd_len > FCP_CDB_LENGTH)) {
@@ -3847,6 +3917,7 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 			}
 		}
 		debug_text_event(fsf_req->adapter->erp_dbf, 1, "fsf_s_access");
+		zfcp_erp_unit_access_denied(unit);
 		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
@@ -3896,7 +3967,7 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 			       "needs to be reopened\n",
 			       unit->port->wwpn, zfcp_get_busid_by_unit(unit));
 		debug_text_event(fsf_req->adapter->erp_dbf, 2, "fsf_s_pboxed");
-		zfcp_erp_port_reopen(unit->port, 0);
+		zfcp_erp_port_boxed(unit->port);
 		zfcp_cmd_dbf_event_fsf("portbox", fsf_req,
 				       &header->fsf_status_qual,
 				       sizeof (union fsf_status_qual));
@@ -3912,7 +3983,7 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 			unit->fcp_lun, unit->port->wwpn,
 			zfcp_get_busid_by_unit(unit));
 		debug_text_event(fsf_req->adapter->erp_dbf, 1, "fsf_s_lboxed");
-		zfcp_erp_unit_reopen(unit, 0);
+		zfcp_erp_unit_boxed(unit);
 		zfcp_cmd_dbf_event_fsf("unitbox", fsf_req,
 			&header->fsf_status_qual,
 			sizeof(union fsf_status_qual));
@@ -3935,7 +4006,6 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 				fsf_req,
 				&header->fsf_status_qual,
 				sizeof (union fsf_status_qual));
-			fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 			break;
 		case FSF_SQ_ULP_DEPENDENT_ERP_REQUIRED:
 			ZFCP_LOG_FLAGS(3,
@@ -3949,12 +4019,10 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 				fsf_req,
 				&header->fsf_status_qual,
 				sizeof (union fsf_status_qual));
-			fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 			break;
 		default:
-			/* FIXME: shall we consider this a successful transfer? */
 			ZFCP_LOG_NORMAL
-			    ("bug: Wrong status qualifier 0x%x arrived.\n",
+			    ("Unknown status qualifier 0x%x arrived.\n",
 			     header->fsf_status_qual.word[0]);
 			debug_text_event(fsf_req->adapter->erp_dbf, 0,
 					 "fsf_sq_inval:");
@@ -3963,6 +4031,7 @@ zfcp_fsf_send_fcp_command_handler(struct zfcp_fsf_req *fsf_req)
 					sizeof(u32));
 			break;
 		}
+		fsf_req->status |= ZFCP_STATUS_FSFREQ_ERROR;
 		break;
 
 	case FSF_GOOD:
@@ -4141,6 +4210,7 @@ zfcp_fsf_send_fcp_command_task_handler(struct zfcp_fsf_req *fsf_req)
 				      bottom.io.fcp_cmnd, FSF_FCP_CMND_SIZE);
 			zfcp_cmd_dbf_event_fsf("undeffcp", fsf_req, NULL, 0);
 			set_host_byte(&scpnt->result, DID_ERROR);
+			goto skip_fsfstatus;
 		}
 	}
 
@@ -4182,22 +4252,23 @@ zfcp_fsf_send_fcp_command_task_handler(struct zfcp_fsf_req *fsf_req)
 
 	/* check for underrun */
 	if (unlikely(fcp_rsp_iu->validity.bits.fcp_resid_under)) {
-		ZFCP_LOG_DEBUG("A data underrun was detected for a command. "
-			       "unit 0x%016Lx, port 0x%016Lx, adapter %s. "
-			       "The response data length is "
-			       "%d, the original length was %d.\n",
-			       unit->fcp_lun,
-			       unit->port->wwpn,
-			       zfcp_get_busid_by_unit(unit),
-			       fcp_rsp_iu->fcp_resid,
-			       (int) zfcp_get_fcp_dl(fcp_cmnd_iu));
+		ZFCP_LOG_INFO("A data underrun was detected for a command. "
+			      "unit 0x%016Lx, port 0x%016Lx, adapter %s. "
+			      "The response data length is "
+			      "%d, the original length was %d.\n",
+			      unit->fcp_lun,
+			      unit->port->wwpn,
+			      zfcp_get_busid_by_unit(unit),
+			      fcp_rsp_iu->fcp_resid,
+			      (int) zfcp_get_fcp_dl(fcp_cmnd_iu));
 		/*
 		 * It may not have been possible to send all data and the
 		 * underrun on send may already be in scpnt->resid, so it's add
 		 * not equals in the below statement.
 		 */
-		scpnt->resid += fcp_rsp_iu->fcp_resid;
-		ZFCP_LOG_TRACE("scpnt->resid=0x%x\n", scpnt->resid);
+		scpnt->resid = fcp_rsp_iu->fcp_resid;
+		if (scpnt->request_bufflen - scpnt->resid < scpnt->underflow)
+			scpnt->result |= DID_ERROR << 16;
 	}
 
  skip_fsfstatus:
@@ -4457,6 +4528,13 @@ zfcp_fsf_control_file_handler(struct zfcp_fsf_req *fsf_req)
 		if (bottom->operation_subtype == FSF_CFDC_OPERATION_SUBTYPE) {
 			switch (header->fsf_status_qual.word[0]) {
 
+			case FSF_SQ_CFDC_HARDENED_ON_SE:
+				ZFCP_LOG_NORMAL(
+					"CFDC on the adapter %s has being "
+					"hardened on primary and secondary SE\n",
+					zfcp_get_busid_by_adapter(adapter));
+				break;
+
 			case FSF_SQ_CFDC_COULD_NOT_HARDEN_ON_SE:
 				ZFCP_LOG_NORMAL(
 					"CFDC of the adapter %s could not "
@@ -4682,6 +4760,8 @@ zfcp_fsf_req_sbal_get(struct zfcp_adapter *adapter, int req_flags,
 						       ZFCP_SBAL_TIMEOUT);
 		if (ret < 0)
 			return ret;
+		if (!ret)
+                        return -EIO;
         } else if (!zfcp_fsf_req_sbal_check(lock_flags, req_queue, 1))
                 return -EIO;
 
@@ -4871,7 +4951,7 @@ zfcp_fsf_req_send(struct zfcp_fsf_req *fsf_req, struct timer_list *timer)
 		 * timer might be expired (absolutely unlikely)
 		 */
 		if (timer)
-			del_timer_sync(timer);
+			del_timer(timer);
 		write_lock_irqsave(&adapter->fsf_req_list_lock, flags);
 		list_del(&fsf_req->list);
 		write_unlock_irqrestore(&adapter->fsf_req_list_lock, flags);

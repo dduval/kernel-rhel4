@@ -50,6 +50,7 @@
 #include <linux/bitops.h>
 #include <linux/mm.h>
 #include <linux/types.h>
+#include <linux/audit.h>
 #include <net/sock.h>
 #include <net/scm.h>
 
@@ -321,8 +322,8 @@ err:
 static void netlink_remove(struct sock *sk)
 {
 	netlink_table_grab();
-	nl_table[sk->sk_protocol].hash.entries--;
-	sk_del_node_init(sk);
+	if (sk_del_node_init(sk))
+		nl_table[sk->sk_protocol].hash.entries--;
 	if (nlk_sk(sk)->groups)
 		__sk_del_bind_node(sk);
 	netlink_table_ungrab();
@@ -436,8 +437,13 @@ retry:
 	err = netlink_insert(sk, pid);
 	if (err == -EADDRINUSE)
 		goto retry;
+
+	/* If 2 threads race to autobind, that is fine.  */
+	if (err == -EBUSY)
+		err = 0;
+
 	nlk_sk(sk)->groups = 0;
-	return 0;
+	return err;
 }
 
 static inline int netlink_capable(struct socket *sock, unsigned int flag) 
@@ -928,6 +934,7 @@ static int netlink_sendmsg(struct kiocb *kiocb, struct socket *sock,
 	NETLINK_CB(skb).groups	= nlk->groups;
 	NETLINK_CB(skb).dst_pid = dst_pid;
 	NETLINK_CB(skb).dst_groups = dst_groups;
+	NETLINK_CB(skb).loginuid = audit_get_loginuid(current->audit_context);
 	memcpy(NETLINK_CREDS(skb), &siocb->scm->creds, sizeof(struct ucred));
 
 	/* What can I do? Netlink is asynchronous, so that

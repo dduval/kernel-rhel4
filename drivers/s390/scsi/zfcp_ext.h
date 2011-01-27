@@ -170,6 +170,14 @@ extern int  zfcp_erp_async_handler(struct zfcp_erp_action *, unsigned long);
 
 extern int  zfcp_test_link(struct zfcp_port *);
 
+extern void zfcp_erp_port_boxed(struct zfcp_port *);
+extern void zfcp_erp_unit_boxed(struct zfcp_unit *);
+extern void zfcp_erp_port_access_denied(struct zfcp_port *);
+extern void zfcp_erp_unit_access_denied(struct zfcp_unit *);
+extern void zfcp_erp_adapter_access_changed(struct zfcp_adapter *);
+extern void zfcp_erp_port_access_changed(struct zfcp_port *);
+extern void zfcp_erp_unit_access_changed(struct zfcp_unit *);
+
 /******************************** AUX ****************************************/
 extern void zfcp_cmd_dbf_event_fsf(const char *, struct zfcp_fsf_req *,
 				   void *, int);

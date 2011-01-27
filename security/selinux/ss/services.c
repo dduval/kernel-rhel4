@@ -40,7 +40,7 @@
 #include "mls.h"
 
 extern void selnl_notify_policyload(u32 seqno);
-extern int policydb_loaded_version;
+unsigned int policydb_loaded_version;
 
 static rwlock_t policy_rwlock = RW_LOCK_UNLOCKED;
 #define POLICY_RDLOCK read_lock(&policy_rwlock)
@@ -579,7 +579,7 @@ static int compute_sid_handle_invalid_context(
 		goto out;
 	if (context_struct_to_string(newcontext, &n, &nlen) < 0)
 		goto out;
-	audit_log(current->audit_context,
+	audit_log(current->audit_context, GFP_ATOMIC, AUDIT_SELINUX_ERR,
 		  "security_compute_sid:  invalid context %s"
 		  " for scontext=%s"
 		  " tcontext=%s"
@@ -1046,6 +1046,7 @@ int security_load_policy(void *data, size_t len)
 			avtab_cache_destroy();
 			return -EINVAL;
 		}
+		policydb_loaded_version = policydb.policyvers;
 		ss_initialized = 1;
 
 		LOAD_UNLOCK;
@@ -1094,7 +1095,7 @@ int security_load_policy(void *data, size_t len)
 	memcpy(&policydb, &newpolicydb, sizeof policydb);
 	sidtab_set(&sidtab, &newsidtab);
 	seqno = ++latest_granting;
-
+	policydb_loaded_version = policydb.policyvers;
 	POLICY_WRUNLOCK;
 	LOAD_UNLOCK;
 

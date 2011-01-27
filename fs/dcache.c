@@ -31,6 +31,7 @@
 #include <linux/seqlock.h>
 #include <linux/swap.h>
 #include <linux/bootmem.h>
+#include <linux/audit.h>
 
 /* #define DCACHE_DEBUG 1 */
 
@@ -99,6 +100,7 @@ static inline void dentry_iput(struct dentry * dentry)
 {
 	struct inode *inode = dentry->d_inode;
 	if (inode) {
+		audit_update_watch(dentry, 1);
 		dentry->d_inode = NULL;
 		list_del_init(&dentry->d_alias);
 		spin_unlock(&dentry->d_lock);
@@ -776,6 +778,7 @@ void d_instantiate(struct dentry *entry, struct inode * inode)
 	if (inode)
 		list_add(&entry->d_alias, &inode->i_dentry);
 	entry->d_inode = inode;
+	audit_update_watch(entry, 0);
 	spin_unlock(&dcache_lock);
 	security_d_instantiate(entry, inode);
 }
@@ -919,6 +922,7 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 			/* d_instantiate takes dcache_lock, so we do it by hand */
 			list_add(&dentry->d_alias, &inode->i_dentry);
 			dentry->d_inode = inode;
+			audit_update_watch(dentry, 0);
 			spin_unlock(&dcache_lock);
 			security_d_instantiate(dentry, inode);
 			d_rehash(dentry);
@@ -1027,6 +1031,7 @@ struct dentry * __d_lookup(struct dentry * parent, struct qstr * name)
 		if (!d_unhashed(dentry)) {
 			atomic_inc(&dentry->d_count);
 			found = dentry;
+			audit_update_watch(dentry, 0);
 		}
 terminate:
 		spin_unlock(&dentry->d_lock);
@@ -1230,6 +1235,8 @@ void d_move(struct dentry * dentry, struct dentry * target)
 		spin_lock(&target->d_lock);
 	}
 
+	audit_update_watch(dentry, 1);
+
 	/* Move the dentry to the target hash queue, if on different bucket */
 	if (dentry->d_flags & DCACHE_UNHASHED)
 		goto already_unhashed;
@@ -1275,6 +1282,7 @@ already_unhashed:
 		list_add(&target->d_child, &target->d_parent->d_subdirs);
 	}
 
+	audit_update_watch(dentry, 0);
 	list_add(&dentry->d_child, &dentry->d_parent->d_subdirs);
 	spin_unlock(&target->d_lock);
 	spin_unlock(&dentry->d_lock);

@@ -38,7 +38,7 @@ struct ieee80211_crypto {
 
 static struct ieee80211_crypto *hcrypt;
 
-void ieee80211_crypt_deinit_entries(struct ieee80211_device *ieee, 
+void ieee80211_crypt_deinit_entries(struct ieee80211_device *ieee,
 					   int force)
 {
 	struct list_head *ptr, *n;
@@ -86,7 +86,7 @@ void ieee80211_crypt_delayed_deinit(struct ieee80211_device *ieee,
 
 	if (*crypt == NULL)
 		return;
-	
+
 	tmp = *crypt;
 	*crypt = NULL;
 

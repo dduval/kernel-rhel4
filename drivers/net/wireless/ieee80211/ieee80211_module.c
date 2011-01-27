@@ -1,5 +1,5 @@
 /*******************************************************************************
-  
+
   Copyright(c) 2004 Intel Corporation. All rights reserved.
 
   Portions of this file are based on the WEP enablement code provided by the
@@ -7,23 +7,23 @@
   Copyright (c) 2001-2002, SSH Communications Security Corp and Jouni Malinen
   <jkmaline@cc.hut.fi>
   Copyright (c) 2002-2003, Jouni Malinen <jkmaline@cc.hut.fi>
-  
-  This program is free software; you can redistribute it and/or modify it 
-  under the terms of version 2 of the GNU General Public License as 
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms of version 2 of the GNU General Public License as
   published by the Free Software Foundation.
 
-  This program is distributed in the hope that it will be useful, but WITHOUT 
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for 
+  This program is distributed in the hope that it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
-  
+
   You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc., 59 
+  this program; if not, write to the Free Software Foundation, Inc., 59
   Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-  
+
   The full GNU General Public License is included in this distribution in the
   file called LICENSE.
-  
+
   Contact Information:
   James P. Ketrenos <ipw2100-admin@linux.intel.com>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
@@ -74,7 +74,7 @@ static inline int ieee80211_networks_allocate(struct ieee80211_device *ieee)
 		return -ENOMEM;
 	}
 
-	memset(ieee->networks, 0, 
+	memset(ieee->networks, 0,
 	       MAX_NETWORK_COUNT * sizeof(struct ieee80211_network));
 
 	return 0;
@@ -94,7 +94,7 @@ static inline void ieee80211_networks_initialize(struct ieee80211_device *ieee)
 
 	INIT_LIST_HEAD(&ieee->network_free_list);
 	INIT_LIST_HEAD(&ieee->network_list);
-	for (i = 0; i < MAX_NETWORK_COUNT; i++) 
+	for (i = 0; i < MAX_NETWORK_COUNT; i++)
 		list_add_tail(&ieee->networks[i].list, &ieee->network_free_list);
 }
 
@@ -144,6 +144,14 @@ struct net_device *alloc_ieee80211(int sizeof_priv)
 
 	spin_lock_init(&ieee->lock);
 
+#ifdef CONFIG_IEEE80211_WPA
+ 	ieee->wpa_enabled = 0;
+ 	ieee->tkip_countermeasures = 0;
+ 	ieee->drop_unencrypted = 0;
+ 	ieee->privacy_invoked = 0;
+ 	ieee->ieee802_1x = 1;
+#endif /* CONFIG_IEEE80211_WPA */
+
 	return dev;
 
  failed:
@@ -162,7 +170,7 @@ void free_ieee80211(struct net_device *dev)
 
 	del_timer_sync(&ieee->crypt_deinit_timer);
 	ieee80211_crypt_deinit_entries(ieee, 1);
-	
+
 	for (i = 0; i < WEP_KEYS; i++) {
 		struct ieee80211_crypt_data *crypt = ieee->crypt[i];
 		if (crypt) {
@@ -175,7 +183,7 @@ void free_ieee80211(struct net_device *dev)
 		}
 	}
 #endif
-		
+
 	ieee80211_networks_free(ieee);
 	free_netdev(dev);
 }
@@ -186,7 +194,7 @@ static int debug = 0;
 u32 ieee80211_debug_level = 0;
 struct proc_dir_entry *ieee80211_proc = NULL;
 
-static int show_debug_level(char *page, char **start, off_t offset, 
+static int show_debug_level(char *page, char **start, off_t offset,
 			    int count, int *eof, void *data)
 {
 	return snprintf(page, count, "0x%08X\n", ieee80211_debug_level);
@@ -200,7 +208,7 @@ static int store_debug_level(struct file *file, const char *buffer,
 	char *p = (char *)buf;
 	unsigned long val;
 
-	if (copy_from_user(buf, buffer, len)) 
+	if (copy_from_user(buf, buffer, len))
 		return count;
 	buf[len] = 0;
 	if (p[1] == 'x' || p[1] == 'X' || p[0] == 'x' || p[0] == 'X') {
@@ -210,8 +218,8 @@ static int store_debug_level(struct file *file, const char *buffer,
 		val = simple_strtoul(p, &p, 16);
 	} else
 		val = simple_strtoul(p, &p, 10);
-	if (p == buf) 
-		printk(KERN_INFO DRV_NAME 
+	if (p == buf)
+		printk(KERN_INFO DRV_NAME
 		       ": %s is not in hex or decimal form.\n", buf);
 	else
 		ieee80211_debug_level = val;
@@ -219,14 +227,14 @@ static int store_debug_level(struct file *file, const char *buffer,
 	return strnlen(buf, count);
 }
 
-static int __init ieee80211_init(void) 
+static int __init ieee80211_init(void)
 {
 	struct proc_dir_entry *e;
 
 	ieee80211_debug_level = debug;
 	ieee80211_proc = create_proc_entry(DRV_NAME, S_IFDIR, proc_net);
 	if (ieee80211_proc == NULL) {
-		IEEE80211_ERROR("Unable to create " DRV_NAME 
+		IEEE80211_ERROR("Unable to create " DRV_NAME
 				" proc directory\n");
 		return -EIO;
 	}

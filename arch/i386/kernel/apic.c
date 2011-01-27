@@ -1073,7 +1073,7 @@ int setup_profiling_timer(unsigned int multiplier)
  * value into /proc/profile.
  */
 
-inline void smp_local_timer_interrupt(struct pt_regs * regs)
+asmlinkage void smp_local_timer_interrupt(struct pt_regs * regs)
 {
 	int cpu = smp_processor_id();
 
@@ -1125,11 +1125,15 @@ inline void smp_local_timer_interrupt(struct pt_regs * regs)
 
 void smp_apic_timer_interrupt(struct pt_regs regs)
 {
-	int cpu = smp_processor_id();
+	union irq_ctx	*curctx;
+	union irq_ctx	*irqctx;
+	int		cpu;
+	u32		*isp;
 
 	/*
 	 * the NMI deadlock-detector uses this.
 	 */
+	cpu = smp_processor_id();
 	irq_stat[cpu].apic_timer_irqs++;
 
 	/*
@@ -1143,7 +1147,27 @@ void smp_apic_timer_interrupt(struct pt_regs regs)
 	 * interrupt lock, which is the WrongThing (tm) to do.
 	 */
 	irq_enter();
-	smp_local_timer_interrupt(&regs);
+	curctx = (union irq_ctx *) current_thread_info();
+	irqctx = hardirq_ctx[cpu];
+	if (curctx == irqctx) {
+		smp_local_timer_interrupt(&regs);
+	} else {
+		/* build the stack frame on the IRQ stack */
+		isp = (u32*) ((char*)irqctx + sizeof(*irqctx));
+		irqctx->tinfo.task = curctx->tinfo.task;
+		irqctx->tinfo.real_stack = curctx->tinfo.real_stack;
+		irqctx->tinfo.virtual_stack = curctx->tinfo.virtual_stack;
+		irqctx->tinfo.previous_esp = current_stack_pointer();
+
+		*--isp = (u32) &regs;
+		asm volatile(
+			"       xchgl   %%ebx,%%esp     \n"
+			"       call    smp_local_timer_interrupt \n"
+			"       xchgl   %%ebx,%%esp     \n"
+			: : "b"(isp)
+			: "memory", "cc", "edx", "ecx"
+		);
+	}
 	irq_exit();
 }
 

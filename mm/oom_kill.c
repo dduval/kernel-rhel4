@@ -21,6 +21,8 @@
 #include <linux/timex.h>
 #include <linux/jiffies.h>
 
+int oom_kill_enabled = 1;
+
 /* #define DEBUG */
 
 /**
@@ -191,6 +193,11 @@ static void oom_kill(void)
 
 	/* print the memory stats whenever we OOM kill */
 	show_mem();
+
+	if (!oom_kill_enabled) {
+		printk(KERN_INFO "Would have oom-killed but /proc/sys/vm/oom-kill is disabled\n");
+		return;
+	}
 
 	read_lock(&tasklist_lock);
 retry:

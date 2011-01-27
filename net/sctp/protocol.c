@@ -377,11 +377,14 @@ static int sctp_v4_addr_valid(union sctp_addr *addr, struct sctp_opt *sp)
 static int sctp_v4_available(union sctp_addr *addr, struct sctp_opt *sp)
 {
 	int ret = inet_addr_type(addr->v4.sin_addr.s_addr);
+	struct inet_opt *opts = inet_sk(sp->ep->base.sk);
 
-	/* FIXME: ip_nonlocal_bind sysctl support. */
-
-	if (addr->v4.sin_addr.s_addr != INADDR_ANY && ret != RTN_LOCAL)
+	if (addr->v4.sin_addr.s_addr != INADDR_ANY && 
+	   ret != RTN_LOCAL &&
+	   !opts->freebind &&
+	   !sysctl_ip_nonlocal_bind)
 		return 0;
+
 	return 1;
 }
 

@@ -39,6 +39,7 @@
 #include <linux/interrupt.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
+#include <linux/swap.h>
 #include <linux/diskdump.h>
 #include <asm/diskdump.h>
 
@@ -59,14 +60,17 @@ static int fallback_on_err = 1;
 static int allow_risky_dumps = 1;
 static unsigned int block_order = 2;
 static int sample_rate = 8;
+static int dump_level = 0;
 module_param_named(fallback_on_err, fallback_on_err, bool, S_IRUGO|S_IWUSR);
 module_param_named(allow_risky_dumps, allow_risky_dumps, bool, S_IRUGO|S_IWUSR);
 module_param_named(block_order, block_order, uint, S_IRUGO|S_IWUSR);
 module_param_named(sample_rate, sample_rate, int, S_IRUGO|S_IWUSR);
+module_param_named(dump_level, dump_level, int, S_IRUGO|S_IWUSR);
 
 static unsigned long timestamp_1sec;
 static uint32_t module_crc;
 static char *scratch;
+static char *bitmap;
 static struct disk_dump_header dump_header;
 static struct disk_dump_sub_header dump_sub_header;
 
@@ -80,8 +84,11 @@ static DECLARE_MUTEX(disk_dump_mutex);
 
 static unsigned int header_blocks;		/* The size of all headers */
 static unsigned int bitmap_blocks;		/* The size of bitmap header */
+static unsigned int ram_bitmap_blocks;		/* The size of ram bitmaps */
 static unsigned int total_ram_blocks;		/* The size of memory */
 static unsigned int total_blocks;		/* The sum of above */
+
+static unsigned int bitmap_index;		/* next block to write bitmap */
 /*
  * This is not a parameter actually, but used to pass the number of
  * required blocks to userland tools
@@ -101,6 +108,41 @@ extern unsigned long max_pfn;
 
 static asmlinkage void disk_dump(struct pt_regs *, void *);
 
+
+static inline int check_zero_page(struct page *page)
+{
+	unsigned long *data;
+	int ret;
+
+	data = kmap_atomic(page, KM_CRASHDUMP);
+	ret = find_first_bit(data, PAGE_SIZE << 3) == PAGE_SIZE << 3;
+	kunmap_atomic(data, KM_CRASHDUMP);
+
+	return ret;
+}
+
+static int page_is_dumpable(unsigned long pfn)
+{
+	struct page *page = pfn_to_page(pfn);
+
+	if (!dump_level)
+		return 1;
+	if ((pfn != page_to_pfn(page)) ||
+	    !kern_addr_valid((unsigned long)pfn_to_kaddr(pfn)))
+		return 0;
+
+	if ((dump_level & DUMP_EXCLUDE_CACHE) && !PageAnon(page) &&
+	    (PageLRU(page) || PageSwapCache(page)))
+		return 0;
+	if ((dump_level & DUMP_EXCLUDE_CLEAN) && check_zero_page(page))
+		return 0;
+	if ((dump_level & DUMP_EXCLUDE_FREE) && PageNosaveFree(page))
+		return 0;
+	if ((dump_level & DUMP_EXCLUDE_ANON) && PageAnon(page))
+		return 0;
+
+	return 1;
+}
 
 #if CONFIG_SMP
 static void freeze_cpu(void *dummy)
@@ -127,7 +169,8 @@ static inline unsigned long eta(unsigned long nr, unsigned long maxnr)
 	return (unsigned long)(eta >> 8) - lapse;
 }
 
-static inline void print_status(unsigned int nr, unsigned int maxnr)
+static inline void print_status(unsigned int nr, int nr_skipped,
+				unsigned int maxnr)
 {
 	static char *spinner = "/|\\-";
 	static unsigned long long prev_timestamp = 0;
@@ -141,8 +184,15 @@ static inline void print_status(unsigned int nr, unsigned int maxnr)
 	if (timestamp - prev_timestamp > (timestamp_1sec/5)) {
 		prev_timestamp = timestamp;
 		lapse++;
-		printk("%u/%u    %lu ETA %c          \r",
-			nr, maxnr, eta(nr, maxnr) / 5, spinner[lapse & 3]);
+		if (nr_skipped >= 0)
+			printk("%u(%u skipped)/%u    %lu ETA %c          \r",
+				nr + nr_skipped, nr_skipped, maxnr,
+				eta(nr + nr_skipped, maxnr) / 5,
+				spinner[lapse & 3]);
+		else
+			printk("%u/%u    %lu ETA %c          \r",
+				nr, maxnr, eta(nr, maxnr) / 5,
+				spinner[lapse & 3]);
 	}
 }
 
@@ -152,6 +202,15 @@ static inline void clear_status(int nr, int maxnr)
 	lapse = 0;
 }
 
+static inline void print_last_status(int nr, int nr_skipped, int maxnr)
+{
+	if (nr_skipped >= 0)
+		printk("%u(%u saved %u skipped)/%u                        \n",
+		       nr + nr_skipped, nr, nr_skipped, maxnr);
+	else
+		printk("%u/%u                        \n", nr, maxnr);
+	lapse = 0;
+}
 /*
  * Checking the signature on a block. The format is as follows.
  *
@@ -252,6 +311,10 @@ static int check_dump_partition(struct disk_dump_partition *dump_part,
 	int ret;
 	unsigned int chunk_blks, skips;
 	int i;
+	unsigned int device_blocks	= SECTOR_BLOCK(dump_part->nr_sects);
+
+	if (dump_level && device_blocks < partition_size)
+		partition_size = device_blocks;
 
 	if (sample_rate < 0)		/* No check */
 		return 1;
@@ -260,8 +323,8 @@ static int check_dump_partition(struct disk_dump_partition *dump_part,
 	 * If the device has limitations of transfer size, use it.
 	 */
 	chunk_blks = 1 << block_order;
-	if (dump_part->device->max_blocks)
-		 chunk_blks = min(chunk_blks, dump_part->device->max_blocks);
+	if (dump_part->device->max_blocks < chunk_blks)
+		Warn("I/O size exceeds the maximum block size of SCSI device. Signature check may fail");
 	skips = chunk_blks << sample_rate;
 
 	lapse = 0;
@@ -271,7 +334,7 @@ redo:
 		len = min(chunk_blks, partition_size - blk);
 		if ((ret = read_blocks(dump_part, blk, scratch, len)) < 0)
 			return 0;
-		print_status(blk + 1, partition_size);
+		print_status(blk + 1, -1, partition_size);
 		for (i = 0; i < len; i++)
 			if (!check_block_signature(scratch + i * DUMP_BLOCK_SIZE, blk + i)) {
 				Err("bad signature in block %u", blk + i);
@@ -284,6 +347,35 @@ redo:
 		goto redo;
 	}
 	clear_status(blk, partition_size);
+	return 1;
+}
+
+/*
+ * Check the signaures in the first blocks of the swap partition
+ * Return 1 if the signature is correct, else return 0
+ */
+static int check_swap_partition(struct disk_dump_partition *dump_part,
+				unsigned int partition_size)
+{
+	int ret;
+	union swap_header *swh;
+
+	if ((ret = read_blocks(dump_part, 0, scratch, 1)) < 0)
+		return 0;
+
+	swh = (union swap_header *)scratch;
+
+	if (memcmp(swh->magic.magic, "SWAPSPACE2",
+					sizeof("SWAPSPACE2") - 1) != 0)
+		return 0;
+
+	if (swh->info.version != 1)
+		return 0;
+
+	if (swh->info.last_page + 1 != SECTOR_BLOCK(dump_part->nr_sects) ||
+				swh->info.last_page < partition_size)
+		return 0;
+
 	return 1;
 }
 
@@ -327,23 +419,80 @@ static int write_bitmap(struct disk_dump_partition *dump_part,
 }
 
 /*
+ * Flush bitmap buffer to the disk
+ */
+static int flush_bitmap(struct disk_dump_partition *dump_part)
+{
+	int ret = 0;
+
+	if (!dump_level)
+		return 0;
+
+	if ((ret = write_blocks(dump_part, bitmap_index, bitmap, 1)) < 0)
+		Err("I/O error %d on block %u", ret, bitmap_index);
+
+	memset(bitmap, 0, PAGE_SIZE);
+	bitmap_index++;
+	return ret;
+}
+
+/*
+ * Set bit of corresponding to the bitmap buffer and flush the buffer
+ * to the disk if needed.
+ */
+static int set_bitmap(struct disk_dump_partition *dump_part, unsigned long val)
+{
+	static int bit, byte;
+	int ret = 0;
+
+	if (!dump_level)
+		return 0;
+
+	bitmap[byte] |= val ? (1<<bit) : 0;
+
+	if (++bit == 8) {
+		bit = 0;
+		++byte;
+	}
+	if (byte == PAGE_SIZE) {
+		/* If bitmap is full, write it to the disk. */
+		if ((ret = flush_bitmap(dump_part)) < 0)
+			return ret;
+		byte = 0;
+	}
+	return 0;
+}
+
+/*
  * Write whole memory to dump partition.
  * Return value is the number of writen blocks.
  */
 static int write_memory(struct disk_dump_partition *dump_part, int offset,
+			unsigned int blocks_written_expected,
 			unsigned int max_blocks_written,
 			unsigned int *blocks_written)
 {
 	char *kaddr;
 	unsigned int blocks = 0;
+	int blocks_skipped = dump_level ? 0 : -1;
 	struct page *page;
 	unsigned long nr;
 	int ret = 0;
 	int blk_in_chunk = 0;
+	int dumpable;
 
 	for (nr = next_ram_page(ULONG_MAX); nr < max_pfn; nr = next_ram_page(nr)) {
-		print_status(blocks, max_blocks_written);
+		print_status(blocks, blocks_skipped, blocks_written_expected);
 
+		dumpable = page_is_dumpable(nr);
+		if ((ret = set_bitmap(dump_part, dumpable)) < 0) {
+			Err("bitmap error %d on block %lu", ret, nr);
+			break;
+		}
+		if (!dumpable) {
+			blocks_skipped++;
+			continue;
+		}
 
 		if (blocks >= max_blocks_written) {
 			Warn("dump device is too small. %lu pages were not saved", max_pfn - blocks);
@@ -404,7 +553,8 @@ write:
 	}
 
 out:
-	clear_status(nr, max_blocks_written);
+	print_last_status(blocks, blocks_skipped, blocks_written_expected);
+	flush_bitmap(dump_part);
 
 	*blocks_written = blocks;
 	return ret;
@@ -604,14 +754,26 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 			goto done;
 		}
 
+	/* partial dump requires an extra bitmap */
+	if (dump_level)		
+		bitmap_blocks <<= 1;
+
 	if (SECTOR_BLOCK(dump_part->nr_sects) < header_blocks + bitmap_blocks) {
 		Warn("dump partition is too small. Aborted");
 		goto done;
 	}
 
+	if ((dump_level & DUMP_EXCLUDE_FREE) && diskdump_mark_free_pages() < 0)
+		/*
+		 * The free page list is broken.
+		 * Free pages will be dumped.
+		 */
+		dump_level &= ~DUMP_EXCLUDE_FREE;
+
 	/* Check dump partition */
 	printk("check dump partition...\n");
-	if (!check_dump_partition(dump_part, total_blocks)) {
+	if (!check_swap_partition(dump_part, total_blocks) &&
+	    !check_dump_partition(dump_part, total_blocks)) {
 		Err("check partition failed.");
 		goto done;
 	}
@@ -646,31 +808,39 @@ static asmlinkage void disk_dump(struct pt_regs *regs, void *platform_arg)
 	}
 
 	Dbg("writing memory bitmaps..");
-	if ((ret = write_bitmap(dump_part, header_blocks, bitmap_blocks)) < 0)
+	if ((ret = write_bitmap(dump_part, header_blocks, ram_bitmap_blocks)) < 0)
 		goto done;
 
 	max_written_blocks = total_ram_blocks;
-	if (dump_header.device_blocks < total_blocks) {
+	if (!dump_level && dump_header.device_blocks < total_blocks) {
 		Warn("dump partition is too small. actual blocks %u. expected blocks %u. whole memory will not be saved",
 				dump_header.device_blocks, total_blocks);
 		max_written_blocks -= (total_blocks - dump_header.device_blocks);
 	}
 
+	/* Set start block of the second bitmap */
+	bitmap_index = header_blocks + ram_bitmap_blocks;
+
 	dump_header.written_blocks += dump_header.sub_hdr_size;
 	dump_header.written_blocks += dump_header.bitmap_blocks;
 	write_header(dump_part);
 
-	printk("dumping memory..\n");
-	if ((ret = write_memory(dump_part, header_blocks + bitmap_blocks,
-				max_written_blocks, &written_blocks)) < 0)
-		goto done;
+	printk("dumping memory");
+	if (dump_level)
+		printk("(partial dump with dump_level %d)", dump_level);
+	printk("..\n");
+	ret = write_memory(dump_part, header_blocks + bitmap_blocks,
+			   max_written_blocks,
+			   dump_header.device_blocks - dump_header.written_blocks,
+			   &written_blocks);
 
 	/*
 	 * Set the number of block that is written into and write it
 	 * into partition again.
 	 */
 	dump_header.written_blocks += written_blocks;
-	dump_header.status = DUMP_HEADER_COMPLETED;
+	if (!ret)
+		dump_header.status = DUMP_HEADER_COMPLETED;
 	write_header(dump_part);
 
 	dump_err = 0;
@@ -739,7 +909,7 @@ static int add_dump_partition(struct disk_dump_device *dump_device,
 	dump_part->nr_sects   = bdev->bd_part->nr_sects;
 	dump_part->start_sect = bdev->bd_part->start_sect;
 
-	if (SECTOR_BLOCK(dump_part->nr_sects) < total_blocks)
+	if (!dump_level && SECTOR_BLOCK(dump_part->nr_sects) < total_blocks)
 		Warn("%s is too small to save whole system memory\n",
 			bdevname(bdev, buffer));
 
@@ -911,6 +1081,7 @@ static int disk_dump_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, "# block_order: %u\n", block_order);
 		seq_printf(seq, "# fallback_on_err: %u\n", fallback_on_err);
 		seq_printf(seq, "# allow_risky_dumps: %u\n", allow_risky_dumps);
+		seq_printf(seq, "# dump_level: %d\n", dump_level);
 		seq_printf(seq, "# total_blocks: %u\n", total_blocks);
 		seq_printf(seq, "#\n");
 
@@ -1024,7 +1195,8 @@ static void compute_total_blocks(void)
 	for (nr = next_ram_page(ULONG_MAX); nr < max_pfn; nr = next_ram_page(nr))
 		total_ram_blocks++;
 
-	bitmap_blocks = ROUNDUP(max_pfn, 8 * PAGE_SIZE);
+	ram_bitmap_blocks = ROUNDUP(max_pfn, 8 * PAGE_SIZE);
+	bitmap_blocks = ram_bitmap_blocks;
 
 	/*
 	 * The necessary size of area for dump is:
@@ -1068,6 +1240,15 @@ static int init_diskdump(void)
 	}
 	scratch = page_address(page);
 	Info("Maximum block size: %lu", PAGE_SIZE << block_order);
+
+	/* Allocate one page that is used as bitmap */
+	if (!(page = alloc_pages(GFP_KERNEL, 0))) {
+		Err("alloc_pages failed.");
+		free_pages((unsigned long)scratch, block_order);
+		return -1;
+	}
+	bitmap = page_address(page);
+	memset(bitmap, 0, PAGE_SIZE);
 
 	if (diskdump_register_hook(start_disk_dump)) {
 		Err("failed to register hooks.");
@@ -1115,6 +1296,7 @@ static void cleanup_diskdump(void)
 	diskdump_unregister_ops();
 	platform_cleanup_stack(diskdump_stack);
 	free_pages((unsigned long)scratch, block_order);
+	free_pages((unsigned long)bitmap, 0);
 #ifdef CONFIG_PROC_FS
 	remove_proc_entry("diskdump", NULL);
 #endif

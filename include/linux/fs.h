@@ -27,6 +27,7 @@ struct poll_table_struct;
 struct kstatfs;
 struct vm_area_struct;
 struct vfsmount;
+struct audit_inode_data;
 
 /*
  * It's silly to have NR_OPEN bigger than NR_FILE, but you can change
@@ -119,7 +120,8 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 #define MS_REC		16384
 #define MS_VERBOSE	32768
 #define MS_POSIXACL	(1<<16)	/* VFS does not apply the umask */
-#define MS_ONE_SECOND	(1<<17)	/* fs has 1 sec a/m/ctime resolution */
+#define MS_ONE_SECOND	(1<<17)	/* fs has 1 sec time resolution (obsolete) */
+#define MS_TIME_GRAN	(1<<18)	/* fs has s_time_gran field */
 #define MS_ACTIVE	(1<<30)
 #define MS_NOUSER	(1<<31)
 
@@ -219,7 +221,6 @@ extern int leases_enable, dir_notify_enable, lease_break_time;
 
 #include <linux/list.h>
 #include <linux/radix-tree.h>
-#include <linux/audit.h>
 #include <linux/init.h>
 #include <asm/semaphore.h>
 #include <asm/byteorder.h>
@@ -781,7 +782,32 @@ struct super_block {
 	 * even looking at it. You had been warned.
 	 */
 	struct semaphore s_vfs_rename_sem;	/* Kludge */
+
+	/* Granuality of c/m/atime in ns.
+	   Cannot be worse than a second */
+#ifndef __GENKSYMS__
+	u32		   s_time_gran;
+#endif
 };
+
+extern struct timespec current_fs_time(struct super_block *sb);
+
+static inline u32 get_sb_time_gran(struct super_block *sb) 
+{
+	if (sb->s_flags & MS_TIME_GRAN) 
+		return sb->s_time_gran;
+	if (sb->s_flags & MS_ONE_SECOND)
+		return 1000000000U;
+	return 1;
+}
+
+static inline void set_sb_time_gran(struct super_block *sb, u32 time_gran)
+{
+	sb->s_time_gran = time_gran;
+	sb->s_flags |= MS_TIME_GRAN;
+	if (time_gran == 1000000000U)
+		sb->s_flags |= MS_ONE_SECOND;
+}
 
 /*
  * Snapshotting support.
@@ -986,6 +1012,8 @@ struct super_operations {
 #define I_FREEING		16
 #define I_CLEAR			32
 #define I_NEW			64
+#define I_WILL_FREE		128
+#define I_AUDIT			256
 
 #define I_DIRTY (I_DIRTY_SYNC | I_DIRTY_DATASYNC | I_DIRTY_PAGES)
 
@@ -1240,6 +1268,7 @@ extern void __init vfs_caches_init(unsigned long);
 #ifndef CONFIG_AUDITSYSCALL
 #define putname(name)   __putname(name)
 #else
+extern void audit_putname(const char *name);
 #define putname(name)							\
 	do {								\
 		if (unlikely(current->audit_context))			\
@@ -1325,6 +1354,7 @@ static inline void invalidate_remote_inode(struct inode *inode)
 }
 extern void invalidate_inode_pages2(struct address_space *mapping);
 extern void write_inode_now(struct inode *, int);
+extern int write_inode_now_err(struct inode *, int);
 extern int filemap_fdatawrite(struct address_space *);
 extern int filemap_flush(struct address_space *);
 extern int filemap_fdatawait(struct address_space *);
@@ -1376,6 +1406,7 @@ extern struct inode * igrab(struct inode *);
 extern ino_t iunique(struct super_block *, ino_t);
 extern int inode_needs_sync(struct inode *inode);
 extern void generic_delete_inode(struct inode *inode);
+extern void generic_drop_inode(struct inode *inode);
 
 extern struct inode *ilookup5(struct super_block *sb, unsigned long hashval,
 		int (*test)(struct inode *, void *), void *data);

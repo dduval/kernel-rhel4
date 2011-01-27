@@ -31,6 +31,8 @@ static inline struct page *pin_page(unsigned long addr, int write,
 	struct page *page = NULL;
 	int ret;
 
+	if (addr >= current_thread_info()->addr_limit.seg)
+		return (struct page *)-1UL;
 	/*
 	 * Do a quick atomic lookup first - this is the fastpath.
 	 */
@@ -102,7 +104,8 @@ static int rw_vm(unsigned long addr, void *buf, int len, int write)
 		void *maddr;
 
 		page = pin_page(addr, write, &pte);
-		if (!page && !pte_present(pte))
+		if ((page == (struct page *)-1UL) ||
+					(!page && !pte_present(pte)))
 			break;
 
 		bytes = len;
@@ -171,7 +174,8 @@ static int str_vm(unsigned long addr, void *buf0, int len, int copy)
 		char *maddr;
 
 		page = pin_page(addr, copy == 2, &pte);
-		if (!page && !pte_present(pte)) {
+		if ((page == (struct page *)-1UL) ||
+					(!page && !pte_present(pte))) {
 			spin_unlock(&mm->page_table_lock);
 			return -EFAULT;
 		}

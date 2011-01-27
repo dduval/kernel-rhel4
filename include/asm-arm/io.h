@@ -135,6 +135,8 @@ extern void _memcpy_fromio(void *, unsigned long, size_t);
 extern void _memcpy_toio(unsigned long, const void *, size_t);
 extern void _memset_io(unsigned long, int, size_t);
 
+#define mmiowb()
+
 /*
  *  Memory access primitives
  *  ------------------------

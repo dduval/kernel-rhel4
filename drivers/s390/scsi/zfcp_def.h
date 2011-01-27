@@ -440,6 +440,9 @@ struct zfcp_rc_entry {
 
 #define ZFCP_NAME               "zfcp"
 
+/* read-only LUN sharing switch initial value */
+#define ZFCP_RO_LUN_SHARING_DEFAULTS 0
+
 /* independent log areas */
 #define ZFCP_LOG_AREA_OTHER	0
 #define ZFCP_LOG_AREA_SCSI	1
@@ -560,6 +563,8 @@ do { \
 #define ZFCP_STATUS_COMMON_OPEN                 0x04000000
 #define ZFCP_STATUS_COMMON_CLOSING              0x02000000
 #define ZFCP_STATUS_COMMON_ERP_INUSE		0x01000000
+#define ZFCP_STATUS_COMMON_ACCESS_DENIED	0x00800000
+#define ZFCP_STATUS_COMMON_ACCESS_BOXED		0x00400000
 
 /* adapter status */
 #define ZFCP_STATUS_ADAPTER_QDIOUP		0x00000002
@@ -590,6 +595,7 @@ do { \
 #define ZFCP_STATUS_PORT_NO_WWPN		0x00000008
 #define ZFCP_STATUS_PORT_NO_SCSI_ID		0x00000010
 #define ZFCP_STATUS_PORT_INVALID_WWPN		0x00000020
+#define ZFCP_STATUS_PORT_ACCESS_DENIED		0x00000040
 
 /* for ports with well known addresses */
 #define ZFCP_STATUS_PORT_WKA \
@@ -598,7 +604,9 @@ do { \
 
 /* logical unit status */
 #define ZFCP_STATUS_UNIT_NOTSUPPUNITRESET	0x00000001
-
+#define ZFCP_STATUS_UNIT_TEMPORARY		0x00000002
+#define ZFCP_STATUS_UNIT_SHARED			0x00000004
+#define ZFCP_STATUS_UNIT_READONLY		0x00000008
 
 /* FSF request status (this does not have a common part) */
 #define ZFCP_STATUS_FSFREQ_NOT_INIT		0x00000000
@@ -952,7 +960,7 @@ struct zfcp_adapter {
 	debug_info_t            *abort_dbf;
 	debug_info_t            *in_els_dbf;
 	debug_info_t            *cmd_dbf;
-	rwlock_t                cmd_dbf_lock;
+	spinlock_t              dbf_lock;
 	struct zfcp_adapter_mempool	pool;      /* Adapter memory pools */
 	struct qdio_initialize  qdio_init_data;    /* for qdio_establish */
 	struct device           generic_services;  /* directory for WKA ports */
@@ -1002,8 +1010,6 @@ struct zfcp_unit {
         struct scsi_device     *device;        /* scsi device struct pointer */
 	struct zfcp_erp_action erp_action;     /* pending error recovery */
         atomic_t               erp_counter;
-	atomic_t               scsi_add_work;  /* used to synchronize */
-	wait_queue_head_t      scsi_add_wq;    /* wait for scsi_add_device */
 };
 
 /* FSF request */

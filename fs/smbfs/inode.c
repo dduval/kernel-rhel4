@@ -383,15 +383,19 @@ parse_options(struct smb_mount_data_kernel *mnt, char *options)
 			break;
 		case 'u':
 			mnt->uid = value;
+			flags |= SMB_MOUNT_UID;
 			break;
 		case 'g':
 			mnt->gid = value;
+			flags |= SMB_MOUNT_GID;
 			break;
 		case 'f':
 			mnt->file_mode = (value & S_IRWXUGO) | S_IFREG;
+			flags |= SMB_MOUNT_FMODE;
 			break;
 		case 'd':
 			mnt->dir_mode = (value & S_IRWXUGO) | S_IFDIR;
+			flags |= SMB_MOUNT_DMODE;
 			break;
 		case 'i':
 			strlcpy(mnt->codepage.local_name, optarg, 
@@ -429,9 +433,9 @@ smb_show_options(struct seq_file *s, struct vfsmount *m)
 		if (mnt->flags & opts[i].flag)
 			seq_printf(s, ",%s", opts[i].name);
 
-	if (mnt->uid != 0)
+	if (mnt->flags & SMB_MOUNT_UID)
 		seq_printf(s, ",uid=%d", mnt->uid);
-	if (mnt->gid != 0)
+	if (mnt->flags & SMB_MOUNT_GID)
 		seq_printf(s, ",gid=%d", mnt->gid);
 	if (mnt->mounted_uid != 0)
 		seq_printf(s, ",mounted_uid=%d", mnt->mounted_uid);
@@ -440,8 +444,10 @@ smb_show_options(struct seq_file *s, struct vfsmount *m)
 	 * Defaults for file_mode and dir_mode are unknown to us; they
 	 * depend on the current umask of the user doing the mount.
 	 */
-	seq_printf(s, ",file_mode=%04o", mnt->file_mode & S_IRWXUGO);
-	seq_printf(s, ",dir_mode=%04o", mnt->dir_mode & S_IRWXUGO);
+	if (mnt->flags & SMB_MOUNT_FMODE)
+		seq_printf(s, ",file_mode=%04o", mnt->file_mode & S_IRWXUGO);
+	if (mnt->flags & SMB_MOUNT_DMODE)
+		seq_printf(s, ",dir_mode=%04o", mnt->dir_mode & S_IRWXUGO);
 
 	if (strcmp(mnt->codepage.local_name, CONFIG_NLS_DEFAULT))
 		seq_printf(s, ",iocharset=%s", mnt->codepage.local_name);
@@ -599,6 +605,7 @@ int smb_fill_super(struct super_block *sb, void *raw_data, int silent)
 	sb->s_root = d_alloc_root(root_inode);
 	if (!sb->s_root)
 		goto out_no_root;
+
 	smb_new_dentry(sb->s_root);
 
 	return 0;

@@ -76,8 +76,10 @@ static void register_irq_proc (unsigned int irq);
 /*
  * per-CPU IRQ handling stacks
  */
+#ifdef CONFIG_4KSTACKS
 union irq_ctx *hardirq_ctx[NR_CPUS];
 union irq_ctx *softirq_ctx[NR_CPUS];
+#endif
 
 /*
  * Special irq handlers.
@@ -393,6 +395,7 @@ static void note_interrupt(int irq, irq_desc_t *desc, irqreturn_t action_ret, st
 		if((irqfixup == 2 && irq == 0) || action_ret == IRQ_NONE)
 		{
 			int ok;
+#ifdef CONFIG_4KSTACKS
 			u32 *isp;
 			union irq_ctx * curctx;
 			union irq_ctx * irqctx;
@@ -432,6 +435,13 @@ static void note_interrupt(int irq, irq_desc_t *desc, irqreturn_t action_ret, st
 			spin_lock(&desc->lock);
 			if (curctx != irqctx)
 				irqctx->tinfo.task = NULL;
+#else
+			spin_unlock(&desc->lock);
+
+			ok = misrouted_irq(irq, regs);
+
+			spin_lock(&desc->lock);
+#endif
 			if(action_ret == IRQ_NONE)
 				desc->irqs_unhandled -= ok;
 		}
@@ -1219,6 +1229,7 @@ void init_irq_proc (void)
 }
 
 
+#ifdef CONFIG_4KSTACKS
 /*
  * These should really be __section__(".bss.page_aligned") as well, but
  * gcc's 3.0 and earlier don't handle that correctly.
@@ -1298,3 +1309,4 @@ asmlinkage void do_softirq(void)
 }
 
 EXPORT_SYMBOL(do_softirq);
+#endif

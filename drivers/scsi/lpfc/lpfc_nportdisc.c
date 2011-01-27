@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_nportdisc.c 1.155 2005/03/02 12:35:42EST sf_support Exp  $
+ * $Id: lpfc_nportdisc.c 1.160.1.2 2005/06/13 17:16:39EDT sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -130,9 +130,6 @@ lpfc_check_elscmpl_iocb(struct lpfc_hba * phba,
 		prsp = (struct lpfc_dmabuf *) pcmd->list.next;
 		lp = (uint32_t *) prsp->virt;
 
-		pci_dma_sync_single_for_cpu(phba->pcidev, prsp->phys,
-			LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
-
 		ptr = (void *)((uint8_t *)lp + sizeof(uint32_t));
 	}
 	else {
@@ -165,7 +162,7 @@ lpfc_els_abort(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp,
 
 	/* Abort outstanding I/O on NPort <nlp_DID> */
 	lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
-			"%d:0201 Abort outstanding I/O on NPort x%x "
+			"%d:0205 Abort outstanding I/O on NPort x%x "
 			"Data: x%x x%x x%x\n",
 			phba->brd_no, ndlp->nlp_DID, ndlp->nlp_flag,
 			ndlp->nlp_state, ndlp->nlp_rpi);
@@ -580,7 +577,6 @@ static struct lpfc_bindlist *
 lpfc_consistent_bind_get(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 {
 	struct lpfc_bindlist *blp, *next_blp;
-	uint16_t index;
 
 	/* check binding list */
 	list_for_each_entry_safe(blp, next_blp, &phba->fc_nlpbind_list,
@@ -605,6 +601,17 @@ lpfc_consistent_bind_get(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
 			return (blp);
 		}
 	}
+	return NULL;
+}
+
+
+static struct lpfc_bindlist *
+lpfc_consistent_bind_create(struct lpfc_hba * phba, struct lpfc_nodelist * ndlp)
+{
+
+	struct lpfc_bindlist *blp;
+	uint16_t index;
+
 
 	/* NOTE: if scan-down = 2 and we have private loop, then we use
 	 * AlpaArray to determine sid.
@@ -764,13 +771,8 @@ lpfc_rcv_plogi_unused_node(struct lpfc_hba * phba,
 			   struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	if(lpfc_rcv_plogi(phba, ndlp, cmdiocb)) {
 		ndlp->nlp_state = NLP_STE_UNUSED_NODE;
@@ -795,13 +797,8 @@ lpfc_rcv_logo_unused_node(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq     *cmdiocb;
-	struct lpfc_dmabuf    *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	ndlp->nlp_flag |= NLP_LOGO_ACC;
 	lpfc_els_rsp_acc(phba, ELS_CMD_ACC, cmdiocb, ndlp, NULL, 0);
@@ -841,9 +838,6 @@ lpfc_rcv_plogi_plogi_issue(struct lpfc_hba * phba,
 	lp = (uint32_t *) pcmd->virt;
 	sp = (struct serv_parm *) ((uint8_t *) lp + sizeof (uint32_t));
 
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
-
 	memset(&stat, 0, sizeof (struct ls_rjt));
 
 	/* For a PLOGI, we only accept if our portname is less
@@ -872,13 +866,8 @@ lpfc_rcv_els_plogi_issue(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq     *cmdiocb;
-	struct lpfc_dmabuf    *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* software abort outstanding PLOGI */
 	lpfc_els_abort(phba, ndlp, 1);
@@ -926,9 +915,6 @@ lpfc_cmpl_plogi_plogi_issue(struct lpfc_hba * phba,
 
 		prsp = (struct lpfc_dmabuf *) pcmd->list.next;
 		lp = (uint32_t *) prsp->virt;
-
-		pci_dma_sync_single_for_cpu(phba->pcidev, prsp->phys,
-			LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 		sp = (struct serv_parm *) ((uint8_t *) lp + sizeof (uint32_t));
 		if ((lpfc_check_sparm(phba, ndlp, sp, CLASS3))) {
@@ -1028,16 +1014,11 @@ lpfc_rcv_plogi_adisc_issue(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	/* software abort outstanding ADISC */
 	lpfc_els_abort(phba, ndlp, 1);
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	if(lpfc_rcv_plogi(phba, ndlp, cmdiocb)) {
 		return (ndlp->nlp_state);
@@ -1055,13 +1036,8 @@ lpfc_rcv_prli_adisc_issue(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_els_rsp_prli_acc(phba, cmdiocb, ndlp);
 	return (ndlp->nlp_state);
@@ -1073,13 +1049,8 @@ lpfc_rcv_logo_adisc_issue(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* software abort outstanding ADISC */
 	lpfc_els_abort(phba, ndlp, 0);
@@ -1094,13 +1065,8 @@ lpfc_rcv_padisc_adisc_issue(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_padisc(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1112,13 +1078,8 @@ lpfc_rcv_prlo_adisc_issue(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* Treat like rcv logo */
 	lpfc_rcv_logo(phba, ndlp, cmdiocb);
@@ -1217,13 +1178,8 @@ lpfc_rcv_plogi_reglogin_issue(struct lpfc_hba * phba,
 			      uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_plogi(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1235,13 +1191,8 @@ lpfc_rcv_prli_reglogin_issue(struct lpfc_hba * phba,
 			     uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_els_rsp_prli_acc(phba, cmdiocb, ndlp);
 	return (ndlp->nlp_state);
@@ -1253,13 +1204,8 @@ lpfc_rcv_logo_reglogin_issue(struct lpfc_hba * phba,
 			     uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_logo(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1271,13 +1217,8 @@ lpfc_rcv_padisc_reglogin_issue(struct lpfc_hba * phba,
 			       uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_padisc(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1370,13 +1311,8 @@ lpfc_rcv_plogi_prli_issue(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_plogi(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1387,13 +1323,8 @@ lpfc_rcv_prli_prli_issue(struct lpfc_hba * phba,
 			 struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_els_rsp_prli_acc(phba, cmdiocb, ndlp);
 	return (ndlp->nlp_state);
@@ -1404,13 +1335,8 @@ lpfc_rcv_logo_prli_issue(struct lpfc_hba * phba,
 			 struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* Software abort outstanding PRLI before sending acc */
 	lpfc_els_abort(phba, ndlp, 1);
@@ -1424,13 +1350,8 @@ lpfc_rcv_padisc_prli_issue(struct lpfc_hba * phba,
 			   struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_padisc(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1489,7 +1410,10 @@ lpfc_cmpl_prli_prli_issue(struct lpfc_hba * phba,
 	}
 
 	/* Can we assign a SCSI Id to this NPort */
-	if ((blp = lpfc_consistent_bind_get(phba, ndlp))) {
+	blp = lpfc_consistent_bind_get(phba, ndlp);
+	if (!blp)
+		blp = lpfc_consistent_bind_create(phba, ndlp);
+	if (blp) {
 		/* Next 4 lines MUST be in this order */
 		if(lpfc_assign_binding(phba, ndlp, blp)) {
 			ndlp->nlp_state = NLP_STE_MAPPED_NODE;
@@ -1575,13 +1499,8 @@ lpfc_rcv_plogi_unmap_node(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_plogi(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1592,13 +1511,8 @@ lpfc_rcv_prli_unmap_node(struct lpfc_hba * phba,
 			 struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_els_rsp_prli_acc(phba, cmdiocb, ndlp);
 	return (ndlp->nlp_state);
@@ -1609,13 +1523,8 @@ lpfc_rcv_logo_unmap_node(struct lpfc_hba * phba,
 			 struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_logo(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1626,13 +1535,8 @@ lpfc_rcv_padisc_unmap_node(struct lpfc_hba * phba,
 			   struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_padisc(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1643,13 +1547,8 @@ lpfc_rcv_prlo_unmap_node(struct lpfc_hba * phba,
 			 struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* Treat like rcv logo */
 	lpfc_rcv_logo(phba, ndlp, cmdiocb);
@@ -1673,13 +1572,8 @@ lpfc_rcv_plogi_mapped_node(struct lpfc_hba * phba,
 			   struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_plogi(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1690,14 +1584,8 @@ lpfc_rcv_prli_mapped_node(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
-
 	lpfc_els_rsp_prli_acc(phba, cmdiocb, ndlp);
 	return (ndlp->nlp_state);
 }
@@ -1707,13 +1595,8 @@ lpfc_rcv_logo_mapped_node(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_logo(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1725,13 +1608,8 @@ lpfc_rcv_padisc_mapped_node(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_padisc(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1742,13 +1620,8 @@ lpfc_rcv_prlo_mapped_node(struct lpfc_hba * phba,
 			  struct lpfc_nodelist * ndlp, void *arg, uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* flush the target */
 	lpfc_sli_abort_iocb_tgt(phba,
@@ -1778,13 +1651,8 @@ lpfc_rcv_plogi_npr_node(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq *cmdiocb;
-	struct lpfc_dmabuf *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	/* Ignore PLOGI if we have an outstanding LOGO */
 	if (ndlp->nlp_flag & NLP_LOGO_SND) {
@@ -1811,19 +1679,10 @@ lpfc_rcv_prli_npr_node(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq     *cmdiocb;
-	struct lpfc_dmabuf    *pcmd;
-	struct ls_rjt          stat;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
 
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
-
-	memset(&stat, 0, sizeof (struct ls_rjt));
-	stat.un.b.lsRjtRsnCode = LSRJT_UNABLE_TPC;
-	stat.un.b.lsRjtRsnCodeExp = LSEXP_NOTHING_MORE;
-	lpfc_els_rsp_reject(phba, stat.un.lsRjtError, cmdiocb, ndlp);
+	lpfc_els_rsp_prli_acc(phba, cmdiocb, ndlp);
 
 	if(!(ndlp->nlp_flag & NLP_DELAY_TMO)) {
 		if (ndlp->nlp_flag & NLP_NPR_ADISC) {
@@ -1845,13 +1704,8 @@ lpfc_rcv_logo_npr_node(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq     *cmdiocb;
-	struct lpfc_dmabuf         *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_logo(phba, ndlp, cmdiocb);
 	return (ndlp->nlp_state);
@@ -1863,13 +1717,8 @@ lpfc_rcv_padisc_npr_node(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq     *cmdiocb;
-	struct lpfc_dmabuf    *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_rcv_padisc(phba, ndlp, cmdiocb);
 
@@ -1893,13 +1742,8 @@ lpfc_rcv_prlo_npr_node(struct lpfc_hba * phba,
 			    uint32_t evt)
 {
 	struct lpfc_iocbq     *cmdiocb;
-	struct lpfc_dmabuf         *pcmd;
 
 	cmdiocb = (struct lpfc_iocbq *) arg;
-	pcmd = (struct lpfc_dmabuf *) cmdiocb->context2;
-
-	pci_dma_sync_single_for_cpu(phba->pcidev, pcmd->phys,
-		LPFC_BPL_SIZE, PCI_DMA_FROMDEVICE);
 
 	lpfc_els_rsp_acc(phba, ELS_CMD_ACC, cmdiocb, ndlp, NULL, 0);
 

@@ -213,6 +213,8 @@ int permission(struct inode * inode,int mask, struct nameidata *nd)
 	int retval;
 	int submask;
 
+	audit_notify_watch(inode, mask);
+
 	/* Ordinary permission routines do not understand MAY_APPEND. */
 	submask = mask & ~MAY_APPEND;
 
@@ -328,6 +330,8 @@ static inline int exec_permission_lite(struct inode *inode,
 
 	if (inode->i_op && inode->i_op->permission)
 		return -EAGAIN;
+
+	audit_notify_watch(inode, MAY_EXEC);
 
 	if (current->fsuid == inode->i_uid)
 		mode >>= 6;
@@ -652,13 +656,13 @@ fail:
 
 /*
  * Name resolution.
+ * This is the basic name resolution function, turning a pathname into
+ * the final dentry. We expect 'base' to be positive and a directory.
  *
- * This is the basic name resolution function, turning a pathname
- * into the final dentry.
- *
- * We expect 'base' to be positive and a directory.
+ * Returns 0 and nd will have valid dentry and mnt on success.
+ * Returns error and drops reference to input namei data on failure.
  */
-int fastcall link_path_walk(const char * name, struct nameidata *nd)
+static fastcall int __link_path_walk(const char * name, struct nameidata *nd)
 {
 	struct path next;
 	struct inode *inode;
@@ -860,14 +864,47 @@ return_err:
 	return err;
 }
 
+/*
+ * Wrapper to retry pathname resolution whenever the underlying
+ * file system returns an ESTALE.
+ *
+ * Retry the whole path once, forcing real lookup requests
+ * instead of relying on the dcache.
+ */
+int fastcall link_path_walk(const char *name, struct nameidata *nd)
+{
+	struct nameidata save = *nd;
+	int result;
+
+	/* make sure the stuff we saved doesn't go away */
+	dget(save.dentry);
+	mntget(save.mnt);
+
+	result = __link_path_walk(name, nd);
+	if (result == -ESTALE) {
+		*nd = save;
+		dget(nd->dentry);
+		mntget(nd->mnt);
+		nd->flags |= LOOKUP_REVAL;
+		result = __link_path_walk(name, nd);
+	}
+
+	dput(save.dentry);
+	mntput(save.mnt);
+
+	return result;
+}
+
 int fastcall path_walk(const char * name, struct nameidata *nd)
 {
 	current->total_link_count = 0;
 	return link_path_walk(name, nd);
 }
 
-/* SMP-safe */
-/* returns 1 if everything is done */
+/* 
+ * SMP-safe: Returns 1 and nd will have valid dentry and mnt, if
+ * everything is done. Returns 0 and drops input nd, if lookup failed;
+ */
 static int __emul_lookup_dentry(const char *name, struct nameidata *nd)
 {
 	if (path_walk(name, nd))
@@ -931,9 +968,10 @@ set_it:
 	}
 }
 
+/* Returns 0 and nd will be valid on success; Retuns error, otherwise. */
 int fastcall path_lookup(const char *name, unsigned int flags, struct nameidata *nd)
 {
-	int retval;
+	int retval = 0;
 
 	nd->last_type = LAST_ROOT; /* if there are only slashes... */
 	nd->flags = flags;
@@ -946,7 +984,7 @@ int fastcall path_lookup(const char *name, unsigned int flags, struct nameidata 
 			nd->dentry = dget(current->fs->altroot);
 			read_unlock(&current->fs->lock);
 			if (__emul_lookup_dentry(name,nd))
-				return 0;
+				goto out; /* found in altroot */
 			read_lock(&current->fs->lock);
 		}
 		nd->mnt = mntget(current->fs->rootmnt);
@@ -958,11 +996,10 @@ int fastcall path_lookup(const char *name, unsigned int flags, struct nameidata 
 	read_unlock(&current->fs->lock);
 	current->total_link_count = 0;
 	retval = link_path_walk(name, nd);
+out:
 	if (unlikely(current->audit_context
 		     && nd && nd->dentry && nd->dentry->d_inode))
-		audit_inode(name,
-			    nd->dentry->d_inode->i_ino,
-			    nd->dentry->d_inode->i_rdev);
+		audit_inode(name, nd->dentry->d_inode, flags);
 	return retval;
 }
 
@@ -1107,6 +1144,8 @@ static inline int may_delete(struct inode *dir,struct dentry *victim,int isdir)
 
 	BUG_ON(victim->d_parent->d_inode != dir);
 
+	audit_notify_watch(victim->d_inode, MAY_WRITE);
+
 	error = permission(dir,MAY_WRITE | MAY_EXEC, NULL);
 	if (error)
 		return error;
@@ -1233,6 +1272,7 @@ int vfs_create(struct inode *dir, struct dentry *dentry, int mode,
 	DQUOT_INIT(dir);
 	error = dir->i_op->create(dir, dentry, mode, nd);
 	if (!error) {
+		audit_notify_watch(dentry->d_inode, MAY_WRITE);
 		inode_dir_notify(dir, DN_CREATE);
 		security_inode_post_create(dir, dentry, mode);
 	}
@@ -1547,6 +1587,7 @@ int vfs_mknod(struct inode *dir, struct dentry *dentry, int mode, dev_t dev)
 	DQUOT_INIT(dir);
 	error = dir->i_op->mknod(dir, dentry, mode, dev);
 	if (!error) {
+		audit_notify_watch(dentry->d_inode, MAY_WRITE);
 		inode_dir_notify(dir, DN_CREATE);
 		security_inode_post_mknod(dir, dentry, mode, dev);
 	}
@@ -1620,6 +1661,7 @@ int vfs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 	DQUOT_INIT(dir);
 	error = dir->i_op->mkdir(dir, dentry, mode);
 	if (!error) {
+		audit_notify_watch(dentry->d_inode, MAY_WRITE);
 		inode_dir_notify(dir, DN_CREATE);
 		security_inode_post_mkdir(dir,dentry, mode);
 	}
@@ -1864,6 +1906,7 @@ int vfs_symlink(struct inode *dir, struct dentry *dentry, const char *oldname, i
 	DQUOT_INIT(dir);
 	error = dir->i_op->symlink(dir, dentry, oldname);
 	if (!error) {
+		audit_notify_watch(dentry->d_inode, MAY_WRITE);
 		inode_dir_notify(dir, DN_CREATE);
 		security_inode_post_symlink(dir, dentry, oldname);
 	}
@@ -1937,6 +1980,7 @@ int vfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *new_de
 	error = dir->i_op->link(old_dentry, dir, new_dentry);
 	up(&old_dentry->d_inode->i_sem);
 	if (!error) {
+		audit_notify_watch(new_dentry->d_inode, MAY_WRITE);
 		inode_dir_notify(dir, DN_CREATE);
 		security_inode_post_link(old_dentry, dir, new_dentry);
 	}
@@ -2060,6 +2104,7 @@ int vfs_rename_dir(struct inode *old_dir, struct dentry *old_dentry,
 	}
 	if (!error) {
 		d_move(old_dentry,new_dentry);
+		audit_notify_watch(old_dentry->d_inode, MAY_WRITE);
 		security_inode_post_rename(old_dir, old_dentry,
 					   new_dir, new_dentry);
 	}
@@ -2088,6 +2133,7 @@ int vfs_rename_other(struct inode *old_dir, struct dentry *old_dentry,
 		/* The following d_move() should become unconditional */
 		if (!(old_dir->i_sb->s_type->fs_flags & FS_ODD_RENAME))
 			d_move(old_dentry, new_dentry);
+		audit_notify_watch(old_dentry->d_inode, MAY_WRITE);
 		security_inode_post_rename(old_dir, old_dentry, new_dir, new_dentry);
 	}
 	if (target)

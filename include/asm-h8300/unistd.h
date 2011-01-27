@@ -270,7 +270,11 @@
 #define __NR_clock_getres	(__NR_timer_create+7)
 #define __NR_clock_nanosleep	(__NR_timer_create+8)
 
-#define NR_syscalls 268
+#define __NR_add_key		286
+#define __NR_request_key	287
+#define __NR_keyctl		288
+
+#define NR_syscalls 289
 
 
 /* user-visible error numbers are in the range -1 - -122: see

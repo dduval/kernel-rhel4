@@ -601,6 +601,10 @@ do_IRQ (struct pt_regs *regs)
 	irq_enter ();
 	asm volatile ("mc 0,0");
 	if (S390_lowcore.int_clock >= S390_lowcore.jiffy_timer)
+		/*
+		 * Make sure that the i/o interrupt did not "overtake"
+		 * the last HZ timer interrupt.
+		 */
 		account_ticks(regs);
 	/*
 	 * Get interrupt information from lowcore
@@ -813,9 +817,10 @@ __clear_subchannel_easy(unsigned int schid)
 }
 
 extern void do_reipl(unsigned long devno);
-/* Make sure all subchannels are quiet before we re-ipl an lpar. */
+
+/* Clear all subchannels. */
 void
-reipl(unsigned long devno)
+clear_all_subchannels(void)
 {
 	unsigned int schid;
 
@@ -823,7 +828,7 @@ reipl(unsigned long devno)
 	for (schid=0;schid<=highest_subchannel;schid++) {
 		struct schib schib;
 		if (stsch(schid, &schib))
-			goto out;
+			break; /* break out of the loop */
 		if (!schib.pmcw.ena)
 			continue;
 		switch(__disable_subchannel_easy(schid, &schib)) {
@@ -832,11 +837,18 @@ reipl(unsigned long devno)
 			break;
 		default: /* -EBUSY */
 			if (__clear_subchannel_easy(schid))
-				break; /* give up... */
+				break; /* give up... jump out of switch */
 			stsch(schid, &schib);
 			__disable_subchannel_easy(schid, &schib);
 		}
 	}
-out:
+}
+
+/* Make sure all subchannels are quiet before we re-ipl an lpar. */
+void
+reipl(unsigned long devno)
+{
+	clear_all_subchannels();
 	do_reipl(devno);
 }
+

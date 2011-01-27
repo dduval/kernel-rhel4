@@ -300,9 +300,9 @@ int proc_pid_status(struct task_struct *task, char * buffer)
 	return buffer - orig;
 }
 
-int proc_pid_stat(struct task_struct *task, char * buffer)
+static int do_task_stat(struct task_struct *task, char * buffer, int whole)
 {
-	unsigned long vsize, eip, esp, wchan;
+	unsigned long vsize, eip, esp, wchan = ~0UL;
 	long priority, nice;
 	int tty_pgrp = -1, tty_nr = 0;
 	sigset_t sigign, sigcatch;
@@ -313,6 +313,8 @@ int proc_pid_stat(struct task_struct *task, char * buffer)
 	struct mm_struct *mm;
 	unsigned long long start_time;
 	unsigned long cmin_flt = 0, cmaj_flt = 0, cutime = 0, cstime = 0;
+	unsigned long  min_flt = 0,  maj_flt = 0,  utime = 0,  stime = 0;
+	struct task_struct *t;
 	char tcomm[sizeof(task->comm)];
 
 	state = *get_task_state(task);
@@ -325,10 +327,6 @@ int proc_pid_stat(struct task_struct *task, char * buffer)
 	}
 
 	get_task_comm(tcomm, task);
-	wchan = 0;
-	if (current->uid == task->uid || current->euid == task->uid ||
-							capable(CAP_SYS_NICE))
-		wchan = get_wchan(task);
 
 	sigemptyset(&sigign);
 	sigemptyset(&sigcatch);
@@ -337,6 +335,19 @@ int proc_pid_stat(struct task_struct *task, char * buffer)
 		spin_lock_irq(&task->sighand->siglock);
 		num_threads = atomic_read(&task->signal->count);
 		collect_sigign_sigcatch(task, &sigign, &sigcatch);
+
+		/* add up live thread stats at the group level */
+		if (whole) {
+			t = task;
+			do {
+				min_flt += t->min_flt;
+				maj_flt += t->maj_flt;
+				utime += t->utime;
+				stime += t->stime;
+				t = next_thread(t);
+			} while (t != task);
+		}
+
 		spin_unlock_irq(&task->sighand->siglock);
 	}
 	if (task->signal) {
@@ -350,17 +361,32 @@ int proc_pid_stat(struct task_struct *task, char * buffer)
 		cmaj_flt = task->signal->cmaj_flt;
 		cutime = task->signal->cutime;
 		cstime = task->signal->cstime;
+		if (whole) {
+			min_flt += task->signal->min_flt;
+			maj_flt += task->signal->maj_flt;
+			utime += task->signal->utime;
+			stime += task->signal->stime;
+		}
 	}
+	ppid = pid_alive(task) ? task->group_leader->real_parent->tgid : 0;
 	read_unlock(&tasklist_lock);
+
+	if ((!whole || num_threads<2) &&
+	    (current->uid == task->uid || current->euid == task->uid ||
+	     capable(CAP_SYS_NICE)))
+		wchan = get_wchan(task);
+
+	if (!whole) {
+		min_flt = task->min_flt;
+		maj_flt = task->maj_flt;
+		utime = task->utime;
+		stime = task->stime;
+	}
 
 	/* scale priority and nice values from timeslices to -20..20 */
 	/* to make it look like a "normal" Unix priority/nice value  */
 	priority = task_prio(task);
 	nice = task_nice(task);
-
-	read_lock(&tasklist_lock);
-	ppid = task->pid ? task->group_leader->real_parent->tgid : 0;
-	read_unlock(&tasklist_lock);
 
 	/* Temporary variable needed for gcc-2.96 */
 	/* convert timespec -> nsec*/
@@ -381,12 +407,12 @@ int proc_pid_stat(struct task_struct *task, char * buffer)
 		tty_nr,
 		tty_pgrp,
 		task->flags,
-		task->min_flt,
+		min_flt,
 		cmin_flt,
-		task->maj_flt,
+		maj_flt,
 		cmaj_flt,
-		jiffies_to_clock_t(task->utime),
-		jiffies_to_clock_t(task->stime),
+		jiffies_to_clock_t(utime),
+		jiffies_to_clock_t(stime),
 		jiffies_to_clock_t(cutime),
 		jiffies_to_clock_t(cstime),
 		priority,
@@ -420,6 +446,16 @@ int proc_pid_stat(struct task_struct *task, char * buffer)
 	if(mm)
 		mmput(mm);
 	return res;
+}
+
+int proc_tid_stat(struct task_struct *task, char * buffer)
+{
+	return do_task_stat(task, buffer, 0);
+}
+
+int proc_tgid_stat(struct task_struct *task, char * buffer)
+{
+	return do_task_stat(task, buffer, 1);
 }
 
 int proc_pid_statm(struct task_struct *task, char *buffer)

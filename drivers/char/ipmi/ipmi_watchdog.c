@@ -53,7 +53,7 @@
 
 #define	PFX "IPMI Watchdog: "
 
-#define IPMI_WATCHDOG_VERSION "v33"
+#define IPMI_WATCHDOG_VERSION "33.4"
 
 /*
  * The IPMI command/response information for the watchdog timer.
@@ -1089,3 +1089,6 @@ EXPORT_SYMBOL(ipmi_delayed_shutdown);
 
 module_init(ipmi_wdog_init);
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Corey Minyard <minyard@mvista.com>");
+MODULE_DESCRIPTION("watchdog timer based upon the IPMI interface.");
+MODULE_VERSION(IPMI_WATCHDOG_VERSION);

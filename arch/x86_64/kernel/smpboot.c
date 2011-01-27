@@ -54,10 +54,13 @@
 #include <asm/tlbflush.h>
 #include <asm/proto.h>
 
-/* Number of siblings per CPU package */
+/* Number of siblings per CPU core */
 int smp_num_siblings = 1;
 /* Package ID of each logical CPU */
 u8 phys_proc_id[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
+/* Core ID of each logical CPU */
+u8 cpu_core_id[NR_CPUS] = { [0 ... NR_CPUS-1] = BAD_APICID };
+EXPORT_SYMBOL(cpu_core_id);
 
 /* Bitmask of currently online CPUs */
 cpumask_t cpu_online_map;
@@ -738,7 +741,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		if (APIC_init_uniprocessor())
 			printk(KERN_NOTICE "Local APIC not detected."
 					   " Using dummy APIC emulation.\n");
-		goto smp_done;
+		return;
 	}
 
 	/*
@@ -762,7 +765,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		cpu_online_map = cpumask_of_cpu(0);
 		phys_cpu_present_map = physid_mask_of_physid(0);
 		disable_apic = 1;
-		goto smp_done;
+		return;
 	}
 
 	verify_local_APIC();
@@ -777,7 +780,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 		cpu_online_map = cpumask_of_cpu(0);
 		phys_cpu_present_map = physid_mask_of_physid(0);
 		disable_apic = 1;
-		goto smp_done;
+		return;
 	}
 
 	connect_bsp_APIC();
@@ -865,7 +868,7 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 			for (i = 0; i < NR_CPUS; i++) {
 				if (!cpu_isset(i, cpu_callout_map))
 					continue;
-				if (phys_proc_id[cpu] == phys_proc_id[i]) {
+				if (cpu_core_id[cpu] == cpu_core_id[i]) {
 					siblings++;
 					cpu_set(i, cpu_sibling_map[cpu]);
 				}
@@ -901,9 +904,6 @@ static void __init smp_boot_cpus(unsigned int max_cpus)
 	 */
 	if (cpu_has_tsc && cpucount)
 		synchronize_tsc_bp();
-
- smp_done:
-	time_init_smp();
 }
 
 /* These are wrappers to interface to the new boot process.  Someone
@@ -949,5 +949,6 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	setup_ioapic_dest();
 #endif
 	zap_low_mappings();
+	time_init_gtod();
 }
 

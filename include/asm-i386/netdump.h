@@ -29,8 +29,37 @@
 
 const static int platform_supports_netdump = 1;
 
-#define platform_page_is_ram(x) (page_is_ram(x))
+#define platform_page_is_ram(x) (page_is_ram(x) && page_is_present(x))
 #define platform_machine_type() (EM_386)
+
+static inline int page_is_present(unsigned long pfn) 
+{
+#ifdef CONFIG_DEBUG_PAGEALLOC
+	unsigned long address;
+	pgd_t *pgd;
+	pmd_t *pmd;
+	pte_t *ptep;
+
+	address = (unsigned long)__va(pfn << PAGE_SHIFT);
+
+	pgd = pgd_offset_k(address);
+	if (pgd_none(*pgd))
+		return 0;
+
+	pmd = pmd_offset(pgd, address);
+	if (pmd_none(*pmd))
+		return 0;
+
+	if (pmd_large(*pmd))  /* should be impossible */
+		return 1;
+
+	ptep = pte_offset_kernel(pmd, address);
+
+	return pte_present(*ptep);
+#else
+	return 1;
+#endif
+}
 
 static inline unsigned char platform_effective_version(req_t *req)
 {

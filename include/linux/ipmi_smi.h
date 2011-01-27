@@ -106,11 +106,13 @@ struct ipmi_smi_handlers
 	void (*poll)(void *send_info);
 };
 
-/* Add a low-level interface to the IPMI driver. */
+/* Add a low-level interface to the IPMI driver.  Note that if the
+   interface doesn't know its slave address, it should pass in zero. */
 int ipmi_register_smi(struct ipmi_smi_handlers *handlers,
 		      void                     *send_info,
 		      unsigned char            version_major,
 		      unsigned char            version_minor,
+		      unsigned char            slave_addr,
 		      ipmi_smi_t               *intf);
 
 /*

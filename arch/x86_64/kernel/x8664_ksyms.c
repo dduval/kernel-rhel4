@@ -198,6 +198,7 @@ EXPORT_SYMBOL(atomic_dec_and_lock);
 #endif
 
 EXPORT_SYMBOL(die_chain);
+EXPORT_SYMBOL(register_die_notifier);
 
 #ifdef CONFIG_SMP
 EXPORT_SYMBOL(cpu_sibling_map);

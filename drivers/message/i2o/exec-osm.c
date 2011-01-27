@@ -37,6 +37,11 @@ extern int i2o_device_parse_lct(struct i2o_controller *);
 
 /* global wait list for POST WAIT */
 static LIST_HEAD(i2o_exec_wait_list);
+/*
+ * i2o_exec_wait_list and i2o_exec_wait's complete and wq fields
+ * must be accessed under this lock
+ */
+static spinlock_t i2o_exec_wait_list_lock = SPIN_LOCK_UNLOCKED;
 
 /* Wait struct needed for POST WAIT */
 struct i2o_exec_wait {
@@ -114,6 +119,7 @@ int i2o_msg_post_wait_mem(struct i2o_controller *c, u32 m, unsigned long
 	static u32 tcntxt = 0x80000000;
 	struct i2o_message *msg = c->in_queue.virt + m;
 	int rc = 0;
+	unsigned long flags;
 
 	iwait = i2o_exec_wait_alloc();
 	if (!iwait)
@@ -140,27 +146,28 @@ int i2o_msg_post_wait_mem(struct i2o_controller *c, u32 m, unsigned long
 	 */
 	i2o_msg_post(c, m);
 
+	spin_lock_irqsave(&i2o_exec_wait_list_lock, flags);
+	iwait->wq = &wq;
+	/*
+	 * we add elements add the head, because if a entry in the list
+	 * will never be removed, we have to iterate over it every time
+	 */
+	list_add(&iwait->list, &i2o_exec_wait_list);
+
+	prepare_to_wait(&wq, &wait, TASK_INTERRUPTIBLE);
+
 	if (!iwait->complete) {
-		iwait->wq = &wq;
-		/*
-		 * we add elements add the head, because if a entry in the list
-		 * will never be removed, we have to iterate over it every time
-		 */
-		list_add(&iwait->list, &i2o_exec_wait_list);
-
-		prepare_to_wait(&wq, &wait, TASK_INTERRUPTIBLE);
-
-		if (!iwait->complete)
-			schedule_timeout(timeout * HZ);
-
-		finish_wait(&wq, &wait);
-
-		iwait->wq = NULL;
+		spin_unlock_irqrestore(&i2o_exec_wait_list_lock, flags);
+		schedule_timeout(timeout * HZ);
+		spin_lock_irqsave(&i2o_exec_wait_list_lock, flags);
 	}
 
-	barrier();
+	finish_wait(&wq, &wait);
+
+	iwait->wq = NULL;
 
 	if (iwait->complete) {
+		spin_unlock_irqrestore(&i2o_exec_wait_list_lock, flags);
 		if (readl(&iwait->msg->body[0]) >> 24)
 			rc = readl(&iwait->msg->body[0]) & 0xff;
 		i2o_flush_reply(c, iwait->m);
@@ -177,6 +184,7 @@ int i2o_msg_post_wait_mem(struct i2o_controller *c, u32 m, unsigned long
 			dma->virt = NULL;
 
 		rc = -ETIMEDOUT;
+		spin_unlock_irqrestore(&i2o_exec_wait_list_lock, flags);
 	}
 
 	return rc;
@@ -204,9 +212,9 @@ static int i2o_msg_post_wait_complete(struct i2o_controller *c, u32 m,
 				      struct i2o_message *msg)
 {
 	struct i2o_exec_wait *wait, *tmp;
-	static spinlock_t lock = SPIN_LOCK_UNLOCKED;
 	int rc = 1;
 	u32 context;
+	unsigned long flags;
 
 	context = readl(&msg->u.s.tcntxt);
 
@@ -217,7 +225,7 @@ static int i2o_msg_post_wait_complete(struct i2o_controller *c, u32 m,
 	 * already expired. Not much we can do about that except log it for
 	 * debug purposes, increase timeout, and recompile.
 	 */
-	spin_lock(&lock);
+	spin_lock_irqsave(&i2o_exec_wait_list_lock, flags);
 	list_for_each_entry_safe(wait, tmp, &i2o_exec_wait_list, list) {
 		if (wait->tcntxt == context) {
 			list_del(&wait->list);
@@ -225,8 +233,6 @@ static int i2o_msg_post_wait_complete(struct i2o_controller *c, u32 m,
 			wait->m = m;
 			wait->msg = msg;
 			wait->complete = 1;
-
-			barrier();
 
 			if (wait->wq) {
 				wake_up_interruptible(wait->wq);
@@ -242,13 +248,13 @@ static int i2o_msg_post_wait_complete(struct i2o_controller *c, u32 m,
 				rc = -1;
 			}
 
-			spin_unlock(&lock);
+			spin_unlock_irqrestore(&i2o_exec_wait_list_lock, flags);
 
 			return rc;
 		}
 	}
 
-	spin_unlock(&lock);
+	spin_unlock_irqrestore(&i2o_exec_wait_list_lock, flags);
 
 	pr_debug("i2o: Bogus reply in POST WAIT (tr-context: %08x)!\n",
 		 context);

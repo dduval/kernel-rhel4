@@ -10,8 +10,8 @@
 #include <asm/sn/types.h>
 #include <asm/sn/sn_sal.h>
 #include <asm/sn/addrs.h>
-#include "pci/pcibus_provider_defs.h"
-#include "pci/pcidev.h"
+#include <asm/sn/pcibus_provider_defs.h>
+#include <asm/sn/pcidev.h>
 #include "pci/pcibr_provider.h"
 #include "xtalk/xwidgetdev.h"
 #include <asm/sn/geo.h>
@@ -32,6 +32,37 @@ struct brick {
 };
 
 int sn_ioif_inited = 0;		/* SN I/O infrastructure initialized? */
+
+struct sn_pcibus_provider *sn_pci_provider[PCIIO_ASIC_MAX_TYPES];	/* indexed by asic type */
+
+/*
+ * Hooks and struct for unsupported pci providers
+ */
+
+static dma_addr_t
+sn_default_pci_map(struct pci_dev *pdev, unsigned long paddr, size_t size)
+{
+	return 0;
+}
+
+static void
+sn_default_pci_unmap(struct pci_dev *pdev, dma_addr_t addr, int direction)
+{
+	return;
+}
+
+static void *
+sn_default_pci_bus_fixup(struct pcibus_bussoft *soft)
+{
+	return NULL;
+}
+
+static struct sn_pcibus_provider sn_pci_default_provider = {
+	.dma_map = sn_default_pci_map,
+	.dma_map_consistent = sn_default_pci_map,
+	.dma_unmap = sn_default_pci_unmap,
+	.bus_fixup = sn_default_pci_bus_fixup,
+};
 
 /*
  * Retrieve the DMA Flush List given nasid.  This list is needed 
@@ -141,6 +172,12 @@ static void sn_fixup_ionodes(void)
 		if (status)
 			continue;
 
+		/* Attach the error interrupt handlers */
+		if (nasid & 1)
+			ice_error_init(hubdev);
+		else
+			hub_error_init(hubdev);
+
 		for (widget = 0; widget <= HUB_WIDGET_ID_MAX; widget++)
 			hubdev->hdi_xwidget_info[widget].xwi_hubinfo = hubdev;
 
@@ -178,10 +215,6 @@ static void sn_fixup_ionodes(void)
 			    sn_flush_device_list;
 		}
 
-		if (!(i & 1))
-			hub_error_init(hubdev);
-		else
-			ice_error_init(hubdev);
 	}
 
 }
@@ -200,8 +233,9 @@ static void sn_pci_fixup_slot(struct pci_dev *dev)
 	struct sn_irq_info *sn_irq_info;
 	struct pci_dev *host_pci_dev;
 	int status = 0;
+	struct pcibus_bussoft *bs;
 
-	SN_PCIDEV_INFO(dev) = kmalloc(sizeof(struct pcidev_info), GFP_KERNEL);
+	dev->sysdata = kmalloc(sizeof(struct pcidev_info), GFP_KERNEL);
 	if (SN_PCIDEV_INFO(dev) <= 0)
 		BUG();		/* Cannot afford to run out of memory */
 	memset(SN_PCIDEV_INFO(dev), 0, sizeof(struct pcidev_info));
@@ -240,6 +274,7 @@ static void sn_pci_fixup_slot(struct pci_dev *dev)
 	}
 
 	/* set up host bus linkages */
+	bs = SN_PCIBUS_BUSSOFT(dev->bus);
 	host_pci_dev =
 	    pci_find_slot(SN_PCIDEV_INFO(dev)->pdi_slot_host_handle >> 32,
 			  SN_PCIDEV_INFO(dev)->
@@ -247,10 +282,16 @@ static void sn_pci_fixup_slot(struct pci_dev *dev)
 	SN_PCIDEV_INFO(dev)->pdi_host_pcidev_info =
 	    SN_PCIDEV_INFO(host_pci_dev);
 	SN_PCIDEV_INFO(dev)->pdi_linux_pcidev = dev;
-	SN_PCIDEV_INFO(dev)->pdi_pcibus_info = SN_PCIBUS_BUSSOFT(dev->bus);
+	SN_PCIDEV_INFO(dev)->pdi_pcibus_info = bs;
+
+	if (bs && bs->bs_asic_type < PCIIO_ASIC_MAX_TYPES) {
+		SN_PCIDEV_BUSPROVIDER(dev) = sn_pci_provider[bs->bs_asic_type];
+	} else {
+		SN_PCIDEV_BUSPROVIDER(dev) = &sn_pci_default_provider;
+	}
 
 	/* Only set up IRQ stuff if this device has a host bus context */
-	if (SN_PCIDEV_BUSSOFT(dev) && sn_irq_info->irq_irq) {
+	if (bs && sn_irq_info->irq_irq) {
 		SN_PCIDEV_INFO(dev)->pdi_sn_irq_info = sn_irq_info;
 		dev->irq = SN_PCIDEV_INFO(dev)->pdi_sn_irq_info->irq_irq;
 		sn_irq_fixup(dev, sn_irq_info);
@@ -270,6 +311,7 @@ static void sn_pci_controller_fixup(int segment, int busnum)
 	struct pcibus_bussoft *prom_bussoft_ptr;
 	struct hubdev_info *hubdev_info;
 	void *provider_soft;
+	struct sn_pcibus_provider *provider;
 
 	status =
 	    sal_get_pcibus_info((u64) segment, (u64) busnum,
@@ -290,16 +332,22 @@ static void sn_pci_controller_fixup(int segment, int busnum)
 	/*
 	 * Per-provider fixup.  Copies the contents from prom to local
 	 * area and links SN_PCIBUS_BUSSOFT().
-	 *
-	 * Note:  Provider is responsible for ensuring that prom_bussoft_ptr
-	 * represents an asic-type that it can handle.
 	 */
 
-	if (prom_bussoft_ptr->bs_asic_type == PCIIO_ASIC_TYPE_PPB) {
-		return;		/* no further fixup necessary */
+	if (prom_bussoft_ptr->bs_asic_type >= PCIIO_ASIC_MAX_TYPES) {
+		return;		/* unsupported asic type */
 	}
 
-	provider_soft = pcibr_bus_fixup(prom_bussoft_ptr);
+	provider = sn_pci_provider[prom_bussoft_ptr->bs_asic_type];
+	if (provider == NULL) {
+		return;		/* no provider registerd for this asic */
+	}
+
+	provider_soft = NULL;
+	if (provider->bus_fixup) {
+		provider_soft = (*provider->bus_fixup) (prom_bussoft_ptr);
+	}
+
 	if (provider_soft == NULL) {
 		return;		/* fixup failed or not applicable */
 	}
@@ -309,8 +357,8 @@ static void sn_pci_controller_fixup(int segment, int busnum)
 	 * after this point.
 	 */
 
-	PCI_CONTROLLER(bus) = controller;
-	SN_PCIBUS_BUSSOFT(bus) = provider_soft;
+	bus->sysdata = controller;
+	PCI_CONTROLLER(bus)->platform_data = provider_soft;
 
 	nasid = NASID_GET(SN_PCIBUS_BUSSOFT(bus)->bs_base);
 	cnode = nasid_to_cnodeid(nasid);
@@ -336,6 +384,16 @@ static int __init sn_pci_init(void)
 
 	if (!ia64_platform_is("sn2") || IS_RUNNING_ON_SIMULATOR())
 		return 0;
+
+	/*
+	 * prime sn_pci_provider[].  Individial provider init routines will
+	 * override their respective default entries.
+	 */
+
+	for (i = 0; i < PCIIO_ASIC_MAX_TYPES; i++)
+		sn_pci_provider[i] = &sn_pci_default_provider;
+
+	pcibr_init_provider();
 
 	/*
 	 * This is needed to avoid bounce limit checks in the blk layer
@@ -382,7 +440,7 @@ void hubdev_init_node(nodepda_t * npda, cnodeid_t node)
 
 	struct hubdev_info *hubdev_info;
 
-	if (node >= numnodes)	/* Headless/memless IO nodes */
+	if (node >= num_online_nodes())	/* Headless/memless IO nodes */
 		hubdev_info =
 		    (struct hubdev_info *)alloc_bootmem_node(NODE_DATA(0),
 							     sizeof(struct

@@ -11,7 +11,7 @@
  * Version Perfmon-2.x is a rewrite of perfmon-1.x
  * by Stephane Eranian, Hewlett Packard Co. 
  *
- * Copyright (C) 1999-2003  Hewlett Packard Co
+ * Copyright (c) 1999-2005 Hewlett-Packard Development Company, L.P.
  *               Stephane Eranian <eranian@hpl.hp.com>
  *               David Mosberger-Tang <davidm@hpl.hp.com>
  *
@@ -230,6 +230,9 @@
 	do { \
 		if (unlikely(pfm_sysctl.debug > 0 && pfm_sysctl.debug_ovfl >0)) { printk("%s.%d: CPU%d [%d] ", __FUNCTION__, __LINE__, smp_processor_id(), current->pid); printk a; } \
 	} while (0)
+#else
+#define DPRINT(a)
+#define DPRINT_ovfl(a)
 #endif
 
 /*
@@ -480,14 +483,6 @@ typedef struct {
 #define PFM_CMD_ARG_MANY	-1 /* cannot be zero */
 
 typedef struct {
-	int	debug;		/* turn on/off debugging via syslog */
-	int	debug_ovfl;	/* turn on/off debug printk in overflow handler */
-	int	fastctxsw;	/* turn on/off fast (unsecure) ctxsw */
-	int	expert_mode;	/* turn on/off value checking */
-	int 	debug_pfm_read;
-} pfm_sysctl_t;
-
-typedef struct {
 	unsigned long pfm_spurious_ovfl_intr_count;	/* keep track of spurious ovfl interrupts */
 	unsigned long pfm_replay_ovfl_intr_count;	/* keep track of replayed ovfl interrupts */
 	unsigned long pfm_ovfl_intr_count; 		/* keep track of ovfl interrupts */
@@ -505,6 +500,9 @@ typedef struct {
 static pfm_stats_t		pfm_stats[NR_CPUS];
 static pfm_session_t		pfm_sessions;	/* global sessions information */
 
+static spinlock_t pfm_alt_install_check;
+static pfm_intr_handler_desc_t  *pfm_alt_intr_handler;
+
 static struct proc_dir_entry 	*perfmon_dir;
 static pfm_uuid_t		pfm_null_uuid = {0,};
 
@@ -514,8 +512,8 @@ static LIST_HEAD(pfm_buffer_fmt_list);
 static pmu_config_t		*pmu_conf;
 
 /* sysctl() controls */
-static pfm_sysctl_t pfm_sysctl;
-int pfm_debug_var;
+pfm_sysctl_t pfm_sysctl;
+EXPORT_SYMBOL(pfm_sysctl);
 
 static ctl_table pfm_ctl_table[]={
 	{1, "debug", &pfm_sysctl.debug, sizeof(int), 0666, NULL, &proc_dointvec, NULL,},
@@ -620,6 +618,7 @@ DEFINE_PER_CPU(unsigned long, pfm_syst_info);
 DEFINE_PER_CPU(struct task_struct *, pmu_owner);
 DEFINE_PER_CPU(pfm_context_t  *, pmu_ctx);
 DEFINE_PER_CPU(unsigned long, pmu_activation_number);
+EXPORT_SYMBOL_GPL(per_cpu__pfm_syst_info);
 
 
 /* forward declaration */
@@ -1344,7 +1343,7 @@ pfm_reserve_session(struct task_struct *task, int is_syswide, unsigned int cpu)
 error_conflict:
 	DPRINT(("system wide not possible, conflicting session [%d] on CPU%d\n",
   		pfm_sessions.pfs_sys_session[cpu]->pid,
-		smp_processor_id()));
+		cpu));
 abort:
 	UNLOCK_PFS(flags);
 
@@ -1594,7 +1593,7 @@ pfm_read(struct file *filp, char __user *buf, size_t size, loff_t *ppos)
 		goto abort_locked;
 	}
 
-	DPRINT(("[%d] fd=%d type=%d\n", current->pid, msg->pfm_gen_msg.msg_ctx_fd, msg->pfm_gen_msg.msg_type));
+	DPRINT(("fd=%d type=%d\n", msg->pfm_gen_msg.msg_ctx_fd, msg->pfm_gen_msg.msg_type));
 
 	ret = -EFAULT;
   	if(copy_to_user(buf, msg, sizeof(pfm_msg_t)) == 0) ret = sizeof(pfm_msg_t);
@@ -2312,10 +2311,6 @@ pfm_smpl_buffer_alloc(struct task_struct *task, pfm_context_t *ctx, unsigned lon
 
 	/*
 	 * partially initialize the vma for the sampling buffer
-	 *
-	 * The VM_DONTCOPY flag is very important as it ensures that the mapping
-	 * will never be inherited for any child process (via fork()) which is always
-	 * what we want.
 	 */
 	vma->vm_mm	     = mm;
 	vma->vm_flags	     = VM_READ| VM_MAYREAD |VM_RESERVED;
@@ -3714,8 +3709,6 @@ pfm_debug(pfm_context_t *ctx, void *arg, int count, struct pt_regs *regs)
 
 	pfm_sysctl.debug = m == 0 ? 0 : 1;
 
-	pfm_debug_var = pfm_sysctl.debug;
-
 	printk(KERN_INFO "perfmon debugging %s (timing reset)\n", pfm_sysctl.debug ? "on" : "off");
 
 	if (m == 0) {
@@ -4231,7 +4224,7 @@ pfm_context_load(pfm_context_t *ctx, void *arg, int count, struct pt_regs *regs)
 		DPRINT(("cannot load to [%d], invalid ctx_state=%d\n",
 			req->load_pid,
 			ctx->ctx_state));
-		return -EINVAL;
+		return -EBUSY;
 	}
 
 	DPRINT(("load_pid [%d] using_dbreg=%d\n", req->load_pid, ctx->ctx_fl_using_dbreg));
@@ -4733,16 +4726,26 @@ recheck:
 	if (task == current || ctx->ctx_fl_system) return 0;
 
 	/*
-	 * if context is UNLOADED we are safe to go
+	 * we are monitoring another thread
 	 */
-	if (state == PFM_CTX_UNLOADED) return 0;
-
-	/*
-	 * no command can operate on a zombie context
-	 */
-	if (state == PFM_CTX_ZOMBIE) {
-		DPRINT(("cmd %d state zombie cannot operate on context\n", cmd));
-		return -EINVAL;
+	switch(state) {
+		case PFM_CTX_UNLOADED:
+			/*
+			 * if context is UNLOADED we are safe to go
+			 */
+			return 0;
+		case PFM_CTX_ZOMBIE:
+			/*
+			 * no command can operate on a zombie context
+			 */
+			DPRINT(("cmd %d state zombie cannot operate on context\n", cmd));
+			return -EINVAL;
+		case PFM_CTX_MASKED:
+			/* 
+			 * PMU state has been saved to software even though
+			 * the thread may still be running.
+			 */
+			if (cmd != PFM_UNLOAD_CONTEXT) return 0;
 	}
 
 	/*
@@ -4755,6 +4758,7 @@ recheck:
 	 * If this user wants to ensure the task does not run, then
 	 * the task must be stopped.
 	 */
+
 	if (PFM_CMD_STOPPED(cmd)) {
 		if ((task->state != TASK_STOPPED) && (task->state != TASK_TRACED)) {
 			DPRINT(("[%d] task not in stopped state\n", task->pid));
@@ -4995,26 +4999,14 @@ pfm_resume_after_ovfl(pfm_context_t *ctx, unsigned long ovfl_regs, struct pt_reg
 static void
 pfm_context_force_terminate(pfm_context_t *ctx, struct pt_regs *regs)
 {
-	if (ctx->ctx_fl_system) {
-		printk(KERN_ERR "perfmon: pfm_context_force_terminate [%d] is system-wide\n", current->pid);
-		return;
+	int ret;
+ 
+	DPRINT(("entering for [%d]\n", current->pid));
+ 
+	ret = pfm_context_unload(ctx, NULL, 0, regs);
+	if (ret) {
+		printk(KERN_ERR "pfm_context_force_terminate: [%d] unloaded failed with %d\n", current->pid, ret);
 	}
-	/*
-	 * we stop the whole thing, we do no need to flush
-	 * we know we WERE masked
-	 */
-	pfm_clear_psr_up();
-	ia64_psr(regs)->up = 0;
-	ia64_psr(regs)->sp = 1;
-
-	/*
-	 * disconnect the task from the context and vice-versa
-	 */
-	current->thread.pfm_context  = NULL;
-	current->thread.flags       &= ~IA64_THREAD_PM_VALID;
-	ctx->ctx_task = NULL;
-
-	DPRINT(("context terminated\n"));
 
 	/*
 	 * and wakeup controlling task, indicating we are now disconnected
@@ -5029,13 +5021,21 @@ pfm_context_force_terminate(pfm_context_t *ctx, struct pt_regs *regs)
 }
 
 static int pfm_ovfl_notify_user(pfm_context_t *ctx, unsigned long ovfl_pmds);
-
+/*
+ * pfm_handle_work() can be called with interrupts enabled
+ * (TIF_NEED_RESCHED) or disabled. The down_interruptible
+ * call may sleep, therefore we must re-enable interrupts
+ * to avoid deadlocks. It is safe to do so because this function
+ * is called ONLY when returning to user level (PUStk=1), in which case
+ * there is no risk of kernel stack overflow due to deep
+ * interrupt nesting.
+ */
 void
 pfm_handle_work(void)
 {
 	pfm_context_t *ctx;
 	struct pt_regs *regs;
-	unsigned long flags;
+	unsigned long flags, dummy_flags;
 	unsigned long ovfl_regs;
 	unsigned int reason;
 	int ret;
@@ -5072,7 +5072,16 @@ pfm_handle_work(void)
 	//if (CTX_OVFL_NOBLOCK(ctx)) goto skip_blocking;
 	if (reason == PFM_TRAP_REASON_RESET) goto skip_blocking;
 
+	/*
+	 * restore interrupt mask to what it was on entry.
+	 * Could be enabled/diasbled.
+	 */
 	UNPROTECT_CTX(ctx, flags);
+
+	/*
+	 * force interrupt enable because of down_interruptible()
+	 */
+        local_irq_enable();
 
 	DPRINT(("before block sleeping\n"));
 
@@ -5084,7 +5093,13 @@ pfm_handle_work(void)
 
 	DPRINT(("after block sleeping ret=%d\n", ret));
 
-	PROTECT_CTX(ctx, flags);
+	/*
+	 * lock context and mask interrupts again
+	 * We save flags into a dummy because we may have
+	 * altered interrupts mask compared to entry in this
+	 * function.
+	 */
+	PROTECT_CTX(ctx, dummy_flags);
 
 	/*
 	 * we need to read the ovfl_regs only after wake-up
@@ -5110,7 +5125,9 @@ skip_blocking:
 	ctx->ctx_ovfl_regs[0] = 0UL;
 
 nothing_to_do:
-
+	/*
+	 * restore flags as they were upon entry
+	 */
 	UNPROTECT_CTX(ctx, flags);
 }
 
@@ -5551,26 +5568,32 @@ pfm_interrupt_handler(int irq, void *arg, struct pt_regs *regs)
 	int ret;
 
 	this_cpu = get_cpu();
-	min      = pfm_stats[this_cpu].pfm_ovfl_intr_cycles_min;
-	max      = pfm_stats[this_cpu].pfm_ovfl_intr_cycles_max;
+	if (likely(!pfm_alt_intr_handler)) {
+		min      = pfm_stats[this_cpu].pfm_ovfl_intr_cycles_min;
+		max      = pfm_stats[this_cpu].pfm_ovfl_intr_cycles_max;
 
-	start_cycles = ia64_get_itc();
+		start_cycles = ia64_get_itc();
 
-	ret = pfm_do_interrupt_handler(irq, arg, regs);
+		ret = pfm_do_interrupt_handler(irq, arg, regs);
 
-	total_cycles = ia64_get_itc();
+		total_cycles = ia64_get_itc();
 
-	/*
-	 * don't measure spurious interrupts
-	 */
-	if (likely(ret == 0)) {
-		total_cycles -= start_cycles;
+		/*
+		 * don't measure spurious interrupts
+		 */
+		if (likely(ret == 0)) {
+			total_cycles -= start_cycles;
 
-		if (total_cycles < min) pfm_stats[this_cpu].pfm_ovfl_intr_cycles_min = total_cycles;
-		if (total_cycles > max) pfm_stats[this_cpu].pfm_ovfl_intr_cycles_max = total_cycles;
+			if (total_cycles < min) pfm_stats[this_cpu].pfm_ovfl_intr_cycles_min = total_cycles;
+			if (total_cycles > max) pfm_stats[this_cpu].pfm_ovfl_intr_cycles_max = total_cycles;
 
-		pfm_stats[this_cpu].pfm_ovfl_intr_cycles += total_cycles;
+			pfm_stats[this_cpu].pfm_ovfl_intr_cycles += total_cycles;
+		}
 	}
+	else {
+		(*pfm_alt_intr_handler->handler)(irq, arg, regs);
+	}
+
 	put_cpu_no_resched();
 	return IRQ_HANDLED;
 }
@@ -5872,14 +5895,6 @@ pfm_save_regs(struct task_struct *task)
 	}
 
 	/*
-	 * sanity check
-	 */
-	if (ctx->ctx_last_activation != GET_ACTIVATION()) {
-		pfm_unprotect_ctx_ctxsw(ctx, flags);
-		return;
-	}
-
-	/*
 	 * save current PSR: needed because we modify it
 	 */
 	ia64_srlz_d();
@@ -6097,8 +6112,10 @@ pfm_load_regs (struct task_struct *task)
 	/*
 	 * if we were the last user of the PMU on that CPU,
 	 * then nothing to do except restore psr
+	 *
+	 * the if(0 disables lazy restore due to a weird oversampling bug
 	 */
-	if (GET_LAST_CPU(ctx) == smp_processor_id() && ctx->ctx_last_activation == GET_ACTIVATION()) {
+	if (0 && GET_LAST_CPU(ctx) == smp_processor_id() && ctx->ctx_last_activation == GET_ACTIVATION()) {
 
 		/*
 		 * retrieve partial reload masks (due to user modifications)
@@ -6426,6 +6443,141 @@ static struct irqaction perfmon_irqaction = {
 	.name    = "perfmon"
 };
 
+static void
+pfm_alt_save_pmu_state(void *data)
+{
+	struct pt_regs *regs;
+
+	regs = ia64_task_regs(current);
+
+	DPRINT(("called\n"));
+
+	/*
+	 * should not be necessary but
+	 * let's take not risk
+	 */
+	pfm_clear_psr_up();
+	pfm_clear_psr_pp();
+	ia64_psr(regs)->pp = 0;
+
+	/*
+	 * This call is required
+	 * May cause a spurious interrupt on some processors
+	 */
+	pfm_freeze_pmu();
+
+	ia64_srlz_d();
+}
+
+void
+pfm_alt_restore_pmu_state(void *data)
+{
+	struct pt_regs *regs;
+
+	regs = ia64_task_regs(current);
+
+	DPRINT(("called\n"));
+
+	/*
+	 * put PMU back in state expected
+	 * by perfmon
+	 */
+	pfm_clear_psr_up();
+	pfm_clear_psr_pp();
+	ia64_psr(regs)->pp = 0;
+
+	/* 
+	 * perfmon runs with PMU unfrozen at all times
+	 */
+	pfm_unfreeze_pmu();
+
+	ia64_srlz_d();
+}
+
+int
+pfm_install_alt_pmu_interrupt(pfm_intr_handler_desc_t *hdl)
+{
+	int ret, i;
+	int reserve_cpu;
+
+	/* some sanity checks */
+	if (hdl == NULL || hdl->handler == NULL) return -EINVAL;
+
+	/* do the easy test first */
+	if (pfm_alt_intr_handler) return -EBUSY;
+
+	/* one at a time in the install or remove, just fail the others */
+	if (!spin_trylock(&pfm_alt_install_check)) {
+		return -EBUSY;
+	}
+
+	/* reserve our session */
+	for_each_online_cpu(reserve_cpu) {
+		ret = pfm_reserve_session(NULL, 1, reserve_cpu);
+		if (ret) goto cleanup_reserve;
+	}
+
+	/* save the current system wide pmu states */
+	ret = on_each_cpu(pfm_alt_save_pmu_state, NULL, 0, 1);
+	if (ret) {
+		DPRINT(("on_each_cpu() failed: %d\n", ret));
+		goto cleanup_reserve;
+	}
+
+	/* officially change to the alternate interrupt handler */
+	pfm_alt_intr_handler = hdl;
+
+	spin_unlock(&pfm_alt_install_check);
+
+	return 0;
+
+cleanup_reserve:
+    for_each_online_cpu(i) {
+        /* don't unreserve more than we reserved */
+        if (i >= reserve_cpu) break;
+
+		pfm_unreserve_session(NULL, 1, i);
+	}
+
+	spin_unlock(&pfm_alt_install_check);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pfm_install_alt_pmu_interrupt);
+
+int
+pfm_remove_alt_pmu_interrupt(pfm_intr_handler_desc_t *hdl)
+{
+	int i;
+	int ret;
+
+	if (hdl == NULL) return -EINVAL;
+
+	/* cannot remove someone else's handler! */
+	if (pfm_alt_intr_handler != hdl) return -EINVAL;
+
+	/* one at a time in the install or remove, just fail the others */
+	if (!spin_trylock(&pfm_alt_install_check)) {
+		return -EBUSY;
+	}
+
+	pfm_alt_intr_handler = NULL;
+
+	ret = on_each_cpu(pfm_alt_restore_pmu_state, NULL, 0, 1);
+	if (ret) {
+		DPRINT(("on_each_cpu() failed: %d\n", ret));
+	}
+
+    for_each_online_cpu(i) {
+		pfm_unreserve_session(NULL, 1, i);
+	}
+
+	spin_unlock(&pfm_alt_install_check);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(pfm_remove_alt_pmu_interrupt);
+
 /*
  * perfmon initialization routine, called from the initcall() table
  */
@@ -6553,6 +6705,7 @@ pfm_init(void)
 	 */
 	spin_lock_init(&pfm_sessions.pfs_lock);
 	spin_lock_init(&pfm_buffer_fmt_lock);
+	spin_lock_init(&pfm_alt_install_check);
 
 	init_pfm_fs();
 

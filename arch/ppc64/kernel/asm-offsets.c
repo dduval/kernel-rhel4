@@ -66,6 +66,7 @@ int main(void)
 	DEFINE(THREAD_USED_VR, offsetof(struct thread_struct, used_vr));
 #endif /* CONFIG_ALTIVEC */
 	DEFINE(MM, offsetof(struct task_struct, mm));
+	DEFINE(AUDITCONTEXT, offsetof(struct task_struct, audit_context));
 
 	/* naca */
         DEFINE(PACA, offsetof(struct naca_struct, paca));

@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_crtn.h 1.147 2005/02/28 18:24:25EST sf_support Exp  $
+ * $Id: lpfc_crtn.h 1.149.1.4 2005/07/13 17:04:12EDT sf_support Exp  $
  */
 
 #ifndef _H_LPFC_CRTN
@@ -110,6 +110,7 @@ int lpfc_els_abort(struct lpfc_hba *, struct lpfc_nodelist * ndlp,
 		   int);
 int lpfc_els_abort_flogi(struct lpfc_hba *);
 int lpfc_initial_flogi(struct lpfc_hba *);
+void lpfc_more_plogi(struct lpfc_hba *);
 int lpfc_issue_els_plogi(struct lpfc_hba *, struct lpfc_nodelist *, uint8_t);
 int lpfc_issue_els_prli(struct lpfc_hba *, struct lpfc_nodelist *, uint8_t);
 int lpfc_issue_els_adisc(struct lpfc_hba *, struct lpfc_nodelist *, uint8_t);
@@ -238,11 +239,13 @@ int lpfc_sli_issue_iocb_wait_high_priority(struct lpfc_hba * phba,
 					   struct lpfc_sli_ring * pring,
 					   struct lpfc_iocbq * piocb,
 					   uint32_t flag,
-					   struct lpfc_iocbq * prspiocbq,
-					   uint32_t timeout);
+					   struct lpfc_iocbq * prspiocbq);
 void lpfc_sli_wake_iocb_high_priority(struct lpfc_hba * phba,
 				      struct lpfc_iocbq * queue1,
 				      struct lpfc_iocbq * queue2);
+void lpfc_sli_abort_fcp_cmpl(struct lpfc_hba * phba,
+				      struct lpfc_iocbq * cmdiocb,
+				      struct lpfc_iocbq * rspiocb);
 void *lpfc_mbuf_alloc(struct lpfc_hba *, int, dma_addr_t *);
 void lpfc_mbuf_free(struct lpfc_hba *, void *, dma_addr_t);
 
@@ -254,6 +257,7 @@ int lpfc_queuecommand(struct scsi_cmnd *, void (*done) (struct scsi_cmnd *));
 int lpfc_abort_handler(struct scsi_cmnd *);
 int lpfc_reset_bus_handler(struct scsi_cmnd *);
 int lpfc_reset_lun_handler(struct scsi_cmnd *);
+void lpfc_free_scsi_buf(struct lpfc_scsi_buf *);
 
 #if defined(RHEL_FC) || defined(SLES_FC)
 void lpfc_target_unblock(struct lpfc_hba *, struct lpfc_target *);

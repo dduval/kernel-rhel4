@@ -138,6 +138,7 @@ deps_config := \
 	drivers/scsi/pcmcia/Kconfig \
 	drivers/scsi/arm/Kconfig \
 	drivers/scsi/qla2xxx/Kconfig \
+	drivers/scsi/iscsi_sfnet/Kconfig \
 	drivers/scsi/megaraid/Kconfig.megaraid \
 	drivers/scsi/aic7xxx/Kconfig.aic79xx \
 	drivers/scsi/aic7xxx/Kconfig.aic7xxx \

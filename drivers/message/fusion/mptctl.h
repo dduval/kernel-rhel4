@@ -5,22 +5,10 @@
  *          LSIFC9xx/LSI409xx Fibre Channel
  *      running LSI Logic Fusion MPT (Message Passing Technology) firmware.
  *
- *  Credits:
- *      This driver would not exist if not for Alan Cox's development
- *      of the linux i2o driver.
- *
- *      A huge debt of gratitude is owed to David S. Miller (DaveM)
- *      for fixing much of the stupid and broken stuff in the early
- *      driver while porting to sparc64 platform.  THANK YOU!
- *
- *      (see also mptbase.c)
- *
- *  Copyright (c) 1999-2004 LSI Logic Corporation
- *  Originally By: Steven J. Ralston
- *  (mailto:sjralston1@netscape.net)
+ *  Copyright (c) 1999-2005 LSI Logic Corporation
  *  (mailto:mpt_linux_developer@lsil.com)
  *
- *  $Id: mptctl.h,v 1.13 2002/12/03 21:26:33 pdelaney Exp $
+ *  $Id: mptctl.h,v 1.14 2003/03/18 22:49:51 Exp $
  */
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /*
@@ -71,6 +59,7 @@
  */
 #define MPT_MISCDEV_BASENAME            "mptctl"
 #define MPT_MISCDEV_PATHNAME            "/dev/" MPT_MISCDEV_BASENAME
+#define MPT_CSMI_DESCRIPTION	        "LSI Logic Corporation: Fusion MPT Driver "MPT_LINUX_VERSION_COMMON
 
 #define MPT_PRODUCT_LENGTH              12
 
@@ -82,6 +71,7 @@
 #define MPTRWPERF		_IOWR(MPT_MAGIC_NUMBER,0,struct mpt_raw_r_w)
 
 #define MPTFWDOWNLOAD		_IOWR(MPT_MAGIC_NUMBER,15,struct mpt_fw_xfer)
+#define MPTFWDOWNLOADBOOT	_IOWR(MPT_MAGIC_NUMBER,16,struct mpt_fw_xfer)
 #define MPTCOMMAND		_IOWR(MPT_MAGIC_NUMBER,20,struct mpt_ioctl_command)
 
 #if defined(__KERNEL__) && defined(CONFIG_COMPAT)
@@ -99,6 +89,11 @@
 #define MPTEVENTREPORT		_IOWR(MPT_MAGIC_NUMBER,23,struct mpt_ioctl_eventreport)
 #define MPTHARDRESET		_IOWR(MPT_MAGIC_NUMBER,24,struct mpt_ioctl_diag_reset)
 #define MPTFWREPLACE		_IOWR(MPT_MAGIC_NUMBER,25,struct mpt_ioctl_replace_fw)
+#define MPTDIAGREGISTER		_IOWR(MPT_MAGIC_NUMBER,26,mpt_diag_register_t)
+#define MPTDIAGRELEASE		_IOWR(MPT_MAGIC_NUMBER,27,mpt_diag_release_t)
+#define MPTDIAGUNREGISTER	_IOWR(MPT_MAGIC_NUMBER,28,mpt_diag_unregister_t)
+#define MPTDIAGQUERY		_IOWR(MPT_MAGIC_NUMBER,29,mpt_diag_query_t)
+#define MPTDIAGREADBUFFER	_IOWR(MPT_MAGIC_NUMBER,30,mpt_diag_read_buffer_t)
 
 /*
  * SPARC PLATFORM REMARKS:
@@ -183,8 +178,9 @@ struct mpt_ioctl_pci_info2 {
  *  Read only.
  *  Data starts at offset 0xC
  */
-#define MPT_IOCTL_INTERFACE_FC		(0x01)
 #define MPT_IOCTL_INTERFACE_SCSI	(0x00)
+#define MPT_IOCTL_INTERFACE_FC		(0x01)
+#define MPT_IOCTL_INTERFACE_SAS		(0x02)
 #define MPT_IOCTL_VERSION_LENGTH	(32)
 
 struct mpt_ioctl_iocinfo {
@@ -477,8 +473,102 @@ typedef struct _hp_target_info {
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 
+#define MPI_FW_DIAG_IOCTL               (0x80646961)    // dia
+#define MPI_FW_DIAG_TYPE_REGISTER       (0x00000001)
+#define MPI_FW_DIAG_TYPE_UNREGISTER     (0x00000002)
+#define MPI_FW_DIAG_TYPE_QUERY          (0x00000003)
+#define MPI_FW_DIAG_TYPE_READ_BUFFER    (0x00000004)
+#define MPI_FW_DIAG_TYPE_RELEASE        (0x00000005)
 
-/*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
+#define MPI_FW_DIAG_INVALID_UID         (0x00000000)
+#define FW_DIAGNOSTIC_BUFFER_COUNT      (3)
+#define FW_DIAGNOSTIC_UID_NOT_FOUND     (0xFF)
+
+#define MPI_FW_DIAG_ERROR_SUCCESS           (0x00000000)
+#define MPI_FW_DIAG_ERROR_FAILURE           (0x00000001)
+#define MPI_FW_DIAG_ERROR_INVALID_PARAMETER (0x00000002)
+#define MPI_FW_DIAG_ERROR_POST_FAILED       (0x00000010)
+#define MPI_FW_DIAG_ERROR_INVALID_UID       (0x00000011)
+#define MPI_FW_DIAG_ERROR_RELEASE_FAILED    (0x00000012)
+#define MPI_FW_DIAG_ERROR_NO_BUFFER         (0x00000013)
+#define MPI_FW_DIAG_ERROR_ALREADY_RELEASED  (0x00000014)
+
+#define MPT_DIAG_CAPABILITY(bufftype) (MPI_IOCFACTS_CAPABILITY_DIAG_TRACE_BUFFER << bufftype)
+
+typedef struct _MPI_FW_DIAG_REGISTER
+{
+    U8                  TraceLevel;
+    U8                  BufferType;
+    U16                 Flags;
+    U32                 ExtendedType;
+    U32                 ProductSpecific[4];
+    U32                 RequestedBufferSize;
+    U32                 UniqueId;
+} MPI_FW_DIAG_REGISTER, *PTR_MPI_FW_DIAG_REGISTER;
+
+typedef struct _mpt_diag_register {
+	mpt_ioctl_header hdr;
+	MPI_FW_DIAG_REGISTER data;
+} mpt_diag_register_t;
+
+typedef struct _MPI_FW_DIAG_UNREGISTER
+{
+    U32                 UniqueId;
+} MPI_FW_DIAG_UNREGISTER, *PTR_MPI_FW_DIAG_UNREGISTER;
+
+typedef struct _mpt_diag_unregister {
+	mpt_ioctl_header hdr;
+	MPI_FW_DIAG_UNREGISTER data;
+} mpt_diag_unregister_t;
+
+#define MPI_FW_DIAG_FLAG_APP_OWNED          (0x0001)
+#define MPI_FW_DIAG_FLAG_BUFFER_VALID       (0x0002)
+#define MPI_FW_DIAG_FLAG_FW_BUFFER_ACCESS   (0x0004)
+
+typedef struct _MPI_FW_DIAG_QUERY
+{
+    U8                  TraceLevel;
+    U8                  BufferType;
+    U16                 Flags;
+    U32                 ExtendedType;
+    U32                 ProductSpecific[4];
+    U32                 DataSize;   
+    U32                 DriverAddedBufferSize;
+    U32                 UniqueId;
+} MPI_FW_DIAG_QUERY, *PTR_MPI_FW_DIAG_QUERY;
+
+typedef struct _mpt_diag_query {
+	mpt_ioctl_header hdr;
+	MPI_FW_DIAG_QUERY data;
+} mpt_diag_query_t;
+
+typedef struct _MPI_FW_DIAG_RELEASE
+{
+    U32                 UniqueId;
+} MPI_FW_DIAG_RELEASE, *PTR_MPI_FW_DIAG_RELEASE;
+
+typedef struct _mpt_diag_release {
+	mpt_ioctl_header hdr;
+	MPI_FW_DIAG_RELEASE data;
+} mpt_diag_release_t;
+
+#define MPI_FW_DIAG_FLAG_REREGISTER         (0x0001)
+
+typedef struct _MPI_FW_DIAG_READ_BUFFER
+{
+    U8                  Status;
+    U8                  Reserved;
+    U16                 Flags;
+    U32                 StartingOffset;
+    U32                 BytesToRead;
+    U32                 UniqueId;
+    U32                 DiagnosticData[1];
+} MPI_FW_DIAG_READ_BUFFER, *PTR_MPI_FW_DIAG_READ_BUFFER;
+
+typedef struct _mpt_diag_read_buffer {
+	mpt_ioctl_header hdr;
+	MPI_FW_DIAG_READ_BUFFER data;
+} mpt_diag_read_buffer_t;
 
 #endif
 

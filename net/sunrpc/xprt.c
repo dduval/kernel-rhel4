@@ -1519,8 +1519,8 @@ static inline int xprt_bindresvport(struct rpc_xprt *xprt, struct socket *sock)
 			xprt->port = port;
 			return 0;
 		}
-		if (--port == 0)
-			port = XPRT_MAX_RESVPORT;
+		if (--port < xprt_min_resvport)
+			port = xprt_max_resvport;
 	} while (err == -EADDRINUSE && port != xprt->port);
 
 	printk("RPC: Can't bind to reserved port (%d).\n", -err);

@@ -46,6 +46,7 @@ svc_authenticate(struct svc_rqst *rqstp, u32 *authp)
 {
 	rpc_authflavor_t	flavor;
 	struct auth_ops		*aops;
+	int status;
 
 	*authp = rpc_auth_ok;
 
@@ -58,12 +59,16 @@ svc_authenticate(struct svc_rqst *rqstp, u32 *authp)
 			|| !try_module_get(aops->owner)) {
 		spin_unlock(&authtab_lock);
 		*authp = rpc_autherr_badcred;
+		dprintk("svc: svc_authenticate: BADCRED: %d\n", flavor);
 		return SVC_DENIED;
 	}
 	spin_unlock(&authtab_lock);
 
 	rqstp->rq_authop = aops;
-	return aops->accept(rqstp, authp);
+	status =  aops->accept(rqstp, authp);
+	dprintk("svc: svc_authenticate: accept 0x%p: status %d\n", 
+		aops->accept, status);
+	return status;
 }
 
 int svc_set_client(struct svc_rqst *rqstp)

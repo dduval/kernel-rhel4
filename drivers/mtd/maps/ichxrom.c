@@ -360,9 +360,9 @@ static struct pci_device_id ichxrom_pci_tbl[] __devinitdata = {
 	{ 0, },
 };
 
+#if 0
 MODULE_DEVICE_TABLE(pci, ichxrom_pci_tbl);
 
-#if 0
 static struct pci_driver ichxrom_driver = {
 	.name =		MOD_NAME,
 	.id_table =	ichxrom_pci_tbl,

@@ -1238,7 +1238,6 @@ shmem_get_inode(struct super_block *sb, int mode, dev_t dev)
 		info = SHMEM_I(inode);
 		memset(info, 0, (char *)inode - (char *)info);
 		spin_lock_init(&info->lock);
- 		mpol_shared_policy_init(&info->policy);
 		INIT_LIST_HEAD(&info->swaplist);
 
 		switch (mode & S_IFMT) {
@@ -1249,6 +1248,7 @@ shmem_get_inode(struct super_block *sb, int mode, dev_t dev)
 		case S_IFREG:
 			inode->i_op = &shmem_inode_operations;
 			inode->i_fop = &shmem_file_operations;
+			mpol_shared_policy_init(&info->policy);
 			break;
 		case S_IFDIR:
 			inode->i_nlink++;
@@ -1258,6 +1258,11 @@ shmem_get_inode(struct super_block *sb, int mode, dev_t dev)
 			inode->i_fop = &simple_dir_operations;
 			break;
 		case S_IFLNK:
+			/*
+			 * Must not load anything in the rbtree,
+			 * mpol_free_shared_policy will not be called.
+			 */
+			mpol_shared_policy_init(&info->policy);
 			break;
 		}
 	} else if (sbinfo) {
@@ -1974,7 +1979,11 @@ static struct inode *shmem_alloc_inode(struct super_block *sb)
 
 static void shmem_destroy_inode(struct inode *inode)
 {
-	mpol_free_shared_policy(&SHMEM_I(inode)->policy);
+	if ((inode->i_mode & S_IFMT) == S_IFREG ||
+	    inode->i_op == &shmem_symlink_inode_operations) {
+		/* only struct inode is valid if it's an inline symlink */
+		mpol_free_shared_policy(&SHMEM_I(inode)->policy);
+	}
 	kmem_cache_free(shmem_inode_cachep, SHMEM_I(inode));
 }
 

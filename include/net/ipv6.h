@@ -149,6 +149,8 @@ extern atomic_t			inet6_sock_nr;
 
 int snmp6_register_dev(struct inet6_dev *idev);
 int snmp6_unregister_dev(struct inet6_dev *idev);
+int snmp6_alloc_dev(struct inet6_dev *idev);
+int snmp6_free_dev(struct inet6_dev *idev);
 int snmp6_mib_init(void *ptr[2], size_t mibsize, size_t mibalign);
 void snmp6_mib_free(void *ptr[2]);
 
@@ -379,6 +381,9 @@ extern void 			ipv6_push_nfrag_opts(struct sk_buff *skb,
 extern void			ipv6_push_frag_opts(struct sk_buff *skb,
 						    struct ipv6_txoptions *opt,
 						    u8 *proto);
+
+extern int			ipv6_skip_exthdr_nolen(const struct sk_buff *, int start,
+					         u8 *nexthdrp);
 
 extern int			ipv6_skip_exthdr(const struct sk_buff *, int start,
 					         u8 *nexthdrp, int len);

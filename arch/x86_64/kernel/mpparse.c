@@ -151,6 +151,10 @@ static void __init MP_processor_info (struct mpc_config_processor *m)
 	}
 	apic_version[m->mpc_apicid] = ver;
 	bios_cpu_apicid[num_processors - 1] = m->mpc_apicid;
+#ifdef CONFIG_ACPI_NUMA
+	if(acpi_numa)
+		acpi_numa_setup_cpu(num_processors - 1, m->mpc_apicid);
+#endif
 }
 
 static void __init MP_bus_info (struct mpc_config_bus *m)

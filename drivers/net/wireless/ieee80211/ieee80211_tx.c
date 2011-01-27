@@ -1,23 +1,23 @@
 /******************************************************************************
-  
+
   Copyright(c) 2003 - 2004 Intel Corporation. All rights reserved.
-  
-  This program is free software; you can redistribute it and/or modify it 
-  under the terms of version 2 of the GNU General Public License as 
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms of version 2 of the GNU General Public License as
   published by the Free Software Foundation.
-  
-  This program is distributed in the hope that it will be useful, but WITHOUT 
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for 
+
+  This program is distributed in the hope that it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
-  
+
   You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc., 59 
+  this program; if not, write to the Free Software Foundation, Inc., 59
   Temple Place - Suite 330, Boston, MA  02111-1307, USA.
-  
+
   The full GNU General Public License is included in this distribution in the
   file called LICENSE.
-  
+
   Contact Information:
   James P. Ketrenos <ipw2100-admin@linux.intel.com>
   Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
@@ -50,7 +50,7 @@
 /*
 
 
-802.11 Data Frame 
+802.11 Data Frame
 
       ,-------------------------------------------------------------------.
 Bytes |  2   |  2   |    6    |    6    |    6    |  2   | 0..2312 |   4  |
@@ -58,7 +58,7 @@ Bytes |  2   |  2   |    6    |    6    |    6    |  2   | 0..2312 |   4  |
 Desc. | ctrl | dura |  DA/RA  |   TA    |    SA   | Sequ |  Frame  |  fcs |
       |      | tion | (BSSID) |         |         | ence |  data   |      |
       `--------------------------------------------------|         |------'
-Total: 28 non-data bytes                                 `----.----'  
+Total: 28 non-data bytes                                 `----.----'
                                                               |
        .- 'Frame data' expands to <---------------------------'
        |
@@ -84,7 +84,7 @@ Desc. | IV  | Encrypted | ICV |
 Total: 8 non-data bytes
 
 
-802.3 Ethernet Data Frame 
+802.3 Ethernet Data Frame
 
       ,-----------------------------------------.
 Bytes |   6   |   6   |  2   |  Variable |   4  |
@@ -100,29 +100,29 @@ remaining packets are just data.
 
 If encryption is enabled, each fragment payload size is reduced by enough space
 to add the prefix and postfix (IV and ICV totalling 8 bytes in the case of WEP)
-So if you have 1500 bytes of payload with ieee->fts set to 500 without 
-encryption it will take 3 frames.  With WEP it will take 4 frames as the 
+So if you have 1500 bytes of payload with ieee->fts set to 500 without
+encryption it will take 3 frames.  With WEP it will take 4 frames as the
 payload of each frame is reduced to 492 bytes.
 
 * SKB visualization
-* 
-*  ,- skb->data 
+*
+*  ,- skb->data
 * |
 * |    ETHERNET HEADER        ,-<-- PAYLOAD
-* |                           |     14 bytes from skb->data 
+* |                           |     14 bytes from skb->data
 * |  2 bytes for Type --> ,T. |     (sizeof ethhdr)
-* |                       | | |    
-* |,-Dest.--. ,--Src.---. | | |     
+* |                       | | |
+* |,-Dest.--. ,--Src.---. | | |
 * |  6 bytes| | 6 bytes | | | |
 * v         | |         | | | |
-* 0         | v       1 | v | v           2       
+* 0         | v       1 | v | v           2
 * 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
-*     ^     | ^         | ^ | 
-*     |     | |         | | |  
+*     ^     | ^         | ^ |
+*     |     | |         | | |
 *     |     | |         | `T' <---- 2 bytes for Type
 *     |     | |         |
 *     |     | '---SNAP--' <-------- 6 bytes for SNAP
-*     |     |  
+*     |     |
 *     `-IV--' <-------------------- 4 bytes for IV (WEP)
 *
 *      SNAP HEADER
@@ -157,7 +157,7 @@ static inline int ieee80211_put_snap(u8 *data, u16 h_proto)
 
 #ifdef CONFIG_IEEE80211_CRYPT
 static inline int ieee80211_encrypt_fragment(
-	struct ieee80211_device *ieee, 
+	struct ieee80211_device *ieee,
 	struct sk_buff *frag,
 	int hdr_len)
 {
@@ -165,7 +165,7 @@ static inline int ieee80211_encrypt_fragment(
 	int res;
 #ifdef CONFIG_IEEE80211_WPA
 	struct ieee80211_hdr *header;
-	
+
 	if (ieee->tkip_countermeasures &&
 	    crypt && crypt->ops && strcmp(crypt->ops->name, "TKIP") == 0) {
 		header = (struct ieee80211_hdr *) frag->data;
@@ -189,7 +189,7 @@ static inline int ieee80211_encrypt_fragment(
 		res = crypt->ops->encrypt_msdu(frag, hdr_len, crypt->priv);
 	if (res == 0 && crypt->ops->encrypt_mpdu)
 		res = crypt->ops->encrypt_mpdu(frag, hdr_len, crypt->priv);
-	
+
 	atomic_dec(&crypt->refcnt);
 	if (res < 0) {
 		printk(KERN_INFO "%s: Encryption failed: len=%d.\n",
@@ -207,19 +207,19 @@ void ieee80211_txb_free(struct ieee80211_txb *txb) {
 	int i;
 	if (unlikely(!txb))
 		return;
-	for (i = 0; i < txb->nr_frags; i++) 
+	for (i = 0; i < txb->nr_frags; i++)
 		if (txb->fragments[i])
 			dev_kfree_skb_any(txb->fragments[i]);
 	kfree(txb);
 }
 
 struct ieee80211_txb *ieee80211_alloc_txb(int nr_frags, int txb_size,
-					  int gfp_mask) 
+					  int gfp_mask)
 {
 	struct ieee80211_txb *txb;
 	int i;
 	txb = kmalloc(
-		sizeof(struct ieee80211_txb) + (sizeof(u8*) * nr_frags), 
+		sizeof(struct ieee80211_txb) + (sizeof(u8*) * nr_frags),
 		gfp_mask);
 	if (!txb)
 		return NULL;
@@ -245,7 +245,7 @@ struct ieee80211_txb *ieee80211_alloc_txb(int nr_frags, int txb_size,
 }
 
 /* SKBs are added to the ieee->tx_queue. */
-int ieee80211_xmit(struct sk_buff *skb, 
+int ieee80211_xmit(struct sk_buff *skb,
 		   struct net_device *dev)
 {
 	struct ieee80211_device *ieee = netdev_priv(dev);
@@ -257,7 +257,10 @@ int ieee80211_xmit(struct sk_buff *skb,
 	int ether_type, encrypt;
 	int bytes, fc, hdr_len;
 	struct sk_buff *skb_frag;
-	struct ieee80211_hdr header;
+	struct ieee80211_hdr header = { /* Ensure zero initialized */
+		.duration_id = 0,
+		.seq_ctl = 0
+	};
 	u8 dest[ETH_ALEN], src[ETH_ALEN];
 
 #ifdef CONFIG_IEEE80211_CRYPT
@@ -288,11 +291,11 @@ int ieee80211_xmit(struct sk_buff *skb,
 	crypt = ieee->crypt[ieee->tx_keyidx];
 
 #ifndef CONFIG_IEEE80211_WPA
-	encrypt = (ether_type != ETH_P_PAE) && 
+	encrypt = (ether_type != ETH_P_PAE) &&
 		ieee->host_encrypt && crypt && crypt->ops;
-	
+
 #else /* CONFIG_IEEE80211_WPA */
-	encrypt = !(ether_type == ETH_P_PAE && ieee->ieee802_1x) && 
+	encrypt = !(ether_type == ETH_P_PAE && ieee->ieee802_1x) &&
 		ieee->host_encrypt && crypt && crypt->ops;
 
 	if (!encrypt && ieee->ieee802_1x &&
@@ -304,7 +307,7 @@ int ieee80211_xmit(struct sk_buff *skb,
 #endif /* CONFIG_IEEE80211_WPA */
 #ifdef CONFIG_IEEE80211_DEBUG
 	if (crypt && !encrypt && ether_type == ETH_P_PAE) {
-		struct eapol *eap = (struct eapol *)(skb->data + 
+		struct eapol *eap = (struct eapol *)(skb->data +
 			sizeof(struct ethhdr) - SNAP_SIZE - sizeof(u16));
 		IEEE80211_DEBUG_EAP("TX: IEEE 802.11 EAPOL frame: %s\n",
 			eap_get_type(eap->type));
@@ -322,26 +325,26 @@ int ieee80211_xmit(struct sk_buff *skb,
 	/* Determine total amount of storage required for TXB packets */
 	bytes = skb->len + SNAP_SIZE + sizeof(u16);
 
-	if (encrypt) 
+	if (encrypt)
 		fc = IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA |
 			IEEE80211_FCTL_WEP;
 	else
 		fc = IEEE80211_FTYPE_DATA | IEEE80211_STYPE_DATA;
-	
+
 	if (ieee->iw_mode == IW_MODE_INFRA) {
 		fc |= IEEE80211_FCTL_TODS;
-		/* To DS: Addr1 = BSSID, Addr2 = SA, 
+		/* To DS: Addr1 = BSSID, Addr2 = SA,
 		   Addr3 = DA */
 		memcpy(&header.addr1, ieee->bssid, ETH_ALEN);
 		memcpy(&header.addr2, &src, ETH_ALEN);
 		memcpy(&header.addr3, &dest, ETH_ALEN);
 	} else if (ieee->iw_mode == IW_MODE_ADHOC) {
-		/* not From/To DS: Addr1 = DA, Addr2 = SA, 
+		/* not From/To DS: Addr1 = DA, Addr2 = SA,
 		   Addr3 = BSSID */
 		memcpy(&header.addr1, dest, ETH_ALEN);
 		memcpy(&header.addr2, src, ETH_ALEN);
 		memcpy(&header.addr3, ieee->bssid, ETH_ALEN);
-	} 		
+	}
 	header.frame_ctl = cpu_to_le16(fc);
 	hdr_len = IEEE80211_3ADDR_LEN;
 
@@ -354,28 +357,28 @@ int ieee80211_xmit(struct sk_buff *skb,
 		frag_size = ieee->fts;
 
 	/* Determine amount of payload per fragment.  Regardless of if
-	 * this stack is providing the full 802.11 header, one will 
+	 * this stack is providing the full 802.11 header, one will
 	 * eventually be affixed to this fragment -- so we must account for
 	 * it when determining the amount of payload space. */
 	bytes_per_frag = frag_size - IEEE80211_3ADDR_LEN;
-	if (ieee->config & 
+	if (ieee->config &
 	    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
 		bytes_per_frag -= IEEE80211_FCS_LEN;
 
 #ifdef CONFIG_IEEE80211_CRYPT
 	/* Each fragment may need to have room for encryptiong pre/postfix */
-	if (encrypt) 
+	if (encrypt)
 		bytes_per_frag -= crypt->ops->extra_prefix_len +
 			crypt->ops->extra_postfix_len;
 #endif
 
-	/* Number of fragments is the total bytes_per_frag / 
+	/* Number of fragments is the total bytes_per_frag /
 	 * payload_per_fragment */
 	nr_frags = bytes / bytes_per_frag;
 	bytes_last_frag = bytes % bytes_per_frag;
 	if (bytes_last_frag)
 		nr_frags++;
-	else 
+	else
 		bytes_last_frag = bytes_per_frag;
 
 	/* When we allocate the TXB we allocate enough space for the reserve
@@ -394,13 +397,13 @@ int ieee80211_xmit(struct sk_buff *skb,
 		skb_frag = txb->fragments[i];
 
 #ifdef CONFIG_IEEE80211_CRYPT
-		if (encrypt) 
+		if (encrypt)
 			skb_reserve(skb_frag, crypt->ops->extra_prefix_len);
 #endif
 
 		frag_hdr = (struct ieee80211_hdr *)skb_put(skb_frag, hdr_len);
 		memcpy(frag_hdr, &header, hdr_len);
-		
+
 		/* If this is not the last fragment, then add the MOREFRAGS
 		 * bit to the frame control */
 		if (i != nr_frags - 1) {
@@ -411,11 +414,11 @@ int ieee80211_xmit(struct sk_buff *skb,
 			/* The last fragment takes the remaining length */
 			bytes = bytes_last_frag;
 		}
-		
+
 	       	/* Put a SNAP header on the first fragment */
 		if (i == 0) {
 			ieee80211_put_snap(
-				skb_put(skb_frag, SNAP_SIZE + sizeof(u16)), 
+				skb_put(skb_frag, SNAP_SIZE + sizeof(u16)),
 				ether_type);
 			bytes -= SNAP_SIZE + sizeof(u16);
 		}
@@ -428,10 +431,10 @@ int ieee80211_xmit(struct sk_buff *skb,
 #ifdef CONFIG_IEEE80211_CRYPT
 		/* Encryption routine will move the header forward in order
 		 * to insert the IV between the header and the payload */
-		if (encrypt) 
+		if (encrypt)
 			ieee80211_encrypt_fragment(ieee, skb_frag, hdr_len);
 #endif
-		if (ieee->config & 
+		if (ieee->config &
 		    (CFG_IEEE80211_COMPUTE_FCS | CFG_IEEE80211_RESERVE_FCS))
 			skb_put(skb_frag, 4);
 	}

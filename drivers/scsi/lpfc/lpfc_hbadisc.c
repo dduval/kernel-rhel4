@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_hbadisc.c 1.215 2005/03/04 11:10:20EST sf_support Exp  $
+ * $Id: lpfc_hbadisc.c 1.225.1.3 2005/07/08 19:33:24EDT sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -83,16 +83,7 @@ void
 lpfc_process_nodev_timeout(struct lpfc_hba *phba, struct lpfc_nodelist *ndlp)
 {
 	struct lpfc_target *targetp;
-	int scsid;
-
-	if (!(ndlp->nlp_type & NLP_FABRIC)) {
-		/* Nodev timeout on NPort <nlp_DID> */
-		lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY,
-			"%d:0203 Nodev timeout on NPort x%x "
-			"Data: x%x x%x x%x\n",
-			phba->brd_no, ndlp->nlp_DID, ndlp->nlp_flag,
-			ndlp->nlp_state, ndlp->nlp_rpi);
-	}
+	int scsid, warn_user = 0;
 
 	/* If the nodev_timeout is cancelled do nothing */
 	if (!(ndlp->nlp_flag & NLP_NODEV_TMO))
@@ -110,8 +101,24 @@ lpfc_process_nodev_timeout(struct lpfc_hba *phba, struct lpfc_nodelist *ndlp)
 				lpfc_sli_abort_iocb_tgt(phba,
 					&phba->sli.ring[phba->sli.fcp_ring],
 					scsid, LPFC_ABORT_ALLQ);
+				warn_user = 1;
+				break;
 			}
 		}
+	}
+
+	if (warn_user) {
+		lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY,
+				"%d:0203 Nodev timeout on NPort x%x "
+				"Data: x%x x%x x%x\n",
+				phba->brd_no, ndlp->nlp_DID, ndlp->nlp_flag,
+				ndlp->nlp_state, ndlp->nlp_rpi);
+	} else {
+		lpfc_printf_log(phba, KERN_INFO, LOG_DISCOVERY,
+				"%d:0206 Nodev timeout on NPort x%x "
+				"Data: x%x x%x x%x\n",
+				phba->brd_no, ndlp->nlp_DID, ndlp->nlp_flag,
+				ndlp->nlp_state, ndlp->nlp_rpi);
 	}
 
 	lpfc_disc_state_machine(phba, ndlp, NULL, NLP_EVT_DEVICE_RM);
@@ -196,37 +203,23 @@ lpfc_disc_done(struct lpfc_hba * phba)
 			free_evt = 0;
 			break;
 		case LPFC_EVT_SCAN:
-			/* SCSI HOTPLUG supported */
 			shost = phba->host;
-#ifdef USE_SCAN_TARGET
-			{
-			struct lpfc_target   *targetp;
-
-			targetp = (struct lpfc_target *)(evtp->evt_arg1);
 			lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY | LOG_FCP,
-			"%d:0251 Rescanning scsi target %d\n",
-			phba->brd_no, targetp->scsi_id);
-
-			if(targetp ==
-			   phba->device_queue_hash[targetp->scsi_id]) {
-				spin_unlock_irq(phba->host->host_lock);
-   				scsi_scan_single_target(shost, 0,
-					targetp->scsi_id);
-				spin_lock_irq(phba->host->host_lock);
-			}
-			}
-#else
-			lpfc_printf_log(phba, KERN_ERR, LOG_DISCOVERY | LOG_FCP,
-			"%d:0251 Rescanning scsi host\n", phba->brd_no);
+				"%d:0252 Rescanning scsi host\n", phba->brd_no);
 			spin_unlock_irq(shost->host_lock);
 			scsi_scan_host(shost);
 			spin_lock_irq(shost->host_lock);
-#endif
 			break;
 		case LPFC_EVT_ERR_ATTN:
 			spin_unlock_irq(phba->host->host_lock);
 			lpfc_handle_eratt(phba, (unsigned long) evtp->evt_arg1);
 			spin_lock_irq(phba->host->host_lock);
+			break;
+		case LPFC_EVT_OPEN_LOOP:
+			ndlp = (struct lpfc_nodelist *)(evtp->evt_arg1);
+			lpfc_nlp_list(phba, ndlp, NLP_NPR_LIST);
+			ndlp->nlp_flag &= ~NLP_NPR_ADISC;
+			break;
 		}
 		if (free_evt)
 			kfree(evtp);
@@ -588,22 +581,8 @@ lpfc_mbx_cmpl_config_link(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	}
 
 	if (phba->hba_state == LPFC_LOCAL_CFG_LINK) {
-		if (phba->fc_topology == TOPOLOGY_LOOP) {
-			/* If we are public loop and L bit was set */
-			if ((phba->fc_flag & FC_PUBLIC_LOOP) &&
-			    !(phba->fc_flag & FC_LBIT)) {
-				/* Need to wait for FAN - use discovery timer
-				 * for timeout.  hba_state is identically
-				 * LPFC_LOCAL_CFG_LINK while waiting for FAN
-				 */
-				lpfc_set_disctmo(phba);
-				mempool_free( pmb, phba->mbox_mem_pool);
-				return;
-			}
-		}
-
 		/* Start discovery by sending a FLOGI hba_state is identically
-		 * LPFC_FLOGI while waiting for FLOGI cmpl
+		 * LPFC_FLOGI while waiting for FLOGI cmpl (same on FAN)
 		 */
 		phba->hba_state = LPFC_FLOGI;
 		lpfc_set_disctmo(phba);
@@ -665,13 +644,6 @@ lpfc_mbx_cmpl_read_sparam(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		phba->hba_state = LPFC_HBA_ERROR;
 		goto out;
 	}
-
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_FROMDEVICE);
 
 	memcpy((uint8_t *) & phba->fc_sparam, (uint8_t *) mp->virt,
 	       sizeof (struct serv_parm));
@@ -754,14 +726,6 @@ lpfc_mbx_cmpl_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		return;
 	}
 	la = (READ_LA_VAR *) & pmb->mb.un.varReadLA;
-
-
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-				    PCI_DMA_FROMDEVICE);
 
 	/* Get Loop Map information */
 	if (mp) {
@@ -924,13 +888,6 @@ lpfc_mbx_cmpl_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	ndlp = (struct lpfc_nodelist *) pmb->context2;
 	mp = (struct lpfc_dmabuf *) (pmb->context1);
 
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_FROMDEVICE);
-
 	pmb->context1 = NULL;
 
 	/* Good status, call state machine */
@@ -977,13 +934,6 @@ lpfc_mbx_cmpl_fabric_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		lpfc_disc_start(phba);
 		return;
 	}
-
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_FROMDEVICE);
 
 	pmb->context1 = NULL;
 
@@ -1075,13 +1025,6 @@ lpfc_mbx_cmpl_ns_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 		lpfc_disc_start(phba);
 		return;
 	}
-
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_FROMDEVICE);
 
 	pmb->context1 = NULL;
 
@@ -1220,6 +1163,38 @@ lpfc_nlp_list(struct lpfc_hba * phba, struct lpfc_nodelist * nlp, int list)
 			if (!list_empty(&nlp->els_retry_evt.evt_listp))
 				list_del_init(&nlp->els_retry_evt.
 					      evt_listp);
+			if (nlp->nlp_flag & NLP_NPR_2B_DISC) {
+				nlp->nlp_flag &= ~NLP_NPR_2B_DISC;
+				if (phba->num_disc_nodes) {
+					/* Check to see if there are more
+					 * PLOGIs to be sent
+					 */
+					lpfc_more_plogi(phba);
+				}
+
+
+				if (phba->num_disc_nodes == 0) {
+					phba->fc_flag &= ~FC_NDISC_ACTIVE;
+					lpfc_can_disctmo(phba);
+
+					if (phba->fc_flag & FC_RSCN_MODE) {
+						/* Check to see if more RSCNs
+						 * came in while we were
+			 			 * processing this one.
+			 			 */
+						if((phba->fc_rscn_id_cnt==0) &&
+			    			   (!(phba->fc_flag &
+							FC_RSCN_DISCOVERY))) {
+							phba->fc_flag &=
+							   ~FC_RSCN_MODE;
+						}
+						else {
+							lpfc_els_handle_rscn(
+							   phba);
+						}
+					}
+				}
+			}
 		}
 		break;
 	}
@@ -1379,7 +1354,7 @@ lpfc_set_disctmo(struct lpfc_hba * phba)
 {
 	uint32_t tmo;
 
-	tmo = ((phba->fc_ratov * 2) + 1);
+	tmo = ((phba->fc_ratov * 2) + LPFC_DRVR_TIMEOUT + 3);
 
 	mod_timer(&phba->fc_disctmo, jiffies + HZ * tmo);
 	phba->fc_flag |= FC_DISC_TMO;
@@ -1971,7 +1946,7 @@ lpfc_findnode_did(struct lpfc_hba * phba, uint32_t order, uint32_t did)
 				/* LOG change to REGLOGIN */
 				/* FIND node DID reglogin */
 				lpfc_printf_log(phba, KERN_INFO, LOG_NODE,
-						"%d:0931 FIND node DID reglogin"
+						"%d:0933 FIND node DID reglogin"
 						" Data: x%p x%x x%x x%x\n",
 						phba->brd_no,
 						ndlp, ndlp->nlp_DID,
@@ -1993,7 +1968,7 @@ lpfc_findnode_did(struct lpfc_hba * phba, uint32_t order, uint32_t did)
 				/* LOG change to PRLI */
 				/* FIND node DID prli */
 				lpfc_printf_log(phba, KERN_INFO, LOG_NODE,
-						"%d:0931 FIND node DID prli "
+						"%d:0934 FIND node DID prli "
 						"Data: x%p x%x x%x x%x\n",
 						phba->brd_no,
 						ndlp, ndlp->nlp_DID,
@@ -2015,7 +1990,7 @@ lpfc_findnode_did(struct lpfc_hba * phba, uint32_t order, uint32_t did)
 				/* LOG change to NPR */
 				/* FIND node DID npr */
 				lpfc_printf_log(phba, KERN_INFO, LOG_NODE,
-						"%d:0931 FIND node DID npr "
+						"%d:0935 FIND node DID npr "
 						"Data: x%p x%x x%x x%x\n",
 						phba->brd_no,
 						ndlp, ndlp->nlp_DID,
@@ -2037,7 +2012,7 @@ lpfc_findnode_did(struct lpfc_hba * phba, uint32_t order, uint32_t did)
 				/* LOG change to UNUSED */
 				/* FIND node DID unused */
 				lpfc_printf_log(phba, KERN_INFO, LOG_NODE,
-						"%d:0931 FIND node DID unused "
+						"%d:0936 FIND node DID unused "
 						"Data: x%p x%x x%x x%x\n",
 						phba->brd_no,
 						ndlp, ndlp->nlp_DID,
@@ -2663,18 +2638,35 @@ lpfc_find_target(struct lpfc_hba * phba, uint32_t tgt,
 	struct lpfc_nodelist *nlp)
 {
 	struct lpfc_target *targetp = NULL;
+	int found = 0, i;
+	struct list_head *listp;
+	struct list_head *node_list[6];
 
 	if (tgt == NLP_NO_SID)
 		return NULL;
 
-	/* search the mapped list for this target ID */
 	if(!nlp) {
-		list_for_each_entry(nlp, &phba->fc_nlpmap_list, nlp_listp) {
-			if (tgt == nlp->nlp_sid)
-				break;
+		/* Search over all lists other than fc_nlpunmap_list */
+		node_list[0] = &phba->fc_npr_list;
+		node_list[1] = &phba->fc_nlpmap_list; /* Skip fc_nlpunmap */
+		node_list[2] = &phba->fc_prli_list;
+		node_list[3] = &phba->fc_reglogin_list;
+		node_list[4] = &phba->fc_adisc_list;
+		node_list[5] = &phba->fc_plogi_list;
+		
+		for (i=0; i < 6 && !found; i++) {
+			listp = node_list[i];
+			if (list_empty(listp))
+				continue;
+			list_for_each_entry(nlp, listp, nlp_listp) {
+				if (tgt == nlp->nlp_sid) {
+					found = 1;
+					break;
+				}
+			}
 		}
 
-		if (&(nlp->nlp_listp) == &(phba->fc_nlpmap_list))
+		if (!found)
 			return NULL;
 	}
 
@@ -2687,6 +2679,9 @@ lpfc_find_target(struct lpfc_hba * phba, uint32_t tgt,
 			return NULL;
 
 		memset(targetp, 0, sizeof (struct lpfc_target));
+#ifdef SLES_FC
+		init_timer(&targetp->dev_loss_timer);
+#endif
 		phba->device_queue_hash[tgt] = targetp;
 		targetp->scsi_id = tgt;
 
@@ -2719,11 +2714,13 @@ lpfc_find_target(struct lpfc_hba * phba, uint32_t tgt,
 	else {
 		if(targetp->pnode != nlp) {
 			/*
-			 * Get rid of the old nlp before updating
-			 * targetp with the new one.
+			 * The scsi-id exists but the nodepointer is different.
+			 * We are reassigning the scsi-id. Attach the nodelist
+			 * pointer to the correct target. This is common
+			 * with a target side cable swap.
 			 */
-			lpfc_nlp_list(phba, targetp->pnode, NLP_NO_LIST);
-			targetp->pnode = nlp;
+			if (targetp->pnode->nlp_Target != targetp)
+				targetp->pnode = nlp;
 		}
 	}
 	nlp->nlp_Target = targetp;
@@ -2785,13 +2782,6 @@ lpfc_mbx_cmpl_fdmi_reg_login(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 
 	ndlp = (struct lpfc_nodelist *) pmb->context2;
 	mp = (struct lpfc_dmabuf *) (pmb->context1);
-
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_FROMDEVICE);
 
 	pmb->context1 = NULL;
 

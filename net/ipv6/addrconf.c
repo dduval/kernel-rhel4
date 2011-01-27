@@ -113,6 +113,45 @@ static spinlock_t md5_tfm_lock = SPIN_LOCK_UNLOCKED;
 
 static int ipv6_count_addresses(struct inet6_dev *idev);
 
+static spinlock_t dev_id_func_lock = SPIN_LOCK_UNLOCKED;
+static LIST_HEAD(dev_id_func_list);
+
+struct dev_id_func {
+	struct list_head list;
+	int (*func)(struct net_device* , u8*, u8*);
+};
+
+int ipv6_register_dev_id_func(int (*func)(struct net_device* , u8*, u8*))
+{
+	struct dev_id_func *new;
+	new = (struct dev_id_func*)kmalloc(sizeof(struct dev_id_func), 
+					GFP_KERNEL);
+	if(!new)
+		return -ENOMEM;
+	spin_lock_bh(&dev_id_func_lock);
+	new->func = func;
+	list_add(&new->list, &dev_id_func_list);
+	spin_unlock_bh(&dev_id_func_lock);
+	return 0;
+}
+
+int ipv6_unregister_dev_id_func(int (*func)(struct net_device* , u8*, u8*))
+{
+	struct dev_id_func *entry;
+
+	spin_lock_bh(&dev_id_func_lock);
+	list_for_each_entry(entry, &dev_id_func_list, list){
+		if(entry->func == func){
+			list_del(&entry->list);
+			kfree(entry);
+			spin_unlock_bh(&dev_id_func_lock);
+			return 0;
+		}
+	}
+	spin_unlock_bh(&dev_id_func_lock);
+	return -ENOENT;
+}
+
 /*
  *	Configured unicast address hash table
  */
@@ -307,7 +346,7 @@ void in6_dev_finish_destroy(struct inet6_dev *idev)
 		printk("Freeing alive inet6 device %p\n", idev);
 		return;
 	}
-	snmp6_unregister_dev(idev);
+	snmp6_free_dev(idev);
 	inet6_dev_count--;
 	kfree(idev);
 }
@@ -339,6 +378,16 @@ static struct inet6_dev * ipv6_add_dev(struct net_device *dev)
 		inet6_dev_count++;
 		/* We refer to the device */
 		dev_hold(dev);
+
+		if (snmp6_alloc_dev(ndev) < 0) {
+			ADBG((KERN_WARNING
+				"%s(): cannot allocate memory for statistics; dev=%s.\n",
+				__FUNCTION__, dev->name));
+			neigh_parms_release(&nd_tbl, ndev->nd_parms);
+			ndev->dead = 1;
+			in6_dev_finish_destroy(ndev);
+			return NULL;
+		}
 
 		if (snmp6_register_dev(ndev) < 0) {
 			ADBG((KERN_WARNING
@@ -483,7 +532,7 @@ ipv6_add_addr(struct inet6_dev *idev, const struct in6_addr *addr, int pfxlen,
 	      int scope, unsigned flags)
 {
 	struct inet6_ifaddr *ifa = NULL;
-	struct rt6_info *rt;
+	struct rt6_info *rt = NULL;
 	int hash;
 	static spinlock_t lock = SPIN_LOCK_UNLOCKED;
 	int err = 0;
@@ -571,6 +620,10 @@ out:
 	if (unlikely(err == 0))
 		notifier_call_chain(&inet6addr_chain, NETDEV_UP, ifa);
 	else {
+		if (rt) {
+			dst_release(&rt->u.dst);
+			dst_free(&rt->u.dst);
+		}
 		kfree(ifa);
 		ifa = ERR_PTR(err);
 	}
@@ -1091,6 +1144,7 @@ void addrconf_leave_anycast(struct inet6_ifaddr *ifp)
 
 static int ipv6_generate_eui64(u8 *eui, struct net_device *dev)
 {
+	struct dev_id_func* dev_id_fn;
 	switch (dev->type) {
 	case ARPHRD_ETHER:
 	case ARPHRD_FDDI:
@@ -1099,6 +1153,14 @@ static int ipv6_generate_eui64(u8 *eui, struct net_device *dev)
 			return -1;
 		memcpy(eui, dev->dev_addr, 3);
 		memcpy(eui + 5, dev->dev_addr+3, 3);
+		spin_lock_bh(&dev_id_func_lock);
+		list_for_each_entry(dev_id_fn, &dev_id_func_list, list){
+			if(dev_id_fn->func(dev,&eui[3],&eui[4]) == 0){
+				spin_unlock_bh(&dev_id_func_lock);
+				return 0;
+			}
+		}
+		spin_unlock_bh(&dev_id_func_lock);
 		eui[3] = 0xFF;
 		eui[4] = 0xFE;
 		eui[0] ^= 2;
@@ -1991,6 +2053,9 @@ static int addrconf_ifdown(struct net_device *dev, int how)
 
 	ASSERT_RTNL();
 
+	if (dev == &loopback_dev && how == 1)
+		how = 0;
+
 	rt6_ifdown(dev);
 	neigh_ifdown(&nd_tbl, dev);
 
@@ -2006,6 +2071,10 @@ static int addrconf_ifdown(struct net_device *dev, int how)
 		dev->ip6_ptr = NULL;
 		idev->dead = 1;
 		write_unlock_bh(&addrconf_lock);
+
+		/* Step 1.5: remove snmp6 entry */
+		snmp6_unregister_dev(idev);
+
 	}
 
 	/* Step 2: clear hash table */
@@ -3397,8 +3466,35 @@ int unregister_inet6addr_notifier(struct notifier_block *nb)
  *	Init / cleanup code
  */
 
-void __init addrconf_init(void)
+int __init addrconf_init(void)
 {
+	int err = 0;
+
+	/* The addrconf netdev notifier requires that loopback_dev
+	 * has it's ipv6 private information allocated and setup
+	 * before it can bring up and give link-local addresses
+	 * to other devices which are up.
+	 *
+	 * Unfortunately, loopback_dev is not necessarily the first
+	 * entry in the global dev_base list of net devices.  In fact,
+	 * it is likely to be the very last entry on that list.
+	 * So this causes the notifier registry below to try and
+	 * give link-local addresses to all devices besides loopback_dev
+	 * first, then loopback_dev, which cases all the non-loopback_dev
+	 * devices to fail to get a link-local address.
+	 *
+	 * So, as a temporary fix, allocate the ipv6 structure for
+	 * loopback_dev first by hand.
+	 * Longer term, all of the dependencies ipv6 has upon the loopback
+	 * device and it being up should be removed.
+	 */
+	rtnl_lock();
+	if (!ipv6_add_dev(&loopback_dev))
+		err = -ENOMEM;
+	rtnl_unlock();
+	if (err)
+		return err;
+
 	register_netdevice_notifier(&ipv6_dev_notf);
 
 #ifdef CONFIG_IPV6_PRIVACY
@@ -3415,6 +3511,8 @@ void __init addrconf_init(void)
 		register_sysctl_table(addrconf_sysctl.addrconf_root_dir, 0);
 	addrconf_sysctl_register(NULL, &ipv6_devconf_dflt);
 #endif
+
+	return 0;
 }
 
 void __exit addrconf_cleanup(void)
@@ -3443,6 +3541,7 @@ void __exit addrconf_cleanup(void)
 			continue;
 		addrconf_ifdown(dev, 1);
 	}
+	addrconf_ifdown(&loopback_dev, 2);
 
 	/*
 	 *	Check hash table.
@@ -3478,3 +3577,7 @@ void __exit addrconf_cleanup(void)
 	proc_net_remove("if_inet6");
 #endif
 }
+
+EXPORT_SYMBOL(ipv6_register_dev_id_func);
+EXPORT_SYMBOL(ipv6_unregister_dev_id_func);
+

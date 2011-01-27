@@ -29,6 +29,7 @@ static char *verstr = "20040403";
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/mtio.h>
+#include <linux/cdrom.h>
 #include <linux/ioctl.h>
 #include <linux/fcntl.h>
 #include <linux/spinlock.h>
@@ -62,6 +63,7 @@ static char *verstr = "20040403";
 
 #include <scsi/scsi_driver.h>
 #include <scsi/scsi_ioctl.h>
+#include <scsi/sg.h>
 
 #define ST_KILOBYTE 1024
 
@@ -3126,8 +3128,9 @@ static int st_ioctl(struct inode *inode, struct file *file,
 	 * access to the device is prohibited.
 	 */
 	retval = scsi_nonblockable_ioctl(STp->device, cmd_in, p, file);
-	if (!scsi_block_when_processing_errors(STp->device) || !retval)
+	if (!scsi_block_when_processing_errors(STp->device) || retval != -ENODEV)
 		goto out;
+	retval = 0;
 
 	cmd_type = _IOC_TYPE(cmd_in);
 	cmd_nr = _IOC_NR(cmd_in);
@@ -3408,12 +3411,23 @@ static int st_ioctl(struct inode *inode, struct file *file,
 		case SCSI_IOCTL_GET_BUS_NUMBER:
 			break;
 		default:
-			i = scsi_cmd_ioctl(file, STp->disk, cmd_in, p);
+			if ((cmd_in == SG_IO ||
+			     cmd_in == SCSI_IOCTL_SEND_COMMAND ||
+			     cmd_in == CDROM_SEND_PACKET) &&
+			    !capable(CAP_SYS_RAWIO))
+ 				i = -EPERM;
+ 			else
+				i = scsi_cmd_ioctl(file, STp->disk, cmd_in, p);
 			if (i != -ENOTTY)
 				return i;
 			break;
 	}
-	return scsi_ioctl(STp->device, cmd_in, p);
+	retval = scsi_ioctl(STp->device, cmd_in, p);
+	if (!retval && cmd_in == SCSI_IOCTL_STOP_UNIT) { /* unload */
+		STp->rew_at_close = 0;
+		STp->ready = ST_NO_TAPE;
+	}
+	return retval;
 
  out:
 	up(&STp->lock);

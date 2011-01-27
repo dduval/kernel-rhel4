@@ -355,10 +355,12 @@ int uart_resume_port(struct uart_driver *reg, struct uart_port *port);
 #define uart_tx_stopped(port)		\
 	((port)->info->tty->stopped || (port)->info->tty->hw_stopped)
 
+extern int sercons_escape_char;
+
 /*
  * The following are helper functions for the low level drivers.
  */
-#ifdef SUPPORT_SYSRQ
+#if defined(SUPPORT_SYSRQ) && defined(CONFIG_SERIAL_CORE_CONSOLE)
 static inline int
 uart_handle_sysrq_char(struct uart_port *port, unsigned int ch,
 		       struct pt_regs *regs)
@@ -370,6 +372,15 @@ uart_handle_sysrq_char(struct uart_port *port, unsigned int ch,
 			return 1;
 		}
 		port->sysrq = 0;
+	}
+	if (sercons_escape_char == (int) ch) {
+		if (port->cons && port->cons->index == port->line) {
+			if (!port->sysrq)
+				port->sysrq = jiffies + HZ*5;
+			else
+				port->sysrq = 0;
+			return 1;
+		}
 	}
 	return 0;
 }

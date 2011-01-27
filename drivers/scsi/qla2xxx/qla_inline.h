@@ -2,7 +2,7 @@
  *                  QLOGIC LINUX SOFTWARE
  *
  * QLogic ISP2x00 device driver for Linux 2.6.x
- * Copyright (C) 2003-2004 QLogic Corporation
+ * Copyright (C) 2003-2005 QLogic Corporation
  * (www.qlogic.com)
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -119,8 +119,10 @@ qla2x00_poll(scsi_qla_host_t *ha)
 {
 	if (IS_QLA2100(ha) || IS_QLA2200(ha))
 		qla2100_intr_handler(0, ha, NULL);
-	else
+	else if (IS_QLA23XX(ha))
 		qla2300_intr_handler(0, ha, NULL);
+	else
+		qla24xx_intr_handler(0, ha, NULL);
 }
 
 
@@ -132,12 +134,18 @@ qla2x00_enable_intrs(scsi_qla_host_t *ha)
 {
 	unsigned long flags = 0;
 	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_24xx __iomem *reg24;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
+	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
+		WRT_REG_DWORD(&reg24->ictrl, ICRX_EN_RISC_INT);
+		RD_REG_DWORD(&reg24->ictrl);
+	} else {
+		WRT_REG_WORD(&reg->ictrl, ICR_EN_INT | ICR_EN_RISC);
+		RD_REG_WORD(&reg->ictrl);
+	}
 	ha->interrupts_on = 1;
-	/* enable risc and host interrupts */
-	WRT_REG_WORD(&reg->ictrl, ICR_EN_INT | ICR_EN_RISC);
-	RD_REG_WORD(&reg->ictrl);
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 
 }
@@ -147,12 +155,19 @@ qla2x00_disable_intrs(scsi_qla_host_t *ha)
 {
 	unsigned long flags = 0;
 	device_reg_t __iomem *reg = ha->iobase;
+	struct device_reg_24xx __iomem *reg24;
 
 	spin_lock_irqsave(&ha->hardware_lock, flags);
 	ha->interrupts_on = 0;
-	/* disable risc and host interrupts */
-	WRT_REG_WORD(&reg->ictrl, 0);
-	RD_REG_WORD(&reg->ictrl);
+	if (IS_QLA24XX(ha) || IS_QLA25XX(ha)) {
+		reg24 = (struct device_reg_24xx __iomem *)ha->iobase;
+		WRT_REG_DWORD(&reg24->ictrl, 0);
+		RD_REG_DWORD(&reg24->ictrl);
+
+	} else {
+		WRT_REG_WORD(&reg->ictrl, 0);
+		RD_REG_WORD(&reg->ictrl);
+	}
 	spin_unlock_irqrestore(&ha->hardware_lock, flags);
 }
 
@@ -290,3 +305,35 @@ qla2x00_delete_timer_from_cmd(srb_t *sp)
 	}
 }
 
+static inline uint8_t *host_to_fcp_swap(uint8_t *, uint32_t);
+
+/**
+ * host_to_fcp_swap() - 
+ * @fcp: 
+ * @bsize: 
+ *
+ * Returns 
+ */
+static inline uint8_t *
+host_to_fcp_swap(uint8_t *fcp, uint32_t bsize)
+{
+	uint32_t *ifcp = (uint32_t *) fcp;
+	uint32_t *ofcp = (uint32_t *) fcp;
+	uint32_t iter = bsize >> 2;
+
+	for (; iter ; iter--)
+		*ofcp++ = swab32(*ifcp++);
+
+	return (fcp);
+}
+
+static inline int qla2x00_is_reserved_id(scsi_qla_host_t *, uint16_t);
+static inline int
+qla2x00_is_reserved_id(scsi_qla_host_t *ha, uint16_t loop_id)
+{
+	if (IS_QLA24XX(ha) || IS_QLA25XX(ha))
+		return (loop_id > NPH_LAST_HANDLE);
+
+	return ((loop_id > ha->last_loop_id && loop_id < SNS_FIRST_LOOP_ID) ||
+	    loop_id == MANAGEMENT_SERVER || loop_id == BROADCAST);
+};

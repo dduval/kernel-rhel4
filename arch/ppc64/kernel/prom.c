@@ -1879,6 +1879,19 @@ prom_add_property(struct device_node* np, struct property* prop)
 	*next = prop;
 }
 
+int
+dn_failed(struct device_node * dn)
+{
+	char * status;
+
+	status = get_property(dn, "status", NULL);
+
+	if (status && !strcmp(status, "fail"))
+		return 1;
+
+	return 0;
+}
+
 #if 0
 void
 print_properties(struct device_node *np)

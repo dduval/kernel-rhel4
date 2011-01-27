@@ -295,6 +295,37 @@ __syscall_start:
 		.long	sys_mq_notify
 		.long	sys_mq_getsetattr
 /* 280 */	.long	sys_waitid
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+/* 285 */	.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+/* 290 */	.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+/* 295 */	.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+/* 300 */	.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+/* 305 */	.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_ni_syscall
+		.long	sys_add_key
+/* 310 */	.long	sys_request_key
+		.long	sys_keyctl
 __syscall_end:
 
 		.rept	NR_syscalls - (__syscall_end - __syscall_start) / 4

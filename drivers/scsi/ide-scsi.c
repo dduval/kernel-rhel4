@@ -29,9 +29,12 @@
  * Ver 0.9   Jul 04 99   Fix a bug in SG_SET_TRANSFORM.
  * Ver 0.91  Jun 10 02   Fix "off by one" error in transforms
  * Ver 0.92  Dec 31 02   Implement new SCSI mid level API
+ * Ver -.--  Sep 09 03   Added transform for reading ATAPI tape drive block
+ *                        limits (ATAPI tapes report block limits in mode
+ *                        page 0x2A, not by "read block limits" command)
  */
 
-#define IDESCSI_VERSION "0.92"
+#define IDESCSI_VERSION "0.92rh1"
 
 #include <linux/module.h>
 #include <linux/config.h>
@@ -147,8 +150,18 @@ static void idescsi_input_buffers (ide_drive_t *drive, idescsi_pc_t *pc, unsigne
 			return;
 		}
 		count = min(pc->sg->length - pc->b_count, bcount);
-		buf = page_address(pc->sg->page) + pc->sg->offset;
-		atapi_input_bytes (drive, buf + pc->b_count, count);
+		if (PageHighMem(pc->sg->page)) {
+			unsigned long flags;
+
+			local_irq_save(flags);
+			buf = kmap_atomic(pc->sg->page, KM_IRQ0) + pc->sg->offset;
+			drive->hwif->atapi_input_bytes(drive, buf + pc->b_count, count);
+			kunmap_atomic(buf - pc->sg->offset, KM_IRQ0);
+			local_irq_restore(flags);
+		} else {
+			buf = page_address(pc->sg->page) + pc->sg->offset;
+			drive->hwif->atapi_input_bytes(drive, buf + pc->b_count, count);
+		}
 		bcount -= count; pc->b_count += count;
 		if (pc->b_count == pc->sg->length) {
 			pc->sg++;
@@ -169,8 +182,18 @@ static void idescsi_output_buffers (ide_drive_t *drive, idescsi_pc_t *pc, unsign
 			return;
 		}
 		count = min(pc->sg->length - pc->b_count, bcount);
-		buf = page_address(pc->sg->page) + pc->sg->offset;
-		atapi_output_bytes (drive, buf + pc->b_count, count);
+		if (PageHighMem(pc->sg->page)) {
+			unsigned long flags;
+
+			local_irq_save(flags);
+			buf = kmap_atomic(pc->sg->page, KM_IRQ0) + pc->sg->offset;
+			drive->hwif->atapi_output_bytes(drive, buf + pc->b_count, count);
+			kunmap_atomic(buf - pc->sg->offset, KM_IRQ0);
+			local_irq_restore(flags);
+		} else {
+			buf = page_address(pc->sg->page) + pc->sg->offset;
+			drive->hwif->atapi_output_bytes(drive, buf + pc->b_count, count);
+		}
 		bcount -= count; pc->b_count += count;
 		if (pc->b_count == pc->sg->length) {
 			pc->sg++;
@@ -223,6 +246,25 @@ static inline void idescsi_transform_pc1 (ide_drive_t *drive, idescsi_pc_t *pc)
 			pc->buffer_size += 4;
 		}
 	}
+	if (drive->media == ide_tape) {
+		if (sc[0] == READ_BLOCK_LIMITS) {	/* IDE tapes have blk lmts in mode page 0x2a */
+			if (!scsi_buf)
+				return;
+			/* buffer size should be 6 for READ_BLOCK_LIMITS    */
+			/* we need 12 bytes (4 for header + 8 for mode page */
+			if ((atapi_buf = kmalloc(12, GFP_ATOMIC)) == NULL)
+				return;
+			memset(atapi_buf, 0, 12);
+			memset (c, 0, 12);
+			c[0] = MODE_SENSE;
+			c[1] = 8;  	/* no block descriptors     */
+			c[2] = 0x2A;	/* mode page 0x2A           */
+			c[4] = 12;	/* buffer length 12 decimal */
+			pc->buffer = atapi_buf;
+			pc->request_transfer = 12;
+			pc->buffer_size = 12;
+		}
+	}
 }
 
 static inline void idescsi_transform_pc2 (ide_drive_t *drive, idescsi_pc_t *pc)
@@ -245,7 +287,19 @@ static inline void idescsi_transform_pc2 (ide_drive_t *drive, idescsi_pc_t *pc)
 			scsi_buf[2] |= 2;			/* ansi_revision */
 			scsi_buf[3] = (scsi_buf[3] & 0xf0) | 2;	/* response data format */
 		}
+	}	
+	if (drive->media == ide_tape) {
+		if (sc[0] == READ_BLOCK_LIMITS) {
+			memset(scsi_buf, 0, pc->scsi_cmd->request_bufflen);
+			/* granularity of 9 (always 9 for ide tapes) */
+			scsi_buf[0] = 9;
+			/* block length of 1024 bytes supported? */
+			scsi_buf[2] = (atapi_buf[11] & 0x04) ? 4 : 2;
+			/* block length of 512 bytes supported?  */
+			scsi_buf[4] = (atapi_buf[11] & 0x02) ? 2 : 4;
+		}
 	}
+
 	if (atapi_buf && atapi_buf != scsi_buf)
 		kfree(atapi_buf);
 }

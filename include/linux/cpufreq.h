@@ -69,6 +69,7 @@ struct cpufreq_real_policy {
 };
 
 struct cpufreq_policy {
+	cpumask_t		cpus;	/* affected CPUs */
 	unsigned int		cpu;    /* cpu nr */
 	struct cpufreq_cpuinfo	cpuinfo;/* see above */
 
@@ -198,6 +199,7 @@ struct cpufreq_driver {
 
 	/* optional */
 	int	(*exit)		(struct cpufreq_policy *policy);
+	int	(*suspend)	(struct cpufreq_policy *policy, u32 state);
 	int	(*resume)	(struct cpufreq_policy *policy);
 	struct freq_attr	**attr;
 };

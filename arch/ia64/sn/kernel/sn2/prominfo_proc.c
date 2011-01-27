@@ -238,8 +238,7 @@ int __init prominfo_init(void)
 
 	sgi_prominfo_entry = proc_mkdir("sgi_prominfo", NULL);
 
-	for (cnodeid = 0, entp = proc_entries;
-	     cnodeid < numnodes;
+	for (cnodeid = 0, entp = proc_entries; cnodeid < numnodes;
 	     cnodeid++, entp++) {
 		sprintf(name, "node%d", cnodeid);
 		*entp = proc_mkdir(name, sgi_prominfo_entry);

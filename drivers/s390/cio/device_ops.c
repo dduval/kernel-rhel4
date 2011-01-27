@@ -24,6 +24,7 @@
 #include "cio.h"
 #include "cio_debug.h"
 #include "css.h"
+#include "chsc.h"
 #include "device.h"
 #include "qdio.h"
 
@@ -80,6 +81,16 @@ ccw_device_start(struct ccw_device *cdev, struct ccw1 *cpa,
 		return -ENODEV;
 	if (cdev->private->state == DEV_STATE_NOT_OPER)
 		return -ENODEV;
+	if (cdev->private->state == DEV_STATE_VERIFY) {
+		/* Remember to fake irb when finished. */
+		if (!cdev->private->flags.fake_irb) {
+			cdev->private->flags.fake_irb = 1;
+			cdev->private->intparm = intparm;
+			return 0;
+		} else
+			/* There's already a fake I/O around. */
+			return -EBUSY;
+	}
 	if (cdev->private->state != DEV_STATE_ONLINE ||
 	    ((sch->schib.scsw.stctl & SCSW_STCTL_PRIM_STATUS) &&
 	     !(sch->schib.scsw.stctl & SCSW_STCTL_SEC_STATUS)) ||
@@ -260,14 +271,14 @@ ccw_device_wake_up(struct ccw_device *cdev, unsigned long ip, struct irb *irb)
 }
 
 static inline int
-__ccw_device_retry_loop(struct ccw_device *cdev, struct ccw1 *ccw, long magic)
+__ccw_device_retry_loop(struct ccw_device *cdev, struct ccw1 *ccw, long magic, __u8 lpm)
 {
 	int ret;
 	struct subchannel *sch;
 
 	sch = to_subchannel(cdev->dev.parent);
 	do {
-		ret = cio_start (sch, ccw, 0);
+		ret = cio_start (sch, ccw, lpm);
 		if ((ret == -EBUSY) || (ret == -EACCES)) {
 			/* Try again later. */
 			spin_unlock_irq(&sch->lock);
@@ -357,7 +368,7 @@ read_dev_chars (struct ccw_device *cdev, void **buffer, int length)
 		ret = -EBUSY;
 	else
 		/* 0x00D9C4C3 == ebcdic "RDC" */
-		ret = __ccw_device_retry_loop(cdev, rdc_ccw, 0x00D9C4C3);
+		ret = __ccw_device_retry_loop(cdev, rdc_ccw, 0x00D9C4C3, 0);
 
 	/* Restore interrupt handler. */
 	cdev->handler = handler;
@@ -370,10 +381,10 @@ read_dev_chars (struct ccw_device *cdev, void **buffer, int length)
 }
 
 /*
- *  Read Configuration data
+ *  Read Configuration data using path mask
  */
 int
-read_conf_data (struct ccw_device *cdev, void **buffer, int *length)
+read_conf_data_lpm (struct ccw_device *cdev, void **buffer, int *length, __u8 lpm)
 {
 	void (*handler)(struct ccw_device *, unsigned long, struct irb *);
 	struct subchannel *sch;
@@ -426,7 +437,7 @@ read_conf_data (struct ccw_device *cdev, void **buffer, int *length)
 		ret = -EBUSY;
 	else
 		/* 0x00D9C3C4 == ebcdic "RCD" */
-		ret = __ccw_device_retry_loop(cdev, rcd_ccw, 0x00D9C3C4);
+		ret = __ccw_device_retry_loop(cdev, rcd_ccw, 0x00D9C3C4, lpm);
 
 	/* Restore interrupt handler. */
 	cdev->handler = handler;
@@ -446,6 +457,15 @@ read_conf_data (struct ccw_device *cdev, void **buffer, int *length)
 	kfree(rcd_ccw);
 
 	return ret;
+}
+
+/*
+ *  Read Configuration data
+ */
+int
+read_conf_data (struct ccw_device *cdev, void **buffer, int *length)
+{
+	return read_conf_data_lpm (cdev, buffer, length, 0);
 }
 
 /*
@@ -519,6 +539,15 @@ out_unlock:
 	return ret;
 }
 
+void *
+ccw_device_get_chp_desc(struct ccw_device *cdev, int chp_no)
+{
+	struct subchannel *sch;
+
+	sch = to_subchannel(cdev->dev.parent);
+	return chsc_get_chp_desc(sch, chp_no);
+}
+
 // FIXME: these have to go:
 
 int
@@ -547,3 +576,5 @@ EXPORT_SYMBOL(read_conf_data);
 EXPORT_SYMBOL(read_dev_chars);
 EXPORT_SYMBOL(_ccw_device_get_subchannel_number);
 EXPORT_SYMBOL(_ccw_device_get_device_number);
+EXPORT_SYMBOL_GPL(ccw_device_get_chp_desc);
+EXPORT_SYMBOL_GPL(read_conf_data_lpm);

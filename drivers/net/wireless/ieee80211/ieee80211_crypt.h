@@ -1,12 +1,12 @@
 /*
- * Original code based on Host AP (software wireless LAN access point) driver 
+ * Original code based on Host AP (software wireless LAN access point) driver
  * for Intersil Prism2/2.5/3.
  *
  * Copyright (c) 2001-2002, SSH Communications Security Corp and Jouni Malinen
  * <jkmaline@cc.hut.fi>
  * Copyright (c) 2002-2003, Jouni Malinen <jkmaline@cc.hut.fi>
  *
- * Adaption to a generic IEEE 802.11 stack by James Ketrenos 
+ * Adaption to a generic IEEE 802.11 stack by James Ketrenos
  * <jketreno@linux.intel.com>
  *
  * Copyright (c) 2004, Intel Corporation
@@ -18,7 +18,7 @@
  */
 
 /*
- * This file defines the interface to the ieee80211 crypto module.  
+ * This file defines the interface to the ieee80211 crypto module.
  */
 #ifndef IEEE80211_CRYPT_H
 #define IEEE80211_CRYPT_H

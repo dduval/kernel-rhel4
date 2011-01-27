@@ -1017,7 +1017,7 @@ static ssize_t tty_read(struct file * file, char __user * buf, size_t count,
 	tty_ldisc_deref(ld);
 	unlock_kernel();
 	if (i > 0)
-		inode->i_atime = CURRENT_TIME;
+		inode->i_atime = current_fs_time(inode->i_sb);
 	return i;
 }
 
@@ -1063,7 +1063,8 @@ static inline ssize_t do_tty_write(
 		}
 	}
 	if (written) {
-		file->f_dentry->d_inode->i_mtime = CURRENT_TIME;
+		struct inode *inode = file->f_dentry->d_inode;
+		inode->i_mtime = current_fs_time(inode->i_sb);
 		ret = written;
 	}
 	up(&tty->atomic_write);
@@ -1773,10 +1774,9 @@ retry_open:
 	}
 got_driver:
 	retval = init_dev(driver, index, &tty);
-	if (retval) {
-		up(&tty_sem);
+	up(&tty_sem);
+	if (retval) 
 		return retval;
-	}
 
 	filp->private_data = tty;
 	file_move(filp, &tty->tty_files);
@@ -1793,8 +1793,7 @@ got_driver:
 		else
 			retval = -ENODEV;
 	}
-	up(&tty_sem);
-
+	set_bit(TTY_OPENED, &tty->flags);
 	filp->f_flags = saved_flags;
 
 	if (!retval && test_bit(TTY_EXCLUSIVE, &tty->flags) && !capable(CAP_SYS_ADMIN))
@@ -1865,7 +1864,7 @@ static int ptmx_open(struct inode * inode, struct file * filp)
 	down(&tty_sem);
 	retval = init_dev(ptm_driver, index, &tty);
 	up(&tty_sem);
-	
+
 	if (retval)
 		goto out;
 
@@ -1879,6 +1878,8 @@ static int ptmx_open(struct inode * inode, struct file * filp)
 
 	check_tty_count(tty, "tty_open");
 	retval = ptm_driver->open(tty, filp);
+	set_bit(TTY_OPENED, &tty->flags);
+	set_bit(TTY_OPENED, &tty->link->flags);
 	if (!retval)
 		return 0;
 out1:

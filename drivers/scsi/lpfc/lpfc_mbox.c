@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_mbox.c 1.75 2005/02/02 16:30:59EST sf_support Exp  $
+ * $Id: lpfc_mbox.c 1.77.2.2 2005/06/13 17:16:32EDT sf_support Exp  $
  */
 #include <linux/version.h>
 #include <linux/blkdev.h>
@@ -115,10 +115,6 @@ lpfc_read_la(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	mb->un.varReadLA.un.lilpBde64.tus.f.bdeSize = 128;
 	mb->un.varReadLA.un.lilpBde64.addrHigh = putPaddrHigh(mp->phys);
 	mb->un.varReadLA.un.lilpBde64.addrLow = putPaddrLow(mp->phys);
-
-	/* Sync the mailbox data with its PCI memory address now. */
-	pci_dma_sync_single_for_device(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_TODEVICE);
 
 	/* Save address for later completion and set the owner to host so that
 	 * the FW knows this mailbox is available for processing.
@@ -284,9 +280,6 @@ lpfc_read_sparam(struct lpfc_hba * phba, LPFC_MBOXQ_t * pmb)
 	mb->un.varRdSparm.un.sp64.addrHigh = putPaddrHigh(mp->phys);
 	mb->un.varRdSparm.un.sp64.addrLow = putPaddrLow(mp->phys);
 
-	pci_dma_sync_single_for_device(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_TODEVICE);
-
 	/* save address for completion */
 	pmb->context1 = mp;
 
@@ -403,10 +396,6 @@ lpfc_reg_login(struct lpfc_hba * phba,
 
 	/* Copy param's into a new buffer */
 	memcpy(sparam, param, sizeof (struct serv_parm));
-
-	/* Sync the mailbox data with its PCI memory address now. */
-	pci_dma_sync_single_for_device(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-			PCI_DMA_TODEVICE);
 
 	/* save address for completion */
 	pmb->context1 = (uint8_t *) mp;

@@ -209,6 +209,14 @@ config SCSI_FC_ATTRS
 	  each attached FiberChannel device to sysfs, say Y.
 	  Otherwise, say N.
 
+config SCSI_ISCSI_ATTRS
+	tristate "iSCSI Transport Attributes"
+	depends on SCSI
+	help
+	  If you wish to export transport-specific information about
+	  each attached iSCSI device to sysfs, say Y.
+	  Otherwise, say N.
+
 endmenu
 
 menu "SCSI low-level drivers"
@@ -823,6 +831,8 @@ config SCSI_INIA100
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called a100u2w.
+
+source "drivers/scsi/iscsi_sfnet/Kconfig"
 
 config SCSI_PPA
 	tristate "IOMEGA parallel port (ppa - older drives)"

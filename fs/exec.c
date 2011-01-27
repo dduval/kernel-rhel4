@@ -34,6 +34,7 @@
 #include <linux/pagemap.h>
 #include <linux/highmem.h>
 #include <linux/spinlock.h>
+#include <linux/key.h>
 #include <linux/personality.h>
 #include <linux/binfmts.h>
 #include <linux/swap.h>
@@ -621,6 +622,14 @@ static inline int de_thread(struct task_struct *tsk)
 		newsig->session = oldsig->session;
 		newsig->leader = oldsig->leader;
 		newsig->tty_old_pgrp = oldsig->tty_old_pgrp;
+#ifdef CONFIG_KEYS
+		rcu_read_lock();
+		newsig->session_keyring =
+			key_get(rcu_dereference(oldsig->session_keyring));
+		rcu_read_unlock();
+
+		newsig->process_keyring = key_get(oldsig->process_keyring);
+#endif
 	}
 
 	if (thread_group_empty(current))
@@ -764,6 +773,7 @@ no_thread_group:
 
 	if (newsig && atomic_dec_and_test(&oldsig->count)) {
 		exit_itimers(oldsig);
+		exit_thread_group_keys(oldsig);
 		kmem_cache_free(signal_cachep, oldsig);
 	}
 
@@ -885,8 +895,10 @@ int flush_old_exec(struct linux_binprm * bprm)
 
 	if (bprm->e_uid != current->euid || bprm->e_gid != current->egid || 
 	    permission(bprm->file->f_dentry->d_inode,MAY_READ, NULL) ||
-	    (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP))
+	    (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP)) {
+		suid_keys(current);
 		current->mm->dumpable = suid_dumpable;
+	}
 
 	/* An exec changes our domain. We are no longer part of the thread
 	   group */
@@ -980,6 +992,11 @@ static inline int unsafe_exec(struct task_struct *p)
 void compute_creds(struct linux_binprm *bprm)
 {
 	int unsafe;
+
+	if (bprm->e_uid != current->uid)
+		suid_keys(current);
+	exec_keys(current);
+
 	task_lock(current);
 	unsafe = unsafe_exec(current);
 	security_bprm_apply_creds(bprm, unsafe);
@@ -1353,7 +1370,7 @@ static void zap_threads (struct mm_struct *mm)
 {
 	struct task_struct *g, *p;
 	struct task_struct *tsk = current;
-	struct completion *vfork_done = tsk->vfork_done;
+	struct completion *vfork_done = task_aux(tsk)->vfork_done;
 	int traced = 0;
 
 	/*
@@ -1361,7 +1378,7 @@ static void zap_threads (struct mm_struct *mm)
 	 * otherwise we can deadlock when we wait on each other
 	 */
 	if (vfork_done) {
-		tsk->vfork_done = NULL;
+		task_aux(tsk)->vfork_done = NULL;
 		complete(vfork_done);
 	}
 
@@ -1449,9 +1466,18 @@ int do_coredump(long signr, int exit_code, struct pt_regs * regs)
 	}
 	mm->dumpable = 0;
 	init_completion(&mm->core_done);
+	spin_lock_irq(&current->sighand->siglock);
 	current->signal->group_exit = 1;
 	current->signal->group_exit_code = exit_code;
+	spin_unlock_irq(&current->sighand->siglock);
 	coredump_wait(mm);
+
+	/*
+	 * Clear any false indication of pending signals that might
+	 * be seen by the filesystem code called to write the core file.
+	 */
+	current->signal->group_stop_count = 0;
+	clear_thread_flag(TIF_SIGPENDING);
 
 	if (current->rlim[RLIMIT_CORE].rlim_cur < binfmt->min_coredump)
 		goto fail_unlock;

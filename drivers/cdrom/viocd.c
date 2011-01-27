@@ -156,7 +156,16 @@ static struct disk_info viocd_diskinfo[VIOCD_MAX_CD];
 
 static spinlock_t viocd_reqlock;
 
-#define MAX_CD_REQ	1
+#define VIOCD_MAX_REQ		6
+#define VIOCD_MAX_SG_LEN	12
+
+struct request_data {
+	int			in_use;
+	int			num_sg;
+	struct request		*req;
+	struct scatterlist	sg[VIOCD_MAX_SG_LEN];
+};
+static struct request_data	pending_requests[VIOCD_MAX_REQ];
 
 /* procfs support */
 static int proc_viocd_show(struct seq_file *m, void *v)
@@ -336,9 +345,12 @@ static int send_request(struct request *req)
 	dma_addr_t dmaaddr;
 	int direction;
 	u16 cmd;
-	struct scatterlist sg;
+	struct request_data *r;
 
-	BUG_ON(req->nr_phys_segments > 1);
+	for (r = pending_requests;
+	     (r < &pending_requests[VIOCD_MAX_REQ]) && r->in_use; r++)
+		/* Do nothing */;
+	BUG_ON(r >= &pending_requests[VIOCD_MAX_REQ]);
 
 	if (rq_data_dir(req) == READ) {
 		direction = DMA_FROM_DEVICE;
@@ -348,18 +360,22 @@ static int send_request(struct request *req)
 		cmd = viomajorsubtype_cdio | viocdwrite;
 	}
 
-        if (blk_rq_map_sg(req->q, req, &sg) == 0) {
+	r->num_sg = blk_rq_map_sg(req->q, req, r->sg);
+	if (r->num_sg == 0) {
 		printk(VIOCD_KERN_WARNING
 				"error setting up scatter/gather list\n");
 		return -1;
 	}
-
-	if (dma_map_sg(diskinfo->dev, &sg, 1, direction) == 0) {
+	r->num_sg = dma_map_sg(diskinfo->dev, r->sg, r->num_sg, direction);
+	if (r->num_sg == 0) {
 		printk(VIOCD_KERN_WARNING "error allocating sg tce\n");
 		return -1;
 	}
-	dmaaddr = sg_dma_address(&sg);
-	len = sg_dma_len(&sg);
+
+	r->in_use = 1;
+	r->req = req;
+	dmaaddr = sg_dma_address(&r->sg[0]);
+	len = sg_dma_len(&r->sg[0]);
 
 	hvrc = HvCallEvent_signalLpEventFast(viopath_hostLp,
 			HvLpEvent_Type_VirtualIo, cmd,
@@ -367,17 +383,28 @@ static int send_request(struct request *req)
 			HvLpEvent_AckType_ImmediateAck,
 			viopath_sourceinst(viopath_hostLp),
 			viopath_targetinst(viopath_hostLp),
-			(u64)req, VIOVERSION << 16,
+			(u64)r, VIOVERSION << 16,
 			((u64)DEVICE_NR(diskinfo) << 48) | dmaaddr,
 			(u64)req->sector * 512, len, 0);
 	if (hvrc != HvLpEvent_Rc_Good) {
 		printk(VIOCD_KERN_WARNING "hv error on op %d\n", (int)hvrc);
+		dma_unmap_sg(diskinfo->dev, r->sg, r->num_sg, direction);
+		r->in_use = 0;
 		return -1;
 	}
 
 	return 0;
 }
 
+static int viocd_end_request(request_queue_t *q, struct request *req,
+		int uptodate, int nr_sectors)
+{
+	if (end_that_request_first(req, uptodate, nr_sectors))
+		return 0;
+	add_disk_randomness(req->rq_disk);
+	end_that_request_last(req);
+	return 1;
+}
 
 static int rwreq;
 
@@ -385,16 +412,20 @@ static void do_viocd_request(request_queue_t *q)
 {
 	struct request *req;
 
-	while ((rwreq == 0) && ((req = elv_next_request(q)) != NULL)) {
+	while ((rwreq < VIOCD_MAX_REQ) &&
+			((req = elv_next_request(q)) != NULL)) {
+		blkdev_dequeue_request(req);
 		if (!blk_fs_request(req))
-			end_request(req, 0);
+			viocd_end_request(q, req, 0, req->hard_nr_sectors);
 		else if (send_request(req) < 0) {
 			printk(VIOCD_KERN_WARNING
 					"unable to send message to OS/400!");
-			end_request(req, 0);
+			viocd_end_request(q, req, 0, req->hard_nr_sectors);
 		} else
 			rwreq++;
 	}
+	if (rwreq == VIOCD_MAX_REQ)
+		blk_stop_queue(q);
 }
 
 static int viocd_media_changed(struct cdrom_device_info *cdi, int disc_nr)
@@ -502,16 +533,16 @@ static int viocd_packet(struct cdrom_device_info *cdi,
 	return ret;
 }
 
-static void restart_all_queues(int first_index)
+static void restart_all_queues(struct disk_info *cur)
 {
-	int i;
+	struct disk_info *di;
 
-	for (i = first_index + 1; i < viocd_numdev; i++)
-		if (viocd_diskinfo[i].viocd_disk)
-			blk_run_queue(viocd_diskinfo[i].viocd_disk->queue);
-	for (i = 0; i <= first_index; i++)
-		if (viocd_diskinfo[i].viocd_disk)
-			blk_run_queue(viocd_diskinfo[i].viocd_disk->queue);
+	for (di = cur + 1; di < &viocd_diskinfo[viocd_numdev]; di++)
+		if (di->viocd_disk && blk_queue_stopped(di->viocd_disk->queue))
+			blk_start_queue(di->viocd_disk->queue);
+	for (di = viocd_diskinfo; di <= cur; di++)
+		if (di->viocd_disk && blk_queue_stopped(di->viocd_disk->queue))
+			blk_start_queue(di->viocd_disk->queue);
 }
 
 /* This routine handles incoming CD LP events */
@@ -521,8 +552,9 @@ static void vio_handle_cd_event(struct HvLpEvent *event)
 	struct viocd_waitevent *pwe;
 	struct disk_info *di;
 	unsigned long flags;
+	struct request_data *r;
 	struct request *req;
-
+	int err;
 
 	if (event == NULL)
 		/* Notification that a partition went away! */
@@ -569,19 +601,14 @@ return_complete:
 
 	case viocdwrite:
 	case viocdread:
-		/*
-		 * Since this is running in interrupt mode, we need to
-		 * make sure we're not stepping on any global I/O operations
-		 */
 		di = &viocd_diskinfo[bevent->disk];
-		spin_lock_irqsave(&viocd_reqlock, flags);
-		dma_unmap_single(di->dev, bevent->token, bevent->len,
+		r = (struct request_data *)bevent->event.xCorrelationToken;
+		req = r->req;
+		dma_unmap_sg(di->dev, r->sg, r->num_sg,
 				((event->xSubtype & VIOMINOR_SUBTYPE_MASK) == viocdread)
 				?  DMA_FROM_DEVICE : DMA_TO_DEVICE);
-		req = (struct request *)bevent->event.xCorrelationToken;
-		rwreq--;
-
-		if (event->xRc != HvLpEvent_Rc_Good) {
+		err = (event->xRc != HvLpEvent_Rc_Good);
+		if (err) {
 			const struct vio_error_entry *err =
 				vio_lookup_rc(viocd_err_table,
 						bevent->sub_result);
@@ -589,13 +616,25 @@ return_complete:
 					"with rc %d:0x%04X: %s\n",
 					req, event->xRc,
 					bevent->sub_result, err->msg);
-			end_request(req, 0);
-		} else
-			end_request(req, 1);
+		}
 
-		/* restart handling of incoming requests */
+		spin_lock_irqsave(&viocd_reqlock, flags);
+		r->in_use = 0;
+		if (viocd_end_request(di->viocd_disk->queue, req, !err,
+					bevent->len >> 9)) {
+			rwreq--;
+			/* restart handling of incoming requests */
+			restart_all_queues(di);
+		} else if (send_request(req) < 0) {
+			printk(VIOCD_KERN_WARNING
+					"unable to send message to OS/400!");
+			viocd_end_request(di->viocd_disk->queue, req, 0,
+					req->hard_nr_sectors);
+			rwreq--;
+			/* restart handling of incoming requests */
+			restart_all_queues(di);
+		}
 		spin_unlock_irqrestore(&viocd_reqlock, flags);
-		restart_all_queues(bevent->disk);
 		break;
 
 	default:
@@ -678,9 +717,9 @@ static int viocd_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 			sizeof(gendisk->disk_name));
 	snprintf(gendisk->devfs_name, sizeof(gendisk->devfs_name),
 			VIOCD_DEVICE_DEVFS "%d", deviceno);
-	blk_queue_max_hw_segments(q, 1);
-	blk_queue_max_phys_segments(q, 1);
-	blk_queue_max_sectors(q, 4096 / 512);
+	blk_queue_max_hw_segments(q, VIOCD_MAX_SG_LEN);
+	blk_queue_max_phys_segments(q, VIOCD_MAX_SG_LEN);
+	blk_queue_max_sectors(q, 64 * 1024 / 512);
 	gendisk->queue = q;
 	gendisk->fops = &viocd_fops;
 	gendisk->flags = GENHD_FL_CD|GENHD_FL_REMOVABLE;
@@ -753,7 +792,7 @@ static int __init viocd_init(void)
 	}
 
 	ret = viopath_open(viopath_hostLp, viomajorsubtype_cdio,
-			MAX_CD_REQ + 2);
+			VIOCD_MAX_REQ + 2);
 	if (ret) {
 		printk(VIOCD_KERN_WARNING
 				"error opening path to host partition %d\n",
@@ -785,7 +824,7 @@ out_free_info:
 			sizeof(*viocd_unitinfo) * VIOCD_MAX_CD,
 			viocd_unitinfo, unitinfo_dmaaddr);
 	vio_clearHandler(viomajorsubtype_cdio);
-	viopath_close(viopath_hostLp, viomajorsubtype_cdio, MAX_CD_REQ + 2);
+	viopath_close(viopath_hostLp, viomajorsubtype_cdio, VIOCD_MAX_REQ + 2);
 out_unregister:
 	unregister_blkdev(VIOCD_MAJOR, VIOCD_DEVICE);
 	return ret;
@@ -799,7 +838,7 @@ static void __exit viocd_exit(void)
 		dma_free_coherent(iSeries_vio_dev,
 				sizeof(*viocd_unitinfo) * VIOCD_MAX_CD,
 				viocd_unitinfo, unitinfo_dmaaddr);
-	viopath_close(viopath_hostLp, viomajorsubtype_cdio, MAX_CD_REQ + 2);
+	viopath_close(viopath_hostLp, viomajorsubtype_cdio, VIOCD_MAX_REQ + 2);
 	vio_clearHandler(viomajorsubtype_cdio);
 	unregister_blkdev(VIOCD_MAJOR, VIOCD_DEVICE);
 }

@@ -1,15 +1,15 @@
 /*
- * Merged with mainline ieee80211.h in Aug 2004.  Original ieee802_11 
+ * Merged with mainline ieee80211.h in Aug 2004.  Original ieee802_11
  * remains copyright by the original authors
  *
- * Portions of the merged code are based on Host AP (software wireless 
+ * Portions of the merged code are based on Host AP (software wireless
  * LAN access point) driver for Intersil Prism2/2.5/3.
  *
  * Copyright (c) 2001-2002, SSH Communications Security Corp and Jouni Malinen
  * <jkmaline@cc.hut.fi>
  * Copyright (c) 2002-2003, Jouni Malinen <jkmaline@cc.hut.fi>
  *
- * Adaption to a generic IEEE 802.11 stack by James Ketrenos 
+ * Adaption to a generic IEEE 802.11 stack by James Ketrenos
  * <jketreno@linux.intel.com>
  * Copyright (c) 2004, Intel Corporation
  *
@@ -65,7 +65,7 @@ struct ieee80211_hdr_3addr {
 } __attribute__ ((packed));
 
 static const char *eap_types[] = {
-	"EAP-Packet", "EAPOL-Start", "EAPOL-Logoff", "EAPOL-Key", 
+	"EAP-Packet", "EAPOL-Start", "EAPOL-Logoff", "EAPOL-Key",
 	"EAPOL-Encap-ASF-Alert", "Unknown"
 };
 
@@ -150,7 +150,7 @@ extern u32 ieee80211_debug_level;
 #define IEEE80211_DEBUG(level, fmt, args...) \
 do { if (ieee80211_debug_level & (level)) \
   printk(KERN_DEBUG "ieee80211: %c %s " fmt, \
-         in_interrupt() ? 'I' : 'U', __FUNCTION__, ## args); } while (0)
+         in_interrupt() ? 'I' : 'U', __FUNCTION__ , ## args); } while (0)
 #else
 #define IEEE80211_DEBUG(level, fmt, args...) do {} while (0);
 #endif	/* CONFIG_IEEE80211_DEBUG */
@@ -162,7 +162,7 @@ do { if (ieee80211_debug_level & (level)) \
  * list here in the form of:
  *
  * #define IEEE80211_DL_xxxx VALUE
- * 
+ *
  * shifting value to the left one bit from the previous entry.  xxxx should be
  * the name of the classification (for example, WEP)
  *
@@ -176,7 +176,7 @@ do { if (ieee80211_debug_level & (level)) \
  *
  * you simply need to add your entry to the ipw_debug_levels array.
  *
- * If you do not see debug_level in /proc/net/ipw then you do not have 
+ * If you do not see debug_level in /proc/net/ipw then you do not have
  * CONFIG_IEEE80211_DEBUG defined in your kernel configuration
  *
  */
@@ -188,6 +188,7 @@ do { if (ieee80211_debug_level & (level)) \
 #define IEEE80211_DL_MGMT          BIT(4)
 #define IEEE80211_DL_FRAG          BIT(5)
 #define IEEE80211_DL_EAP           BIT(6)
+#define IEEE80211_DL_DROP          BIT(7)
 
 #define IEEE80211_DL_TX            BIT(8)
 #define IEEE80211_DL_RX            BIT(9)
@@ -202,6 +203,7 @@ do { if (ieee80211_debug_level & (level)) \
 #define IEEE80211_DEBUG_MGMT(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_MGMT, f, ## a)
 #define IEEE80211_DEBUG_FRAG(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_FRAG, f, ## a)
 #define IEEE80211_DEBUG_EAP(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_EAP, f, ## a)
+#define IEEE80211_DEBUG_DROP(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_DROP, f, ## a)
 #define IEEE80211_DEBUG_TX(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_TX, f, ## a)
 #define IEEE80211_DEBUG_RX(f, a...)  IEEE80211_DEBUG(IEEE80211_DL_RX, f, ## a)
 #include <linux/netdevice.h>
@@ -319,13 +321,13 @@ struct ieee80211_snap_hdr {
 #define IEEE80211_24GHZ_BAND     BIT(0)
 #define IEEE80211_52GHZ_BAND     BIT(1)
 
-#define IEEE80211_CCK_RATE_1MB		        0x02	
-#define IEEE80211_CCK_RATE_2MB		        0x04	
+#define IEEE80211_CCK_RATE_1MB		        0x02
+#define IEEE80211_CCK_RATE_2MB		        0x04
 #define IEEE80211_CCK_RATE_5MB		        0x0B
 #define IEEE80211_CCK_RATE_11MB		        0x16
-#define IEEE80211_OFDM_RATE_6MB		        0x0C	
+#define IEEE80211_OFDM_RATE_6MB		        0x0C
 #define IEEE80211_OFDM_RATE_9MB		        0x12
-#define IEEE80211_OFDM_RATE_12MB		0x18	
+#define IEEE80211_OFDM_RATE_12MB		0x18
 #define IEEE80211_OFDM_RATE_18MB		0x24
 #define IEEE80211_OFDM_RATE_24MB		0x30
 #define IEEE80211_OFDM_RATE_36MB		0x48
@@ -333,7 +335,7 @@ struct ieee80211_snap_hdr {
 #define IEEE80211_OFDM_RATE_54MB		0x6C
 #define IEEE80211_BASIC_RATE_MASK		0x80
 
-#define IEEE80211_CCK_RATE_1MB_MASK		BIT(0)	
+#define IEEE80211_CCK_RATE_1MB_MASK		BIT(0)
 #define IEEE80211_CCK_RATE_2MB_MASK		BIT(1)
 #define IEEE80211_CCK_RATE_5MB_MASK		BIT(2)
 #define IEEE80211_CCK_RATE_11MB_MASK		BIT(3)
@@ -341,7 +343,7 @@ struct ieee80211_snap_hdr {
 #define IEEE80211_OFDM_RATE_9MB_MASK		BIT(5)
 #define IEEE80211_OFDM_RATE_12MB_MASK		BIT(6)
 #define IEEE80211_OFDM_RATE_18MB_MASK		BIT(7)
-#define IEEE80211_OFDM_RATE_24MB_MASK		BIT(8)	
+#define IEEE80211_OFDM_RATE_24MB_MASK		BIT(8)
 #define IEEE80211_OFDM_RATE_36MB_MASK		BIT(9)
 #define IEEE80211_OFDM_RATE_48MB_MASK		BIT(10)
 #define IEEE80211_OFDM_RATE_54MB_MASK		BIT(11)
@@ -431,7 +433,7 @@ struct ieee80211_stats {
 struct ieee80211_device;
 
 #include "ieee80211_crypt.h"
- 
+
 #define SEC_KEY_1         BIT(0)
 #define SEC_KEY_2         BIT(1)
 #define SEC_KEY_3         BIT(2)
@@ -452,10 +454,10 @@ struct ieee80211_device;
 #define WEP_KEY_LEN 13
 
 struct ieee80211_security {
-	u16 active_key:2, 
-            enabled:1, 
-	    auth_mode:2, 
-            auth_algo:4, 
+	u16 active_key:2,
+            enabled:1,
+	    auth_mode:2,
+            auth_algo:4,
             unicast_uses_group:1;
 	u8 key_sizes[WEP_KEYS];
 	u8 keys[WEP_KEYS][WEP_KEY_LEN];
@@ -555,6 +557,15 @@ struct ieee80211_assoc_request_frame {
 	struct ieee80211_info_element info_element;
 } __attribute__ ((packed));
 
+struct ieee80211_assoc_response_frame {
+	struct ieee80211_hdr_3addr header;
+	u16 capability;
+	u16 status;
+	u16 aid;
+	struct ieee80211_info_element info_element; /* supported rates */
+} __attribute__ ((packed));
+
+
 struct ieee80211_txb {
 	u8 nr_frags;
 	u8 encrypted;
@@ -607,12 +618,12 @@ struct ieee80211_network {
 	u16 beacon_interval;
 	u16 listen_interval;
 	u16 atim_window;
-#ifdef CONFIG_IEEE80211_WPA		
+#ifdef CONFIG_IEEE80211_WPA
 	u8 wpa_ie[MAX_WPA_IE_LEN];
 	size_t wpa_ie_len;
 	u8 rsn_ie[MAX_WPA_IE_LEN];
-	size_t rsn_ie_len;	
-#endif /* CONFIG_IEEE80211_WPA */	
+	size_t rsn_ie_len;
+#endif /* CONFIG_IEEE80211_WPA */
 	struct list_head list;
 };
 
@@ -626,7 +637,7 @@ enum ieee80211_state {
 	IEEE80211_SHUTDOWN
 };
 
-#define DEFAULT_MAX_SCAN_AGE (15 * HZ) 
+#define DEFAULT_MAX_SCAN_AGE (15 * HZ)
 #define DEFAULT_FTS 2346
 #define MAC_FMT "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MAC_ARG(x) ((u8*)(x))[0],((u8*)(x))[1],((u8*)(x))[2],((u8*)(x))[3],((u8*)(x))[4],((u8*)(x))[5]
@@ -715,11 +726,11 @@ struct ieee80211_device {
 	/* Callback functions */
 	void (*set_security)(struct net_device *dev,
 			     struct ieee80211_security *sec);
-	int (*hard_start_xmit)(struct ieee80211_txb *txb, 
+	int (*hard_start_xmit)(struct ieee80211_txb *txb,
 			       struct net_device *dev);
 	int (*reset_port)(struct net_device *dev);
 
-	/* This must be the last item so that it points to the data 
+	/* This must be the last item so that it points to the data
 	 * allocated beyond this structure by alloc_ieee80211 */
 	u8 priv[0];
 };
@@ -758,17 +769,17 @@ extern inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mod
 	 * of ap/device supported modes, then return success
 	 *
 	 */
-	if ((mode & IEEE_A) && 
+	if ((mode & IEEE_A) &&
 	    (ieee->modulation & IEEE80211_OFDM_MODULATION) &&
 	    (ieee->freq_band & IEEE80211_52GHZ_BAND))
 		return 1;
 
-	if ((mode & IEEE_G) && 
+	if ((mode & IEEE_G) &&
 	    (ieee->modulation & IEEE80211_OFDM_MODULATION) &&
 	    (ieee->freq_band & IEEE80211_24GHZ_BAND))
 		return 1;
 
-	if ((mode & IEEE_B) && 
+	if ((mode & IEEE_B) &&
 	    (ieee->modulation & IEEE80211_CCK_MODULATION) &&
 	    (ieee->freq_band & IEEE80211_24GHZ_BAND))
 		return 1;
@@ -825,23 +836,23 @@ extern void ieee80211_rx_mgt(struct ieee80211_device *ieee,
 			     struct ieee80211_rx_stats *stats);
 
 /* iee80211_wx.c */
-extern int ieee80211_wx_get_scan(struct ieee80211_device *ieee, 
-				 struct iw_request_info *info, 
+extern int ieee80211_wx_get_scan(struct ieee80211_device *ieee,
+				 struct iw_request_info *info,
 				 union iwreq_data *wrqu, char *key);
-extern int ieee80211_wx_set_encode(struct ieee80211_device *ieee, 
-				   struct iw_request_info *info, 
+extern int ieee80211_wx_set_encode(struct ieee80211_device *ieee,
+				   struct iw_request_info *info,
 				   union iwreq_data *wrqu, char *key);
-extern int ieee80211_wx_get_encode(struct ieee80211_device *ieee, 
-				   struct iw_request_info *info, 
+extern int ieee80211_wx_get_encode(struct ieee80211_device *ieee,
+				   struct iw_request_info *info,
 				   union iwreq_data *wrqu, char *key);
 
 
-extern inline void ieee80211_increment_scans(struct ieee80211_device *ieee) 
+extern inline void ieee80211_increment_scans(struct ieee80211_device *ieee)
 {
 	ieee->scans++;
 }
 
-extern inline int ieee80211_get_scans(struct ieee80211_device *ieee) 
+extern inline int ieee80211_get_scans(struct ieee80211_device *ieee)
 {
 	return ieee->scans;
 }
@@ -855,7 +866,7 @@ static inline const char *escape_essid(const char *essid, u8 essid_len) {
 		memcpy(escaped, "<hidden>", sizeof("<hidden>"));
 		return escaped;
 	}
-		
+
 	essid_len = min(essid_len, (u8)IW_ESSID_MAX_SIZE);
 	while (essid_len--) {
 		if (*s == '\0') {

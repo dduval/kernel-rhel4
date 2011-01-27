@@ -50,6 +50,8 @@
 
 #if defined(CONFIG_SYSCTL)
 
+int sercons_escape_char = -1;
+
 /* External variables not in a header file. */
 extern int panic_timeout;
 extern int C_A_D;
@@ -626,6 +628,16 @@ static ctl_table kern_table[] = {
 		.proc_handler	= &proc_dointvec,
 	},
 #endif
+#ifdef CONFIG_SERIAL_CORE_CONSOLE
+	{
+		.ctl_name	= KERN_SERCONS_ESC,
+		.procname	= "sercons_esc",
+		.data		= &sercons_escape_char,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+	},
+#endif
 	{
 		.ctl_name	= KERN_PIDMAX,
 		.procname	= "pid_max",
@@ -866,6 +878,16 @@ static ctl_table vm_table[] = {
 		.extra1		= &zero,
 	},
 #endif
+	{
+		.ctl_name	= VM_OOM_KILL,
+		.procname	= "oom-kill",
+		.data		= &oom_kill_enabled,
+		.maxlen		= sizeof(oom_kill_enabled),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+	},
 	{ .ctl_name = 0 }
 };
 

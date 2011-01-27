@@ -82,6 +82,7 @@
 #include <linux/syscalls.h>
 #include <linux/compat.h>
 #include <linux/kmod.h>
+#include <linux/audit.h>
 
 #ifdef CONFIG_NET_RADIO
 #include <linux/wireless.h>		/* Note : will define WIRELESS_EXT */
@@ -227,7 +228,7 @@ int move_addr_to_kernel(void __user *uaddr, int ulen, void *kaddr)
 		return 0;
 	if(copy_from_user(kaddr,uaddr,ulen))
 		return -EFAULT;
-	return 0;
+	return audit_sockaddr(ulen, kaddr);
 }
 
 /**
@@ -1760,10 +1761,11 @@ asmlinkage long sys_sendmsg(int fd, struct msghdr __user *msg, unsigned flags)
 		goto out_freeiov;
 	ctl_len = msg_sys.msg_controllen; 
 	if ((MSG_CMSG_COMPAT & flags) && ctl_len) {
-		err = cmsghdr_from_user_compat_to_kern(&msg_sys, ctl, sizeof(ctl));
+		err = cmsghdr_from_user_compat_to_kern(&msg_sys, sock->sk, ctl, sizeof(ctl));
 		if (err)
 			goto out_freeiov;
 		ctl_buf = msg_sys.msg_control;
+		ctl_len = msg_sys.msg_controllen;
 	} else if (ctl_len) {
 		if (ctl_len > sizeof(ctl))
 		{
@@ -1927,7 +1929,11 @@ asmlinkage long sys_socketcall(int call, unsigned long __user *args)
 	/* copy_from_user should be SMP safe. */
 	if (copy_from_user(a, args, nargs[call]))
 		return -EFAULT;
-		
+
+	err = audit_socketcall(nargs[call]/sizeof(unsigned long), a);
+	if (err)
+		return err;
+
 	a0=a[0];
 	a1=a[1];
 	
@@ -2144,6 +2150,10 @@ void socket_seq_show(struct seq_file *seq)
 	seq_printf(seq, "sockets: used %d\n", counter);
 }
 #endif /* CONFIG_PROC_FS */
+
+/* Cluster devices need this, or better: a kernel interface */
+
+EXPORT_SYMBOL_GPL(sys_recvmsg);
 
 /* ABI emulation layers need these two */
 EXPORT_SYMBOL(move_addr_to_kernel);

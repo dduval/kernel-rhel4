@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_fcp.c 1.456 2005/03/04 11:10:29EST sf_support Exp  $
+ * $Id: lpfc_fcp.c 1.466.1.3 2005/06/21 15:48:55EDT sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -53,8 +53,8 @@
 #include "lpfc_logmsg.h"
 #include "lpfc_mem.h"
 #include "lpfc_version.h"
-#include "lpfc_compat.h"
 #include "lpfc_crtn.h"
+#include "lpfc_compat.h"
 
 static char *lpfc_drvr_name = LPFC_DRIVER_NAME;
 
@@ -303,7 +303,7 @@ lpfc_port_type_show(struct class_device *cdev, char *buf)
 	struct Scsi_Host *host = class_to_shost(cdev);
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
 
-	size_t retval = 0;
+	size_t retval = -EPERM;
 
 	if (phba->fc_topology == TOPOLOGY_LOOP) {
 		if (phba->fc_flag & FC_PUBLIC_LOOP)
@@ -438,7 +438,7 @@ lpfc_board_online_show(struct class_device *cdev, char *buf)
 	struct Scsi_Host *host = class_to_shost(cdev);
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	if (phba->fc_flag & FC_OFFLINE_MODE)
 		return snprintf(buf, PAGE_SIZE, "0\n");
@@ -454,10 +454,10 @@ lpfc_board_online_store(struct class_device *cdev, const char *buf,
 	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];
  	int val=0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
  	if (sscanf(buf, "%d", &val) != 1)
-		return 0;
+		return -EINVAL;
 
 	if (val && (phba->fc_flag & FC_OFFLINE_MODE)) {
 		lpfc_online(phba);
@@ -525,7 +525,7 @@ lpfc_disc_npr_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_npr_list;
@@ -562,7 +562,7 @@ lpfc_disc_map_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_nlpmap_list;
@@ -599,7 +599,7 @@ lpfc_disc_unmap_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_nlpunmap_list;
@@ -636,7 +636,7 @@ lpfc_disc_prli_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_prli_list;
@@ -673,7 +673,7 @@ lpfc_disc_reglgn_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_reglogin_list;
@@ -710,7 +710,7 @@ lpfc_disc_adisc_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_adisc_list;
@@ -747,7 +747,7 @@ lpfc_disc_plogi_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_plogi_list;
@@ -784,7 +784,7 @@ lpfc_disc_unused_show(struct class_device *cdev, char *buf)
 	unsigned long iflag;
 	int i = 0, len = 0;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 
 	spin_lock_irqsave(phba->host->host_lock, iflag);
 	listp = &phba->fc_unused_list;
@@ -832,7 +832,7 @@ lpfc_outfcpio_show(struct class_device *cdev, char *buf)
 	int cnt = 0, unused = 0, total = 0;
 	int tx_count, txcmpl_count;
 
-	if (!phba) return 0;
+	if (!phba) return -EPERM;
 	psli = &phba->sli;
 	pring = &psli->ring[psli->fcp_ring];
 
@@ -875,7 +875,7 @@ lpfc_outfcpio_show(struct class_device *cdev, char *buf)
 				lpfc_cmd =
 				    (struct lpfc_scsi_buf *) (iocb->context1);
 				if ((lpfc_cmd == 0)
-				    || (lpfc_cmd->pCmd->device->id !=
+				    || (lpfc_cmd->target->scsi_id !=
 					targetp->scsi_id)) {
 					continue;
 				}
@@ -900,7 +900,7 @@ lpfc_outfcpio_show(struct class_device *cdev, char *buf)
 				lpfc_cmd =
 				    (struct lpfc_scsi_buf *) (iocb->context1);
 				if ((lpfc_cmd == 0)
-				    || (lpfc_cmd->pCmd->device->id !=
+				    || (lpfc_cmd->target->scsi_id !=
 					targetp->scsi_id)) {
 					continue;
 				}
@@ -955,10 +955,22 @@ lpfc_##attr##_show(struct class_device *cdev, char *buf) \
  		return snprintf(buf, PAGE_SIZE, "%d\n",\
  				phba->cfg_##attr);\
  	}\
- 	return 0;\
+ 	return -EPERM;\
 }
 
-#define lpfc_param_store(attr, minval, maxval)	\
+#define lpfc_param_set(attr, default, minval, maxval)	\
+static int \
+lpfc_##attr##_set(struct lpfc_hba *phba, int val) \
+{ \
+ 	if (val >= minval && val <= maxval) {\
+ 		phba->cfg_##attr = val;\
+ 		return 0;\
+ 	}\
+ 	phba->cfg_##attr = default;\
+ 	return -EINVAL;\
+}
+
+#define lpfc_param_store(attr)	\
 static ssize_t \
 lpfc_##attr##_store(struct class_device *cdev, const char *buf, size_t count) \
 { \
@@ -966,28 +978,27 @@ lpfc_##attr##_store(struct class_device *cdev, const char *buf, size_t count) \
  	struct lpfc_hba *phba = (struct lpfc_hba*)host->hostdata[0];\
  	int val=0;\
  	if (sscanf(buf, "%d", &val) != 1)\
- 		return 0;\
+ 		return -EPERM;\
  	if (phba){\
- 		if (val >= minval && val <= maxval) {\
- 			phba->cfg_##attr = val;\
+ 		if (lpfc_##attr##_set(phba, val) == 0) \
  			return strlen(buf);\
- 		}\
  	}\
- 	return 0;\
+ 	return -EINVAL;\
 }
 
-#define LPFC_ATTR_R_NOINIT(name, desc) \
-extern int lpfc_##name;\
+#define LPFC_ATTR(name, defval, minval, maxval, desc) \
+static int lpfc_##name = defval;\
 module_param(lpfc_##name, int, 0);\
 MODULE_PARM_DESC(lpfc_##name, desc);\
-lpfc_param_show(name)\
-static CLASS_DEVICE_ATTR(lpfc_##name, S_IRUGO , lpfc_##name##_show, NULL)
+lpfc_param_set(name, defval, minval, maxval)\
+
 
 #define LPFC_ATTR_R(name, defval, minval, maxval, desc) \
 static int lpfc_##name = defval;\
 module_param(lpfc_##name, int, 0);\
 MODULE_PARM_DESC(lpfc_##name, desc);\
 lpfc_param_show(name)\
+lpfc_param_set(name, defval, minval, maxval)\
 static CLASS_DEVICE_ATTR(lpfc_##name, S_IRUGO , lpfc_##name##_show, NULL)
 
 #define LPFC_ATTR_RW(name, defval, minval, maxval, desc) \
@@ -995,7 +1006,8 @@ static int lpfc_##name = defval;\
 module_param(lpfc_##name, int, 0);\
 MODULE_PARM_DESC(lpfc_##name, desc);\
 lpfc_param_show(name)\
-lpfc_param_store(name, minval, maxval)\
+lpfc_param_set(name, defval, minval, maxval)\
+lpfc_param_store(name)\
 static CLASS_DEVICE_ATTR(lpfc_##name, S_IRUGO | S_IWUSR,\
 			 lpfc_##name##_show, lpfc_##name##_store)
 
@@ -1083,7 +1095,7 @@ LPFC_ATTR_R(lun_queue_depth, 30, 1, 128,
 # and will not work across a fabric. Also this parameter will take
 # effect only in the case when ALPA map is not available.)
 */
-LPFC_ATTR_RW(scan_down, 1, 0, 1,
+LPFC_ATTR_R(scan_down, 1, 0, 1,
 	     "Start scanning for devices from highest ALPA to lowest");
 
 /*
@@ -1146,7 +1158,7 @@ LPFC_ATTR_R(ack0, 0, 0, 1, "Enable ACK0 support");
 # not match with the bind method of the port will be ignored. Value range
 # is [1,4]. Default value is 2.
 */
-LPFC_ATTR_RW(fcp_bind_method, 2, 0, 4,
+LPFC_ATTR_R(fcp_bind_method, 2, 0, 4,
 	    "Select the bind method to be used");
 
 /*
@@ -1156,14 +1168,10 @@ LPFC_ATTR_RW(fcp_bind_method, 2, 0, 4,
 # is 0. Default value of cr_count is 1. The cr_count feature is disabled if
 # cr_delay is set to 0.
 */
-static int lpfc_cr_delay = 0;
-module_param(lpfc_cr_delay, int , 0);
-MODULE_PARM_DESC(lpfc_cr_delay, "A count of milliseconds after which an"
+LPFC_ATTR(cr_delay, 0, 0, 63, "A count of milliseconds after which an"
 		"interrupt response is generated");
 
-static int lpfc_cr_count = 1;
-module_param(lpfc_cr_count, int, 0);
-MODULE_PARM_DESC(lpfc_cr_count, "A count of I/O completions after which an"
+LPFC_ATTR(cr_count, 1, 1, 255, "A count of I/O completions after which an"
 		"interrupt response is generated");
 
 /*
@@ -1177,39 +1185,17 @@ LPFC_ATTR_RW(fdmi_on, 0, 0, 2, "Enable FDMI support");
 
 /*
 # Specifies the maximum number of ELS cmds we can have outstanding (for
-# discovery). Value range is [1,64]. Default value = 1.
+# discovery). Value range is [1,64]. Default value = 32.
 */
-static int lpfc_discovery_threads = 32;
-module_param(lpfc_discovery_threads, int, 0);
-MODULE_PARM_DESC(lpfc_discovery_threads, "Maximum number of ELS commands"
+LPFC_ATTR(discovery_threads, 32, 1, 64, "Maximum number of ELS commands"
 		 "during discovery");
-
-/* Do not allow the scsi hotplug feature for the lpfc driver even if the 
- * kernel has been configured for it.  The driver's hotplug code is
- * unsupported.
- */
-#ifdef USE_SCAN_TARGET
-/*
-# This enables lpfc_target_add and lpfc_target_remove.
-# Default value = 1, SCSI hotplug enabled.
-*/
-static int lpfc_scsi_hotplug = 1;
-#else
-/*
-# This enables lpfc_target_add and lpfc_target_remove.
-# Default value = 0, SCSI hotplug disabled.
-*/
-static int lpfc_scsi_hotplug = 0;
-#endif
-module_param(lpfc_scsi_hotplug, int, 0);
-MODULE_PARM_DESC(lpfc_scsi_hotplug, "Enables support of SCSI hotplug");
 
 /*
 # lpfc_max_luns: maximum number of LUNs per target driver will support
 # Value range is [1,32768]. Default value is 256.
 # NOTE: The SCSI layer will scan each target for this many luns
 */
-LPFC_ATTR_RW(max_luns, 256, 1, 32768,
+LPFC_ATTR_R(max_luns, 256, 1, 32768,
 	     "Maximum number of LUNs per target driver will support");
 
 
@@ -1744,6 +1730,9 @@ lpfc_slave_alloc(struct scsi_device *scsi_devs)
 		return 1;
 
 	memset(target, 0, sizeof (struct lpfc_target));
+#ifdef SLES_FC
+	init_timer(&target->dev_loss_timer);
+#endif
 	scsi_devs->hostdata = target;
 	target->slavecnt++;
 	return 0;
@@ -1884,6 +1873,7 @@ static struct scsi_host_template driver_template = {
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
 	.cmd_per_lun		= 30,
+	.max_sectors		= 0xFFFF,
 	.shost_attrs		= lpfc_host_attrs,
 	.use_clustering		= ENABLE_CLUSTERING,
 };
@@ -2008,29 +1998,22 @@ lpfc_set_bind_type(struct lpfc_hba * phba)
 static void
 lpfc_get_cfgparam(struct lpfc_hba *phba)
 {
-	phba->cfg_log_verbose = lpfc_log_verbose;
-	phba->cfg_fcp_bind_method = lpfc_fcp_bind_method;
-	phba->cfg_cr_delay = lpfc_cr_delay;
-	phba->cfg_cr_count = lpfc_cr_count;
-	phba->cfg_lun_queue_depth = lpfc_lun_queue_depth;
-	phba->cfg_fcp_class = lpfc_fcp_class;
-	phba->cfg_use_adisc = lpfc_use_adisc;
-	phba->cfg_ack0 = lpfc_ack0;
-	phba->cfg_topology = lpfc_topology;
-	phba->cfg_scan_down = lpfc_scan_down;
-	phba->cfg_nodev_tmo = lpfc_nodev_tmo;
-	phba->cfg_link_speed = lpfc_link_speed;
-	phba->cfg_fdmi_on = lpfc_fdmi_on;
-	phba->cfg_discovery_threads = lpfc_discovery_threads;
-	phba->cfg_max_luns = lpfc_max_luns;
-
-	if (lpfc_scsi_hotplug > 0) {
-		lpfc_scsi_hotplug = 0;
-		printk(KERN_WARNING "WARNING: lpfc%d scsi hotplug unsupported -"
-			" forcing off\n", phba->brd_no);
-	}
-
-	phba->cfg_scsi_hotplug = lpfc_scsi_hotplug;
+	lpfc_log_verbose_set(phba, lpfc_log_verbose);
+	lpfc_fcp_bind_method_set(phba, lpfc_fcp_bind_method);
+	lpfc_cr_delay_set(phba, lpfc_cr_delay);
+	lpfc_cr_count_set(phba, lpfc_cr_count);
+	lpfc_lun_queue_depth_set(phba, lpfc_lun_queue_depth);
+	lpfc_fcp_class_set(phba, lpfc_fcp_class);
+	lpfc_use_adisc_set(phba, lpfc_use_adisc);
+	lpfc_ack0_set(phba, lpfc_ack0);
+	lpfc_topology_set(phba, lpfc_topology);
+	lpfc_scan_down_set(phba, lpfc_scan_down);
+	lpfc_nodev_tmo_set(phba, lpfc_nodev_tmo);
+	lpfc_link_speed_set(phba, lpfc_link_speed);
+	lpfc_fdmi_on_set(phba, lpfc_fdmi_on);
+	lpfc_discovery_threads_set(phba, lpfc_discovery_threads);
+	lpfc_max_luns_set(phba, lpfc_max_luns);
+	phba->cfg_scsi_hotplug = 0;
 
 	switch (phba->pcidev->device) {
 	case PCI_DEVICE_ID_LP101:
@@ -2442,6 +2425,8 @@ static struct pci_device_id lpfc_id_table[] = {
 		PCI_ANY_ID, PCI_ANY_ID, },
 	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP101,
 		PCI_ANY_ID, PCI_ANY_ID, },
+	{PCI_VENDOR_ID_EMULEX, PCI_DEVICE_ID_LP10000S,
+		PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0 }
 };
 MODULE_DEVICE_TABLE(pci, lpfc_id_table);
@@ -2460,7 +2445,7 @@ lpfc_init(void)
 	int rc;
 
 	printk(LPFC_MODULE_DESC "\n");
-
+	printk(LPFC_COPYRIGHT "\n");
 
 	lpfc_transport_template =
 		fc_attach_transport(&lpfc_transport_functions);

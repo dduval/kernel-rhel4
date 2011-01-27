@@ -123,5 +123,14 @@ extern void arch_remove_exec_range(struct mm_struct *mm, unsigned long limit);
 extern void arch_flush_exec_range(struct mm_struct *mm);
 
 
+static inline unsigned long get_desc_base(unsigned long *desc)
+{
+ 	unsigned long base;
+  	base = ((desc[0] >> 16)  & 0x0000ffff) |
+   		((desc[1] << 16) & 0x00ff0000) |
+    		(desc[1] & 0xff000000);
+     	return base;
+}
+
 #endif /* !__ASSEMBLY__ */
 #endif

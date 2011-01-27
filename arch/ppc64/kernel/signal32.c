@@ -685,7 +685,7 @@ static void handle_rt_signal32(unsigned long sig, struct k_sigaction *ka,
 	if (save_user_regs(regs, frame, __NR_rt_sigreturn))
 		goto badframe;
 
-	if (put_user(regs->gpr[1], (unsigned long __user *)newsp))
+	if (put_user(regs->gpr[1], (u32 __user *)newsp))
 		goto badframe;
 	regs->gpr[1] = (unsigned long) newsp;
 	regs->gpr[3] = sig;
@@ -853,7 +853,7 @@ static void handle_signal32(unsigned long sig, struct k_sigaction *ka,
 	if (save_user_regs(regs, &frame->mctx, __NR_sigreturn))
 		goto badframe;
 
-	if (put_user(regs->gpr[1], (unsigned long __user *)newsp))
+	if (put_user(regs->gpr[1], (u32 __user *)newsp))
 		goto badframe;
 	regs->gpr[1] = (unsigned long) newsp;
 	regs->gpr[3] = sig;

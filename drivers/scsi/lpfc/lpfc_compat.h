@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_compat.h 1.29 2005/01/13 18:38:34EST sf_support Exp  $
+ * $Id: lpfc_compat.h 1.31.1.2 2005/06/13 17:16:04EDT sf_support Exp  $
  *
  * This file provides macros to aid compilation in the Linux 2.4 kernel
  * over various platform architectures.
@@ -105,16 +105,5 @@ lpfc_memcpy_from_slim( void *dest, void *src, unsigned int bytes)
 			set_current_state(TASK_UNINTERRUPTIBLE); \
 			schedule_timeout((x)); \
 		} while (0);
-/* Provide local msecs_to_jiffies call for earlier kernels */
-static inline unsigned long msecs_to_jiffies(const unsigned int m)
-{
-#if HZ <= 1000 && !(1000 % HZ)
-	return (m + (1000 / HZ) - 1) / (1000 / HZ);
-#elif HZ > 1000 && !(HZ % 1000)
-	return m * (HZ / 1000);
-#else
-	return (m * HZ + 999) / 1000;
-#endif
-}
 #endif
 #endif				/*  _H_LPFC_COMPAT */

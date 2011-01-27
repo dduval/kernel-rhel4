@@ -37,6 +37,14 @@ source "init/Kconfig"
 
 menu "Processor type and features"
 
+config MEM_MIRROR
+	bool "Memory Mirroring (memory tracking support)"
+	depends on SMP
+	help
+	  Memory tracking support can be used by agents wishing to
+	  keep track of changes to memory while monitoring or copying
+	  memory contents.
+
 choice
 	prompt "Subarchitecture Type"
 	default X86_PC

@@ -524,7 +524,7 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 		 * returns an immediate error upwards, and signals
 		 * that the device is no longer present */
 		cmd->result = DID_NO_CONNECT << 16;
-		scsi_done(cmd);
+		__scsi_done(cmd);
 		/* return 0 (because the command has been processed) */
 		goto out;
 	}

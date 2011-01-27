@@ -21,18 +21,17 @@ EXTRA_CFLAGS += ${MPT_CFLAGS}
 #EXTRA_CFLAGS += -DMPT_DEBUG
 #EXTRA_CFLAGS += -DMPT_DEBUG_MSG_FRAME
 #EXTRA_CFLAGS += -DMPT_DEBUG_SG
-
+#EXTRA_CFLAGS += -DMPT_DEBUG_SAS
 #
 # driver/module specifics...
 #
 #  For mptbase:
 #CFLAGS_mptbase.o += -DMPT_DEBUG_HANDSHAKE
-#CFLAGS_mptbase.o += -DMPT_DEBUG_IRQ
 #
 #  For mptscsih:
 #CFLAGS_mptscsih.o += -DMPT_DEBUG_SCANDV
-#CFLAGS_mptscsih.o += -DMPT_DEBUG_RESET
-#CFLAGS_mptscsih.o += -DMPT_DEBUG_NEH
+#CFLAGS_mptscsih.o += -DMPT_DEBUG_RESET -DMPT_DEBUG_TM
+#CFLAGS_mptscsih.o += -DMPTSCSIH_ENABLE_FC_TRANSPORT
 #
 #  For mptctl:
 #CFLAGS_mptctl.o += -DMPT_DEBUG_IOCTL

@@ -150,6 +150,18 @@ do { \
 	DBF_EVENT(DBF_ALERT, d_string, d_args); \
 } while(0)
 
+/* messages to be written via klogd only */
+#define DEV_MESSAGE_LOG(d_loglevel,d_device,d_string,d_args...)\
+do { \
+	printk(d_loglevel PRINTK_HEADER " %s: " d_string "\n", \
+	       d_device->cdev->dev.bus_id, d_args); \
+} while(0)
+
+#define MESSAGE_LOG(d_loglevel,d_string,d_args...)\
+do { \
+	printk(d_loglevel PRINTK_HEADER " " d_string "\n", d_args); \
+} while(0)
+
 struct dasd_ccw_req {
 	unsigned int magic;		/* Eye catcher */
         struct list_head list;		/* list_head for request queueing. */
@@ -520,7 +532,8 @@ void dasd_proc_exit(void);
 /* externals in dasd_erp.c */
 struct dasd_ccw_req *dasd_default_erp_action(struct dasd_ccw_req *);
 struct dasd_ccw_req *dasd_default_erp_postaction(struct dasd_ccw_req *);
-struct dasd_ccw_req *dasd_alloc_erp_request(char *, int, int, struct dasd_device *);
+struct dasd_ccw_req *dasd_alloc_erp_request(char *, int, int,
+					    struct dasd_device *);
 void dasd_free_erp_request(struct dasd_ccw_req *, struct dasd_device *);
 void dasd_log_sense(struct dasd_ccw_req *, struct irb *);
 void dasd_log_ccw(struct dasd_ccw_req *, int, __u32);

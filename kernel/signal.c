@@ -21,6 +21,7 @@
 #include <linux/binfmts.h>
 #include <linux/security.h>
 #include <linux/ptrace.h>
+#include <linux/audit.h>
 #include <asm/param.h>
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -406,6 +407,7 @@ void __exit_signal(struct task_struct *tsk)
 		 * signals are constrained to threads inside the group.
 		 */
 		exit_itimers(sig);
+		exit_thread_group_keys(sig);
 		kmem_cache_free(signal_cachep, sig);
 	}
 }
@@ -519,7 +521,17 @@ static int __dequeue_signal(struct sigpending *pending, sigset_t *mask,
 {
 	int sig = 0;
 
-	sig = next_signal(pending, mask);
+	/* SIGKILL must have priority, otherwise it is quite easy
+	 * to create an unkillable process, sending sig < SIGKILL
+	 * to self */
+	if (unlikely(sigismember(&pending->signal, SIGKILL))) {
+		if (!sigismember(mask, SIGKILL))
+			sig = SIGKILL;
+	}
+
+	if (likely(!sig))
+		sig = next_signal(pending, mask);
+
 	if (sig) {
 		if (current->notifier) {
 			if (sigismember(current->notifier_mask, sig)) {
@@ -632,7 +644,11 @@ static int check_kill_permission(int sig, struct siginfo *info,
 	    && (current->uid ^ t->suid) && (current->uid ^ t->uid)
 	    && !capable(CAP_KILL))
 		return error;
-	return security_task_kill(t, info, sig);
+
+	error = security_task_kill(t, info, sig);
+	if (!error)
+		audit_signal_info(sig, t); /* Let audit system see the signal */
+	return error;
 }
 
 /* forward decl */

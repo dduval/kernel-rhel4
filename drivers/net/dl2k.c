@@ -1205,7 +1205,7 @@ rio_ethtool_ioctl (struct net_device *dev, void __user *useraddr)
 	switch (ethcmd) {
 		case ETHTOOL_GDRVINFO: {
 			struct ethtool_drvinfo info = { ETHTOOL_GDRVINFO };
-			strcpy(info.driver, "DL2K");
+			strcpy(info.driver, "dl2k");
 			strcpy(info.version, DRV_VERSION);
 			strcpy(info.bus_info, pci_name(np->pdev));
 			memset(&info.fw_version, 0, sizeof(info.fw_version));

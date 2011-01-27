@@ -189,6 +189,7 @@ struct device_node {
 	int	status;			/* Current device status (non-zero is bad) */
 	int	eeh_mode;		/* See eeh.h for possible EEH_MODEs */
 	int	eeh_config_addr;
+	int	pci_ext_config_space;	/* for pci devices */
 	struct  pci_controller *phb;	/* for pci devices */
 	struct	iommu_table *iommu_table;	/* for phb's or bridges */
 
@@ -286,5 +287,6 @@ extern int prom_n_size_cells(struct device_node* np);
 extern int prom_n_intr_cells(struct device_node* np);
 extern void prom_get_irq_senses(unsigned char *senses, int off, int max);
 extern void prom_add_property(struct device_node* np, struct property* prop);
+extern int dn_failed(struct device_node * dn);
 
 #endif /* _PPC64_PROM_H */

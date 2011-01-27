@@ -185,6 +185,26 @@ static struct sysrq_key_op sysrq_showmem_op = {
 	.action_msg	= "Show Memory",
 };
 
+static spinlock_t show_lock = SPIN_LOCK_UNLOCKED;
+static void showacpu(void *info)
+{
+	spin_lock(&show_lock);
+	printk("CPU%d:\n", smp_processor_id());
+	show_stack(NULL, NULL);
+	spin_unlock(&show_lock);
+}
+static void sysrq_handle_showcpus(int key, struct pt_regs *pt_regs,
+				  struct tty_struct *tty) {
+	showacpu(NULL);
+	smp_call_function(showacpu, NULL, 0, 0);
+}
+static struct sysrq_key_op sysrq_showcpus_op = {
+	handler:	sysrq_handle_showcpus,
+	help_msg:	"shoWcpus",
+	action_msg:	"Show CPUs",
+};
+
+
 /* SHOW SYSRQ HANDLERS BLOCK */
 
 
@@ -277,7 +297,7 @@ static struct sysrq_key_op *sysrq_key_table[SYSRQ_KEY_TABLE_LENGTH] = {
 /* t */	&sysrq_showstate_op,
 /* u */	&sysrq_mountro_op,
 /* v */	NULL, /* May be assigned at init time by SMP VOYAGER */
-/* w */	NULL,
+/* w */	&sysrq_showcpus_op,
 /* x */	NULL,
 /* y */	NULL,
 /* z */	NULL

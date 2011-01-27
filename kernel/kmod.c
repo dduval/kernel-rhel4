@@ -143,6 +143,7 @@ struct subprocess_info {
 	char *path;
 	char **argv;
 	char **envp;
+	struct key *ring;
 	int wait;
 	int retval;
 };
@@ -150,23 +151,34 @@ struct subprocess_info {
 /*
  * This is the task which runs the usermode application
  */
-int __exec_usermodehelper(char *path, char **argv, char **envp)
+static int ____exec_usermodehelper(char *path, char **argv, char **envp,
+				   struct key *session_keyring)
 {
+	struct key *old_session;
 	int retval;
 
 	/* Unblock all signals. */
+	key_get(session_keyring);
 	flush_signals(current);
 	spin_lock_irq(&current->sighand->siglock);
+	old_session = __install_session_keyring(current, session_keyring);
 	flush_signal_handlers(current, 1);
 	sigemptyset(&current->blocked);
 	recalc_sigpending();
 	spin_unlock_irq(&current->sighand->siglock);
+
+	key_put(old_session);
 
 	retval = -EPERM;
 	if (current->fs->root)
 		retval = execve(path, argv, envp);
 
 	return retval;
+}
+
+int __exec_usermodehelper(char *path, char **argv, char **envp)
+{
+	return ____exec_usermodehelper(path, argv, envp, NULL);
 }
 
 EXPORT_SYMBOL_GPL(__exec_usermodehelper);
@@ -182,8 +194,8 @@ static int ____call_usermodehelper(void *data)
 	/* We can run anywhere, unlike our parent keventd(). */
 	set_cpus_allowed(current, CPU_MASK_ALL);
 
-	retval = __exec_usermodehelper(sub_info->path,
-			sub_info->argv, sub_info->envp);
+	retval = ____exec_usermodehelper(sub_info->path,
+			sub_info->argv, sub_info->envp, sub_info->ring);
 
 	/* Exec failed? */
 	sub_info->retval = retval;
@@ -286,6 +298,48 @@ int call_usermodehelper(char *path, char **argv, char **envp, int wait)
 	return sub_info.retval;
 }
 EXPORT_SYMBOL(call_usermodehelper);
+
+/**
+ * call_usermodehelper_keys - start a usermode application
+ * @path: pathname for the application
+ * @argv: null-terminated argument list
+ * @envp: null-terminated environment list
+ * @session_keyring: session keyring for process (NULL for an empty keyring)
+ * @wait: wait for the application to finish and return status.
+ *
+ * Runs a user-space application.  The application is started
+ * asynchronously if wait is not set, and runs as a child of keventd.
+ * (ie. it runs with full root capabilities).
+ *
+ * Must be called from process context.  Returns a negative error code
+ * if program was not execed successfully, or 0.
+ */
+int call_usermodehelper_keys(char *path, char **argv, char **envp,
+			     struct key *session_keyring, int wait)
+{
+	DECLARE_COMPLETION(done);
+	struct subprocess_info sub_info = {
+		.complete	= &done,
+		.path		= path,
+		.argv		= argv,
+		.envp		= envp,
+		.ring		= session_keyring,
+		.wait		= wait,
+		.retval		= 0,
+	};
+	DECLARE_WORK(work, __call_usermodehelper, &sub_info);
+
+	if (!khelper_wq)
+		return -EBUSY;
+
+	if (path[0] == '\0')
+		return 0;
+
+	queue_work(khelper_wq, &work);
+	wait_for_completion(&done);
+	return sub_info.retval;
+}
+EXPORT_SYMBOL(call_usermodehelper_keys);
 
 void __init usermodehelper_init(void)
 {

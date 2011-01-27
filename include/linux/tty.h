@@ -322,6 +322,7 @@ struct tty_struct {
 #define TTY_PTY_LOCK 		16	/* pty private */
 #define TTY_NO_WRITE_SPLIT 	17	/* Preserve write boundaries to driver */
 #define TTY_HUPPED 		18	/* Post driver->hangup() */
+#define TTY_OPENED		19	/* set by initial driver->open call */
 
 #define TTY_WRITE_FLUSH(tty) tty_write_flush((tty))
 

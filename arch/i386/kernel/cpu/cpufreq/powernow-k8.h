@@ -5,6 +5,8 @@
  *  http://www.gnu.org/licenses/gpl.html
  */
 
+#define CORES 8 /* should probably be defined someplace else; ask Andi */
+
 struct powernow_k8_data {
 	unsigned int cpu;
 
@@ -29,24 +31,28 @@ struct powernow_k8_data {
 	 * frequency is in kHz */
 	struct cpufreq_frequency_table  *powernow_table;
 
-#ifdef CONFIG_X86_POWERNOW_K8_ACPI
+#if defined(CONFIG_ACPI_PROCESSOR) || defined(CONFIG_ACPI_PROCESSOR_MODULE)
 	/* the acpi table needs to be kept. it's only available if ACPI was
 	 * used to determine valid frequency/vid/fid states */
 	struct acpi_processor_performance acpi_data;
 #endif
+	unsigned int num_siblings; /* count of other cores in socket */
+	unsigned int cpu_siblings[CORES]; /* numbers of other CPU in socket */
+	unsigned int reqrelation; /* last relation requested for this CPU */
+	unsigned int reqstate;
 };
 
 
 /* processor's cpuid instruction support */
-#define CPUID_PROCESSOR_SIGNATURE	1	/* function 1 */
-#define CPUID_XFAM			0x0ff00000	/* extended family */
-#define CPUID_XFAM_K8			0
-#define CPUID_XMOD			0x000f0000	/* extended model */
-#define CPUID_XMOD_REV_E		0x00020000
-#define CPUID_USE_XFAM_XMOD		0x00000f00
-#define CPUID_GET_MAX_CAPABILITIES	0x80000000
-#define CPUID_FREQ_VOLT_CAPABILITIES	0x80000007
-#define P_STATE_TRANSITION_CAPABLE	6
+#define CPUID_PROCESSOR_SIGNATURE             1	/* function 1 */
+#define CPUID_XFAM                   0x0ff00000	/* extended family */
+#define CPUID_XFAM_K8                0
+#define CPUID_XMOD                   0x000f0000	/* extended model */
+#define CPUID_XMOD_REV_E             0x00020000
+#define CPUID_USE_XFAM_XMOD          0x00000f00
+#define CPUID_GET_MAX_CAPABILITIES   0x80000000
+#define CPUID_FREQ_VOLT_CAPABILITIES 0x80000007
+#define P_STATE_TRANSITION_CAPABLE            6
 
 /* Model Specific Registers for p-state transitions. MSRs are 64-bit. For     */
 /* writes (wrmsr - opcode 0f 30), the register number is placed in ecx, and   */

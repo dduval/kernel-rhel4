@@ -82,7 +82,7 @@ static inline unsigned int pci_calc_resource_flags(unsigned int flags)
 /*
  * Find the extent of a PCI decode..
  */
-static u32 pci_size(u32 base, u32 maxbase, unsigned long mask)
+static u32 pci_size(u32 base, u32 maxbase, u32 mask)
 {
 	u32 size = mask & maxbase;	/* Find the significant bits */
 	if (!size)
@@ -590,15 +590,15 @@ pci_scan_device(struct pci_bus *bus, int devfn)
 	u32 l;
 	u8 hdr_type;
 
-	if (pci_bus_read_config_byte(bus, devfn, PCI_HEADER_TYPE, &hdr_type))
-		return NULL;
-
 	if (pci_bus_read_config_dword(bus, devfn, PCI_VENDOR_ID, &l))
 		return NULL;
 
 	/* some broken boards return 0 or ~0 if a slot is empty: */
 	if (l == 0xffffffff || l == 0x00000000 ||
 	    l == 0x0000ffff || l == 0xffff0000)
+		return NULL;
+
+	if (pci_bus_read_config_byte(bus, devfn, PCI_HEADER_TYPE, &hdr_type))
 		return NULL;
 
 	dev = kmalloc(sizeof(struct pci_dev), GFP_KERNEL);

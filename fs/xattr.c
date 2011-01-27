@@ -15,6 +15,7 @@
 #include <linux/namei.h>
 #include <linux/security.h>
 #include <linux/module.h>
+#include <linux/audit.h>
 #include <asm/uaccess.h>
 
 /*
@@ -52,6 +53,7 @@ setxattr(struct dentry *d, char __user *name, void __user *value,
 	error = -EOPNOTSUPP;
 	if (d->d_inode->i_op && d->d_inode->i_op->setxattr) {
 		down(&d->d_inode->i_sem);
+		audit_notify_watch(d->d_inode, MAY_WRITE);
 		error = security_inode_setxattr(d, kname, kvalue, size, flags);
 		if (error)
 			goto out;

@@ -22,6 +22,9 @@
 #include <asm/bitops.h>
 #endif
 
+#include <asm/mm_track.h>
+
+
 extern pgd_t swapper_pg_dir[1024];
 extern kmem_cache_t *pgd_cache, *pmd_cache, *kpmd_cache;
 extern spinlock_t pgd_lock;
@@ -109,7 +112,7 @@ extern void entry_trampoline_setup(void);
 #define _PAGE_BIT_DIRTY		6
 #define _PAGE_BIT_PSE		7	/* 4 MB (or 2MB) page, Pentium+, if present.. */
 #define _PAGE_BIT_GLOBAL	8	/* Global TLB entry PPro+ */
-#define _PAGE_BIT_UNUSED1	9	/* available for programmer */
+#define _PAGE_BIT_SOFTDIRTY	9	/* save dirty state when hdw dirty bit cleared */
 #define _PAGE_BIT_UNUSED2	10
 #define _PAGE_BIT_UNUSED3	11
 #define _PAGE_BIT_NX		63
@@ -123,7 +126,7 @@ extern void entry_trampoline_setup(void);
 #define _PAGE_DIRTY	0x040
 #define _PAGE_PSE	0x080	/* 4 MB (or 2MB) page, Pentium+, if present.. */
 #define _PAGE_GLOBAL	0x100	/* Global TLB entry PPro+ */
-#define _PAGE_UNUSED1	0x200	/* available for programmer */
+#define _PAGE_SOFTDIRTY	0x200
 #define _PAGE_UNUSED2	0x400
 #define _PAGE_UNUSED3	0x800
 
@@ -137,7 +140,7 @@ extern void entry_trampoline_setup(void);
 
 #define _PAGE_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED | _PAGE_DIRTY)
 #define _KERNPG_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_ACCESSED | _PAGE_DIRTY)
-#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY)
+#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_SOFTDIRTY | _PAGE_DIRTY)
 
 #define PAGE_NONE \
 	__pgprot(_PAGE_PROTNONE | _PAGE_ACCESSED)
@@ -214,8 +217,7 @@ extern unsigned long pg0[];
 #define pmd_none(x)	(!pmd_val(x))
 #define pmd_present(x)	(pmd_val(x) & _PAGE_PRESENT)
 #define pmd_clear(xp)	do { set_pmd(xp, __pmd(0)); } while (0)
-#define	pmd_bad(x)	((pmd_val(x) & (~PAGE_MASK & ~_PAGE_USER)) != _KERNPG_TABLE)
-
+#define	pmd_bad(x)	((pmd_val(x) & (~PAGE_MASK & ~_PAGE_USER & ~_PAGE_SOFTDIRTY & ~_PAGE_ACCESSED)) != (_KERNPG_TABLE & ~_PAGE_ACCESSED))
 
 #define pages_to_mb(x) ((x) >> (20-PAGE_SHIFT))
 
@@ -225,7 +227,7 @@ extern unsigned long pg0[];
  */
 static inline int pte_user(pte_t pte)		{ return (pte).pte_low & _PAGE_USER; }
 static inline int pte_read(pte_t pte)		{ return (pte).pte_low & _PAGE_USER; }
-static inline int pte_dirty(pte_t pte)		{ return (pte).pte_low & _PAGE_DIRTY; }
+static inline int pte_dirty(pte_t pte)		{ return (pte).pte_low & (_PAGE_DIRTY | _PAGE_SOFTDIRTY); }
 static inline int pte_young(pte_t pte)		{ return (pte).pte_low & _PAGE_ACCESSED; }
 static inline int pte_write(pte_t pte)		{ return (pte).pte_low & _PAGE_RW; }
 
@@ -236,7 +238,7 @@ static inline int pte_file(pte_t pte)		{ return (pte).pte_low & _PAGE_FILE; }
 
 static inline pte_t pte_rdprotect(pte_t pte)	{ (pte).pte_low &= ~_PAGE_USER; return pte; }
 static inline pte_t pte_exprotect(pte_t pte)	{ (pte).pte_low &= ~_PAGE_USER; return pte; }
-static inline pte_t pte_mkclean(pte_t pte)	{ (pte).pte_low &= ~_PAGE_DIRTY; return pte; }
+static inline pte_t pte_mkclean(pte_t pte)      { (pte).pte_low &= ~(_PAGE_SOFTDIRTY | _PAGE_DIRTY); return pte; }
 static inline pte_t pte_mkold(pte_t pte)	{ (pte).pte_low &= ~_PAGE_ACCESSED; return pte; }
 static inline pte_t pte_wrprotect(pte_t pte)	{ (pte).pte_low &= ~_PAGE_RW; return pte; }
 static inline pte_t pte_mkread(pte_t pte)	{ (pte).pte_low |= _PAGE_USER; return pte; }
@@ -255,7 +257,10 @@ static inline int ptep_test_and_clear_dirty(pte_t *ptep)
 {
 	if (!pte_dirty(*ptep))
 		return 0;
-	return test_and_clear_bit(_PAGE_BIT_DIRTY, &ptep->pte_low);
+
+ 	mm_track(ptep);
+	return (test_and_clear_bit(_PAGE_BIT_DIRTY, &ptep->pte_low) |
+		test_and_clear_bit(_PAGE_BIT_SOFTDIRTY, &ptep->pte_low));
 }
 
 static inline int ptep_test_and_clear_young(pte_t *ptep)

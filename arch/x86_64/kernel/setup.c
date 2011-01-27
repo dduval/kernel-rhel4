@@ -40,6 +40,7 @@
 #include <linux/acpi.h>
 #include <linux/kallsyms.h>
 #include <linux/edd.h>
+#include <linux/dmi.h>
 #include <asm/mtrr.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -238,7 +239,7 @@ static __init void parse_cmdline_early (char ** cmdline_p)
 		if (c != ' ') 
 			goto next_char; 
 
-#ifdef  CONFIG_SMP
+#ifdef CONFIG_SMP
 		/*
 		 * If the BIOS enumerates physical processors before logical,
 		 * maxcpus=N at enumeration-time can be used to disable HT.
@@ -484,25 +485,8 @@ void __init setup_arch(char **cmdline_p)
 	data_resource.start = virt_to_phys(&_etext);
 	data_resource.end = virt_to_phys(&_edata)-1;
 
-#ifdef CONFIG_NUMA
-	numa_off = -1;	// indicate unspecified
-#endif
 	parse_cmdline_early(cmdline_p);
 
-#ifdef CONFIG_NUMA
-	// If we didn't explicitly specify NUMA on or off, figure
-	// out our default here.  For this release only, dual-core
-	// AMD CPUs default to OFF, all others default to ON.
-	if (numa_off < 0) {
-		if((cpuid_ecx(0) == 0x444d4163) &&
-		   ((cpuid_ecx(0x80000008) & 0xff) > 0)) {
-			printk("Disabling NUMA for this system.  Use numa=on to force NUMA to be enabled\n");
-			numa_off = 1;
-		}
-		else
-			numa_off = 0;
-	}
-#endif
 
 	/*
 	 * partially used pages are not usable - thus
@@ -554,7 +538,10 @@ void __init setup_arch(char **cmdline_p)
 	/*
 	 * Parse SRAT to discover nodes.
 	 */
-	acpi_numa_init();
+	if (acpi_numa && acpi_numa_init()) {
+		printk("acpi_numa_init() failed, disabling ACPI NUMA config\n");
+		acpi_numa = 0;
+	}
 #endif
 #endif
 
@@ -624,7 +611,9 @@ void __init setup_arch(char **cmdline_p)
 #endif
 	paging_init();
 
-		check_ioapic();
+	dmi_scan_machine();
+
+	check_ioapic();
 #ifdef CONFIG_ACPI_BOOT
        /*
         * Initialize the ACPI boot-time table parser (gets the RSDP and SDT).
@@ -758,7 +747,8 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 	} 
 	display_cacheinfo(c);
 
-	if (c->cpuid_level >= 0x80000008) {
+#ifdef CONFIG_SMP
+	if (cpuid_eax(0x80000000) >= 0x80000008) {
 		c->x86_num_cores = (cpuid_ecx(0x80000008) & 0xff) + 1;
 		if (c->x86_num_cores & (c->x86_num_cores - 1))
 			c->x86_num_cores = 1;
@@ -779,15 +769,17 @@ static int __init init_amd(struct cpuinfo_x86 *c)
 				cpu, c->x86_num_cores, cpu_to_node[cpu]);
 #endif
 	}
+#endif
 
 	return r;
 }
+
 
 static void __init detect_ht(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_SMP
 	u32 	eax, ebx, ecx, edx;
-	int 	index_lsb, index_msb, tmp;
+	int 	index_msb, tmp;
 	int	initial_apic_id;
 	int 	cpu = smp_processor_id();
 	
@@ -800,38 +792,84 @@ static void __init detect_ht(struct cpuinfo_x86 *c)
 	if (smp_num_siblings == 1) {
 		printk(KERN_INFO  "CPU: Hyper-Threading is disabled\n");
 	} else if (smp_num_siblings > 1) {
-		index_lsb = 0;
+
 		index_msb = 31;
-		/*
-		 * At this point we only support two siblings per
-		 * processor package.
-		 */
+
 		if (smp_num_siblings > NR_CPUS) {
-			printk(KERN_WARNING "CPU: Unsupported number of the siblings %d", smp_num_siblings);
+			printk(KERN_WARNING "CPU: Unsupported number of siblings %d", smp_num_siblings);
 			smp_num_siblings = 1;
 			return;
 		}
-		tmp = smp_num_siblings;
-		while ((tmp & 1) == 0) {
-			tmp >>=1 ;
-			index_lsb++;
-		}
+
+		/* Calculate index_msb for the *total* number of
+		 * threads on the package (HT sibs * cores)
+		 */
 		tmp = smp_num_siblings;
 		while ((tmp & 0x80000000 ) == 0) {
 			tmp <<=1 ;
 			index_msb--;
 		}
-		if (index_lsb != index_msb )
+		if (smp_num_siblings & (smp_num_siblings - 1))
 			index_msb++;
 		initial_apic_id = hard_smp_processor_id();
-		phys_proc_id[cpu] = initial_apic_id >> index_msb;
 		
-		printk(KERN_INFO  "CPU: Physical Processor ID: %d\n",
-		       phys_proc_id[cpu]);
+		phys_proc_id[cpu] = initial_apic_id >> index_msb;
+
+		if (c->x86_num_cores == 1) {
+			cpu_core_id[cpu] = phys_proc_id[cpu];
+			printk(KERN_INFO  "CPU%d: Initial APIC ID: %d, Physical Processor ID: %d\n",
+					   cpu, initial_apic_id, phys_proc_id[cpu]);
+			return;
+		}
+
+		smp_num_siblings /= c->x86_num_cores;
+		/* Now calculate index_msb for the number of
+		 * HT threads on each core...
+		 */
+
+		tmp = smp_num_siblings;
+		index_msb = 31;
+
+		while ((tmp & 0x80000000 ) == 0) {
+			tmp <<=1 ;
+			index_msb--;
+		}
+		if (smp_num_siblings & (smp_num_siblings - 1))
+			index_msb++;
+		cpu_core_id[cpu] = initial_apic_id >> index_msb;
+		printk(KERN_INFO  "CPU%d: Physical Processor ID: %d\n",
+		       cpu, phys_proc_id[cpu]);
+		printk(KERN_INFO  "CPU%d: Processor Core ID: %d\n",
+		       cpu, cpu_core_id[cpu]);
+		printk(KERN_INFO  "CPU%d: Initial APIC ID: %d\n",
+			cpu, initial_apic_id);
+
+
 	}
 #endif
 }
 	
+/*
+ * find out the number of processor cores on the die
+ */
+static int __init num_cpu_cores(struct cpuinfo_x86 *c)
+{
+	unsigned int eax;
+
+	if (c->cpuid_level < 4)
+		return 1;
+
+	__asm__("cpuid"
+		: "=a" (eax)
+		: "0" (4), "c" (0)
+		: "bx", "dx");
+
+	if (eax & 0x1f)
+		return ((eax >> 26) + 1);
+	else
+		return 1;
+}
+
 static void __init init_intel(struct cpuinfo_x86 *c)
 {
 	/* Cache sizes */
@@ -847,6 +885,10 @@ static void __init init_intel(struct cpuinfo_x86 *c)
 
 	if (c->x86 == 15)
 		c->x86_cache_alignment = c->x86_clflush_size * 2;
+
+#ifdef CONFIG_SMP
+	c->x86_num_cores = num_cpu_cores(c);
+#endif
 }
 
 void __init get_cpu_vendor(struct cpuinfo_x86 *c)
@@ -881,8 +923,8 @@ void __init early_identify_cpu(struct cpuinfo_x86 *c)
 	c->x86_vendor_id[0] = '\0'; /* Unset */
 	c->x86_model_id[0] = '\0';  /* Unset */
 	c->x86_clflush_size = 64;
-	c->x86_cache_alignment = c->x86_clflush_size;
 	c->x86_num_cores = 1;
+	c->x86_cache_alignment = c->x86_clflush_size;
 	c->x86_apicid = c == &boot_cpu_data ? 0 : c - cpu_data;
 	memset(&c->x86_capability, 0, sizeof c->x86_capability);
 
@@ -1088,9 +1130,11 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		seq_printf(m, "cache size\t: %d KB\n", c->x86_cache_size);
 	
 #ifdef CONFIG_X86_HT
-	if (smp_num_siblings > 1) {
+	if (smp_num_siblings > 1 || c->x86_num_cores > 1) {
 		seq_printf(m, "physical id\t: %d\n", phys_proc_id[c - cpu_data]);
-		seq_printf(m, "siblings\t: %d\n", smp_num_siblings);
+		seq_printf(m, "siblings\t: %d\n", smp_num_siblings * c->x86_num_cores);
+		seq_printf(m, "core id\t\t: %d\n", cpu_core_id[c - cpu_data]);
+		seq_printf(m, "cpu cores\t: %d\n", c->x86_num_cores);
 	}
 #endif	
 
@@ -1134,8 +1178,6 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 			}
 	}
 
-	if (c->x86_num_cores > 1)
-		seq_printf(m, "cpu cores\t: %d\n", c->x86_num_cores);
 
 	seq_printf(m, "\n\n"); 
 

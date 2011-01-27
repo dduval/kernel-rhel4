@@ -272,3 +272,66 @@ void try_crashdump(struct pt_regs *regs)
 	if (netdump_func)
 		netdump_func(regs);
 }
+
+int diskdump_mark_free_pages(void)
+{
+	struct zone *zone;
+	unsigned long zone_pfn, start_pfn, err_pfn, i, pfn;
+	int order, free_page_cnt = 0;
+	struct list_head *curr, *previous, *dlhead;
+
+	for_each_zone(zone) {
+		if (!zone->spanned_pages)
+			continue;
+
+		/*
+		 * This is not necessary if PG_nosave_free is cleared
+		 * while allocating new pages.
+		 */
+		for (zone_pfn = 0; zone_pfn < zone->spanned_pages; ++zone_pfn) {
+			pfn = zone_pfn + zone->zone_start_pfn;
+			if (pfn_valid(pfn))
+				ClearPageNosaveFree(pfn_to_page(pfn));
+		}
+
+		for (order = MAX_ORDER - 1; order >= 0; --order) {
+			/*
+			 * Emulate a list_for_each.
+			 */
+			dlhead = &zone->free_area[order].free_list;
+
+			for (previous = dlhead, curr = dlhead->next;
+			     curr != dlhead;
+			     previous=curr, curr = curr->next) {
+
+				start_pfn = page_to_pfn(
+					list_entry(curr, struct page, lru));
+
+				if (!pfn_valid(start_pfn) ||
+				    (previous != curr->prev)) {
+					err_pfn = start_pfn;
+					goto mark_err;
+				}
+
+				for (i = 0; i < (1<<order); i++) {
+					pfn = start_pfn + i;
+					if (!pfn_valid(pfn) ||
+					    TestSetPageNosaveFree(
+						  pfn_to_page(pfn))) {
+						err_pfn = pfn;
+						goto mark_err;
+					}
+				}
+				free_page_cnt += i;
+			}
+		}
+	}
+	return free_page_cnt;
+
+mark_err:
+	printk(KERN_WARNING "dump: Bad page. PFN %lu.", err_pfn);
+	printk(KERN_WARNING "DUMP_LEVEL will be ignored. Free pages will be dumped.");
+	return -1;
+}
+
+EXPORT_SYMBOL_GPL(diskdump_mark_free_pages);

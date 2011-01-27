@@ -460,9 +460,9 @@ EX(.fail_efault, ld8 r14=[r33])			// r14 <- *set
 	;;
 
 	st8 [r2]=r14				// update current->blocked with new mask
-	cmpxchg4.acq r14=[r9],r18,ar.ccv	// current->thread_info->flags <- r18
+	cmpxchg4.acq r8=[r9],r18,ar.ccv		// current->thread_info->flags <- r18
 	;;
-	cmp.ne p6,p0=r17,r14			// update failed?
+	cmp.ne p6,p0=r17,r8			// update failed?
 (p6)	br.cond.spnt.few 1b			// yes -> retry
 
 #ifdef CONFIG_SMP
@@ -611,8 +611,10 @@ GLOBAL_ENTRY(fsys_bubble_down)
 	movl r2=ia64_ret_from_syscall
 	;;
 	mov rp=r2				// set the real return addr
-	tbit.z p8,p0=r3,TIF_SYSCALL_TRACE
+	and r3=_TIF_SYSCALL_TRACEAUDIT,r3
 	;;
+	cmp.eq p8,p0=r3,r0
+
 (p10)	br.cond.spnt.many ia64_ret_from_syscall	// p10==true means out registers are more than 8
 (p8)	br.call.sptk.many b6=b6		// ignore this return addr
 	br.cond.sptk ia64_trace_syscall

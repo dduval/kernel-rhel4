@@ -1,25 +1,25 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
- * Enterprise Fibre Channel Host Bus Adapters.                     *
- * Refer to the README file included with this package for         *
- * driver version and adapter support.                             *
- * Copyright (C) 2005 Emulex Corporation.                          *
+ * Fibre Channel Host Bus Adapters.                                *
+ * Copyright (C) 2003-2005 Emulex.  All rights reserved.           *
+ * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
  * This program is free software; you can redistribute it and/or   *
- * modify it under the terms of the GNU General Public License     *
- * as published by the Free Software Foundation; either version 2  *
- * of the License, or (at your option) any later version.          *
- *                                                                 *
- * This program is distributed in the hope that it will be useful, *
- * but WITHOUT ANY WARRANTY; without even the implied warranty of  *
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the   *
- * GNU General Public License for more details, a copy of which    *
- * can be found in the file COPYING included with this package.    *
+ * modify it under the terms of version 2 of the GNU General       *
+ * Public License as published by the Free Software Foundation.    *
+ * This program is distributed in the hope that it will be useful. *
+ * ALL EXPRESS OR IMPLIED CONDITIONS, REPRESENTATIONS AND          *
+ * WARRANTIES, INCLUDING ANY IMPLIED WARRANTY OF MERCHANTABILITY,  *
+ * FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT, ARE      *
+ * DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH DISCLAIMERS ARE HELD *
+ * TO BE LEGALLY INVALID.  See the GNU General Public License for  *
+ * more details, a copy of which can be found in the file COPYING  *
+ * included with this package.                                     *
  *******************************************************************/
 
 /*
- * $Id: lpfc_init.c 1.179 2005/02/23 10:40:44EST sf_support Exp  $
+ * $Id: lpfc_init.c 1.183.1.2 2005/06/13 17:16:27EDT sf_support Exp  $
  */
 
 #include <linux/version.h>
@@ -285,13 +285,6 @@ lpfc_config_port_post(struct lpfc_hba * phba)
 	}
 
 	mp = (struct lpfc_dmabuf *) pmb->context1;
-
-	/* The mailbox was populated by the HBA.  Flush it to main store for the
-	 * driver.  Note that all context buffers are from the driver's
-	 * dma pool and have length LPFC_BPL_SIZE.
-	 */
-	 pci_dma_sync_single_for_cpu(phba->pcidev, mp->phys, LPFC_BPL_SIZE,
-		PCI_DMA_FROMDEVICE);
 
 	memcpy(&phba->fc_sparam, mp->virt, sizeof (struct serv_parm));
 	lpfc_mbuf_free(phba, mp->virt, mp->phys);
@@ -862,10 +855,12 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 {
 	lpfc_vpd_t *vp;
 	uint32_t id;
+	uint8_t hdrtype;
 	char str[16];
 
 	vp = &phba->vpd;
 	pci_read_config_dword(phba->pcidev, PCI_VENDOR_ID, &id);
+	pci_read_config_byte(phba->pcidev, PCI_HEADER_TYPE, &hdrtype);
 
 	switch ((id >> 16) & 0xffff) {
 	case PCI_DEVICE_ID_SUPERFLY:
@@ -890,7 +885,10 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 		strcpy(str, "LP9802 2");
 		break;
 	case PCI_DEVICE_ID_THOR:
-		strcpy(str, "LP10000 2");
+		if (hdrtype == 0x80)
+			strcpy(str, "LP10000DC 2");
+		else
+			strcpy(str, "LP10000 2");
 		break;
 	case PCI_DEVICE_ID_VIPER:
 		strcpy(str, "LPX1000 10");
@@ -899,10 +897,16 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 		strcpy(str, "LP982 2");
 		break;
 	case PCI_DEVICE_ID_TFLY:
-		strcpy(str, "LP1050 2");
+		if (hdrtype == 0x80)
+			strcpy(str, "LP1050DC 2");
+		else
+			strcpy(str, "LP1050 2");
 		break;
 	case PCI_DEVICE_ID_HELIOS:
-		strcpy(str, "LP11000 4");
+		if (hdrtype == 0x80)
+			strcpy(str, "LP11002 4");
+		else
+			strcpy(str, "LP11000 4");
 		break;
 	case PCI_DEVICE_ID_BMID:
 		strcpy(str, "LP1150 4");
@@ -911,16 +915,22 @@ lpfc_get_hba_model_desc(struct lpfc_hba * phba, uint8_t * mdp, uint8_t * descp)
 		strcpy(str, "LP111 4");
 		break;
 	case PCI_DEVICE_ID_ZEPHYR:
-		strcpy(str, "LP11000e 4");
+		if (hdrtype == 0x80)
+			strcpy(str, "LPe11002 4");
+		else
+			strcpy(str, "LPe11000 4");
 		break;
 	case PCI_DEVICE_ID_ZMID:
-		strcpy(str, "LP1150e 4");
+		strcpy(str, "LPe1150 4");
 		break;
 	case PCI_DEVICE_ID_ZSMB:
-		strcpy(str, "LP111e 4");
+		strcpy(str, "LPe111 4");
 		break;
 	case PCI_DEVICE_ID_LP101:
 		strcpy(str, "LP101 2");
+		break;
+	case PCI_DEVICE_ID_LP10000S:
+		strcpy(str, "LP10000-S 2");
 		break;
 	}
 	if (mdp)

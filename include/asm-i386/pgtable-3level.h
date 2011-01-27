@@ -50,15 +50,22 @@ static inline int pte_exec_kernel(pte_t pte)
  */
 static inline void set_pte(pte_t *ptep, pte_t pte)
 {
+	mm_track(ptep);	// track the old (departing) page
 	ptep->pte_high = pte.pte_high;
 	smp_wmb();
 	ptep->pte_low = pte.pte_low;
 }
 #define __HAVE_ARCH_SET_PTE_ATOMIC
-#define set_pte_atomic(pteptr,pteval) \
-		set_64bit((unsigned long long *)(pteptr),pte_val(pteval))
-#define set_pmd(pmdptr,pmdval) \
-		set_64bit((unsigned long long *)(pmdptr),pmd_val(pmdval))
+static inline void set_pte_atomic(pte_t *pteptr, pte_t pte)
+{
+	mm_track(pteptr);	// track the old (departing) page
+	set_64bit((unsigned long long *)(pteptr),pte_val(pte));
+}
+static inline void set_pmd(pmd_t *pmdptr, pmd_t pmd)
+{
+	mm_track(pmdptr);	/* track the old page */
+	set_64bit((unsigned long long *)(pmdptr),pmd_val(pmd));
+}
 #define set_pgd(pgdptr,pgdval) \
 		set_64bit((unsigned long long *)(pgdptr),pgd_val(pgdval))
 
@@ -80,6 +87,8 @@ static inline void pgd_clear (pgd_t * pgd) { }
 static inline pte_t ptep_get_and_clear(pte_t *ptep)
 {
 	pte_t res;
+
+	mm_track(ptep);	// track old page before losing this reference
 
 	/* xchg acts as a barrier before the setting of the high bits */
 	res.pte_low = xchg(&ptep->pte_low, 0);

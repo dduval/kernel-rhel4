@@ -58,6 +58,11 @@ int min_free_kbytes = 1024;
 unsigned long __initdata nr_kernel_pages;
 unsigned long __initdata nr_all_pages;
 
+#ifdef CONFIG_HIGHMEM
+extern atomic_t bouncepages;
+#endif
+
+
 /*
  * Temporary debugging check for pages not lying within a given zone.
  */
@@ -630,14 +635,21 @@ __alloc_pages(unsigned int gfp_mask, unsigned int order,
 
 	/* Go through the zonelist once, looking for a zone with enough free */
 	for (i = 0; (z = zones[i]) != NULL; i++) {
+		int need_kswapd = 0;
 		min = z->pages_low + (1<<order) + z->protection[alloc_type];
 
-		if (z->free_pages < min)
-			continue;
+		if (z->free_pages < min) {
+			need_kswapd++;
+			if (!(gfp_mask & __GFP_WIRED))
+				continue;
+		}
 
 		page = buffered_rmqueue(z, order, gfp_mask);
-		if (page)
+		if (page) {
+			if (need_kswapd)
+				wakeup_kswapd(z);
 			goto got_pg;
+		}
 	}
 
 	for (i = 0; (z = zones[i]) != NULL; i++)
@@ -1146,6 +1158,10 @@ void show_free_areas(void)
 	}
 
 	show_swap_cache_info();
+
+#ifdef CONFIG_HIGHMEM
+	printk("%d bounce buffer pages\n", atomic_read(&bouncepages));
+#endif
 }
 
 /*

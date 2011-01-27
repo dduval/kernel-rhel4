@@ -416,7 +416,7 @@ void tcp_push_one(struct sock *sk, unsigned cur_mss)
 	struct tcp_opt *tp = tcp_sk(sk);
 	struct sk_buff *skb = sk->sk_send_head;
 
-	if (tcp_snd_test(tp, skb, cur_mss, TCP_NAGLE_PUSH)) {
+	if (tcp_snd_test(sk, skb, cur_mss, TCP_NAGLE_PUSH)) {
 		/* Send it out now. */
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 		if (!tcp_transmit_skb(sk, skb_clone(skb, sk->sk_allocation))) {
@@ -428,9 +428,12 @@ void tcp_push_one(struct sock *sk, unsigned cur_mss)
 	}
 }
 
-void tcp_set_skb_tso_segs(struct sk_buff *skb, unsigned int mss_std)
+void tcp_set_skb_tso_segs(struct sock *sk, struct sk_buff *skb)
 {
-	if (skb->len <= mss_std) {
+	struct tcp_opt *tp = tcp_sk(sk);
+
+	if (skb->len <= tp->mss_cache_std ||
+	    !(sk->sk_route_caps & NETIF_F_TSO)) {
 		/* Avoid the costly divide in the normal
 		 * non-TSO case.
 		 */
@@ -439,10 +442,10 @@ void tcp_set_skb_tso_segs(struct sk_buff *skb, unsigned int mss_std)
 	} else {
 		unsigned int factor;
 
-		factor = skb->len + (mss_std - 1);
-		factor /= mss_std;
+		factor = skb->len + (tp->mss_cache_std - 1);
+		factor /= tp->mss_cache_std;
 		skb_shinfo(skb)->tso_segs = factor;
-		skb_shinfo(skb)->tso_size = mss_std;
+		skb_shinfo(skb)->tso_size = tp->mss_cache_std;
 	}
 }
 EXPORT_SYMBOL_GPL(tcp_set_skb_tso_segs);
@@ -514,8 +517,8 @@ static int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len)
 	}
 
 	/* Fix up tso_factor for both original and new SKB.  */
-	tcp_set_skb_tso_segs(skb, tp->mss_cache_std);
-	tcp_set_skb_tso_segs(buff, tp->mss_cache_std);
+	tcp_set_skb_tso_segs(sk, skb);
+	tcp_set_skb_tso_segs(sk, buff);
 
 	if (TCP_SKB_CB(skb)->sacked & TCPCB_LOST) {
 		tcp_inc_pcount(&tp->lost_out, skb);
@@ -590,7 +593,7 @@ int tcp_trim_head(struct sock *sk, struct sk_buff *skb, u32 len)
 	 * factor and mss.
 	 */
 	if (tcp_skb_pcount(skb) > 1)
-		tcp_set_skb_tso_segs(skb, tcp_skb_mss(skb));
+		tcp_set_skb_tso_segs(sk, skb);
 
 	return 0;
 }
@@ -748,7 +751,7 @@ int tcp_write_xmit(struct sock *sk, int nonagle)
 		mss_now = tcp_current_mss(sk, 1);
 
 		while ((skb = sk->sk_send_head) &&
-		       tcp_snd_test(tp, skb, mss_now,
+		       tcp_snd_test(sk, skb, mss_now,
 			       	    tcp_skb_is_last(sk, skb) ? nonagle :
 				    			       TCP_NAGLE_PUSH)) {
 			if (skb->len > mss_now) {
@@ -1664,7 +1667,7 @@ int tcp_write_wakeup(struct sock *sk)
 					tp->mss_cache = tp->mss_cache_std;
 				}
 			} else if (!tcp_skb_pcount(skb))
-				tcp_set_skb_tso_segs(skb, tp->mss_cache_std);
+				tcp_set_skb_tso_segs(sk, skb);
 
 			TCP_SKB_CB(skb)->flags |= TCPCB_FLAG_PSH;
 			TCP_SKB_CB(skb)->when = tcp_time_stamp;

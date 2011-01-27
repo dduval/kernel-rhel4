@@ -696,6 +696,7 @@ static int
 cciss_scsi_detect(int ctlr)
 {
 	struct Scsi_Host *sh;
+	int error;
 
 	sh = scsi_host_alloc(&cciss_driver_template, sizeof(struct ctlr_info *));
 	if (sh == NULL)
@@ -711,10 +712,15 @@ cciss_scsi_detect(int ctlr)
 	sh->hostdata[0] = (unsigned long) hba[ctlr];
 	sh->irq = hba[ctlr]->intr;
 	sh->unique_id = sh->irq;
-	scsi_add_host(sh, &hba[ctlr]->pdev->dev); /* XXX handle failure */
+	error = scsi_add_host(sh, &hba[ctlr]->pdev->dev);
+	if (error)
+		goto fail_host_put;
 	scsi_scan_host(sh);
-
 	return 1;
+
+fail_host_put:
+	scsi_host_put(sh);
+	return 0;
 }
 
 static void __exit cleanup_cciss_module(void);

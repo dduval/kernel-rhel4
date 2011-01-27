@@ -1,5 +1,18 @@
+/*
+ *      Routines to indentify caches on Intel CPU.
+ *
+ *      Changes:
+ *      Venkatesh Pallipadi	: Adding cache identification through cpuid(4)
+ */
+
 #include <linux/init.h>
+#include <linux/slab.h>
+#include <linux/device.h>
+#include <linux/compiler.h>
+#include <linux/cpu.h>
+
 #include <asm/processor.h>
+#include <asm/smp.h>
 
 #define LVL_1_INST	1
 #define LVL_1_DATA	2
@@ -58,10 +71,142 @@ static struct _cache_table cache_table[] __initdata =
 	{ 0x00, 0, 0}
 };
 
-unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c)
+
+enum _cache_type
+{
+	CACHE_TYPE_NULL	= 0,
+	CACHE_TYPE_DATA = 1,
+	CACHE_TYPE_INST = 2,
+	CACHE_TYPE_UNIFIED = 3
+};
+
+union _cpuid4_leaf_eax {
+	struct {
+		enum _cache_type	type:5;
+		unsigned int		level:3;
+		unsigned int		is_self_initializing:1;
+		unsigned int		is_fully_associative:1;
+		unsigned int		reserved:4;
+		unsigned int		num_threads_sharing:12;
+		unsigned int		num_cores_on_die:6;
+	} split;
+	u32 full;
+};
+
+union _cpuid4_leaf_ebx {
+	struct {
+		unsigned int		coherency_line_size:12;
+		unsigned int		physical_line_partition:10;
+		unsigned int		ways_of_associativity:10;
+	} split;
+	u32 full;
+};
+
+union _cpuid4_leaf_ecx {
+	struct {
+		unsigned int		number_of_sets:32;
+	} split;
+	u32 full;
+};
+
+struct _cpuid4_info {
+	union _cpuid4_leaf_eax eax;
+	union _cpuid4_leaf_ebx ebx;
+	union _cpuid4_leaf_ecx ecx;
+	unsigned long size;
+	cpumask_t shared_cpu_map;
+};
+
+#define MAX_CACHE_LEAVES		4
+static unsigned short __devinitdata	num_cache_leaves;
+
+static int __init cpuid4_cache_lookup(int index, struct _cpuid4_info *this_leaf)
+{
+	unsigned int		eax, ebx, ecx, edx;
+	union _cpuid4_leaf_eax	cache_eax;
+
+	cpuid_count(4, index, &eax, &ebx, &ecx, &edx);
+	cache_eax.full = eax;
+	if (cache_eax.split.type == CACHE_TYPE_NULL)
+		return -1;
+
+	this_leaf->eax.full = eax;
+	this_leaf->ebx.full = ebx;
+	this_leaf->ecx.full = ecx;
+	this_leaf->size = (this_leaf->ecx.split.number_of_sets + 1) *
+		(this_leaf->ebx.split.coherency_line_size + 1) *
+		(this_leaf->ebx.split.physical_line_partition + 1) *
+		(this_leaf->ebx.split.ways_of_associativity + 1);
+	return 0;
+}
+
+static int __init find_num_cache_leaves(void)
+{
+	unsigned int		eax, ebx, ecx, edx;
+	union _cpuid4_leaf_eax	cache_eax;
+	int 			i;
+	int 			retval;
+
+	retval = MAX_CACHE_LEAVES;
+	/* Do cpuid(4) loop to find out num_cache_leaves */
+	for (i = 0; i < MAX_CACHE_LEAVES; i++) {
+		cpuid_count(4, i, &eax, &ebx, &ecx, &edx);
+		cache_eax.full = eax;
+		if (cache_eax.split.type == CACHE_TYPE_NULL) {
+			retval = i;
+			break;
+		}
+	}
+	return retval;
+}
+
+unsigned int __init init_intel_cacheinfo(struct cpuinfo_x86 *c)
 {
 	unsigned int trace = 0, l1i = 0, l1d = 0, l2 = 0, l3 = 0; /* Cache sizes */
+	unsigned int new_l1d = 0, new_l1i = 0; /* Cache sizes from cpuid(4) */
+	unsigned int new_l2 = 0, new_l3 = 0, i; /* Cache sizes from cpuid(4) */
 
+	if (c->cpuid_level > 4) {
+		static int is_initialized;
+
+		if (is_initialized == 0) {
+			/* Init num_cache_leaves from boot CPU */
+			num_cache_leaves = find_num_cache_leaves();
+			is_initialized++;
+		}
+
+		/*
+		 * Whenever possible use cpuid(4), deterministic cache 
+		 * parameters cpuid leaf to find the cache details
+		 */
+		for (i = 0; i < num_cache_leaves; i++) {
+			struct _cpuid4_info this_leaf;
+
+			int retval;
+
+			retval = cpuid4_cache_lookup(i, &this_leaf);
+			if (retval >= 0) {
+				switch(this_leaf.eax.split.level) {
+				    case 1:
+					if (this_leaf.eax.split.type == 
+							CACHE_TYPE_DATA)
+						new_l1d = this_leaf.size/1024;
+					else if (this_leaf.eax.split.type == 
+							CACHE_TYPE_INST)
+						new_l1i = this_leaf.size/1024;
+					break;
+				    case 2:
+					new_l2 = this_leaf.size/1024;
+					break;
+				    case 3:
+					new_l3 = this_leaf.size/1024;
+					break;
+				    default:
+					break;
+				}
+			}
+		}
+	}
 	if (c->cpuid_level > 1) {
 		/* supports eax=2  call */
 		int i, j, n;
@@ -113,6 +258,18 @@ unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c)
 				}
 			}
 		}
+
+		if (new_l1d)
+			l1d = new_l1d;
+
+		if (new_l1i)
+			l1i = new_l1i;
+
+		if (new_l2)
+			l2 = new_l2;
+
+		if (new_l3)
+			l3 = new_l3;
 
 		if ( trace )
 			printk (KERN_INFO "CPU: Trace cache: %dK uops", trace);

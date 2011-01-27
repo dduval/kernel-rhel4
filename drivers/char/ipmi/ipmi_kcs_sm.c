@@ -42,7 +42,7 @@
 #include <linux/ipmi_msgdefs.h>		/* for completion codes */
 #include "ipmi_si_sm.h"
 
-#define IPMI_KCS_VERSION "v33"
+#define IPMI_KCS_VERSION "33.4"
 
 /* Set this if you want a printout of why the state machine was hosed
    when it gets hosed. */
@@ -178,7 +178,7 @@ static inline void start_error_recovery(struct si_sm_data *kcs, char *reason)
 	(kcs->error_retries)++;
 	if (kcs->error_retries > MAX_ERROR_RETRIES) {
 #ifdef DEBUG_HOSED_REASON
-		printk("ipmi_kcs_sm: kcs hosed: %s\n", reason);
+		printk(KERN_WARNING "ipmi_kcs_sm: kcs hosed: %s\n", reason);
 #endif
 		kcs->state = KCS_HOSED;
 	} else {

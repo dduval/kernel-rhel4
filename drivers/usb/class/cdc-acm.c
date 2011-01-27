@@ -102,6 +102,113 @@ static int acm_ctrl_msg(struct acm *acm, int request, int value, void *buf, int 
 #define acm_send_break(acm, ms)		acm_ctrl_msg(acm, ACM_REQ_SEND_BREAK, ms, NULL, 0)
 
 /*
+ * Write buffer management.
+ * All of these assume proper locks taken by the caller.
+ */
+
+static int acm_wb_alloc(struct acm *acm)
+{
+	int i, wbn;
+	struct acm_wb *wb;
+
+	wbn = acm->write_current;
+	i = 0;
+	for (;;) {
+		wb = &acm->wb[wbn];
+		if (!wb->use) {
+			wb->use = 1;
+			return wbn;
+		}
+		wbn = (wbn + 1) % ACM_NWB;
+		if (++i >= ACM_NWB)
+			return -1;
+	}
+}
+
+static void acm_wb_free(struct acm *acm, int wbn)
+{
+	struct acm_wb *wb = &acm->wb[wbn];
+	wb->use = 0;
+	wb->len = 0;
+}
+
+static int acm_wb_is_avail(struct acm *acm)
+{
+	int i, n;
+
+	n = 0;
+	for (i = 0; i < ACM_NWB; i++) {
+		if (!acm->wb[i].use)
+			n++;
+	}
+	return n;
+}
+
+static inline int acm_wb_is_used(struct acm *acm, int wbn)
+{
+	return acm->wb[wbn].use && (acm->wb[wbn].len != 0);
+}
+
+/*
+ * Finish write.
+ */
+static void acm_write_done(struct acm *acm)
+{
+	unsigned long flags;
+	int wbn;
+
+	spin_lock_irqsave(&acm->write_lock, flags);
+	acm->write_ready = 1;
+	wbn = acm->write_current;
+	acm_wb_free(acm, wbn);
+	acm->write_current = (wbn + 1) % ACM_NWB;
+	spin_unlock_irqrestore(&acm->write_lock, flags);
+}
+
+/*
+ * Poke write.
+ */
+static int acm_write_start(struct acm *acm)
+{
+	unsigned long flags;
+	int wbn;
+	struct acm_wb *wb;
+	int rc;
+
+	spin_lock_irqsave(&acm->write_lock, flags);
+	if (!acm->dev) {
+		spin_unlock_irqrestore(&acm->write_lock, flags);
+		return -ENODEV;
+	}
+
+	if (!acm->write_ready) {
+		spin_unlock_irqrestore(&acm->write_lock, flags);
+		return 0;	/* A white lie */
+	}
+
+	wbn = acm->write_current;
+	if (!acm_wb_is_used(acm, wbn)) {
+		spin_unlock_irqrestore(&acm->write_lock, flags);
+		return 0;
+	}
+	wb = &acm->wb[wbn];
+
+	acm->write_ready = 0;
+	spin_unlock_irqrestore(&acm->write_lock, flags);
+
+	acm->writeurb->transfer_buffer = wb->buf;
+	acm->writeurb->transfer_dma = wb->dmah;
+	acm->writeurb->transfer_buffer_length = wb->len;
+	acm->writeurb->dev = acm->dev;
+
+	if ((rc = usb_submit_urb(acm->writeurb, GFP_ATOMIC)) < 0) {
+		dbg("usb_submit_urb(write bulk) failed: %d", rc);
+		acm_write_done(acm);
+	}
+	return rc;
+}
+
+/*
  * Interrupt handlers for various ACM device responses
  */
 
@@ -232,17 +339,13 @@ static void acm_rx_tasklet(unsigned long _acm)
 static void acm_write_bulk(struct urb *urb, struct pt_regs *regs)
 {
 	struct acm *acm = (struct acm *)urb->context;
+
 	dbg("Entering acm_write_bulk with status %d\n", urb->status);
 
-	if (!ACM_READY(acm))
-		goto out;
-
-	if (urb->status)
-		dbg("nonzero write bulk status received: %d", urb->status);
-
-	schedule_work(&acm->work);
-out:
-	acm->ready_for_write = 1;
+	acm_write_done(acm);
+	acm_write_start(acm);
+	if (ACM_READY(acm))
+		schedule_work(&acm->work);
 }
 
 static void acm_softint(void *private)
@@ -339,36 +442,42 @@ static int acm_tty_write(struct tty_struct *tty, int from_user, const unsigned c
 {
 	struct acm *acm = tty->driver_data;
 	int stat;
+	unsigned long flags;
+	int wbn;
+	struct acm_wb *wb;
+
 	dbg("Entering acm_tty_write to write %d bytes from %s space,\n", count, from_user ? "user" : "kernel");
 
 	if (!ACM_READY(acm))
 		return -EINVAL;
-	if (!acm->ready_for_write)
-		return 0;
 	if (!count)
 		return 0;
 
-	count = (count > acm->writesize) ? acm->writesize : count;
+	spin_lock_irqsave(&acm->write_lock, flags);
+	if ((wbn = acm_wb_alloc(acm)) < 0) {
+		spin_unlock_irqrestore(&acm->write_lock, flags);
+		acm_write_start(acm);
+		return 0;
+	}
+	wb = &acm->wb[wbn];
+	spin_unlock_irqrestore(&acm->write_lock, flags);
 
+	count = (count > acm->writesize) ? acm->writesize : count;
 	dbg("Get %d bytes from %s space...", count, from_user ? "user" : "kernel");
 	if (from_user) {
-		if (copy_from_user(acm->write_buffer, (void __user *)buf, count))
+		if (copy_from_user(wb->buf, (void __user *)buf, count)) {
+			spin_lock_irqsave(&acm->write_lock, flags);
+			acm_wb_free(acm, wbn);
+			spin_unlock_irqrestore(&acm->write_lock, flags);
 			return -EFAULT;
+		}
 	} else
-		memcpy(acm->write_buffer, buf, count);
+		memcpy(wb->buf, buf, count);
 	dbg("  Successfully copied.\n");
+	wb->len = count;
 
-	acm->writeurb->transfer_buffer_length = count;
-	acm->writeurb->dev = acm->dev;
-
-	acm->ready_for_write = 0;
-	stat = usb_submit_urb(acm->writeurb, from_user ? GFP_KERNEL : GFP_ATOMIC);
-	if (stat < 0) {
-		dbg("usb_submit_urb(write bulk) failed");
-		acm->ready_for_write = 1;
+	if ((stat = acm_write_start(acm)) < 0)
 		return stat;
-	}
-
 	return count;
 }
 
@@ -377,7 +486,11 @@ static int acm_tty_write_room(struct tty_struct *tty)
 	struct acm *acm = tty->driver_data;
 	if (!ACM_READY(acm))
 		return -EINVAL;
-	return !acm->ready_for_write ? 0 : acm->writesize;
+	/*
+	 * Do not let the line discipline to know that we have a reserve,
+	 * or it might get too enthusiastic.
+	 */
+	return (acm->write_ready && acm_wb_is_avail(acm)) ? acm->writesize : 0;
 }
 
 static int acm_tty_chars_in_buffer(struct tty_struct *tty)
@@ -385,7 +498,10 @@ static int acm_tty_chars_in_buffer(struct tty_struct *tty)
 	struct acm *acm = tty->driver_data;
 	if (!ACM_READY(acm))
 		return -EINVAL;
-	return !acm->ready_for_write ? acm->writeurb->transfer_buffer_length : 0;
+	/*
+	 * This is inaccurate (overcounts), but it works.
+	 */
+	return (ACM_NWB - acm_wb_is_avail(acm)) * acm->writesize;
 }
 
 static void acm_tty_throttle(struct tty_struct *tty)
@@ -515,6 +631,39 @@ static void acm_tty_set_termios(struct tty_struct *tty, struct termios *termios_
 /*
  * USB probe and disconnect routines.
  */
+
+/* Little helper: write buffers free */
+static void acm_write_buffers_free(struct acm *acm)
+{
+	int i;
+	struct acm_wb *wb;
+
+	for (wb = &acm->wb[0], i = 0; i < ACM_NWB; i++, wb++) {
+		usb_buffer_free(acm->dev, acm->writesize, wb->buf, wb->dmah);
+	}
+}
+
+/* Little helper: write buffers allocate */
+static int acm_write_buffers_alloc(struct acm *acm)
+{
+	int i;
+	struct acm_wb *wb;
+
+	for (wb = &acm->wb[0], i = 0; i < ACM_NWB; i++, wb++) {
+		wb->buf = usb_buffer_alloc(acm->dev, acm->writesize, GFP_KERNEL,
+		    &wb->dmah);
+		if (!wb->buf) {
+			while (i != 0) {
+				--i;
+				--wb;
+				usb_buffer_free(acm->dev, acm->writesize,
+				    wb->buf, wb->dmah);
+			}
+			return -ENOMEM;
+		}
+	}
+	return 0;
+}
 
 static int acm_probe (struct usb_interface *intf,
 		      const struct usb_device_id *id)
@@ -662,7 +811,8 @@ next_desc:
 	acm->bh.data = (unsigned long) acm;
 	INIT_WORK(&acm->work, acm_softint, acm);
 	spin_lock_init(&acm->throttle_lock);
-	acm->ready_for_write = 1;
+	spin_lock_init(&acm->write_lock);
+	acm->write_ready = 1;
 
 	buf = usb_buffer_alloc(usb_dev, ctrlsize, GFP_KERNEL, &acm->ctrl_dma);
 	if (!buf) {
@@ -678,12 +828,10 @@ next_desc:
 	}
 	acm->read_buffer = buf;
 
-	buf = usb_buffer_alloc(usb_dev, acm->writesize, GFP_KERNEL, &acm->write_dma);
-	if (!buf) {
+	if (acm_write_buffers_alloc(acm) < 0) {
 		dev_dbg(&intf->dev, "out of memory (write buffer alloc)\n");
 		goto alloc_fail4;
 	}
-	acm->write_buffer = buf;	
 
 	acm->ctrlurb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!acm->ctrlurb) {
@@ -712,9 +860,9 @@ next_desc:
 	acm->readurb->transfer_dma = acm->read_dma;
 
 	usb_fill_bulk_urb(acm->writeurb, usb_dev, usb_sndbulkpipe(usb_dev, epwrite->bEndpointAddress),
-			  acm->write_buffer, acm->writesize, acm_write_bulk, acm);
+			  NULL, acm->writesize, acm_write_bulk, acm);
 	acm->writeurb->transfer_flags |= URB_NO_FSBR | URB_NO_TRANSFER_DMA_MAP;
-	acm->writeurb->transfer_dma = acm->write_dma;
+	/* acm->writeurb->transfer_dma = 0; */
 
 	dev_info(&intf->dev, "ttyACM%d: USB ACM device\n", minor);
 
@@ -737,7 +885,7 @@ alloc_fail7:
 alloc_fail6:
 	usb_free_urb(acm->ctrlurb);
 alloc_fail5:
-	usb_buffer_free(usb_dev, acm->writesize, acm->write_buffer, acm->write_dma);
+	acm_write_buffers_free(acm);
 alloc_fail4:
 	usb_buffer_free(usb_dev, readsize, acm->read_buffer, acm->read_dma);
 alloc_fail3:
@@ -768,7 +916,7 @@ static void acm_disconnect(struct usb_interface *intf)
 
 	flush_scheduled_work(); /* wait for acm_softint */
 
-	usb_buffer_free(usb_dev, acm->writesize, acm->write_buffer, acm->write_dma);
+	acm_write_buffers_free(acm);
 	usb_buffer_free(usb_dev, acm->readsize, acm->read_buffer, acm->read_dma);
 	usb_buffer_free(usb_dev, acm->ctrlsize, acm->ctrl_buffer, acm->ctrl_dma);
 

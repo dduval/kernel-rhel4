@@ -14,6 +14,8 @@
 #include <linux/fcntl.h>
 #include <linux/quotaops.h>
 #include <linux/security.h>
+#include <linux/time.h>
+#include <linux/audit.h>
 
 /* Taken over from the old code... */
 
@@ -68,6 +70,8 @@ int inode_setattr(struct inode * inode, struct iattr * attr)
 	unsigned int ia_valid = attr->ia_valid;
 	int error = 0;
 
+	audit_notify_watch(inode, MAY_WRITE);	
+
 	if (ia_valid & ATTR_SIZE) {
 		if (attr->ia_size != i_size_read(inode)) {
 			error = vmtruncate(inode, attr->ia_size);
@@ -87,11 +91,14 @@ int inode_setattr(struct inode * inode, struct iattr * attr)
 	if (ia_valid & ATTR_GID)
 		inode->i_gid = attr->ia_gid;
 	if (ia_valid & ATTR_ATIME)
-		inode->i_atime = attr->ia_atime;
+		inode->i_atime = timespec_trunc(attr->ia_atime,
+						get_sb_time_gran(inode->i_sb));
 	if (ia_valid & ATTR_MTIME)
-		inode->i_mtime = attr->ia_mtime;
+		inode->i_mtime = timespec_trunc(attr->ia_mtime,
+						get_sb_time_gran(inode->i_sb));
 	if (ia_valid & ATTR_CTIME)
-		inode->i_ctime = attr->ia_ctime;
+		inode->i_ctime = timespec_trunc(attr->ia_ctime,
+						get_sb_time_gran(inode->i_sb));
 	if (ia_valid & ATTR_MODE) {
 		umode_t mode = attr->ia_mode;
 
@@ -131,13 +138,16 @@ int setattr_mask(unsigned int ia_valid)
 int notify_change(struct dentry * dentry, struct iattr * attr)
 {
 	struct inode *inode = dentry->d_inode;
-	mode_t mode = inode->i_mode;
+	mode_t mode;
 	int error;
-	struct timespec now = CURRENT_TIME;
+	struct timespec now;
 	unsigned int ia_valid = attr->ia_valid;
 
 	if (!inode)
 		BUG();
+
+	mode = inode->i_mode;
+	now = current_fs_time(inode->i_sb);
 
 	attr->ia_ctime = now;
 	if (!(ia_valid & ATTR_ATIME_SET))
@@ -168,6 +178,7 @@ int notify_change(struct dentry * dentry, struct iattr * attr)
 		return 0;
 
 	if (inode->i_op && inode->i_op->setattr) {
+		audit_notify_watch(inode, MAY_WRITE);
 		error = security_inode_setattr(dentry, attr);
 		if (!error)
 			error = inode->i_op->setattr(dentry, attr);

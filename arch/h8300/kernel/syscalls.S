@@ -289,6 +289,21 @@ SYMBOL_NAME_LABEL(sys_call_table)
 	.long SYMBOL_NAME(sys_utimes)
  	.long SYMBOL_NAME(sys_fadvise64_64)
 	.long SYMBOL_NAME(sys_ni_syscall)	/* sys_vserver */
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)	/* 280 */
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)	/* reserved for kexec */
+	.long SYMBOL_NAME(sys_ni_syscall)
+	.long SYMBOL_NAME(sys_ni_syscall)	/* 285 */ /* available */
+	.long SYMBOL_NAME(sys_add_key)
+	.long SYMBOL_NAME(sys_request_key)
+	.long SYMBOL_NAME(sys_keyctl)
 
 	.rept NR_syscalls-(.-SYMBOL_NAME(sys_call_table))/4
 		.long SYMBOL_NAME(sys_ni_syscall)

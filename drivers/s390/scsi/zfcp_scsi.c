@@ -333,8 +333,8 @@ zfcp_scsi_command_sync(struct zfcp_unit *unit, struct scsi_cmnd *scpnt,
 	scpnt->SCp.ptr = (void *) &wait;  /* silent re-use */
 	scpnt->scsi_done = zfcp_scsi_command_sync_handler;
 	ret = zfcp_scsi_command_async(unit->port->adapter, unit, scpnt, timer);
-	if ((ret == 0) && (scpnt->result == 0))
-	wait_for_completion(&wait);
+	if (ret == 0)
+		wait_for_completion(&wait);
 
 	scpnt->SCp.ptr = NULL;
 

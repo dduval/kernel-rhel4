@@ -533,13 +533,24 @@ static inline void nfs_renew_times(struct dentry * dentry)
 }
 
 static inline
-int nfs_lookup_verify_inode(struct inode *inode, int isopen)
+int nfs_lookup_verify_inode(struct inode *inode, struct nameidata *nd)
 {
 	struct nfs_server *server = NFS_SERVER(inode);
 
-	if (isopen && !(server->flags & NFS_MOUNT_NOCTO))
-		return __nfs_revalidate_inode(server, inode);
+	if (nd != NULL) {
+		int ndflags = nd->flags;
+		/* VFS wants an on-the-wire revalidation */
+		if (ndflags & LOOKUP_REVAL)
+			goto out_force;
+		/* This is an open(2) */
+		if ((ndflags & LOOKUP_OPEN) &&
+				!(ndflags & LOOKUP_CONTINUE) &&
+				!(server->flags & NFS_MOUNT_NOCTO))
+			goto out_force;
+	}
 	return nfs_revalidate_inode(server, inode);
+out_force:
+	return __nfs_revalidate_inode(server, inode);
 }
 
 /*
@@ -583,15 +594,11 @@ static int nfs_lookup_revalidate(struct dentry * dentry, struct nameidata *nd)
 	struct nfs_fh fhandle;
 	struct nfs_fattr fattr;
 	unsigned long verifier;
-	int isopen = 0;
 
 	parent = dget_parent(dentry);
 	lock_kernel();
 	dir = parent->d_inode;
 	inode = dentry->d_inode;
-
-	if (nd && !(nd->flags & LOOKUP_CONTINUE) && (nd->flags & LOOKUP_OPEN))
-		isopen = 1;
 
 	if (!inode) {
 		if (nfs_neg_need_reval(dir, dentry, nd))
@@ -606,11 +613,12 @@ static int nfs_lookup_revalidate(struct dentry * dentry, struct nameidata *nd)
 	}
 
 	/* Revalidate parent directory attribute cache */
-	nfs_revalidate_inode(NFS_SERVER(dir), dir);
+	if (nfs_revalidate_inode(NFS_SERVER(dir), dir) < 0)
+		goto out_zap_parent;
 
 	/* Force a full look up iff the parent directory has changed */
 	if (nfs_check_verifier(dir, dentry)) {
-		if (nfs_lookup_verify_inode(inode, isopen))
+		if (nfs_lookup_verify_inode(inode, nd))
 			goto out_zap_parent;
 		goto out_valid;
 	}
@@ -625,7 +633,7 @@ static int nfs_lookup_revalidate(struct dentry * dentry, struct nameidata *nd)
 	if (!error) {
 		if (nfs_compare_fh(NFS_FH(inode), &fhandle))
 			goto out_bad;
-		if (nfs_lookup_verify_inode(inode, isopen))
+		if (nfs_lookup_verify_inode(inode, nd))
 			goto out_zap_parent;
 		goto out_valid_renew;
 	}
@@ -740,7 +748,9 @@ static struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, stru
 
 	lock_kernel();
 	/* Revalidate parent directory attribute cache */
-	nfs_revalidate_inode(NFS_SERVER(dir), dir);
+	error = nfs_revalidate_inode(NFS_SERVER(dir), dir);
+	if (error < 0)
+		goto out_unlock;
 
 	/* If we're doing an exclusive create, optimize away the lookup */
 	if (nfs_is_exclusive_create(dir, nd))
@@ -818,7 +828,11 @@ static struct dentry *nfs_atomic_lookup(struct inode *dir, struct dentry *dentry
 	/* Open the file on the server */
 	lock_kernel();
 	/* Revalidate parent directory attribute cache */
-	nfs_revalidate_inode(NFS_SERVER(dir), dir);
+	error = nfs_revalidate_inode(NFS_SERVER(dir), dir);
+	if (error < 0) {
+		unlock_kernel();
+		goto out;
+	}
 
 	if (nd->intent.open.flags & O_CREAT) {
 		nfs_begin_data_update(dir);
@@ -1597,8 +1611,9 @@ int nfs_permission(struct inode *inode, int mask, struct nameidata *nd)
 	unlock_kernel();
 	return res;
 out_notsup:
-	nfs_revalidate_inode(NFS_SERVER(inode), inode);
-	res = vfs_permission(inode, mask);
+	res = nfs_revalidate_inode(NFS_SERVER(inode), inode);
+	if (res == 0)
+		res = vfs_permission(inode, mask);
 	unlock_kernel();
 	return res;
 }

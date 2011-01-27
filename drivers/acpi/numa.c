@@ -173,6 +173,7 @@ int __init
 acpi_numa_init()
 {
 	int			result;
+	int			no_srat = 0, no_slit = 0;
 
 	/* SRAT: Static Resource Affinity Table */
 	result = acpi_table_parse(ACPI_SRAT, acpi_parse_srat);
@@ -187,6 +188,7 @@ acpi_numa_init()
 	} else {
 		/* FIXME */
 		printk("Warning: acpi_table_parse(ACPI_SRAT) returned %d!\n",result);
+		no_srat = 1;
 	}
 
 	/* SLIT: System Locality Information Table */
@@ -194,7 +196,17 @@ acpi_numa_init()
 	if (result < 1) {
 		/* FIXME */
 		printk("Warning: acpi_table_parse(ACPI_SLIT) returned %d!\n",result);
+		no_slit = 1;
 	}
+
+#ifdef CONFIG_X86_64
+	/* x86_64 uses the return value of this routine to decide whether
+	 * to use other means to configure NUMA.  ia64 does it in
+	 * acpi_numa_arch_fixup.  Don't want to affect any other archs.
+	 */
+	if (no_srat && no_slit)
+		return -1;
+#endif
 
 	acpi_numa_arch_fixup();
 	return 0;
