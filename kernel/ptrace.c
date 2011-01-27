@@ -202,6 +202,8 @@ void __ptrace_detach(struct task_struct *child, unsigned int data)
 
 int ptrace_detach(struct task_struct *child, unsigned int data)
 {
+	int ret;
+
 	if ((unsigned long) data > _NSIG)
 		return	-EIO;
 
@@ -209,13 +211,16 @@ int ptrace_detach(struct task_struct *child, unsigned int data)
 	ptrace_disable(child);
 	clear_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
 
+	ret = -ESRCH;
 	write_lock_irq(&tasklist_lock);
 	/* protect against de_thread()->release_task() */
-	if (child->ptrace)
+	if (child->ptrace && !child->exit_state) {
 		__ptrace_detach(child, data);
+		ret = 0;
+	}
 	write_unlock_irq(&tasklist_lock);
 
-	return 0;
+	return ret;
 }
 
 /*

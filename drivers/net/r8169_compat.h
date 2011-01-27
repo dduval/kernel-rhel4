@@ -121,5 +121,7 @@ static inline int backport_schedule_delayed_work(struct delayed_work *work,
 
 #define schedule_delayed_work backport_schedule_delayed_work
 
+#define ETH_FCS_LEN 4
+
 #endif /* __R8169_COMPAT_H__ */
 

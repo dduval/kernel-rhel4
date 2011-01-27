@@ -69,7 +69,6 @@ static const int multicast_filter_limit = 32;
 #define RX_DMA_BURST	6	/* Maximum PCI burst, '6' is 1024 */
 #define TX_DMA_BURST	6	/* Maximum PCI burst, '6' is 1024 */
 #define EarlyTxThld	0x3F	/* 0x3F means NO early transmit */
-#define RxPacketMaxSize	0x3FE8	/* 16K - 1 - ETH_HLEN - VLAN - CRC... */
 #define SafeMtu		0x1c20	/* ... actually life sucks beyond ~7k */
 #define InterFrameGap	0x03	/* 3 means InterFrameGap = the shortest one */
 
@@ -184,7 +183,12 @@ static struct pci_device_id rtl8169_pci_tbl[] = {
 
 MODULE_DEVICE_TABLE(pci, rtl8169_pci_tbl);
 
-static int rx_copybreak = 200;
+/*
+ * we set our copybreak very high so that we don't have
+ * to allocate 16k frames all the time (see note in
+ * rtl8169_open()
+ */ 
+static int rx_copybreak = 16383;
 static int use_dac;
 static int ignore_parity_err;
 static struct {
@@ -2208,11 +2212,15 @@ static void __devexit rtl8169_remove_one(struct pci_dev *pdev)
 }
 
 static void rtl8169_set_rxbufsize(struct rtl8169_private *tp,
-				  struct net_device *dev)
+				  unsigned int mtu)
 {
-	unsigned int mtu = dev->mtu;
+	unsigned int max_frame = mtu + VLAN_ETH_HLEN + ETH_FCS_LEN;
 
-	tp->rx_buf_sz = (mtu > RX_BUF_SIZE) ? mtu + ETH_HLEN + 8 : RX_BUF_SIZE;
+	if (max_frame != 16383)
+		printk(KERN_WARNING "WARNING! Changing of MTU on this NIC "
+			"May lead to frame reception errors!\n");
+
+	tp->rx_buf_sz = (max_frame > RX_BUF_SIZE) ? max_frame : RX_BUF_SIZE;
 }
 
 static int rtl8169_open(struct net_device *dev)
@@ -2222,7 +2230,17 @@ static int rtl8169_open(struct net_device *dev)
 	int retval = -ENOMEM;
 
 
-	rtl8169_set_rxbufsize(tp, dev);
+	/*
+	 * Note that we use a magic value here, its wierd I know
+	 * its done because, some subset of rtl8169 hardware suffers from
+	 * a problem in which frames received that are longer than 
+	 * the size set in RxMaxSize register return garbage sizes
+	 * when received.  To avoid this we need to turn off filtering, 
+	 * which is done by setting a value of 16383 in the RxMaxSize register
+	 * and allocating 16k frames to handle the largest possible rx value
+	 * thats what the magic math below does.
+	 */
+	rtl8169_set_rxbufsize(tp, 16383 - VLAN_ETH_HLEN - ETH_FCS_LEN);
 
 	/*
 	 * Rx and Tx desscriptors needs 256 bytes alignment.
@@ -2343,10 +2361,10 @@ static u16 rtl_rw_cpluscmd(void __iomem *ioaddr)
 	return cmd;
 }
 
-static void rtl_set_rx_max_size(void __iomem *ioaddr)
+static void rtl_set_rx_max_size(void __iomem *ioaddr, unsigned int rx_buf_sz)
 {
 	/* Low hurts. Let's disable the filtering. */
-	RTL_W16(RxMaxSize, 16383);
+	RTL_W16(RxMaxSize, rx_buf_sz);
 }
 
 static void rtl8169_set_magic_reg(void __iomem *ioaddr, unsigned mac_version)
@@ -2393,7 +2411,7 @@ static void rtl_hw_start_8169(struct net_device *dev)
 
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
-	rtl_set_rx_max_size(ioaddr);
+	rtl_set_rx_max_size(ioaddr, tp->rx_buf_sz);
 
 	if ((tp->mac_version == RTL_GIGA_MAC_VER_01) ||
 	    (tp->mac_version == RTL_GIGA_MAC_VER_02) ||
@@ -2654,7 +2672,7 @@ static void rtl_hw_start_8168(struct net_device *dev)
 
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
-	rtl_set_rx_max_size(ioaddr);
+	rtl_set_rx_max_size(ioaddr, tp->rx_buf_sz);
 
 	tp->cp_cmd |= RTL_R16(CPlusCmd) | PktCntrDisable | INTT_1;
 
@@ -2834,7 +2852,7 @@ static void rtl_hw_start_8101(struct net_device *dev)
 
 	RTL_W8(EarlyTxThres, EarlyTxThld);
 
-	rtl_set_rx_max_size(ioaddr);
+	rtl_set_rx_max_size(ioaddr, tp->rx_buf_sz);
 
 	tp->cp_cmd |= rtl_rw_cpluscmd(ioaddr) | PCIMulRW;
 
@@ -2877,7 +2895,7 @@ static int rtl8169_change_mtu(struct net_device *dev, int new_mtu)
 
 	rtl8169_down(dev);
 
-	rtl8169_set_rxbufsize(tp, dev);
+	rtl8169_set_rxbufsize(tp, dev->mtu);
 
 	ret = rtl8169_init_ring(dev);
 	if (ret < 0)
@@ -2937,7 +2955,7 @@ static struct sk_buff *rtl8169_alloc_rx_skb(struct pci_dev *pdev,
 
 	pad = align ? align : NET_IP_ALIGN;
 
-	skb = netdev_alloc_skb(dev, 16383 + pad);
+	skb = netdev_alloc_skb(dev, rx_buf_sz + pad);
 	if (!skb)
 		goto err_out;
 

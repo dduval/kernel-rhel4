@@ -3469,7 +3469,7 @@ static int gdth_read_event(gdth_ha_str *ha, int handle, gdth_evt_str *estr)
         eindex = handle;
     estr->event_source = 0;
 
-    if (eindex >= MAX_EVENTS) {
+    if (eindex < 0 || eindex >= MAX_EVENTS) {
         GDTH_UNLOCK_HA(ha, flags);
         return eindex;
     }
