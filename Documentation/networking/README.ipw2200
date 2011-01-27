@@ -1,0 +1,194 @@
+
+Intel PRO/Wireless 2200 802.11bg Driver for Linux
+README.ipw2200
+
+October 13, 2004
+
+Release 0.12 Current Features
+------------ -----   -----       ----       ---       --         -     
+- BSS mode (Infrastructure, Managed)
+- IBSS mode (Ad-Hoc)
+- WEP (OPEN and SHARED KEY mode)
+- 802.1x EAP via xsupplicant
+- Wireless Extension support 
+- long/short preamble support
+- Full B and G rate support (2200 and 2915)
+- Full A rate support (2915 only)
+- Transmit power control
+- S state support (ACPI suspend/resume)
+
+TODO
+------------ -----   -----       ----       ---       --         -     
+- Fix statistics returned by iwconfig and /proc/net/wireless
+- Add firmware restart backoff algorithm (see ipw2100 project)
+- Look into (and hopefully enable) Monitor/RFMon mode
+- Add WPA support
+
+
+Command Line Parameters
+------------ -----   -----       ----       ---       --         -     
+  associate
+	Set to 0 to disable the auto scan-and-associate functionality of the
+	driver.  Default is 1 (auto-associate)
+
+  auto_create
+	Set to 0 to disable the auto creation of an Ad-Hoc network 
+	matching the channel and network name parameters provided.  
+	Default is 1.
+
+  channel
+	channel number for association.  The normal method for setting
+        the channel would be to use the standard wireless tools
+        (i.e. `iwconfig eth1 channel 10`), but it is useful sometimes
+	to set this while debugging.  Channel 0 means 'ANY'
+
+  debug
+	If using a debug build, this is used to control the amount of debug
+	info is logged.  See the 'dval' and 'load' script for more info on
+	how to use this.
+
+  ifname
+	Can be used to override the default interface name of eth%.  For 
+	example: 
+
+		modprobe ipw2200 ifname=wlan%d
+
+	You can also specify a specific interface number -- be warned 
+	that if that number conflicts with an already assigned interface
+	the driver will not load correctly.
+
+  mode
+	Can be used to set the default mode of the adapter.  
+	0 = Managed, 1 = Ad-Hoc
+
+Wireless Extension Private Methods
+------------ -----   -----       ----       ---       --         -     
+  get_mode
+	Can be used to report out which IEEE mode the driver is 
+	configured to support.  Example:
+	
+	% iwpriv eth1 get_mode
+	eth1	get_mode:802.11bg (6)
+
+  set_mode
+	Can be used to configure which IEEE mode the driver will 
+	support.  
+
+	Usage:
+	% iwpriv eth1 set_mode {mode}
+	Where {mode} is a number in the range 1-7:
+	1	802.11a (2915 only)
+	2	802.11b
+	3	802.11ab (2915 only)
+	4	802.11g 
+	5	802.11ag (2915 only)
+	6	802.11bg
+	7	802.11abg (2915 only)
+
+
+Sysfs Helper Files: (NOTE: All of these are only useful for developers)
+------------ -----   -----       ----       ---       --         -     
+
+----- Driver Level ------
+For the driver level files, look in /sys/bus/pci/drivers/ipw2200/
+
+  debug_level  
+	
+	This controls the same global as the 'debug' module parameter
+
+----- Device Level ------
+For the device level files, look in
+	
+	/sys/bus/pci/drivers/ipw2200/{PCI-ID}/
+
+For example:
+	/sys/bus/pci/drivers/ipw2200/0000:02:01.0
+
+For the device level files, see /sys/bus/pci/[drivers/ipw2200:
+
+  command_event_reg 
+	read access to the the Command Event register
+
+  eeprom 
+	reading from this fill will cause our private copy of the 
+	contents of the EEPROM to be flushed to the log
+
+  eeprom_sram 
+	reading this file will behave like the 'eeprom' file, except
+	that instead of pulling from the device's cached copy of the
+	eeprom data, the region of the device's sram that should
+	hold eeprom data is dumped.
+
+  eeprom_clear 
+	reading from this file will cause the eeprom info in sram to be 
+	cleared.
+
+  error_log 
+	reading this file will cause the contents of the device's error 
+	log to be flushed to our log.  normally the event_log is empty, 
+	but if the device's fw get's into an odd state, this log contains 
+	some hints.
+
+  fw_date 
+	read-only access to the firmware release date
+
+  fw_version 
+	read-only access to the firmware release version
+
+  rf_kill
+	read - 
+	0 = RF kill not enabled (radio on)
+	1 = HW based RF kill active (radio off)
+	2 = SW based RF kill active (radio off)
+	write -
+	0 = If SW based RF kill active, turn the radio back on
+	1 = If radio is on, activate SW based RF kill
+
+	NOTE: If you enable the SW based RF kill and then toggle the HW
+  	based RF kill from ON -> OFF -> ON, the radio will come back on
+	(resetting the SW based RF kill to the 'radio on' state)
+	
+  ucode 
+	read-only access to the ucode version number
+
+  rtc 
+	read-only access the the device's real-time clock
+
+  [in]direct_byte
+  [in]direct_word
+	enables read-only access to the device's sram by first writing
+	the address of the data to read, and then reading from the file 
+	will return the word/byte the address points to.
+
+Support
+------------ -----   -----       ----       ---       --         -     
+
+For general information and support, go to:
+	
+    http://ipw2200.sf.net/
+
+License
+------------ -----   -----       ----       ---       --         -     
+
+  Copyright(c) 2003 - 2004 Intel Corporation. All rights reserved.
+
+  This program is free software; you can redistribute it and/or modify it 
+  under the terms of the GNU General Public License as published by the Free 
+  Software Foundation; either version 2 of the License.
+  
+  This program is distributed in the hope that it will be useful, but WITHOUT 
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or 
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for 
+  more details.
+  
+  You should have received a copy of the GNU General Public License along with
+  this program; if not, write to the Free Software Foundation, Inc., 59 
+  Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+  
+  The full GNU General Public License is included in this distribution in the
+  file called LICENSE.
+  
+  Contact Information:
+  James P. Ketrenos <ipw2100-admin@linux.intel.com>
+  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+
