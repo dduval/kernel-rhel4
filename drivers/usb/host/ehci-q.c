@@ -829,12 +829,13 @@ static struct ehci_qh *qh_append_tds (
 		/* control qh may need patching after enumeration */
 		if (unlikely (epnum == 0)) {
 			/* set_address changes the address */
-			if ((qh->hw_info1 & QH_ADDR_MASK) == 0)
+			if ((qh->hw_info1 & QH_ADDR_MASK) == 0) {
 				qh->hw_info1 |= cpu_to_le32 (
 						usb_pipedevice (urb->pipe));
+				mdelay(1);
 
 			/* for full speed, ep0 maxpacket can grow */
-			else if (!(qh->hw_info1
+			} else if (!(qh->hw_info1
 					& __constant_cpu_to_le32 (0x3 << 12))) {
 				u32	info, max;
 

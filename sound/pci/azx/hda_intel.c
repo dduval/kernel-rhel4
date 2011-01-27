@@ -1424,7 +1424,7 @@ static int __devinit azx_init_stream(struct azx *chip)
 static int azx_acquire_irq(struct azx *chip, int do_disconnect)
 {
 	if (request_irq(chip->pci->irq, azx_interrupt,
-			chip->msi ? 0 : 0x00000080,
+			chip->msi ? 0 : SA_SHIRQ,
 			"HDA Intel", chip)) {
 		printk(KERN_ERR "hda-intel: unable to grab IRQ %d, "
 		       "disabling device\n", chip->pci->irq);
