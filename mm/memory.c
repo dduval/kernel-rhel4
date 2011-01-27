@@ -1661,6 +1661,35 @@ out_nomap:
 }
 
 /*
+ * This is like a special single-page "expand_downwards()",
+ * except we must first make sure that 'address-PAGE_SIZE'
+ * doesn't hit another vma.
+ *
+ * The "find_vma()" will do the right thing even if we wrap
+ */
+static inline int check_stack_guard_page(struct vm_area_struct *vma, unsigned long address)
+{
+        address &= PAGE_MASK;
+        if ((vma->vm_flags & VM_GROWSDOWN) && address == vma->vm_start) {
+		struct vm_area_struct *prev;
+
+		find_vma_prev(vma->vm_mm, address, &prev);
+
+		/*
+		 * Is there a mapping abutting this one below?
+		 *
+		 * That's only ok if it's the same stack mapping
+		 * that has gotten split..
+		 */
+		if (prev && prev->vm_end == address)
+			return prev->vm_flags & VM_GROWSDOWN ? 0 : -ENOMEM;
+ 
+		expand_stack(vma, address - PAGE_SIZE);
+        }
+        return 0;
+}
+
+/*
  * We are called with the MM semaphore and page_table_lock
  * spinlock held to protect against concurrent faults in
  * multithreaded programs. 
@@ -1671,17 +1700,18 @@ do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		unsigned long addr)
 {
 	pte_t entry;
-	struct page * page = ZERO_PAGE(addr);
+	struct page * page;
 
-	/* Read-only mapping of ZERO_PAGE. */
-	entry = pte_wrprotect(mk_pte(ZERO_PAGE(addr), vma->vm_page_prot));
+	pte_unmap(page_table);
+	spin_unlock(&mm->page_table_lock);
 
-	/* ..except if it's a write access */
+	/* Check if we need to add a guard page to the stack */
+	if (check_stack_guard_page(vma, addr) < 0)
+		return VM_FAULT_SIGBUS;
+
+	/* Use the zero-page for reads */
 	if (write_access) {
 		/* Allocate our own private page. */
-		pte_unmap(page_table);
-		spin_unlock(&mm->page_table_lock);
-
 		if (unlikely(anon_vma_prepare(vma)))
 			goto no_mem;
 		page = alloc_page_vma(GFP_HIGHUSER, vma, addr);
@@ -1705,6 +1735,21 @@ do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		lru_cache_add_active(page);
 		mark_page_accessed(page);
 		page_add_anon_rmap(page, vma, addr);
+	} else {
+		/* Read-only mapping of ZERO_PAGE. */
+		page = ZERO_PAGE(addr);
+		spin_lock(&mm->page_table_lock);
+		page_table = pte_offset_map(pmd, addr);
+
+		if (!pte_none(*page_table)) {
+			pte_unmap(page_table);
+			page_cache_release(page);
+			spin_unlock(&mm->page_table_lock);
+			goto out;
+		}
+
+		entry = pte_wrprotect(mk_pte(ZERO_PAGE(addr),
+					     vma->vm_page_prot));
 	}
 
 	set_pte(page_table, entry);

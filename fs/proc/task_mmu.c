@@ -63,6 +63,7 @@ static int show_map(struct seq_file *m, void *v)
 	struct file *file = map->vm_file;
 	int flags = map->vm_flags;
 	unsigned long ino = 0;
+	unsigned long start;
 	dev_t dev = 0;
 	int len;
 
@@ -72,15 +73,20 @@ static int show_map(struct seq_file *m, void *v)
 		ino = inode->i_ino;
 	}
 
+	/* We don't show the stack guard page in /proc/maps */
+        start = map->vm_start;
+        if (map->vm_flags & VM_GROWSDOWN && ((start+PAGE_SIZE) != map->vm_end))
+                start += PAGE_SIZE;
+	
 	seq_printf(m, "%08lx-%08lx %c%c%c%c %08lx %02x:%02x %lu %n",
-			map->vm_start,
+			start,
 			map->vm_end,
 			flags & VM_READ ? 'r' : '-',
 			flags & VM_WRITE ? 'w' : '-',
 			(flags & VM_EXEC
 #ifdef __i386__
 				|| (!nx_enabled && map->vm_mm &&
-				(map->vm_start < map->vm_mm->context.exec_limit))
+				(start < map->vm_mm->context.exec_limit))
 #endif
 			)
 				? 'x' : '-',
